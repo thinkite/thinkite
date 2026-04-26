@@ -235,6 +235,29 @@ export const deleteSessionResponse = z.object({
   requestId: z.string(),
 });
 
+/**
+ * Open a session in Claude Desktop via the `claude://resume` deep link.
+ *
+ * V0 callers pass only `cliSessionId` (sidecode-created sessions whose Desktop
+ * mirror does not yet exist). `desktopLocalSessionId` is reserved for V0.5+
+ * "navigate to existing Desktop session" — see project_continue_on_desktop.md
+ * for the dedup-via-prefix-strip rationale.
+ */
+export const continueOnDesktopCommand = z.object({
+  type: z.literal("continueOnDesktop"),
+  requestId: z.string(),
+  cliSessionId: z.string(),
+  desktopLocalSessionId: z.string().optional(),
+});
+
+export const continueOnDesktopResponse = z.object({
+  type: z.literal("continueOnDesktop.response"),
+  requestId: z.string(),
+  ok: z.boolean(),
+  /** Human-readable error when ok=false (e.g. `open` exited non-zero, Desktop missing). */
+  error: z.string().optional(),
+});
+
 // ─── Health + error ────────────────────────────────────────────────────────
 
 export const pingFrame = z.object({
@@ -271,6 +294,7 @@ export const command = z.discriminatedUnion("type", [
   stopTaskCommand,
   listSessionsCommand,
   deleteSessionCommand,
+  continueOnDesktopCommand,
 ]);
 
 export type Command = z.infer<typeof command>;
@@ -278,6 +302,7 @@ export type Command = z.infer<typeof command>;
 export const response = z.discriminatedUnion("type", [
   listSessionsResponse,
   deleteSessionResponse,
+  continueOnDesktopResponse,
 ]);
 
 export type Response = z.infer<typeof response>;
@@ -293,6 +318,7 @@ export const clientFrame = z.discriminatedUnion("type", [
   stopTaskCommand,
   listSessionsCommand,
   deleteSessionCommand,
+  continueOnDesktopCommand,
 ]);
 
 export type ClientFrame = z.infer<typeof clientFrame>;
@@ -310,6 +336,7 @@ export const daemonFrame = z.discriminatedUnion("type", [
   sessionForkedEvent,
   listSessionsResponse,
   deleteSessionResponse,
+  continueOnDesktopResponse,
 ]);
 
 export type DaemonFrame = z.infer<typeof daemonFrame>;
