@@ -41,6 +41,11 @@ export const pairRejectFrame = z.object({
   reason: z.string(),
 });
 
+export type PairOfferFrame = z.infer<typeof pairOfferFrame>;
+export type PairProofFrame = z.infer<typeof pairProofFrame>;
+export type PairAcceptFrame = z.infer<typeof pairAcceptFrame>;
+export type PairRejectFrame = z.infer<typeof pairRejectFrame>;
+
 // ─── Events: daemon → client (server-pushed, no requestId) ─────────────────
 
 export const sessionUpdatedEvent = z.object({

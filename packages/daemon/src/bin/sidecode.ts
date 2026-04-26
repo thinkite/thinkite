@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import { PROTOCOL_VERSION } from "@sidecodeapp/protocol";
+import { resolveSidecodeHome } from "../home.js";
+import { loadOrCreateIdentity } from "../identity.js";
 import { start } from "../index.js";
+import { KnownClients } from "../known-clients.js";
+import { runPairCommand } from "../pair-command.js";
 
 const [, , rawSubcommand, ...rest] = process.argv;
 const subcommand = rawSubcommand ?? "help";
@@ -25,13 +29,24 @@ async function main(): Promise<void> {
       console.log("TODO: signal running daemon");
       return;
 
-    case "pair":
-      console.log("TODO: print pairing QR");
+    case "pair": {
+      await runPairCommand(rest);
       return;
+    }
 
-    case "status":
-      console.log("TODO: query running daemon");
+    case "status": {
+      const home = resolveSidecodeHome();
+      const identity = loadOrCreateIdentity(home);
+      const known = KnownClients.load(home);
+      console.log(`sidecode home:    ${home}`);
+      console.log(`fingerprint:      ${identity.fingerprint}`);
+      console.log(`paired clients:   ${known.list().length}`);
+      for (const c of known.list()) {
+        const when = new Date(c.pairedAt).toISOString().slice(0, 19);
+        console.log(`  ${c.fingerprint}  paired ${when}  ${c.label ?? ""}`);
+      }
       return;
+    }
 
     case "logs":
       console.log("TODO: tail $SIDECODE_HOME/daemon.log");
@@ -88,7 +103,8 @@ Commands:
   help               Show this help
 
 Options:
-  --port <n>         Override default port (used with up/start)`);
+  --port <n>         Override default port (used with up/start)
+  --self-test        Run pair end-to-end in-process (used with pair)`);
 }
 
 main().catch((err) => {
