@@ -1,0 +1,40 @@
+{
+  "name": "@sidecodeapp/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "description": "macOS daemon for sidecode — wraps Claude Agent SDK and exposes it to mobile clients",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "sidecode": "./dist/bin/sidecode.js"
+  },
+  "files": [
+    "dist",
+    "scripts/*.plist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "os": [
+    "darwin"
+  ],
+  "scripts": {
+    "dev": "tsx watch src/bin/sidecode.ts up",
+    "build": "tsc -b tsconfig.json && chmod +x ./dist/bin/sidecode.js",
+    "typecheck": "tsc -b tsconfig.json",
+    "start": "node ./dist/bin/sidecode.js",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.119",
+    "@sidecodeapp/protocol": "workspace:*",
+    "bonjour-service": "^1.3.0",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.21.0"
+  }
+}

@@ -1,0 +1,13 @@
+node_modules
+dist
+.expo
+*.log
+.DS_Store
+.env*
+!.env.example
+
+# TS incremental build cache (emitted next to tsconfig.json, not inside dist/)
+*.tsbuildinfo
+
+# vitest / test coverage output
+coverage
