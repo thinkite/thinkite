@@ -1,4 +1,5 @@
 import { PROTOCOL_VERSION } from "@sidecodeapp/protocol";
+import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
@@ -44,6 +45,24 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   });
   const bound = await ws.start();
 
+  // Advertise where we're listening so `sidecode pair` (and the future menu
+  // bar) can read it without us writing yet another IPC channel.
+  writeDaemonLock(home, {
+    pid: process.pid,
+    // If the user passed 0.0.0.0 or 127.0.0.1, prefer 127.0.0.1 in the
+    // advertised host so locally-running CLI tools don't have to guess.
+    host: bound.host === "0.0.0.0" ? "127.0.0.1" : bound.host,
+    port: bound.port,
+    startedAt: Date.now(),
+  });
+
+  // Best-effort sync cleanup: if our parent kills us ungracefully (signal
+  // not delivered to handler, hard SIGKILL elsewhere), we still try to
+  // remove the lock here. `pair-command` falls back to PID liveness check
+  // so a leftover lock file is harmless either way — it'd just be
+  // recognized as stale.
+  process.on("exit", () => deleteDaemonLock(home));
+
   console.log(
     `sidecode daemon (protocol ${PROTOCOL_VERSION}) listening on ws://${bound.host}:${bound.port}`,
   );
@@ -56,6 +75,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     pairedClientCount: () => knownClients.list().length,
     authenticatedConnectionCount: () => ws.authenticatedCount(),
     async stop() {
+      deleteDaemonLock(home);
       await ws.stop();
       console.log("sidecode daemon stopped");
     },

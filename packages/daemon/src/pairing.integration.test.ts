@@ -58,12 +58,13 @@ describe("pairing integration", () => {
       daemonAddress: "ws://127.0.0.1:41234",
     });
 
-    const { offer, sessionId } = pairing.createOffer("integration-test");
+    const offer = pairing.createOffer("integration-test");
     expect(offer.daemonFingerprint).toBe(identity.fingerprint);
     expect(offer.daemonIdentityPublicKey).toBe(identity.publicKeyB64);
     expect(offer.daemonAddress).toBe("ws://127.0.0.1:41234");
 
     const client = freshClient();
+    const sessionId = `int-${Date.now()}`;
     const hello = {
       type: "client.hello" as const,
       v: HANDSHAKE_VERSION,
@@ -72,6 +73,8 @@ describe("pairing integration", () => {
       clientFingerprint: client.fingerprint,
       clientIdentityPublicKey: client.publicKeyB64,
       clientNonce: randomBytes(32).toString("base64url"),
+      offerExpiresAt: offer.expiresAt,
+      offerDaemonFingerprint: offer.daemonFingerprint,
     };
 
     const helloRes = pairing.processClientHello(hello);
@@ -139,7 +142,8 @@ describe("pairing integration", () => {
       const identity = loadOrCreateIdentity(home);
       const known = KnownClients.load(home);
       const pairing = new PairingService(identity, known);
-      const { sessionId } = pairing.createOffer("first-boot");
+      const offer = pairing.createOffer("first-boot");
+      const sessionId = `boot-${Date.now()}`;
       const hello = {
         type: "client.hello" as const,
         v: HANDSHAKE_VERSION,
@@ -148,6 +152,8 @@ describe("pairing integration", () => {
         clientFingerprint: client.fingerprint,
         clientIdentityPublicKey: client.publicKeyB64,
         clientNonce: randomBytes(32).toString("base64url"),
+        offerExpiresAt: offer.expiresAt,
+        offerDaemonFingerprint: offer.daemonFingerprint,
       };
       const helloRes = pairing.processClientHello(hello);
       if (!helloRes.ok) throw new Error("hello failed");

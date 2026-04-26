@@ -2,6 +2,7 @@ import {
   createHash,
   generateKeyPairSync,
   randomBytes,
+  randomUUID,
   sign as cryptoSign,
 } from "node:crypto";
 import { hostname } from "node:os";
@@ -10,110 +11,62 @@ import {
   HANDSHAKE_VERSION,
   type TranscriptInput,
 } from "@sidecodeapp/protocol";
+import { readActiveDaemonLock } from "./daemon-lock.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
 import { PairingService } from "./pairing.js";
-import { DEFAULT_PORT, WebSocketServer } from "./ws-server.js";
-
-/**
- * Lifetime of an interactive `sidecode pair` session — how long the daemon
- * waits for the first client to complete the handshake.
- */
-const PAIR_TIMEOUT_MS = 60_000;
 
 /**
  * Implementation of the `sidecode pair` subcommand.
  *
- * Runs an ephemeral WS server, generates one pair.offer, prints it,
- * and waits up to 60s for the first client to complete the handshake.
+ * Stateless print: reads identity from $SIDECODE_HOME, finds the running
+ * `sidecode up` daemon via $SIDECODE_HOME/daemon.lock, and prints a fresh
+ * pair.offer payload pointing at that daemon's WS address. Does NOT spawn
+ * a server of its own — multiple `sidecode pair` runs are safe and cheap.
  *
- * V0 model: `sidecode pair` is one-shot (run when adding a new client).
- * `sidecode up` is the long-running daemon (already-paired clients reach
- * it via trusted_reconnect). The menu bar app (W3-W4) will eventually
- * make this seamless by keeping the daemon up and issuing offers on demand.
- *
- * `--self-test` runs the handshake in-process without a network — useful
- * for CI / smoke testing.
- *
- * `--port <n>` overrides the default WS port.
+ * `--self-test` runs the full handshake in-process without any network —
+ * useful for CI / smoke testing.
  */
 export async function runPairCommand(args: readonly string[]): Promise<void> {
   if (args.includes("--self-test")) return runSelfTest();
 
-  const port = parsePort(args) ?? DEFAULT_PORT;
   const home = resolveSidecodeHome();
   const identity = loadOrCreateIdentity(home);
   const knownClients = KnownClients.load(home);
 
-  // Build PairingService + WS server in this process, sharing the instance
-  // so the offer's sessionId is recognized when the client connects.
-  const pairing = new PairingService(identity, knownClients, {
-    daemonAddress: `ws://127.0.0.1:${port}`,
-  });
-  const ws = new WebSocketServer({
-    pairing,
-    port,
-    host: "0.0.0.0",
-    log: () => undefined, // silent stdout during pair
-  });
-  const bound = await ws.start();
+  const lock = readActiveDaemonLock(home);
+  if (!lock) {
+    console.error("✗ sidecode is not running.");
+    console.error("");
+    console.error("Start it first:");
+    console.error("  sidecode up");
+    console.error("");
+    console.error("Then re-run `sidecode pair` (in another terminal).");
+    process.exit(1);
+  }
 
-  // Generate the offer AFTER the server bound, so we know the real port if 0.
-  const { offer } = pairing.createOffer(`sidecode-${hostname()}`);
-  const offerWithRealAddress = {
-    ...offer,
-    daemonAddress: `ws://${bound.host === "0.0.0.0" ? "127.0.0.1" : bound.host}:${bound.port}`,
-  };
-  const encoded = Buffer.from(JSON.stringify(offerWithRealAddress)).toString(
-    "base64url",
-  );
+  // Build the offer pointing at the running daemon. PairingService here is
+  // just a metadata builder; createOffer() is a pure function in the
+  // post-revision design — it doesn't track issued offers.
+  const pairing = new PairingService(identity, knownClients, {
+    daemonAddress: `ws://${lock.host}:${lock.port}`,
+  });
+  const offer = pairing.createOffer(`sidecode-${hostname()}`);
+  const encoded = Buffer.from(JSON.stringify(offer)).toString("base64url");
 
   console.log("Pair payload (paste into mobile client to pair):");
   console.log("");
   console.log(encoded);
   console.log("");
-  console.log(`SessionId:    ${offer.sessionId}`);
+  console.log(`Daemon PID:   ${lock.pid}`);
   console.log(`Fingerprint:  ${identity.fingerprint}`);
-  console.log(`Address:      ${offerWithRealAddress.daemonAddress}`);
+  console.log(`Address:      ${offer.daemonAddress}`);
   console.log(`Expires:      ${new Date(offer.expiresAt).toISOString()}`);
   console.log("");
-  console.log("Waiting for client to complete handshake (up to 60s)…");
-  console.log("");
-
-  const result = await waitForFirstAuth(ws, PAIR_TIMEOUT_MS);
-  await ws.stop();
-
-  if (result === "timeout") {
-    console.error("✗ pair timed out — no client completed the handshake.");
-    process.exit(1);
-  }
-  console.log("✓ paired (1 client now authenticated)");
-  console.log(`  total paired clients: ${KnownClients.load(home).list().length}`);
-}
-
-function parsePort(args: readonly string[]): number | undefined {
-  const i = args.indexOf("--port");
-  if (i === -1) return undefined;
-  const value = args[i + 1];
-  const port = value ? Number.parseInt(value, 10) : Number.NaN;
-  if (!Number.isFinite(port)) {
-    throw new Error(`invalid --port value: ${value}`);
-  }
-  return port;
-}
-
-async function waitForFirstAuth(
-  ws: WebSocketServer,
-  timeoutMs: number,
-): Promise<"ok" | "timeout"> {
-  const deadline = Date.now() + timeoutMs;
-  // Use the monotonic counter so a quickly-disconnecting client still counts.
-  while (Date.now() < deadline) {
-    if (ws.totalAuthenticatedCount() > 0) return "ok";
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return "timeout";
+  console.log(
+    "QR is valid for ~5 minutes; multiple devices can scan within that window.",
+  );
 }
 
 /** Self-test: run the full handshake in-process. No WS, no network. */
@@ -127,8 +80,8 @@ async function runSelfTest(): Promise<void> {
   console.log(`home:        ${home}`);
   console.log(`fingerprint: ${identity.fingerprint}`);
 
-  const { sessionId } = pairing.createOffer("self-test");
-  console.log(`offer sessionId: ${sessionId}`);
+  const offer = pairing.createOffer("self-test");
+  console.log(`offer expiresAt: ${new Date(offer.expiresAt).toISOString()}`);
 
   const { publicKey: clientPub, privateKey: clientPriv } =
     generateKeyPairSync("ed25519");
@@ -138,6 +91,7 @@ async function runSelfTest(): Promise<void> {
     .digest("hex")
     .slice(0, 16);
   const clientNonce = randomBytes(32).toString("base64url");
+  const sessionId = randomUUID();
 
   const helloOutcome = pairing.processClientHello({
     type: "client.hello",
@@ -147,6 +101,8 @@ async function runSelfTest(): Promise<void> {
     clientFingerprint,
     clientIdentityPublicKey: clientPubB64,
     clientNonce,
+    offerExpiresAt: offer.expiresAt,
+    offerDaemonFingerprint: offer.daemonFingerprint,
   });
   if (!helloOutcome.ok) {
     console.error(

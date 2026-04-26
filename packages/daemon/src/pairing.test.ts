@@ -3,6 +3,7 @@ import {
   generateKeyPairSync,
   type KeyObject,
   randomBytes,
+  randomUUID,
   sign as cryptoSign,
 } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,6 +15,7 @@ import {
   type ClientHelloFrame,
   HANDSHAKE_VERSION,
   type HandshakeMode,
+  type PairOfferFrame,
   type ServerHelloFrame,
   type TranscriptInput,
 } from "@sidecodeapp/protocol";
@@ -38,19 +40,52 @@ function makeMockClient(): MockClient {
   return { publicKeyB64: jwk.x, privateKey, fingerprint };
 }
 
-function makeHello(
+/** Build a client.hello for qr_bootstrap, echoing the offer fields. */
+function helloForOffer(
   client: MockClient,
-  sessionId: string,
-  mode: HandshakeMode,
+  offer: PairOfferFrame,
 ): ClientHelloFrame {
   return {
     type: "client.hello",
     v: HANDSHAKE_VERSION,
-    sessionId,
+    sessionId: randomUUID(),
+    mode: "qr_bootstrap",
+    clientFingerprint: client.fingerprint,
+    clientIdentityPublicKey: client.publicKeyB64,
+    clientNonce: randomBytes(32).toString("base64url"),
+    offerExpiresAt: offer.expiresAt,
+    offerDaemonFingerprint: offer.daemonFingerprint,
+  };
+}
+
+/** Build a client.hello for trusted_reconnect (no offer-echo fields). */
+function helloForReconnect(client: MockClient): ClientHelloFrame {
+  return {
+    type: "client.hello",
+    v: HANDSHAKE_VERSION,
+    sessionId: randomUUID(),
+    mode: "trusted_reconnect",
+    clientFingerprint: client.fingerprint,
+    clientIdentityPublicKey: client.publicKeyB64,
+    clientNonce: randomBytes(32).toString("base64url"),
+  };
+}
+
+/** Build a client.hello with caller-controlled mode (used for malformed cases). */
+function makeHello(
+  client: MockClient,
+  mode: HandshakeMode,
+  extra: Partial<ClientHelloFrame> = {},
+): ClientHelloFrame {
+  return {
+    type: "client.hello",
+    v: HANDSHAKE_VERSION,
+    sessionId: randomUUID(),
     mode,
     clientFingerprint: client.fingerprint,
     clientIdentityPublicKey: client.publicKeyB64,
     clientNonce: randomBytes(32).toString("base64url"),
+    ...extra,
   };
 }
 
@@ -95,21 +130,33 @@ describe("PairingService.createOffer", () => {
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
-  it("returns a well-formed offer with our identity", () => {
+  it("returns a stateless offer with our identity", () => {
     const identity = loadOrCreateIdentity(home);
     const known = KnownClients.load(home);
     const pairing = new PairingService(identity, known, {
       daemonAddress: "ws://10.0.0.1:41234",
     });
-    const { offer, sessionId } = pairing.createOffer("sidecode-test");
+    const offer = pairing.createOffer("sidecode-test");
     expect(offer.type).toBe("pair.offer");
     expect(offer.daemonFingerprint).toBe(identity.fingerprint);
     expect(offer.daemonIdentityPublicKey).toBe(identity.publicKeyB64);
     expect(offer.daemonAddress).toBe("ws://10.0.0.1:41234");
     expect(offer.serviceName).toBe("sidecode-test");
-    expect(offer.sessionId).toBe(sessionId);
     expect(offer.v).toBe(HANDSHAKE_VERSION);
     expect(offer.expiresAt).toBeGreaterThan(Date.now());
+    // No sessionId on the offer in the new design.
+    expect((offer as Record<string, unknown>).sessionId).toBeUndefined();
+  });
+
+  it("multiple offers from the same service return distinct expiresAt timestamps", () => {
+    let now = 1_000_000;
+    const identity = loadOrCreateIdentity(home);
+    const known = KnownClients.load(home);
+    const pairing = new PairingService(identity, known, { clock: () => now });
+    const a = pairing.createOffer("test");
+    now += 1_000;
+    const b = pairing.createOffer("test");
+    expect(b.expiresAt).toBeGreaterThan(a.expiresAt);
   });
 });
 
@@ -125,13 +172,14 @@ describe("PairingService — qr_bootstrap happy path", () => {
     const known = KnownClients.load(home);
     const pairing = new PairingService(identity, known);
 
-    const { offer, sessionId } = pairing.createOffer("test");
+    const offer = pairing.createOffer("test");
     const client = makeMockClient();
-    const hello = makeHello(client, sessionId, "qr_bootstrap");
+    const hello = helloForOffer(client, offer);
     const helloRes = pairing.processClientHello(hello);
     expect(helloRes.ok).toBe(true);
     if (!helloRes.ok) return;
     expect(helloRes.serverHello.daemonSignature).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(helloRes.serverHello.expiresAt).toBe(offer.expiresAt);
 
     const auth = signClientAuth(helloRes.serverHello, hello, client);
     const authRes = pairing.processClientAuth(auth);
@@ -141,11 +189,27 @@ describe("PairingService — qr_bootstrap happy path", () => {
     expect(authRes.ready.type).toBe("server.ready");
 
     expect(KnownClients.load(home).list()).toHaveLength(1);
-    expect(offer.sessionId).toBe(sessionId);
+  });
+
+  it("two different clients can pair off the same offer", () => {
+    const identity = loadOrCreateIdentity(home);
+    const known = KnownClients.load(home);
+    const pairing = new PairingService(identity, known);
+    const offer = pairing.createOffer("test");
+
+    for (const client of [makeMockClient(), makeMockClient()]) {
+      const hello = helloForOffer(client, offer);
+      const helloRes = pairing.processClientHello(hello);
+      expect(helloRes.ok).toBe(true);
+      if (!helloRes.ok) return;
+      const auth = signClientAuth(helloRes.serverHello, hello, client);
+      expect(pairing.processClientAuth(auth).ok).toBe(true);
+    }
+    expect(KnownClients.load(home).list()).toHaveLength(2);
   });
 });
 
-describe("PairingService — failure modes", () => {
+describe("PairingService — qr_bootstrap failure modes", () => {
   let home: string;
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "sidecode-pair-"));
@@ -162,24 +226,44 @@ describe("PairingService — failure modes", () => {
     return { identity, known, pairing };
   }
 
-  it("rejects unknown sessionId on qr_bootstrap", () => {
+  it("rejects qr_bootstrap missing offerExpiresAt / offerDaemonFingerprint", () => {
+    const { pairing } = bootstrap();
+    const client = makeMockClient();
+    const res = pairing.processClientHello(makeHello(client, "qr_bootstrap"));
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reject.code).toBe("internal");
+      expect(res.reject.message).toContain("offerDaemonFingerprint");
+    }
+  });
+
+  it("rejects offer for a different daemon", () => {
     const { pairing } = bootstrap();
     const client = makeMockClient();
     const res = pairing.processClientHello(
-      makeHello(client, "no-such-id", "qr_bootstrap"),
+      makeHello(client, "qr_bootstrap", {
+        offerExpiresAt: Date.now() + 60_000,
+        offerDaemonFingerprint: "0".repeat(16),
+      }),
     );
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.reject.code).toBe("session_unknown");
+    if (!res.ok) {
+      expect(res.reject.code).toBe("internal");
+      expect(res.reject.message).toMatch(/different daemon/);
+    }
   });
 
-  it("rejects expired offer", () => {
+  it("rejects offer that has expired", () => {
     let now = 1_000_000;
-    const { pairing } = bootstrap({ now: () => now });
-    const { sessionId } = pairing.createOffer("test");
-    now += OFFER_TTL_MS + 1;
+    const { pairing, identity } = bootstrap({ now: () => now });
     const client = makeMockClient();
+    const offerExpiresAt = now + 5_000;
+    now += 6_000;
     const res = pairing.processClientHello(
-      makeHello(client, sessionId, "qr_bootstrap"),
+      makeHello(client, "qr_bootstrap", {
+        offerExpiresAt,
+        offerDaemonFingerprint: identity.fingerprint,
+      }),
     );
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reject.code).toBe("session_expired");
@@ -187,9 +271,9 @@ describe("PairingService — failure modes", () => {
 
   it("rejects v mismatch", () => {
     const { pairing } = bootstrap();
-    const { sessionId } = pairing.createOffer("test");
+    const offer = pairing.createOffer("test");
     const client = makeMockClient();
-    const hello = makeHello(client, sessionId, "qr_bootstrap");
+    const hello = helloForOffer(client, offer);
     hello.v = 999;
     const res = pairing.processClientHello(hello);
     expect(res.ok).toBe(false);
@@ -200,37 +284,33 @@ describe("PairingService — failure modes", () => {
     const { pairing } = bootstrap();
     const client = makeMockClient();
 
-    // First pair: hello + auth must use the SAME hello (same clientNonce),
-    // otherwise transcripts differ and signature verification fails.
-    const first = pairing.createOffer("a");
-    const firstHello = makeHello(client, first.sessionId, "qr_bootstrap");
+    // First pair.
+    const firstOffer = pairing.createOffer("a");
+    const firstHello = helloForOffer(client, firstOffer);
     const firstHelloRes = pairing.processClientHello(firstHello);
     expect(firstHelloRes.ok).toBe(true);
     if (!firstHelloRes.ok) return;
     const firstAuth = signClientAuth(firstHelloRes.serverHello, firstHello, client);
     expect(pairing.processClientAuth(firstAuth).ok).toBe(true);
 
-    // Second qr_bootstrap with same client → already paired
-    const second = pairing.createOffer("b");
-    const res = pairing.processClientHello(
-      makeHello(client, second.sessionId, "qr_bootstrap"),
-    );
+    // Second qr_bootstrap with same client — already paired, must reconnect instead.
+    const secondOffer = pairing.createOffer("b");
+    const res = pairing.processClientHello(helloForOffer(client, secondOffer));
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reject.code).toBe("client_already_paired");
   });
 
   it("rejects bad client signature on auth", () => {
     const { pairing } = bootstrap();
-    const { sessionId } = pairing.createOffer("test");
+    const offer = pairing.createOffer("test");
     const client = makeMockClient();
     const attacker = makeMockClient();
-    const hello = makeHello(client, sessionId, "qr_bootstrap");
+    const hello = helloForOffer(client, offer);
     const helloRes = pairing.processClientHello(hello);
     expect(helloRes.ok).toBe(true);
     if (!helloRes.ok) return;
-    // Sign with attacker's key but claim honest fingerprint
     const auth = signClientAuth(helloRes.serverHello, hello, attacker);
-    auth.clientFingerprint = client.fingerprint; // claim wrong identity
+    auth.clientFingerprint = client.fingerprint;
     const res = pairing.processClientAuth(auth);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reject.code).toBe("invalid_signature");
@@ -238,14 +318,14 @@ describe("PairingService — failure modes", () => {
 
   it("rejects fingerprint mismatch between hello and auth", () => {
     const { pairing } = bootstrap();
-    const { sessionId } = pairing.createOffer("test");
+    const offer = pairing.createOffer("test");
     const client = makeMockClient();
-    const hello = makeHello(client, sessionId, "qr_bootstrap");
+    const hello = helloForOffer(client, offer);
     const helloRes = pairing.processClientHello(hello);
     expect(helloRes.ok).toBe(true);
     if (!helloRes.ok) return;
     const auth = signClientAuth(helloRes.serverHello, hello, client);
-    auth.clientFingerprint = "x".repeat(16); // different fp
+    auth.clientFingerprint = "x".repeat(16);
     const res = pairing.processClientAuth(auth);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reject.code).toBe("invalid_signature");
@@ -267,9 +347,9 @@ describe("PairingService — failure modes", () => {
 
   it("auth twice for same session → second consumed", () => {
     const { pairing } = bootstrap();
-    const { sessionId } = pairing.createOffer("test");
+    const offer = pairing.createOffer("test");
     const client = makeMockClient();
-    const hello = makeHello(client, sessionId, "qr_bootstrap");
+    const hello = helloForOffer(client, offer);
     const helloRes = pairing.processClientHello(hello);
     if (!helloRes.ok) throw new Error("hello failed");
     const auth = signClientAuth(helloRes.serverHello, hello, client);
@@ -277,22 +357,6 @@ describe("PairingService — failure modes", () => {
     const replay = pairing.processClientAuth(auth);
     expect(replay.ok).toBe(false);
     if (!replay.ok) expect(replay.reject.code).toBe("session_unknown");
-  });
-
-  it("two clients racing on the same sessionId — only one wins", () => {
-    const { pairing } = bootstrap();
-    const { sessionId } = pairing.createOffer("test");
-    const a = makeMockClient();
-    const b = makeMockClient();
-    const helloA = pairing.processClientHello(
-      makeHello(a, sessionId, "qr_bootstrap"),
-    );
-    expect(helloA.ok).toBe(true);
-    const helloB = pairing.processClientHello(
-      makeHello(b, sessionId, "qr_bootstrap"),
-    );
-    expect(helloB.ok).toBe(false);
-    if (!helloB.ok) expect(helloB.reject.code).toBe("session_unknown");
   });
 });
 
@@ -308,8 +372,8 @@ describe("PairingService — trusted_reconnect", () => {
     const known = KnownClients.load(home);
     const pairing = new PairingService(identity, known);
     const client = makeMockClient();
-    const { sessionId } = pairing.createOffer("test");
-    const hello = makeHello(client, sessionId, "qr_bootstrap");
+    const offer = pairing.createOffer("test");
+    const hello = helloForOffer(client, offer);
     const helloRes = pairing.processClientHello(hello);
     if (!helloRes.ok) throw new Error("initial pair hello failed");
     const auth = signClientAuth(helloRes.serverHello, hello, client);
@@ -320,7 +384,7 @@ describe("PairingService — trusted_reconnect", () => {
 
   it("known client can re-authenticate without QR", () => {
     const { pairing, client } = bootstrapAndPair();
-    const hello = makeHello(client, "reconnect-1", "trusted_reconnect");
+    const hello = helloForReconnect(client);
     const helloRes = pairing.processClientHello(hello);
     expect(helloRes.ok).toBe(true);
     if (!helloRes.ok) return;
@@ -331,8 +395,7 @@ describe("PairingService — trusted_reconnect", () => {
   it("unknown fingerprint → client_unknown", () => {
     const { pairing } = bootstrapAndPair();
     const stranger = makeMockClient();
-    const hello = makeHello(stranger, "reconnect-x", "trusted_reconnect");
-    const res = pairing.processClientHello(hello);
+    const res = pairing.processClientHello(helloForReconnect(stranger));
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reject.code).toBe("client_unknown");
   });
@@ -340,9 +403,8 @@ describe("PairingService — trusted_reconnect", () => {
   it("known fingerprint but lying about pubkey → invalid_signature", () => {
     const { pairing, client } = bootstrapAndPair();
     const fake = makeMockClient();
-    const hello = makeHello(fake, "reconnect-y", "trusted_reconnect");
-    hello.clientFingerprint = client.fingerprint; // claim known fp
-    // pubkey is `fake`'s, which doesn't match stored
+    const hello = helloForReconnect(fake);
+    hello.clientFingerprint = client.fingerprint;
     const res = pairing.processClientHello(hello);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reject.code).toBe("invalid_signature");
@@ -356,15 +418,40 @@ describe("PairingService.prune", () => {
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
-  it("drops expired offers and stalled transcripts", () => {
+  it("drops stalled in-flight transcripts", () => {
     let now = 1_000_000;
     const identity = loadOrCreateIdentity(home);
     const known = KnownClients.load(home);
-    const pairing = new PairingService(identity, known, { clock: () => now });
+    const pairing = new PairingService(identity, known, {
+      clock: () => now,
+      transcriptTtlMs: 1_000,
+    });
+    const offer = pairing.createOffer("test");
+    const client = makeMockClient();
+    const hello = helloForOffer(client, offer);
+    const helloRes = pairing.processClientHello(hello);
+    expect(helloRes.ok).toBe(true);
+
+    now += 1_500; // exceed transcript TTL
+    const result = pairing.prune();
+    expect(result.transcripts).toBe(1);
+
+    // Stale auth now fails because transcript pruned.
+    if (!helloRes.ok) return;
+    const auth = signClientAuth(helloRes.serverHello, hello, client);
+    const res = pairing.processClientAuth(auth);
+    expect(res.ok).toBe(false);
+  });
+
+  it("offer expiry needs no daemon-side pruning (offers are stateless)", () => {
+    const identity = loadOrCreateIdentity(home);
+    const known = KnownClients.load(home);
+    const pairing = new PairingService(identity, known, {
+      offerTtlMs: OFFER_TTL_MS,
+    });
     pairing.createOffer("a");
     pairing.createOffer("b");
-    now += OFFER_TTL_MS + 1;
-    const result = pairing.prune();
-    expect(result.offers).toBe(2);
+    // No assertion about offer count — there's nothing to count anymore.
+    expect(pairing.prune().transcripts).toBe(0);
   });
 });

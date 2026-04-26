@@ -16,6 +16,7 @@ import {
   generateKeyPairSync,
   type KeyObject,
   randomBytes,
+  randomUUID,
   sign as cryptoSign,
 } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -91,16 +92,18 @@ async function runPair(offerB64: string, keyPath: string): Promise<void> {
   console.log(`mock client fingerprint: ${keypair.fingerprint}`);
   console.log(`daemon  fingerprint:     ${offer.daemonFingerprint}`);
   console.log(`daemon  address:         ${offer.daemonAddress}`);
-  console.log(`session id:              ${offer.sessionId}`);
+  console.log(`offer expires:           ${new Date(offer.expiresAt).toISOString()}`);
 
   const hello: ClientHelloFrame = {
     type: "client.hello",
     v: HANDSHAKE_VERSION,
-    sessionId: offer.sessionId,
+    sessionId: randomUUID(),
     mode: "qr_bootstrap",
     clientFingerprint: keypair.fingerprint,
     clientIdentityPublicKey: keypair.publicKeyB64,
     clientNonce: randomBytes(32).toString("base64url"),
+    offerExpiresAt: offer.expiresAt,
+    offerDaemonFingerprint: offer.daemonFingerprint,
   };
 
   await runHandshake({
@@ -128,7 +131,7 @@ async function runAuth(daemonUrl: string, keyPath: string): Promise<void> {
   const hello: ClientHelloFrame = {
     type: "client.hello",
     v: HANDSHAKE_VERSION,
-    sessionId: `reconnect-${Date.now()}`, // any opaque correlation token
+    sessionId: randomUUID(),
     mode: "trusted_reconnect",
     clientFingerprint: keypair.fingerprint,
     clientIdentityPublicKey: keypair.publicKeyB64,

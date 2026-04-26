@@ -1,7 +1,6 @@
 import {
   createHash,
   randomBytes,
-  randomUUID,
   sign as cryptoSign,
   verify as cryptoVerify,
 } from "node:crypto";
@@ -22,25 +21,24 @@ import type { Identity } from "./identity.js";
 import { publicKeyFromB64 } from "./identity.js";
 import type { KnownClient, KnownClients } from "./known-clients.js";
 
-/** Default lifetime of a `pair.offer` (the QR is valid this long). */
-export const OFFER_TTL_MS = 60_000;
-
 /**
- * Tracked state for a pending pair.offer. Created by `createOffer`,
- * consumed by `processClientHello` when the client connects.
+ * Default lifetime of an offer. Long enough to scan + connect with margin
+ * for menu bar UX (user opens popover, scans, completes); short enough that
+ * a captured QR isn't usable for days.
  */
-interface PendingOffer {
-  sessionId: string;
-  serviceName: string;
-  expiresAt: number;
-}
+export const OFFER_TTL_MS = 5 * 60_000; // 5 minutes
+
+/** TTL for in-flight handshake transcripts (between hello and auth). */
+export const TRANSCRIPT_TTL_MS = 30_000;
 
 export interface PairingServiceOptions {
   clock?: () => number;
   /** Network address advertised in the offer (e.g. "ws://192.168.1.5:41234"). */
   daemonAddress?: string;
-  /** TTL override for tests. */
+  /** Override the default 5-minute offer expiry. */
   offerTtlMs?: number;
+  /** Override the per-handshake transcript TTL. */
+  transcriptTtlMs?: number;
 }
 
 export type HelloOutcome =
@@ -60,19 +58,22 @@ export type AuthOutcome =
   | { ok: false; reject: HandshakeRejectFrame };
 
 /**
- * State machine for the daemon side of the handshake. One PairingService
- * instance is shared by all WS connections; per-connection state lives in
- * the WS connection handler (Day 3).
+ * Daemon-side of the handshake state machine.
+ *
+ * In the new (post-Day-3-revision) design, offers are STATELESS — the
+ * daemon doesn't track which offers it has issued. `createOffer()` is a
+ * pure function over the daemon's identity + the requested expiresAt.
+ *
+ * The only mutable state is `pendingTranscripts`, which threads
+ * client.hello → server.hello → client.auth through a single transcript.
+ * That state is per-handshake, short-lived, and consumed on first auth.
  */
 export class PairingService {
   private readonly clock: () => number;
   private readonly offerTtlMs: number;
-  /** sessionId → pending offer. Pruned on consume + on demand via prune(). */
-  private readonly pendingOffers = new Map<string, PendingOffer>();
-  /**
-   * sessionId → in-flight transcript (built when server.hello is sent,
-   * needed again to verify client.auth).
-   */
+  private readonly transcriptTtlMs: number;
+  private readonly daemonAddress: string;
+  /** sessionId (client-generated) → in-flight transcript. */
   private readonly pendingTranscripts = new Map<
     string,
     { input: TranscriptInput; deadline: number }
@@ -81,43 +82,40 @@ export class PairingService {
   constructor(
     private readonly identity: Identity,
     private readonly knownClients: KnownClients,
-    private readonly options: PairingServiceOptions = {},
+    options: PairingServiceOptions = {},
   ) {
     this.clock = options.clock ?? Date.now;
     this.offerTtlMs = options.offerTtlMs ?? OFFER_TTL_MS;
+    this.transcriptTtlMs = options.transcriptTtlMs ?? TRANSCRIPT_TTL_MS;
+    this.daemonAddress = options.daemonAddress ?? "ws://127.0.0.1:41234";
   }
 
   /**
-   * Generate a fresh pair.offer to encode in a QR. The returned `sessionId`
-   * is the lookup key for when the client later connects with this offer.
+   * Generate a fresh pair.offer. Pure function — does not mutate any
+   * service state. The returned offer is valid for `expiresAt` worth of
+   * time and can be scanned multiple times within that window.
    */
-  createOffer(serviceName: string): {
-    offer: PairOfferFrame;
-    sessionId: string;
-  } {
-    const sessionId = randomUUID();
+  createOffer(serviceName: string): PairOfferFrame {
     const expiresAt = this.clock() + this.offerTtlMs;
-    this.pendingOffers.set(sessionId, { sessionId, serviceName, expiresAt });
-    const offer: PairOfferFrame = {
+    return {
       type: "pair.offer",
       v: HANDSHAKE_VERSION,
-      sessionId,
       daemonFingerprint: this.identity.fingerprint,
       daemonIdentityPublicKey: this.identity.publicKeyB64,
-      daemonAddress: this.options.daemonAddress ?? "ws://127.0.0.1:41234",
+      daemonAddress: this.daemonAddress,
       serviceName,
       expiresAt,
     };
-    return { offer, sessionId };
   }
 
   /**
    * Process a `client.hello` frame and produce either a `server.hello`
    * (with daemonSignature over the transcript) or a reject.
    *
-   * Pure function as far as outward effects go; internally it stores the
-   * transcript so a later `processClientAuth` call can verify against it.
-   * The caller is responsible for sending the returned frame over WS.
+   * For qr_bootstrap, validates the echoed offer fields (offerExpiresAt
+   * not yet passed; offerDaemonFingerprint matches our identity).
+   * For trusted_reconnect, looks up the client in known_clients and
+   * synthesizes a fresh expiresAt for the transcript.
    */
   processClientHello(hello: ClientHelloFrame): HelloOutcome {
     if (hello.v !== HANDSHAKE_VERSION) {
@@ -129,20 +127,26 @@ export class PairingService {
     }
 
     let expiresAt: number;
-    let serviceName: string | undefined;
 
     if (hello.mode === "qr_bootstrap") {
-      const offer = this.pendingOffers.get(hello.sessionId);
-      if (!offer) {
+      if (
+        hello.offerDaemonFingerprint === undefined ||
+        hello.offerExpiresAt === undefined
+      ) {
         return reject(
           hello.sessionId,
-          "session_unknown",
-          "no pending offer for this sessionId (check QR or regenerate)",
+          "internal",
+          "qr_bootstrap requires offerDaemonFingerprint + offerExpiresAt",
         );
       }
-      // Consume eagerly to prevent two clients racing on the same offer.
-      this.pendingOffers.delete(hello.sessionId);
-      if (this.clock() > offer.expiresAt) {
+      if (hello.offerDaemonFingerprint !== this.identity.fingerprint) {
+        return reject(
+          hello.sessionId,
+          "internal",
+          "offer was for a different daemon",
+        );
+      }
+      if (this.clock() > hello.offerExpiresAt) {
         return reject(hello.sessionId, "session_expired", "offer expired");
       }
       if (this.knownClients.has(hello.clientFingerprint)) {
@@ -152,14 +156,12 @@ export class PairingService {
           "client is already paired; reconnect with mode=trusted_reconnect",
         );
       }
-      expiresAt = offer.expiresAt;
-      serviceName = offer.serviceName;
+      expiresAt = hello.offerExpiresAt;
     } else {
-      // trusted_reconnect: client must already be in known_clients with the
-      // exact pubkey it claims.
-      const known = this.knownClients.list().find(
-        (c) => c.fingerprint === hello.clientFingerprint,
-      );
+      // trusted_reconnect
+      const known = this.knownClients
+        .list()
+        .find((c) => c.fingerprint === hello.clientFingerprint);
       if (!known) {
         return reject(
           hello.sessionId,
@@ -174,12 +176,9 @@ export class PairingService {
           "claimed pubkey does not match stored",
         );
       }
-      // Synthesize a fresh expiresAt for the transcript (no QR involved).
+      // Synthesize fresh expiresAt for the transcript. No QR to anchor to.
       expiresAt = this.clock() + this.offerTtlMs;
-      serviceName = this.identity.fingerprint; // not strictly used, just non-empty
     }
-
-    void serviceName; // currently unused beyond validation; reserved for future telemetry
 
     const serverNonce = randomBytes(32).toString("base64url");
     const transcriptInput: TranscriptInput = {
@@ -198,10 +197,10 @@ export class PairingService {
     const transcript = buildTranscript(transcriptInput);
     const signature = cryptoSign(null, transcript, this.identity.privateKey);
 
-    // Stash for processClientAuth — short TTL so a stalled client doesn't pin memory.
+    // Stash for processClientAuth — short-lived per-handshake state.
     this.pendingTranscripts.set(hello.sessionId, {
       input: transcriptInput,
-      deadline: this.clock() + this.offerTtlMs,
+      deadline: this.clock() + this.transcriptTtlMs,
     });
 
     const serverHello: ServerHelloFrame = {
@@ -277,12 +276,8 @@ export class PairingService {
       );
     }
 
-    // Resolve the client record:
-    //   qr_bootstrap → first-time, persist and return new entry
-    //   trusted_reconnect → must already exist (we re-verify it's there)
     let client: KnownClient | undefined;
     if (pending.input.mode === "qr_bootstrap") {
-      // Persist
       client = {
         fingerprint: pending.input.clientFingerprint,
         publicKeyB64: pending.input.clientIdentityPublicKey,
@@ -291,11 +286,12 @@ export class PairingService {
       try {
         this.knownClients.add(client);
       } catch {
-        // Race: somebody else added the same fingerprint between hello and auth.
-        // Treat as already paired — still authenticated, just don't double-add.
-        client = this.knownClients.list().find(
-          (c) => c.fingerprint === pending.input.clientFingerprint,
-        );
+        // Race: another concurrent qr_bootstrap added the same fingerprint
+        // between this hello and this auth. Treat as authenticated; just
+        // don't double-add.
+        client = this.knownClients
+          .list()
+          .find((c) => c.fingerprint === pending.input.clientFingerprint);
         if (!client) {
           return reject(
             auth.sessionId,
@@ -305,9 +301,9 @@ export class PairingService {
         }
       }
     } else {
-      client = this.knownClients.list().find(
-        (c) => c.fingerprint === pending.input.clientFingerprint,
-      );
+      client = this.knownClients
+        .list()
+        .find((c) => c.fingerprint === pending.input.clientFingerprint);
       if (!client) {
         return reject(
           auth.sessionId,
@@ -327,16 +323,10 @@ export class PairingService {
     return { ok: true, ready, client };
   }
 
-  /** Drop expired offers and stalled transcripts. */
-  prune(): { offers: number; transcripts: number } {
+  /** Drop stalled in-flight transcripts. Offers are stateless so nothing
+   *  to prune for them. */
+  prune(): { transcripts: number } {
     const now = this.clock();
-    let offers = 0;
-    for (const [k, v] of this.pendingOffers) {
-      if (now > v.expiresAt) {
-        this.pendingOffers.delete(k);
-        offers += 1;
-      }
-    }
     let transcripts = 0;
     for (const [k, v] of this.pendingTranscripts) {
       if (now > v.deadline) {
@@ -344,7 +334,7 @@ export class PairingService {
         transcripts += 1;
       }
     }
-    return { offers, transcripts };
+    return { transcripts };
   }
 }
 
@@ -364,3 +354,8 @@ function reject(
     },
   };
 }
+
+// suppress unused: createHash is no longer used in this file but kept import
+// for transcript-related tooling that may follow. (Vitest tree-shaker won't
+// strip it; tsc will warn. Re-export elsewhere if useful.)
+void createHash;

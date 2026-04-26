@@ -141,8 +141,8 @@ describe("WebSocketServer", () => {
 
   it("happy path: full handshake authenticates the client", async () => {
     const client = makeMockClient();
-    const { offer, sessionId } = pairing.createOffer("test");
-    expect(offer.sessionId).toBe(sessionId);
+    const offer = pairing.createOffer("test");
+    const sessionId = `int-${Date.now()}`;
 
     const ws = await connect(url);
     const hello: ClientHelloFrame = {
@@ -153,6 +153,8 @@ describe("WebSocketServer", () => {
       clientFingerprint: client.fingerprint,
       clientIdentityPublicKey: client.publicKeyB64,
       clientNonce: randomBytes(32).toString("base64url"),
+      offerExpiresAt: offer.expiresAt,
+      offerDaemonFingerprint: offer.daemonFingerprint,
     };
     ws.send(JSON.stringify(hello));
 
@@ -199,7 +201,7 @@ describe("WebSocketServer", () => {
     expect(closed.code).toBe(4003);
   });
 
-  it("rejects unknown sessionId in client.hello (qr_bootstrap)", async () => {
+  it("rejects qr_bootstrap missing offer-echo fields", async () => {
     const client = makeMockClient();
     const ws = await connect(url);
     const framePromise = nextFrame<{ type: string; code: string }>(ws);
@@ -207,16 +209,17 @@ describe("WebSocketServer", () => {
       JSON.stringify({
         type: "client.hello",
         v: HANDSHAKE_VERSION,
-        sessionId: "no-such-id",
+        sessionId: "any-uuid",
         mode: "qr_bootstrap",
         clientFingerprint: client.fingerprint,
         clientIdentityPublicKey: client.publicKeyB64,
         clientNonce: randomBytes(32).toString("base64url"),
+        // offerExpiresAt / offerDaemonFingerprint missing
       } satisfies ClientHelloFrame),
     );
     const reject = await framePromise;
     expect(reject.type).toBe("handshake.reject");
-    expect(reject.code).toBe("session_unknown");
+    expect(reject.code).toBe("internal");
     const closed = await nextClose(ws);
     expect(closed.code).toBe(4004);
   });
@@ -247,11 +250,10 @@ describe("WebSocketServer", () => {
     expect(reject.code).toBe("internal");
   });
 
-  it("two concurrent connections can pair independently", async () => {
+  it("two concurrent connections can pair off the same offer", async () => {
     const a = makeMockClient();
     const b = makeMockClient();
-    const offerA = pairing.createOffer("a");
-    const offerB = pairing.createOffer("b");
+    const offer = pairing.createOffer("shared");
 
     const wsA = await connect(url);
     const wsB = await connect(url);
@@ -259,15 +261,17 @@ describe("WebSocketServer", () => {
     const helloA: ClientHelloFrame = {
       type: "client.hello",
       v: HANDSHAKE_VERSION,
-      sessionId: offerA.sessionId,
+      sessionId: `a-${Date.now()}`,
       mode: "qr_bootstrap",
       clientFingerprint: a.fingerprint,
       clientIdentityPublicKey: a.publicKeyB64,
       clientNonce: randomBytes(32).toString("base64url"),
+      offerExpiresAt: offer.expiresAt,
+      offerDaemonFingerprint: offer.daemonFingerprint,
     };
     const helloB: ClientHelloFrame = {
       ...helloA,
-      sessionId: offerB.sessionId,
+      sessionId: `b-${Date.now()}`,
       clientFingerprint: b.fingerprint,
       clientIdentityPublicKey: b.publicKeyB64,
       clientNonce: randomBytes(32).toString("base64url"),
@@ -296,16 +300,18 @@ describe("WebSocketServer", () => {
     const client = makeMockClient();
     // First pair via qr_bootstrap.
     {
-      const { sessionId } = pairing.createOffer("test");
+      const offer = pairing.createOffer("test");
       const ws = await connect(url);
       const hello: ClientHelloFrame = {
         type: "client.hello",
         v: HANDSHAKE_VERSION,
-        sessionId,
+        sessionId: `boot-${Date.now()}`,
         mode: "qr_bootstrap",
         clientFingerprint: client.fingerprint,
         clientIdentityPublicKey: client.publicKeyB64,
         clientNonce: randomBytes(32).toString("base64url"),
+        offerExpiresAt: offer.expiresAt,
+        offerDaemonFingerprint: offer.daemonFingerprint,
       };
       ws.send(JSON.stringify(hello));
       const sh = await nextFrame<ServerHelloFrame>(ws);
