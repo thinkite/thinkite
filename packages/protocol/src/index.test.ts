@@ -54,7 +54,6 @@ describe("pair.offer frame", () => {
   const valid = {
     type: "pair.offer" as const,
     v: 1,
-    sessionId: "abc-123",
     daemonFingerprint: "988d6cb2baa153ef",
     daemonIdentityPublicKey: "AAAA",
     daemonAddress: "ws://192.168.1.10:41234",
@@ -62,10 +61,12 @@ describe("pair.offer frame", () => {
     expiresAt: 1700000000000,
   };
 
-  it("parses a well-formed offer", () => {
+  it("parses a stateless offer (no sessionId)", () => {
     const parsed = pairOfferFrame.parse(valid);
-    expect(parsed.sessionId).toBe("abc-123");
+    expect(parsed.daemonFingerprint).toBe("988d6cb2baa153ef");
     expect(parsed.v).toBe(1);
+    // Confirm sessionId is NOT a field on the offer.
+    expect((parsed as Record<string, unknown>).sessionId).toBeUndefined();
   });
 
   it("rejects when daemonAddress is missing", () => {
@@ -73,8 +74,8 @@ describe("pair.offer frame", () => {
     expect(pairOfferFrame.safeParse(rest).success).toBe(false);
   });
 
-  it("rejects when sessionId is missing", () => {
-    const { sessionId: _, ...rest } = valid;
+  it("rejects when daemonIdentityPublicKey is missing", () => {
+    const { daemonIdentityPublicKey: _, ...rest } = valid;
     expect(pairOfferFrame.safeParse(rest).success).toBe(false);
   });
 });
@@ -90,8 +91,18 @@ describe("client.hello frame", () => {
     clientNonce: "CCCC",
   };
 
-  it("parses qr_bootstrap mode", () => {
+  it("parses qr_bootstrap mode (offer-echo fields optional at schema level)", () => {
     expect(clientHelloFrame.parse(valid).mode).toBe("qr_bootstrap");
+  });
+
+  it("parses qr_bootstrap with offer-echo fields", () => {
+    const parsed = clientHelloFrame.parse({
+      ...valid,
+      offerExpiresAt: 1700000000000,
+      offerDaemonFingerprint: "988d6cb2baa153ef",
+    });
+    expect(parsed.offerExpiresAt).toBe(1700000000000);
+    expect(parsed.offerDaemonFingerprint).toBe("988d6cb2baa153ef");
   });
 
   it("parses trusted_reconnect mode", () => {

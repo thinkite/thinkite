@@ -24,6 +24,7 @@
     "build": "tsc -b tsconfig.json && chmod +x ./dist/bin/sidecode.js",
     "typecheck": "tsc -b tsconfig.json",
     "start": "node ./dist/bin/sidecode.js",
+    "e2e:pair": "bash scripts/e2e-pair.sh",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
