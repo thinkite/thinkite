@@ -1,21 +1,21 @@
 // Mock pair client — manual debugging companion to `sidecode pair`.
 //
-// Day 2 has no WS server, so this script's job is purely to validate the
-// crypto round-trip:
-//   1. Run `sidecode pair` to produce a base64 offer payload
-//   2. Pass that payload as argv[2] to this script
-//   3. Script generates an ephemeral keypair, signs the challenge correctly,
-//      and prints the corresponding pair.proof payload
-//   4. Verify the proof shape is well-formed
-//
-// In Day 3+, a future version of this script will connect to the WS server
-// and complete the actual handshake instead of just printing the proof.
+// Day 2-equivalent: produces the `client.hello` payload that a real iOS client
+// would send first over WS. Day 3+ extends this to actually connect to the
+// daemon's WS server, send the frames, and complete the handshake.
 //
 // Usage:
-//   pnpm exec tsx scripts/mock-pair-client.ts <base64-offer>
+//   pnpm exec tsx scripts/mock-pair-client.ts <base64-pair-offer>
 
-import { createHash, generateKeyPairSync, sign as cryptoSign } from "node:crypto";
-import { pairOfferFrame } from "@sidecodeapp/protocol";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+} from "node:crypto";
+import {
+  HANDSHAKE_VERSION,
+  pairOfferFrame,
+} from "@sidecodeapp/protocol";
 
 const offerB64 = process.argv[2];
 if (!offerB64) {
@@ -32,54 +32,66 @@ try {
   process.exit(1);
 }
 
-if (Date.now() > offer.challengeExpiresAt) {
+if (offer.v !== HANDSHAKE_VERSION) {
   console.error(
-    `Challenge already expired at ${new Date(offer.challengeExpiresAt).toISOString()}.`,
+    `Offer protocol version ${offer.v} ≠ this client's ${HANDSHAKE_VERSION}.`,
   );
-  console.error("Run `sidecode pair` again to get a fresh challenge.");
+  console.error(
+    "Update sidecode on the Mac or this client; they must match for the handshake to verify.",
+  );
+  process.exit(1);
+}
+
+if (Date.now() > offer.expiresAt) {
+  console.error(
+    `Offer already expired at ${new Date(offer.expiresAt).toISOString()}.`,
+  );
+  console.error("Run `sidecode pair` again to get a fresh offer.");
   process.exit(1);
 }
 
 console.log("Decoded offer:");
-console.log(`  daemon fingerprint: ${offer.fingerprint}`);
+console.log(`  daemon fingerprint: ${offer.daemonFingerprint}`);
+console.log(`  daemon address:     ${offer.daemonAddress}`);
 console.log(`  service:            ${offer.serviceName}`);
+console.log(`  sessionId:          ${offer.sessionId}`);
 console.log(`  protocol version:   ${offer.v}`);
 console.log(
-  `  expires in:         ${Math.round((offer.challengeExpiresAt - Date.now()) / 1000)}s`,
+  `  expires in:         ${Math.round((offer.expiresAt - Date.now()) / 1000)}s`,
 );
 console.log("");
 
 // Generate ephemeral client keypair.
-const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+const { publicKey } = generateKeyPairSync("ed25519");
 const jwk = publicKey.export({ format: "jwk" }) as { x: string };
-
-// Sign hash(challenge || clientPubkey).
-const challengeBytes = Buffer.from(offer.challenge, "base64url");
-const clientPubBytes = Buffer.from(jwk.x, "base64url");
-const hash = createHash("sha256")
-  .update(challengeBytes)
-  .update(clientPubBytes)
-  .digest();
-const signatureBytes = cryptoSign(null, hash, privateKey);
-
-const proof = {
-  type: "pair.proof" as const,
-  clientPubkey: jwk.x,
-  signature: Buffer.from(signatureBytes).toString("base64url"),
-};
-
-const clientFp = createHash("sha256")
-  .update(clientPubBytes)
+const clientPubB64 = jwk.x;
+const clientFingerprint = createHash("sha256")
+  .update(Buffer.from(clientPubB64, "base64url"))
   .digest("hex")
   .slice(0, 16);
+const clientNonce = randomBytes(32).toString("base64url");
 
-console.log("Generated proof:");
-console.log(`  client fingerprint: ${clientFp}`);
+const clientHello = {
+  type: "client.hello" as const,
+  v: HANDSHAKE_VERSION,
+  sessionId: offer.sessionId,
+  mode: "qr_bootstrap" as const,
+  clientFingerprint,
+  clientIdentityPublicKey: clientPubB64,
+  clientNonce,
+};
+
+console.log("Generated client.hello (would be first WS frame after connect):");
+console.log(`  client fingerprint: ${clientFingerprint}`);
+console.log(`  client nonce:       ${clientNonce.slice(0, 16)}…`);
 console.log("");
-console.log("Pair proof payload (base64url JSON):");
+console.log("client.hello payload (base64url JSON):");
 console.log("");
-console.log(Buffer.from(JSON.stringify(proof)).toString("base64url"));
+console.log(Buffer.from(JSON.stringify(clientHello)).toString("base64url"));
 console.log("");
 console.log(
-  "(Day 3+: this script will send the proof over WS instead of printing it.)",
+  "(Day 3+: this script will open a WebSocket to offer.daemonAddress and",
+);
+console.log(
+  "complete the full handshake. For now it just prints the first frame.)",
 );

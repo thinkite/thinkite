@@ -1,11 +1,17 @@
 import {
   createHash,
   generateKeyPairSync,
+  randomBytes,
   sign as cryptoSign,
 } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  buildClientAuthTranscript,
+  HANDSHAKE_VERSION,
+  type TranscriptInput,
+} from "@sidecodeapp/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
@@ -16,7 +22,7 @@ import { PairingService } from "./pairing.js";
  * Wires home + identity + known-clients + pairing together as the daemon
  * would in production. Simulates the full client pair flow against a real
  * filesystem (in a tmpdir) without any network — Day 3 will replace the
- * direct verifyProof() call with a WS message round-trip.
+ * direct processClientHello/processClientAuth calls with a WS handshake.
  */
 describe("pairing integration", () => {
   let originalEnv: string | undefined;
@@ -34,57 +40,92 @@ describe("pairing integration", () => {
     rmSync(homeRoot, { recursive: true, force: true });
   });
 
-  it("completes full pair round-trip and persists client to disk", () => {
-    // Server-side bootstrap, exactly as bin/sidecode.ts would do.
+  function freshClient() {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const jwk = publicKey.export({ format: "jwk" }) as { x: string };
+    const fingerprint = createHash("sha256")
+      .update(Buffer.from(jwk.x, "base64url"))
+      .digest("hex")
+      .slice(0, 16);
+    return { publicKeyB64: jwk.x, privateKey, fingerprint };
+  }
+
+  it("completes full qr_bootstrap and persists client to disk", () => {
     const home = resolveSidecodeHome();
     const identity = loadOrCreateIdentity(home);
     const known = KnownClients.load(home);
-    const pairing = new PairingService(identity, known);
+    const pairing = new PairingService(identity, known, {
+      daemonAddress: "ws://127.0.0.1:41234",
+    });
 
-    // Server-side: produce offer.
-    const { offer, challenge } = pairing.createOffer("integration-test");
-    expect(offer.daemonPubkey).toBe(identity.publicKeyB64);
-    expect(offer.fingerprint).toBe(identity.fingerprint);
+    const { offer, sessionId } = pairing.createOffer("integration-test");
+    expect(offer.daemonFingerprint).toBe(identity.fingerprint);
+    expect(offer.daemonIdentityPublicKey).toBe(identity.publicKeyB64);
+    expect(offer.daemonAddress).toBe("ws://127.0.0.1:41234");
 
-    // Client-side: ephemeral keypair + correct sign over hash(challenge||clientPub).
-    const { privateKey: clientPriv, publicKey: clientPub } =
-      generateKeyPairSync("ed25519");
-    const clientPubB64 = (clientPub.export({ format: "jwk" }) as { x: string }).x;
-    const hash = createHash("sha256")
-      .update(Buffer.from(offer.challenge, "base64url"))
-      .update(Buffer.from(clientPubB64, "base64url"))
-      .digest();
-    const sig = cryptoSign(null, hash, clientPriv);
-    const proof = {
-      type: "pair.proof" as const,
-      clientPubkey: clientPubB64,
-      signature: Buffer.from(sig).toString("base64url"),
+    const client = freshClient();
+    const hello = {
+      type: "client.hello" as const,
+      v: HANDSHAKE_VERSION,
+      sessionId,
+      mode: "qr_bootstrap" as const,
+      clientFingerprint: client.fingerprint,
+      clientIdentityPublicKey: client.publicKeyB64,
+      clientNonce: randomBytes(32).toString("base64url"),
     };
 
-    // Server-side: verify.
-    const result = pairing.verifyProof(challenge, proof);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.client.publicKeyB64).toBe(clientPubB64);
+    const helloRes = pairing.processClientHello(hello);
+    expect(helloRes.ok).toBe(true);
+    if (!helloRes.ok) return;
+    expect(helloRes.serverHello.daemonFingerprint).toBe(identity.fingerprint);
+
+    const transcriptInput: TranscriptInput = {
+      sessionId,
+      protocolVersion: HANDSHAKE_VERSION,
+      mode: "qr_bootstrap",
+      keyEpoch: helloRes.serverHello.keyEpoch,
+      daemonFingerprint: helloRes.serverHello.daemonFingerprint,
+      clientFingerprint: client.fingerprint,
+      daemonIdentityPublicKey: helloRes.serverHello.daemonIdentityPublicKey,
+      clientIdentityPublicKey: client.publicKeyB64,
+      clientNonce: hello.clientNonce,
+      serverNonce: helloRes.serverHello.serverNonce,
+      expiresAt: helloRes.serverHello.expiresAt,
+    };
+    const sig = cryptoSign(
+      null,
+      buildClientAuthTranscript(transcriptInput),
+      client.privateKey,
+    );
+
+    const authRes = pairing.processClientAuth({
+      type: "client.auth",
+      v: HANDSHAKE_VERSION,
+      sessionId,
+      clientFingerprint: client.fingerprint,
+      keyEpoch: helloRes.serverHello.keyEpoch,
+      clientSignature: Buffer.from(sig).toString("base64url"),
+    });
+
+    expect(authRes.ok).toBe(true);
+    if (!authRes.ok) return;
+    expect(authRes.client.fingerprint).toBe(client.fingerprint);
 
     // Persistence sanity: known_clients.json on disk has exactly one entry.
     const reloaded = KnownClients.load(home);
     expect(reloaded.list()).toHaveLength(1);
-    expect(reloaded.has(result.client.fingerprint)).toBe(true);
+    expect(reloaded.has(client.fingerprint)).toBe(true);
 
-    // File format snapshot: version 1, contains our client entry.
     const raw = JSON.parse(
       readFileSync(join(home, "known_clients.json"), "utf8"),
     ) as { v: number; clients: Array<{ fingerprint: string }> };
     expect(raw.v).toBe(1);
-    expect(raw.clients[0]?.fingerprint).toBe(result.client.fingerprint);
+    expect(raw.clients[0]?.fingerprint).toBe(client.fingerprint);
   });
 
   it("identity is stable across daemon restarts", () => {
-    // First "boot"
     const home = resolveSidecodeHome();
     const id1 = loadOrCreateIdentity(home);
-    // Second "boot" — same home, should load not regenerate.
     const id2 = loadOrCreateIdentity(home);
     expect(id2.publicKeyB64).toBe(id1.publicKeyB64);
     expect(id2.fingerprint).toBe(id1.fingerprint);
@@ -92,33 +133,60 @@ describe("pairing integration", () => {
 
   it("known clients persist across simulated daemon restart", () => {
     // First boot: pair a client.
+    const client = freshClient();
     {
       const home = resolveSidecodeHome();
       const identity = loadOrCreateIdentity(home);
       const known = KnownClients.load(home);
       const pairing = new PairingService(identity, known);
-      const { offer, challenge } = pairing.createOffer("first-boot");
-      const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-      const clientPubB64 = (publicKey.export({ format: "jwk" }) as { x: string }).x;
-      const hash = createHash("sha256")
-        .update(Buffer.from(offer.challenge, "base64url"))
-        .update(Buffer.from(clientPubB64, "base64url"))
-        .digest();
-      const proof = {
-        type: "pair.proof" as const,
-        clientPubkey: clientPubB64,
-        signature: Buffer.from(cryptoSign(null, hash, privateKey)).toString(
-          "base64url",
-        ),
+      const { sessionId } = pairing.createOffer("first-boot");
+      const hello = {
+        type: "client.hello" as const,
+        v: HANDSHAKE_VERSION,
+        sessionId,
+        mode: "qr_bootstrap" as const,
+        clientFingerprint: client.fingerprint,
+        clientIdentityPublicKey: client.publicKeyB64,
+        clientNonce: randomBytes(32).toString("base64url"),
       };
-      expect(pairing.verifyProof(challenge, proof).ok).toBe(true);
+      const helloRes = pairing.processClientHello(hello);
+      if (!helloRes.ok) throw new Error("hello failed");
+      const transcriptInput: TranscriptInput = {
+        sessionId,
+        protocolVersion: HANDSHAKE_VERSION,
+        mode: "qr_bootstrap",
+        keyEpoch: helloRes.serverHello.keyEpoch,
+        daemonFingerprint: helloRes.serverHello.daemonFingerprint,
+        clientFingerprint: client.fingerprint,
+        daemonIdentityPublicKey: helloRes.serverHello.daemonIdentityPublicKey,
+        clientIdentityPublicKey: client.publicKeyB64,
+        clientNonce: hello.clientNonce,
+        serverNonce: helloRes.serverHello.serverNonce,
+        expiresAt: helloRes.serverHello.expiresAt,
+      };
+      const sig = cryptoSign(
+        null,
+        buildClientAuthTranscript(transcriptInput),
+        client.privateKey,
+      );
+      expect(
+        pairing.processClientAuth({
+          type: "client.auth",
+          v: HANDSHAKE_VERSION,
+          sessionId,
+          clientFingerprint: client.fingerprint,
+          keyEpoch: helloRes.serverHello.keyEpoch,
+          clientSignature: Buffer.from(sig).toString("base64url"),
+        }).ok,
+      ).toBe(true);
     }
 
-    // Second boot: known client should still be there.
+    // Second boot — same home dir, identity reloads, paired client still there.
     {
       const home = resolveSidecodeHome();
       const known = KnownClients.load(home);
       expect(known.list()).toHaveLength(1);
+      expect(known.has(client.fingerprint)).toBe(true);
     }
   });
 });

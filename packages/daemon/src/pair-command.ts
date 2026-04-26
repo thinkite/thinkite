@@ -1,9 +1,15 @@
 import {
   createHash,
   generateKeyPairSync,
+  randomBytes,
   sign as cryptoSign,
 } from "node:crypto";
 import { hostname } from "node:os";
+import {
+  buildClientAuthTranscript,
+  HANDSHAKE_VERSION,
+  type TranscriptInput,
+} from "@sidecodeapp/protocol";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
@@ -12,11 +18,13 @@ import { PairingService } from "./pairing.js";
 /**
  * Implementation of the `sidecode pair` subcommand.
  *
- * V0 has no WS server yet (Day 3), so this command:
- *   - prints the pair.offer payload as base64-encoded JSON for manual relay
- *     to a mobile client (or to scripts/mock-pair-client.ts)
- *   - or, with --self-test, runs the full pair round-trip in-process to
- *     prove the implementation end-to-end without any network
+ * Day 2-equivalent: prints the base64url-encoded `pair.offer` JSON for manual
+ * delivery to a mobile client. Day 3+ adds a WS handshake; this CLI command
+ * stays as a power-user / SSH-friendly path.
+ *
+ * `--self-test` runs the full handshake (client.hello → server.hello →
+ * client.auth → server.ready) in-process to validate the crypto stack
+ * without any network.
  */
 export async function runPairCommand(args: readonly string[]): Promise<void> {
   if (args.includes("--self-test")) {
@@ -35,20 +43,23 @@ export async function runPairCommand(args: readonly string[]): Promise<void> {
   console.log("");
   console.log(encoded);
   console.log("");
+  console.log(`SessionId:    ${offer.sessionId}`);
   console.log(`Fingerprint:  ${identity.fingerprint}`);
-  console.log(`Expires:      ${new Date(offer.challengeExpiresAt).toISOString()}`);
+  console.log(`Address:      ${offer.daemonAddress}`);
+  console.log(`Expires:      ${new Date(offer.expiresAt).toISOString()}`);
   console.log("");
   console.log(
-    "Note: Day 2 has no WS server yet. To complete pair, pipe the proof");
-  console.log(
-    "back into a future `sidecode pair-verify` (Day 3+) or use --self-test.",
+    "Note: Day 2 has no WS server yet. To complete pair, run --self-test or",
   );
+  console.log(
+    "wait for Day 3 WS server. The mock client (scripts/mock-pair-client.ts)",
+  );
+  console.log("can produce a client.hello payload from this offer.");
 }
 
 /**
- * Self-test: runs server's createOffer, mock client signs it, server verifies.
- * Exits 0 on success, 1 on any failure. Useful for CI / smoke testing the
- * crypto + persistence stack without launching a real client.
+ * Self-test: runs the full handshake in-process and exits 0/1. Useful for CI
+ * smoke testing of the crypto + persistence stack.
  */
 async function runSelfTest(): Promise<void> {
   const home = resolveSidecodeHome();
@@ -60,35 +71,77 @@ async function runSelfTest(): Promise<void> {
   console.log(`home:        ${home}`);
   console.log(`fingerprint: ${identity.fingerprint}`);
 
-  // Server side: generate offer.
-  const { offer, challenge } = pairing.createOffer("self-test");
-  console.log(`offer challenge: ${offer.challenge.slice(0, 16)}…`);
+  // Server-side: produce offer.
+  const { offer, sessionId } = pairing.createOffer("self-test");
+  console.log(`offer sessionId: ${sessionId}`);
 
-  // Client side: ephemeral keypair + sign hash(challenge || clientPub).
+  // Client-side: ephemeral keypair + compute fingerprint.
   const { publicKey: clientPub, privateKey: clientPriv } =
     generateKeyPairSync("ed25519");
-  const jwk = clientPub.export({ format: "jwk" }) as { x: string };
-  const challengeBytes = Buffer.from(offer.challenge, "base64url");
-  const clientPubBytes = Buffer.from(jwk.x, "base64url");
-  const hash = createHash("sha256")
-    .update(challengeBytes)
-    .update(clientPubBytes)
-    .digest();
-  const signature = cryptoSign(null, hash, clientPriv);
-  const proof = {
-    type: "pair.proof" as const,
-    clientPubkey: jwk.x,
-    signature: Buffer.from(signature).toString("base64url"),
+  const clientPubB64 = (clientPub.export({ format: "jwk" }) as { x: string }).x;
+  const clientFingerprint = createHash("sha256")
+    .update(Buffer.from(clientPubB64, "base64url"))
+    .digest("hex")
+    .slice(0, 16);
+  const clientNonce = randomBytes(32).toString("base64url");
+
+  // client.hello → server.hello
+  const hello = {
+    type: "client.hello" as const,
+    v: HANDSHAKE_VERSION,
+    sessionId,
+    mode: "qr_bootstrap" as const,
+    clientFingerprint,
+    clientIdentityPublicKey: clientPubB64,
+    clientNonce,
   };
-
-  // Server side: verify.
-  const result = pairing.verifyProof(challenge, proof);
-
-  if (result.ok) {
-    console.log(`✓ pair accepted: client fingerprint ${result.accepted.clientFingerprint}`);
-    console.log(`  (note: this writes a real entry into ${home}/known_clients.json)`);
-  } else {
-    console.error(`✗ pair rejected: ${result.rejected.reason}`);
+  const helloOutcome = pairing.processClientHello(hello);
+  if (!helloOutcome.ok) {
+    console.error(
+      `✗ client.hello rejected: ${helloOutcome.reject.code} — ${helloOutcome.reject.message}`,
+    );
     process.exit(1);
   }
+  console.log(
+    `→ server.hello signed (signature ${helloOutcome.serverHello.daemonSignature.slice(0, 16)}…)`,
+  );
+
+  // client.auth: sign (transcript || CLIENT_AUTH_LABEL).
+  const transcriptInput: TranscriptInput = {
+    sessionId,
+    protocolVersion: HANDSHAKE_VERSION,
+    mode: "qr_bootstrap",
+    keyEpoch: helloOutcome.serverHello.keyEpoch,
+    daemonFingerprint: helloOutcome.serverHello.daemonFingerprint,
+    clientFingerprint,
+    daemonIdentityPublicKey: helloOutcome.serverHello.daemonIdentityPublicKey,
+    clientIdentityPublicKey: clientPubB64,
+    clientNonce,
+    serverNonce: helloOutcome.serverHello.serverNonce,
+    expiresAt: helloOutcome.serverHello.expiresAt,
+  };
+  const sig = cryptoSign(
+    null,
+    buildClientAuthTranscript(transcriptInput),
+    clientPriv,
+  );
+  const authOutcome = pairing.processClientAuth({
+    type: "client.auth",
+    v: HANDSHAKE_VERSION,
+    sessionId,
+    clientFingerprint,
+    keyEpoch: helloOutcome.serverHello.keyEpoch,
+    clientSignature: Buffer.from(sig).toString("base64url"),
+  });
+
+  if (!authOutcome.ok) {
+    console.error(
+      `✗ client.auth rejected: ${authOutcome.reject.code} — ${authOutcome.reject.message}`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `✓ pair accepted: client fingerprint ${authOutcome.client.fingerprint}`,
+  );
+  console.log(`  (writes a real entry into ${home}/known_clients.json)`);
 }
