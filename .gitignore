@@ -11,3 +11,6 @@ dist
 
 # vitest / test coverage output
 coverage
+
+# Local Claude Code per-repo state (settings, agent worktrees)
+.claude/

@@ -21,7 +21,7 @@ import { WebSocket } from "ws";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
 import { PairingService } from "./pairing.js";
-import { WebSocketServer } from "./ws-server.js";
+import { type CommandHandler, WebSocketServer } from "./ws-server.js";
 
 interface MockClient {
   publicKeyB64: string;
@@ -350,5 +350,183 @@ describe("WebSocketServer", () => {
     const closed = await closePromise;
     // Code 1001 is "going away"; test the connection is closed cleanly.
     expect(closed.code).toBeGreaterThanOrEqual(1000);
+  });
+});
+
+describe("WebSocketServer authenticated dispatch", () => {
+  let home: string;
+  let server: WebSocketServer | null = null;
+  let url: string;
+  let pairing: PairingService;
+
+  /** Performs a full qr_bootstrap handshake and returns the open authenticated ws. */
+  async function authenticate(): Promise<WebSocket> {
+    const client = makeMockClient();
+    const offer = pairing.createOffer("dispatch");
+    const ws = await connect(url);
+    const hello: ClientHelloFrame = {
+      type: "client.hello",
+      v: HANDSHAKE_VERSION,
+      sessionId: `disp-${Math.random().toString(36).slice(2)}`,
+      mode: "qr_bootstrap",
+      clientFingerprint: client.fingerprint,
+      clientIdentityPublicKey: client.publicKeyB64,
+      clientNonce: randomBytes(32).toString("base64url"),
+      offerExpiresAt: offer.expiresAt,
+      offerDaemonFingerprint: offer.daemonFingerprint,
+    };
+    ws.send(JSON.stringify(hello));
+    const sh = await nextFrame<ServerHelloFrame>(ws);
+    ws.send(JSON.stringify(buildAuth(sh, hello, client)));
+    await nextFrame<{ type: string }>(ws); // server.ready
+    return ws;
+  }
+
+  /** Build server with a custom commandHandler. */
+  async function startWith(handler: CommandHandler): Promise<void> {
+    server = new WebSocketServer({
+      pairing,
+      commandHandler: handler,
+      port: 0,
+      host: "127.0.0.1",
+      authTimeoutMs: 1000,
+      heartbeatIntervalMs: 60_000,
+    });
+    const bound = await server.start();
+    url = `ws://${bound.host}:${bound.port}`;
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "sidecode-ws-disp-"));
+    const identity = loadOrCreateIdentity(home);
+    const known = KnownClients.load(home);
+    pairing = new PairingService(identity, known);
+  });
+
+  afterEach(async () => {
+    await server?.stop();
+    server = null;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("calls commandHandler with the parsed command + send context", async () => {
+    const calls: Array<{ cmdType: string; cliSessionId?: string; fingerprint: string }> = [];
+    await startWith(async (cmd, ctx) => {
+      calls.push({
+        cmdType: cmd.type,
+        cliSessionId: "cliSessionId" in cmd ? cmd.cliSessionId : undefined,
+        fingerprint: ctx.fingerprint,
+      });
+      if (cmd.type === "continueOnDesktop") {
+        ctx.send({
+          type: "continueOnDesktop.response",
+          requestId: cmd.requestId,
+          ok: true,
+        });
+      }
+    });
+    const ws = await authenticate();
+    const reply = nextFrame<{ type: string; requestId: string; ok: boolean }>(ws);
+    ws.send(
+      JSON.stringify({
+        type: "continueOnDesktop",
+        requestId: "req-1",
+        cliSessionId: "abc",
+      }),
+    );
+    const res = await reply;
+    expect(res.type).toBe("continueOnDesktop.response");
+    expect(res.requestId).toBe("req-1");
+    expect(res.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.cmdType).toBe("continueOnDesktop");
+    expect(calls[0]?.cliSessionId).toBe("abc");
+    expect(calls[0]?.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+    ws.close();
+  });
+
+  it("emits an internal-error frame when the handler throws", async () => {
+    await startWith(() => {
+      throw new Error("boom");
+    });
+    const ws = await authenticate();
+    const reply = nextFrame<{ type: string; code: string; requestId?: string; message: string }>(ws);
+    ws.send(
+      JSON.stringify({
+        type: "continueOnDesktop",
+        requestId: "req-2",
+        cliSessionId: "abc",
+      }),
+    );
+    const res = await reply;
+    expect(res.type).toBe("error");
+    expect(res.code).toBe("internal");
+    expect(res.requestId).toBe("req-2");
+    expect(res.message).toMatch(/boom/);
+    ws.close();
+  });
+
+  it("emits an internal-error frame when an async handler rejects", async () => {
+    await startWith(async () => {
+      throw new Error("async boom");
+    });
+    const ws = await authenticate();
+    const reply = nextFrame<{ code: string; message: string }>(ws);
+    ws.send(
+      JSON.stringify({
+        type: "continueOnDesktop",
+        requestId: "req-3",
+        cliSessionId: "abc",
+      }),
+    );
+    const res = await reply;
+    expect(res.code).toBe("internal");
+    expect(res.message).toMatch(/async boom/);
+    ws.close();
+  });
+
+  it("responds to ping with pong (no handler invocation)", async () => {
+    let handlerCalls = 0;
+    await startWith(() => {
+      handlerCalls += 1;
+    });
+    const ws = await authenticate();
+    const reply = nextFrame<{ type: string; t: number; echoT: number }>(ws);
+    const t = Date.now();
+    ws.send(JSON.stringify({ type: "ping", t }));
+    const pong = await reply;
+    expect(pong.type).toBe("pong");
+    expect(pong.echoT).toBe(t);
+    expect(handlerCalls).toBe(0);
+    ws.close();
+  });
+
+  it("authenticated commands are silently dropped when no handler configured", async () => {
+    // Server WITHOUT a handler.
+    server = new WebSocketServer({
+      pairing,
+      port: 0,
+      host: "127.0.0.1",
+      authTimeoutMs: 1000,
+      heartbeatIntervalMs: 60_000,
+    });
+    const bound = await server.start();
+    url = `ws://${bound.host}:${bound.port}`;
+
+    const ws = await authenticate();
+    ws.send(
+      JSON.stringify({
+        type: "continueOnDesktop",
+        requestId: "req-4",
+        cliSessionId: "abc",
+      }),
+    );
+    // Wait a tick to confirm no response comes back (timeout-then-resolve dance).
+    const got = await Promise.race([
+      nextFrame<unknown>(ws).then((f) => ({ frame: f })),
+      new Promise((r) => setTimeout(() => r({ frame: null }), 200)),
+    ]);
+    expect((got as { frame: unknown }).frame).toBeNull();
+    ws.close();
   });
 });

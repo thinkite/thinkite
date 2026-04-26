@@ -2,12 +2,30 @@ import { type AddressInfo } from "node:net";
 import {
   type ClientFrame,
   clientFrame,
+  type Command,
   type DaemonFrame,
   HANDSHAKE_VERSION,
   type HandshakeRejectFrame,
 } from "@sidecodeapp/protocol";
 import { type WebSocket, WebSocketServer as WSCore } from "ws";
 import type { PairingService } from "./pairing.js";
+
+/** Context passed to each authenticated command. The handler uses `send`
+ *  to push responses or events back to the connection. */
+export interface CommandContext {
+  send: (frame: DaemonFrame) => void;
+  /** ed25519 fingerprint (16 hex chars) of the authenticated client. */
+  fingerprint: string;
+}
+
+/** Dispatched for every authenticated command frame. May be async. The
+ *  ws-server catches thrown errors and emits an `error` frame; handlers
+ *  that want a structured response should send it via `ctx.send` instead
+ *  of throwing. */
+export type CommandHandler = (
+  cmd: Command,
+  ctx: CommandContext,
+) => void | Promise<void>;
 
 /** Default address bound. 127.0.0.1 limits V0 to local LAN/loopback. */
 export const DEFAULT_HOST = "0.0.0.0";
@@ -37,6 +55,9 @@ interface Connection {
 
 export interface WebSocketServerOptions {
   pairing: PairingService;
+  /** Dispatcher for authenticated command frames. If absent, authenticated
+   *  commands are logged and ignored (V0 W1 baseline / test convenience). */
+  commandHandler?: CommandHandler;
   port?: number;
   host?: string;
   /** Time from connection open to authenticated state. Default 10s. */
@@ -185,11 +206,54 @@ export class WebSocketServer {
       case "wait_auth":
         return this.handleAuth(conn, frame);
       case "authenticated":
-        // Day 4 will dispatch subscribe/sendPrompt/etc. here.
-        // For Day 3, anything past handshake is logged and ignored.
-        this.log("conn.unhandled", { ip: conn.ip, frameType: frame.type });
-        return;
+        return this.handleAuthenticated(conn, frame);
     }
+  }
+
+  private handleAuthenticated(conn: Connection, frame: ClientFrame): void {
+    // Heartbeat ping is allowed at any post-handshake point.
+    if (frame.type === "ping") {
+      this.send(conn, { type: "pong", t: Date.now(), echoT: frame.t });
+      return;
+    }
+    // Handshake frames after the handshake are protocol violations.
+    if (frame.type === "client.hello" || frame.type === "client.auth") {
+      this.log("conn.unexpected_handshake", {
+        ip: conn.ip,
+        frameType: frame.type,
+      });
+      return;
+    }
+
+    const handler = this.options.commandHandler;
+    if (!handler) {
+      this.log("conn.unhandled", { ip: conn.ip, frameType: frame.type });
+      return;
+    }
+    const cmd = frame as Command;
+    const ctx: CommandContext = {
+      send: (f) => this.send(conn, f),
+      // Auth state guarantees fingerprint is set; the assertion is safe.
+      fingerprint: conn.fingerprint as string,
+    };
+    Promise.resolve()
+      .then(() => handler(cmd, ctx))
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.log("conn.handler_error", {
+          ip: conn.ip,
+          frameType: frame.type,
+          error: message,
+        });
+        const requestId =
+          "requestId" in cmd ? (cmd as { requestId?: string }).requestId : undefined;
+        this.send(conn, {
+          type: "error",
+          requestId,
+          code: "internal",
+          message: `handler error: ${message}`,
+        });
+      });
   }
 
   private handleHello(conn: Connection, frame: ClientFrame): void {
