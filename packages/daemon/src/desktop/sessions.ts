@@ -36,22 +36,26 @@ export function desktopSessionsRoot(homeDirOverride?: string): string {
 }
 
 export interface ListOptions {
-  cwd: string;
+  /** When provided, only sessions whose `cwd` matches exactly are returned.
+   *  When omitted, all sessions across all cwds + accounts are returned and
+   *  the caller groups client-side. */
+  cwd?: string;
   /** Override the sessions root directory (tests / fixtures). */
   rootOverride?: string;
 }
 
 /**
- * Return all Desktop sessions whose `cwd` matches exactly. Sorted by
- * lastActivityAt descending. Missing root → []. Malformed files are skipped
- * silently — a single corrupt JSON must not break the whole listing.
+ * Return Desktop sessions sorted by lastActivityAt descending. Missing root
+ * → []. Malformed files are skipped silently — a single corrupt JSON must
+ * not break the whole listing.
  */
 export async function listDesktopSessions(
-  opts: ListOptions,
+  opts: ListOptions = {},
 ): Promise<DesktopSession[]> {
   const root = opts.rootOverride ?? desktopSessionsRoot();
   if (!(await isDir(root))) return [];
 
+  const cwdFilter = opts.cwd;
   const results: DesktopSession[] = [];
   for (const outer of await readdirSafe(root)) {
     const outerPath = join(root, outer);
@@ -65,7 +69,9 @@ export async function listDesktopSessions(
         if (!file.startsWith("local_") || !file.endsWith(".json")) continue;
         const filePath = join(innerPath, file);
         const session = await readSessionFile(filePath, outer, inner);
-        if (session && session.cwd === opts.cwd) results.push(session);
+        if (!session) continue;
+        if (cwdFilter !== undefined && session.cwd !== cwdFilter) continue;
+        results.push(session);
       }
     }
   }

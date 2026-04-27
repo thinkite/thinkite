@@ -168,19 +168,28 @@ export const event = z.discriminatedUnion("type", [
 
 export type Event = z.infer<typeof event>;
 
-// ─── Session metadata (mirrors SDKSessionInfo, intentionally redeclared) ───
+// ─── Session metadata (display-oriented; daemon → iOS list view) ──────────
 
+export const sessionOrigin = z.enum(["desktop-mirror", "sidecode-created"]);
+export type SessionOrigin = z.infer<typeof sessionOrigin>;
+
+/**
+ * Lean session record returned by `listSessions`. Field set is what the iOS
+ * list view actually renders today; extend conservatively as new screens
+ * need more. Distinct from Desktop's on-disk `local_*.json` schema and from
+ * the SDK's `SDKSessionInfo` — both have many fields we don't expose to the
+ * client.
+ */
 export const sessionInfo = z.object({
   sessionId: z.string(),
-  summary: z.string(),
-  lastModified: z.number(),
-  fileSize: z.number().optional(),
-  customTitle: z.string().optional(),
-  firstPrompt: z.string().optional(),
-  gitBranch: z.string().optional(),
-  cwd: z.string().optional(),
-  tag: z.string().nullable().optional(),
-  createdAt: z.number().optional(),
+  cwd: z.string(),
+  lastActivityAt: z.number(),
+  origin: sessionOrigin,
+  cliSessionId: z.string().optional(),
+  title: z.string().optional(),
+  model: z.string().optional(),
+  completedTurns: z.number().optional(),
+  isArchived: z.boolean().optional(),
 });
 
 export type SessionInfo = z.infer<typeof sessionInfo>;

@@ -1,6 +1,7 @@
 import { PROTOCOL_VERSION } from "@sidecodeapp/protocol";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
+import { listDesktopSessions } from "./desktop/sessions.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
@@ -38,7 +39,10 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   const daemonAddress = options.daemonAddress ?? `ws://${host}:${port}`;
 
   const pairing = new PairingService(identity, knownClients, { daemonAddress });
-  const commandHandler = createCommandHandler({ continueOnDesktop });
+  const commandHandler = createCommandHandler({
+    continueOnDesktop,
+    listSessions: listDesktopSessions,
+  });
   const ws = new WebSocketServer({
     pairing,
     commandHandler,

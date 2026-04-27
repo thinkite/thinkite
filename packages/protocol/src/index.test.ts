@@ -338,29 +338,42 @@ describe("command union", () => {
 });
 
 describe("session metadata", () => {
-  it("parses minimal SessionInfo", () => {
+  it("parses minimal SessionInfo (required fields only)", () => {
     const p = sessionInfo.parse({
       sessionId: "s1",
-      summary: "Hi",
-      lastModified: 1,
+      cwd: "/Users/x",
+      lastActivityAt: 1,
+      origin: "desktop-mirror",
     });
     expect(p.sessionId).toBe("s1");
+    expect(p.title).toBeUndefined();
   });
 
-  it("parses full 10-field SessionInfo", () => {
+  it("parses fully-populated SessionInfo", () => {
     const p = sessionInfo.parse({
-      sessionId: "s1",
-      summary: "x",
-      lastModified: 1,
-      fileSize: 4096,
-      customTitle: "My session",
-      firstPrompt: "Hi",
-      gitBranch: "main",
-      cwd: "/Users/x",
-      tag: null,
-      createdAt: 1,
+      sessionId: "local_119c4694-f67a-4e16-b99c-140567c682fd",
+      cwd: "/Users/x/proj",
+      lastActivityAt: 1777000000000,
+      origin: "desktop-mirror",
+      cliSessionId: "03f3f808-9702-4dda-82da-34a8b3f76879",
+      title: "Plan project folder structure",
+      model: "Opus 4.7",
+      completedTurns: 21,
+      isArchived: false,
     });
-    expect(p.tag).toBeNull();
+    expect(p.completedTurns).toBe(21);
+    expect(p.isArchived).toBe(false);
+  });
+
+  it("rejects unknown origin", () => {
+    expect(
+      sessionInfo.safeParse({
+        sessionId: "s1",
+        cwd: "/x",
+        lastActivityAt: 1,
+        origin: "made-up",
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -374,7 +387,14 @@ describe("request/response correlation", () => {
     const res = listSessionsResponse.parse({
       type: "listSessions.response",
       requestId: "r",
-      sessions: [{ sessionId: "s1", summary: "x", lastModified: 1 }],
+      sessions: [
+        {
+          sessionId: "s1",
+          cwd: "/tmp",
+          lastActivityAt: 1,
+          origin: "desktop-mirror",
+        },
+      ],
     });
     expect(req.requestId).toBe(res.requestId);
   });

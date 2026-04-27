@@ -284,6 +284,52 @@ describe("listDesktopSessions", () => {
     });
     expect(result[0]?.originCwd).toBe("/p");
   });
+
+  it("returns sessions across all cwds when cwd is omitted", async () => {
+    writeSession(root, {
+      outer: OUTER_A,
+      inner: INNER_A,
+      fileName: "local_a.json",
+      body: makeSessionBody({
+        sessionId: "local_a",
+        cwd: "/p/one",
+        lastActivityAt: 100,
+      }),
+    });
+    writeSession(root, {
+      outer: OUTER_A,
+      inner: INNER_A,
+      fileName: "local_b.json",
+      body: makeSessionBody({
+        sessionId: "local_b",
+        cwd: "/p/two",
+        lastActivityAt: 200,
+      }),
+    });
+    writeSession(root, {
+      outer: OUTER_B,
+      inner: INNER_B,
+      fileName: "local_c.json",
+      body: makeSessionBody({
+        sessionId: "local_c",
+        cwd: "/p/three",
+        lastActivityAt: 300,
+      }),
+    });
+    const result = await listDesktopSessions({ rootOverride: root });
+    expect(result.map((s) => s.sessionId)).toEqual([
+      "local_c",
+      "local_b",
+      "local_a",
+    ]);
+  });
+
+  it("treats no-arg call as 'all cwds, default root' (root missing → [])", async () => {
+    // No fixtures written under the OS default Desktop path; this exercises
+    // the both-defaults code path.
+    const result = await listDesktopSessions();
+    expect(Array.isArray(result)).toBe(true);
+  });
 });
 
 describe("desktopSessionsRoot", () => {
