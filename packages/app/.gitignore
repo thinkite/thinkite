@@ -9,6 +9,9 @@ dist/
 web-build/
 expo-env.d.ts
 
+# uniwind regenerates this on every metro start
+src/uniwind-types.d.ts
+
 # Native
 .kotlin/
 *.orig.*
