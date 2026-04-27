@@ -1,3 +1,4 @@
+import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { bytesToBase64Url } from "./base64";
 import {
@@ -81,7 +82,7 @@ export class DaemonClient {
     identity: ClientIdentity,
     offer: PairOffer,
   ): Promise<DaemonClient> {
-    const sessionId = randomUuid();
+    const sessionId = Crypto.randomUUID();
     const clientNonce = randomBase64UrlBytes(32);
     const hello = {
       type: "client.hello" as const,
@@ -108,7 +109,7 @@ export class DaemonClient {
     identity: ClientIdentity,
     daemon: PairedDaemon,
   ): Promise<DaemonClient> {
-    const sessionId = randomUuid();
+    const sessionId = Crypto.randomUUID();
     const clientNonce = randomBase64UrlBytes(32);
     const hello = {
       type: "client.hello" as const,
@@ -128,7 +129,7 @@ export class DaemonClient {
    * client-side). V0 surface — extend with sendPrompt / approve / etc. in W3.
    */
   async listSessions(dir?: string): Promise<unknown[]> {
-    const requestId = randomUuid();
+    const requestId = Crypto.randomUUID();
     const frame: { type: string; requestId: string } & Record<string, unknown> =
       { type: "listSessions", requestId };
     if (dir !== undefined) frame.dir = dir;
@@ -316,25 +317,7 @@ function describeEvent(ev: unknown): string {
 // ─── small utils ──────────────────────────────────────────────────────────
 
 function randomBase64UrlBytes(n: number): string {
-  const bytes = new Uint8Array(n);
-  crypto.getRandomValues(bytes);
-  return bytesToBase64Url(bytes);
-}
-
-function randomUuid(): string {
-  // RN has crypto.randomUUID since 0.74-ish; fall back if missing.
-  if (
-    typeof crypto !== "undefined" &&
-    typeof (crypto as { randomUUID?: () => string }).randomUUID === "function"
-  ) {
-    return (crypto as { randomUUID: () => string }).randomUUID();
-  }
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // version 4
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // variant
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  return bytesToBase64Url(Crypto.getRandomBytes(n));
 }
 
 // Shared-connection orchestration lives in `daemon-client-context.tsx` —

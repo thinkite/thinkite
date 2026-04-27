@@ -7,18 +7,20 @@ import type { SessionInfo } from "@/types/session";
  * (see SessionsScreen). The daemon walks every Desktop env-pair under
  * `claude-code-sessions/`; we don't filter on the wire.
  *
- * The DaemonClient is owned by `<DaemonClientProvider>` — first useQuery
- * call triggers the WS handshake; the live connection is shared across
- * every consumer until the provider unmounts or `daemon.reset()` is called.
+ * Daemon connection is owned by `<DaemonClientProvider>`, which handshakes
+ * eagerly on mount. The root layout gates the tree behind a splash until
+ * `client` is ready, so in practice this query runs with a live connection
+ * the first time it mounts. The `enabled` guard is just defense for the
+ * brief window after `reset()` when we're handshaking again.
  */
 export function useSessions() {
-  const daemon = useDaemonClient();
+  const { client } = useDaemonClient();
   return useQuery<SessionInfo[]>({
     queryKey: ["sessions"],
     queryFn: async () => {
-      const client = await daemon.get();
-      const raw = await client.listSessions();
+      const raw = await client!.listSessions();
       return raw as SessionInfo[];
     },
+    enabled: !!client,
   });
 }

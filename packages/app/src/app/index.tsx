@@ -62,9 +62,6 @@ function Body({ query }: { query: ReturnType<typeof useSessions> }) {
     return (
       <View className="flex-1 items-center justify-center">
         <ActivityIndicator />
-        <Text className="mt-3 text-xs text-gray-500 dark:text-gray-400">
-          Connecting to daemon…
-        </Text>
       </View>
     );
   }

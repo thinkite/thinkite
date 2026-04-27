@@ -1,6 +1,7 @@
 import "react-native-get-random-values";
 import * as ed25519 from "@noble/ed25519";
 import { sha256, sha512 } from "@noble/hashes/sha2.js";
+import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { base64UrlToBytes, bytesToBase64Url } from "./base64";
 
@@ -38,7 +39,7 @@ export async function loadOrCreateIdentity(): Promise<ClientIdentity> {
   const existing = await readStored();
   if (existing) return materialize(base64UrlToBytes(existing.privateKeyB64));
 
-  const privateKey = ed25519.utils.randomSecretKey();
+  const privateKey = Crypto.getRandomBytes(32);
   await SecureStore.setItemAsync(
     STORE_KEY,
     JSON.stringify({ privateKeyB64: bytesToBase64Url(privateKey) }),
