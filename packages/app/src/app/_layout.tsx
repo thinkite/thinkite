@@ -6,11 +6,11 @@ import { HeroUINativeProvider } from "heroui-native";
 import { useEffect } from "react";
 import { Pressable, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { SafeAreaView } from "react-native-safe-area-context";
 import {
   DaemonClientProvider,
   useDaemonClient,
 } from "@/lib/daemon-client-context";
+import { SafeAreaView } from "@/lib/styled";
 
 // Hold the native splash open through the daemon handshake. Per Expo docs,
 // preventAutoHideAsync MUST run in module scope (not inside a hook) — by the

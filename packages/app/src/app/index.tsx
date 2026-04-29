@@ -1,10 +1,10 @@
-import { Stack } from "expo-router";
+import { router, Stack } from "expo-router";
 import { useMemo } from "react";
 import { ActivityIndicator, SectionList, Text, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { SessionRow } from "@/components/session-row";
 import { useSessions } from "@/hooks/use-sessions";
 import { projectName } from "@/lib/format";
+import { SafeAreaView } from "@/lib/styled";
 import type { SessionInfo } from "@/types/session";
 
 interface ProjectSection {
@@ -18,6 +18,17 @@ interface ProjectSection {
 const Separator = () => (
   <View className="h-px bg-gray-200 dark:bg-gray-800" />
 );
+
+function openSession(session: SessionInfo) {
+  router.push({
+    pathname: "/session/[cliSessionId]",
+    params: {
+      cliSessionId: session.cliSessionId,
+      cwd: session.cwd,
+      title: session.title,
+    },
+  });
+}
 
 export default function SessionsScreen() {
   const query = useSessions();
@@ -98,7 +109,9 @@ function Body({ query }: { query: ReturnType<typeof useSessions> }) {
     <SectionList<SessionInfo, ProjectSection>
       sections={sections}
       keyExtractor={(item) => item.cliSessionId}
-      renderItem={({ item }) => <SessionRow session={item} />}
+      renderItem={({ item }) => (
+        <SessionRow session={item} onPress={openSession} />
+      )}
       ItemSeparatorComponent={Separator}
       renderSectionHeader={({ section }) => (
         <View className="bg-gray-50 px-4 pt-4 pb-1 dark:bg-gray-950">
