@@ -123,6 +123,7 @@ describe("listDesktopSessions", () => {
       fileName: "local_a.json",
       body: makeSessionBody({
         sessionId: "local_a",
+        cliSessionId: "cli-a",
         cwd: "/p",
         lastActivityAt: 100,
       }),
@@ -133,6 +134,7 @@ describe("listDesktopSessions", () => {
       fileName: "local_b.json",
       body: makeSessionBody({
         sessionId: "local_b",
+        cliSessionId: "cli-b",
         cwd: "/p",
         lastActivityAt: 200,
       }),
@@ -151,6 +153,7 @@ describe("listDesktopSessions", () => {
       fileName: "local_old.json",
       body: makeSessionBody({
         sessionId: "local_old",
+        cliSessionId: "cli-old",
         cwd: "/p",
         lastActivityAt: 100,
       }),
@@ -161,6 +164,7 @@ describe("listDesktopSessions", () => {
       fileName: "local_new.json",
       body: makeSessionBody({
         sessionId: "local_new",
+        cliSessionId: "cli-new",
         cwd: "/p",
         lastActivityAt: 999,
       }),
@@ -171,6 +175,7 @@ describe("listDesktopSessions", () => {
       fileName: "local_mid.json",
       body: makeSessionBody({
         sessionId: "local_mid",
+        cliSessionId: "cli-mid",
         cwd: "/p",
         lastActivityAt: 500,
       }),
@@ -315,6 +320,7 @@ describe("listDesktopSessions", () => {
       fileName: "local_a.json",
       body: makeSessionBody({
         sessionId: "local_a",
+        cliSessionId: "cli-a",
         cwd: "/p/one",
         lastActivityAt: 100,
       }),
@@ -325,6 +331,7 @@ describe("listDesktopSessions", () => {
       fileName: "local_b.json",
       body: makeSessionBody({
         sessionId: "local_b",
+        cliSessionId: "cli-b",
         cwd: "/p/two",
         lastActivityAt: 200,
       }),
@@ -335,6 +342,7 @@ describe("listDesktopSessions", () => {
       fileName: "local_c.json",
       body: makeSessionBody({
         sessionId: "local_c",
+        cliSessionId: "cli-c",
         cwd: "/p/three",
         lastActivityAt: 300,
       }),
@@ -345,6 +353,76 @@ describe("listDesktopSessions", () => {
       "local_b",
       "local_a",
     ]);
+  });
+
+  it("dedupes same cliSessionId across env-pairs, keeping the latest lastActivityAt", async () => {
+    // User with two environments (work + personal): Desktop mirrors the
+    // same CLI conversation under both env-pairs. We should see one row,
+    // with the more recently-used env-pair's metadata.
+    writeSession(root, {
+      outer: OUTER_A,
+      inner: INNER_A,
+      fileName: "local_dup.json",
+      body: makeSessionBody({
+        sessionId: "local_dup",
+        cliSessionId: "cli-shared",
+        cwd: "/p",
+        title: "old env",
+        lastActivityAt: 100,
+      }),
+    });
+    writeSession(root, {
+      outer: OUTER_B,
+      inner: INNER_B,
+      fileName: "local_dup.json",
+      body: makeSessionBody({
+        sessionId: "local_dup",
+        cliSessionId: "cli-shared",
+        cwd: "/p",
+        title: "active env",
+        lastActivityAt: 999,
+      }),
+    });
+    const result = await listDesktopSessions({ rootOverride: root });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.title).toBe("active env");
+    expect(result[0]?.lastActivityAt).toBe(999);
+    expect(result[0]?.environmentOuter).toBe(OUTER_B);
+  });
+
+  it("dedupes by cliSessionId even when local sessionIds differ", async () => {
+    // Hypothetical (and the reason we key on cliSessionId, not sessionId):
+    // if Desktop ever issues a different local_<uuid> for the same CLI
+    // conversation, we still collapse to one row. sessionId-based dedup
+    // would silently let both through.
+    writeSession(root, {
+      outer: OUTER_A,
+      inner: INNER_A,
+      fileName: "local_one.json",
+      body: makeSessionBody({
+        sessionId: "local_one",
+        cliSessionId: "cli-shared",
+        cwd: "/p",
+        title: "local_one mirror",
+        lastActivityAt: 50,
+      }),
+    });
+    writeSession(root, {
+      outer: OUTER_B,
+      inner: INNER_B,
+      fileName: "local_two.json",
+      body: makeSessionBody({
+        sessionId: "local_two",
+        cliSessionId: "cli-shared",
+        cwd: "/p",
+        title: "local_two mirror",
+        lastActivityAt: 500,
+      }),
+    });
+    const result = await listDesktopSessions({ rootOverride: root });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.cliSessionId).toBe("cli-shared");
+    expect(result[0]?.title).toBe("local_two mirror");
   });
 
   it("treats no-arg call as 'all cwds, default root' (root missing → [])", async () => {

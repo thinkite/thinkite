@@ -48,6 +48,21 @@ export interface ListOptions {
  * Return Desktop sessions sorted by lastActivityAt descending. Missing root
  * → []. Malformed files are skipped silently — a single corrupt JSON must
  * not break the whole listing.
+ *
+ * Dedup: Desktop keeps one `<outer>/<inner>` pair per Anthropic
+ * environmentId. A user with multiple environments (e.g. work + personal)
+ * gets the same CLI conversation mirrored under each env-pair, producing
+ * duplicate rows on disk. We collapse to one record per `cliSessionId`
+ * (the conversation's identity in `~/.claude/projects/`), keeping the
+ * env-pair with the most recent `lastActivityAt` — the env the user is
+ * actually working in.
+ *
+ * Why `cliSessionId` and not `sessionId`: today they're 1:1 (sessionId =
+ * "local_" + cliSessionId), but that's Desktop's storage encoding, not
+ * the conversation identity. If Desktop ever changes the local-id scheme
+ * (or sidecode-created sessions land in V0.5+ with their own sessionId
+ * for the same cliSessionId), keying on cliSessionId still collapses the
+ * duplicate; sessionId would not.
  */
 export async function listDesktopSessions(
   opts: ListOptions = {},
@@ -56,7 +71,7 @@ export async function listDesktopSessions(
   if (!(await isDir(root))) return [];
 
   const cwdFilter = opts.cwd;
-  const results: DesktopSession[] = [];
+  const byCliSessionId = new Map<string, DesktopSession>();
   for (const outer of await readdirSafe(root)) {
     const outerPath = join(root, outer);
     if (!(await isDir(outerPath))) continue;
@@ -71,11 +86,15 @@ export async function listDesktopSessions(
         const session = await readSessionFile(filePath, outer, inner);
         if (!session) continue;
         if (cwdFilter !== undefined && session.cwd !== cwdFilter) continue;
-        results.push(session);
+        const prev = byCliSessionId.get(session.cliSessionId);
+        if (!prev || session.lastActivityAt > prev.lastActivityAt) {
+          byCliSessionId.set(session.cliSessionId, session);
+        }
       }
     }
   }
 
+  const results = Array.from(byCliSessionId.values());
   results.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
   return results;
 }

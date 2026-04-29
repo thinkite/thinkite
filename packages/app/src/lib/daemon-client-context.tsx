@@ -24,6 +24,7 @@ type DaemonState =
 
 interface DaemonClientContextValue {
   state: DaemonState;
+  initialized: boolean;
   reset: () => void;
 }
 
@@ -39,6 +40,10 @@ const Ctx = createContext<DaemonClientContextValue | null>(null);
  */
 export function DaemonClientProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<DaemonState>({ status: "connecting" });
+  // Sticky: flips to true on the first successful handshake, never flips back.
+  // Splash UX keys off this — `isLoading` flickers on every reset() and would
+  // briefly re-mount the splash branch, but the native splash is one-shot.
+  const [initialized, setInitialized] = useState(false);
   // Bumped on every connect() call; in-flight handshakes that finish after
   // a newer connect started are dropped via this guard.
   const epochRef = useRef(0);
@@ -86,6 +91,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
         }
         clientRef.current = client;
         setState({ status: "ready", client });
+        setInitialized(true);
       } catch (err) {
         if (epoch !== epochRef.current) return;
         setState({
@@ -106,8 +112,8 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   }, [connect]);
 
   const value = useMemo<DaemonClientContextValue>(
-    () => ({ state, reset: connect }),
-    [state, connect],
+    () => ({ state, initialized, reset: connect }),
+    [state, initialized, connect],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -116,7 +122,12 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
 interface UseDaemonClientResult {
   /** Live client when handshake has completed; `null` while connecting or after error. */
   client: DaemonClient | null;
+  /** True during any in-flight handshake (initial boot AND every reset/reconnect). */
   isLoading: boolean;
+  /** Sticky: true once the first handshake succeeded. Use this for one-shot UX
+   *  like the splash gate; use `isLoading` for "are we currently reconnecting"
+   *  states such as banners or disabled actions. */
+  isInitialized: boolean;
   error: Error | null;
   /** Tear down the current connection (if any) and re-run the handshake. */
   reset: () => void;
@@ -129,10 +140,11 @@ export function useDaemonClient(): UseDaemonClientResult {
       "useDaemonClient must be used inside <DaemonClientProvider>",
     );
   }
-  const { state, reset } = v;
+  const { state, initialized, reset } = v;
   return {
     client: state.status === "ready" ? state.client : null,
     isLoading: state.status === "connecting",
+    isInitialized: initialized,
     error: state.status === "error" ? state.error : null,
     reset,
   };

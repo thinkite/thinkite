@@ -47,42 +47,67 @@ export default function RootLayout() {
   );
 }
 
-// Native splash stays up while the daemon is connecting. When the handshake
-// settles (success or error) we hide it, revealing either the Stack or the
-// inline error UI below.
+// Splash gate. Two concerns are intentionally separate:
 //
-// The native splash is one-shot per launch, so a later `reset()` (Retry)
-// briefly renders blank during reconnect — acceptable for V0; we can add an
-// inline spinner if it ever feels rough.
+//   - `isInitialized` — sticky flag, "have we ever connected this launch?"
+//     Drives the splash branch. Native splash is one-shot; once we hide it,
+//     we never re-show it on later reconnects.
+//   - `isLoading` / `error` — the live status. Used for the first-attempt
+//     error UI and to drive the Retry button's pending state.
+//
+// Once initialized, the Stack always renders. Reconnects don't gate the UI;
+// downstream consumers can opt into a banner via useDaemonClient().isLoading.
 function DaemonGate({ children }: { children: React.ReactNode }) {
-  const { isLoading, error, reset } = useDaemonClient();
+  const { isInitialized, isLoading, error, reset } = useDaemonClient();
 
   useEffect(() => {
-    if (!isLoading) SplashScreen.hideAsync().catch(() => undefined);
-  }, [isLoading]);
+    // Hide as soon as we have something user-meaningful to render — either
+    // the app (initialized) or the first-attempt error screen.
+    if (isInitialized || error) {
+      SplashScreen.hideAsync().catch(() => undefined);
+    }
+  }, [isInitialized, error]);
 
-  if (isLoading) return null;
-
-  if (error) {
-    return (
-      <SafeAreaView className="flex-1 items-center justify-center bg-white px-6 dark:bg-black">
-        <Text className="text-base font-medium text-red-600 dark:text-red-400">
-          Couldn't connect to daemon
-        </Text>
-        <Text className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400">
-          {error.message}
-        </Text>
-        <Pressable
-          onPress={reset}
-          className="mt-5 rounded-md bg-gray-900 px-4 py-2 dark:bg-gray-100"
-        >
-          <Text className="text-sm font-medium text-white dark:text-black">
-            Retry
-          </Text>
-        </Pressable>
-      </SafeAreaView>
-    );
+  if (!isInitialized) {
+    if (error) {
+      return (
+        <ConnectError message={error.message} onRetry={reset} retrying={isLoading} />
+      );
+    }
+    // Pre-init, no error yet → behind the native splash.
+    return null;
   }
 
   return <View className="flex-1">{children}</View>;
+}
+
+function ConnectError({
+  message,
+  onRetry,
+  retrying,
+}: {
+  message: string;
+  onRetry: () => void;
+  retrying: boolean;
+}) {
+  return (
+    <SafeAreaView className="flex-1 items-center justify-center bg-white px-6 dark:bg-black">
+      <Text className="text-base font-medium text-red-600 dark:text-red-400">
+        Couldn't connect to daemon
+      </Text>
+      <Text className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400">
+        {message}
+      </Text>
+      <Pressable
+        onPress={onRetry}
+        disabled={retrying}
+        className="mt-5 rounded-md bg-gray-900 px-4 py-2 dark:bg-gray-100"
+        style={retrying ? { opacity: 0.5 } : undefined}
+      >
+        <Text className="text-sm font-medium text-white dark:text-black">
+          {retrying ? "Retrying…" : "Retry"}
+        </Text>
+      </Pressable>
+    </SafeAreaView>
+  );
 }

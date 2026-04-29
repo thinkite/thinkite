@@ -92,7 +92,7 @@ function Body({ query }: { query: ReturnType<typeof useSessions> }) {
   return (
     <SectionList<SessionInfo, ProjectSection>
       sections={sections}
-      keyExtractor={(item) => item.sessionId}
+      keyExtractor={(item) => item.cliSessionId}
       renderItem={({ item }) => <SessionRow session={item} />}
       ItemSeparatorComponent={Separator}
       renderSectionHeader={({ section }) => (
