@@ -137,6 +137,22 @@ export class DaemonClient {
     return res.sessions;
   }
 
+  /**
+   * Fetch a session's full message transcript. Returned shape is the wire
+   * `SessionMessage[]` from `@sidecodeapp/protocol` — caller narrows
+   * `message: unknown` against the Anthropic API shape when rendering.
+   */
+  async getMessages(cliSessionId: string, cwd: string): Promise<unknown[]> {
+    const requestId = Crypto.randomUUID();
+    const res = (await this.request({
+      type: "getMessages",
+      requestId,
+      cliSessionId,
+      cwd,
+    })) as { messages: unknown[] };
+    return res.messages;
+  }
+
   close(): void {
     try {
       this.ws.close();

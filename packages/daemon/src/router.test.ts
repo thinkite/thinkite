@@ -20,6 +20,7 @@ function makeDeps(overrides?: Partial<Parameters<typeof createCommandHandler>[0]
   return {
     continueOnDesktop: vi.fn().mockResolvedValue(undefined),
     listSessions: vi.fn().mockResolvedValue([]),
+    getMessages: vi.fn().mockResolvedValue([]),
     ...overrides,
   };
 }
@@ -232,6 +233,91 @@ describe("createCommandHandler — listSessions", () => {
     expect(sent[0]).toMatchObject({
       type: "listSessions.response",
       sessions: [],
+    });
+  });
+});
+
+describe("createCommandHandler — getMessages", () => {
+  it("calls getMessages with cliSessionId + cwd and ships messages back", async () => {
+    const messages = [
+      {
+        type: "user" as const,
+        uuid: "u-1",
+        sessionId: "cli-abc",
+        message: { role: "user", content: "hi" },
+      },
+      {
+        type: "assistant" as const,
+        uuid: "u-2",
+        sessionId: "cli-abc",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "hello" }],
+        },
+      },
+    ];
+    const getMessages = vi.fn().mockResolvedValue(messages);
+    const handler = createCommandHandler(makeDeps({ getMessages }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "getMessages",
+        requestId: "gm-1",
+        cliSessionId: "cli-abc",
+        cwd: "/Users/x/proj",
+      },
+      ctx,
+    );
+    expect(getMessages).toHaveBeenCalledWith("cli-abc", "/Users/x/proj");
+    expect(sent).toEqual([
+      {
+        type: "getMessages.response",
+        requestId: "gm-1",
+        messages,
+      },
+    ]);
+  });
+
+  it("returns an error frame when getMessages throws", async () => {
+    const getMessages = vi
+      .fn()
+      .mockRejectedValue(new Error("session file gone"));
+    const handler = createCommandHandler(makeDeps({ getMessages }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "getMessages",
+        requestId: "gm-2",
+        cliSessionId: "cli-x",
+        cwd: "/p",
+      },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "error",
+      requestId: "gm-2",
+      code: "internal",
+      message: "session file gone",
+    });
+  });
+
+  it("ships an empty messages array when SDK returns []", async () => {
+    const handler = createCommandHandler(
+      makeDeps({ getMessages: vi.fn().mockResolvedValue([]) }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "getMessages",
+        requestId: "gm-3",
+        cliSessionId: "cli-empty",
+        cwd: "/p",
+      },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "getMessages.response",
+      messages: [],
     });
   });
 });

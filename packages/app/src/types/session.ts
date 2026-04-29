@@ -9,6 +9,9 @@ export interface SessionInfo {
   /** Stable identifier — for Desktop-mirror sessions this is `local_<uuid>`,
    *  for sidecode-created (V0.5+) it's the cliSessionId. */
   sessionId: string;
+  /** CLI session UUID. Always present per protocol contract — used to fetch
+   *  the message transcript via `getMessages`. */
+  cliSessionId: string;
   /** Sidecode-side flag for whether the "Continue on Desktop" button shows. */
   origin: "desktop-mirror" | "sidecode-created";
   /** Human-readable title. Empty string when Anthropic hasn't synthesized one yet. */

@@ -102,10 +102,17 @@ async function readSessionFile(
   if (typeof data.cwd !== "string" || typeof data.sessionId !== "string") {
     return null;
   }
+  // cliSessionId is the foreign key into ~/.claude/projects/<key>/<id>.jsonl —
+  // without it we can't fetch the transcript via the SDK, so the session is
+  // useless to iOS. Filter out (rather than emit empty-string) so the wire
+  // contract can require it (see protocol.sessionInfo.cliSessionId).
+  if (typeof data.cliSessionId !== "string" || data.cliSessionId === "") {
+    return null;
+  }
 
   return {
     sessionId: data.sessionId,
-    cliSessionId: stringOr(data.cliSessionId, ""),
+    cliSessionId: data.cliSessionId,
     cwd: data.cwd,
     originCwd: stringOr(data.originCwd, data.cwd),
     createdAt: numberOr(data.createdAt, 0),

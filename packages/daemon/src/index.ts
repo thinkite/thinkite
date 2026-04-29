@@ -1,4 +1,5 @@
-import { PROTOCOL_VERSION } from "@sidecodeapp/protocol";
+import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+import { PROTOCOL_VERSION, type SessionMessage } from "@sidecodeapp/protocol";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { listDesktopSessions } from "./desktop/sessions.js";
@@ -42,6 +43,18 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   const commandHandler = createCommandHandler({
     continueOnDesktop,
     listSessions: listDesktopSessions,
+    getMessages: async (cliSessionId, cwd) => {
+      // SDK returns its own SessionMessage shape (`session_id`, plus a
+      // `parent_tool_use_id` we don't ship). Reshape to our wire type:
+      // camelCase the field, drop the always-null tool-use parent.
+      const sdkMessages = await getSessionMessages(cliSessionId, { dir: cwd });
+      return sdkMessages.map<SessionMessage>((m) => ({
+        type: m.type,
+        uuid: m.uuid,
+        sessionId: m.session_id,
+        message: m.message,
+      }));
+    },
   });
   const ws = new WebSocketServer({
     pairing,

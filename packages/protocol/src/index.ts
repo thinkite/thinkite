@@ -185,7 +185,11 @@ export const sessionInfo = z.object({
   cwd: z.string(),
   lastActivityAt: z.number(),
   origin: sessionOrigin,
-  cliSessionId: z.string().optional(),
+  /** CLI session UUID. Required because every code path that ships a session
+   *  to iOS — desktop-mirror today, sidecode-created tomorrow — produces it.
+   *  iOS uses this to fetch the message transcript via `getMessages`. The
+   *  daemon's reader filters out any local_*.json that lacks it. */
+  cliSessionId: z.string(),
   title: z.string().optional(),
   model: z.string().optional(),
   completedTurns: z.number().optional(),
@@ -193,6 +197,26 @@ export const sessionInfo = z.object({
 });
 
 export type SessionInfo = z.infer<typeof sessionInfo>;
+
+/**
+ * One message from a session transcript. Mirrors the SDK's `SessionMessage`
+ * but renames `session_id` → `sessionId` for wire consistency and drops
+ * `parent_tool_use_id` (always null per SDK docs).
+ *
+ * `message` is the standard Anthropic API message shape (role + ContentBlock[]
+ * for assistant; role + string|ContentBlock[] for user). Left as `unknown` on
+ * the wire — iOS narrows when rendering. Tightening to a content-block schema
+ * is straightforward later (Slice C) but locking it in now would couple the
+ * protocol to render decisions we haven't made.
+ */
+export const sessionMessage = z.object({
+  type: z.enum(["user", "assistant", "system"]),
+  uuid: z.string(),
+  sessionId: z.string(),
+  message: z.unknown(),
+});
+
+export type SessionMessage = z.infer<typeof sessionMessage>;
 
 // ─── Commands: client → daemon (fire-and-forget; effects via events) ───────
 
@@ -267,6 +291,31 @@ export const continueOnDesktopResponse = z.object({
   error: z.string().optional(),
 });
 
+/**
+ * Read a session's full message transcript. Backed by the SDK's
+ * `getSessionMessages`, which parses the JSONL at
+ * `~/.claude/projects/<projectKey>/<cliSessionId>.jsonl`.
+ *
+ * V0 returns the whole transcript — no pagination. For typical Claude Code
+ * sessions this is hundreds of messages at most, well within FlatList's
+ * virtualized rendering envelope. Add `limit`/`offset` later (non-breaking)
+ * if profiling shows it matters.
+ */
+export const getMessagesCommand = z.object({
+  type: z.literal("getMessages"),
+  requestId: z.string(),
+  cliSessionId: z.string(),
+  /** Project directory passed to the SDK as `dir`. Avoids an all-projects
+   *  scan; iOS already has this from the session's `SessionInfo.cwd`. */
+  cwd: z.string(),
+});
+
+export const getMessagesResponse = z.object({
+  type: z.literal("getMessages.response"),
+  requestId: z.string(),
+  messages: z.array(sessionMessage),
+});
+
 // ─── Health + error ────────────────────────────────────────────────────────
 
 export const pingFrame = z.object({
@@ -304,6 +353,7 @@ export const command = z.discriminatedUnion("type", [
   listSessionsCommand,
   deleteSessionCommand,
   continueOnDesktopCommand,
+  getMessagesCommand,
 ]);
 
 export type Command = z.infer<typeof command>;
@@ -312,6 +362,7 @@ export const response = z.discriminatedUnion("type", [
   listSessionsResponse,
   deleteSessionResponse,
   continueOnDesktopResponse,
+  getMessagesResponse,
 ]);
 
 export type Response = z.infer<typeof response>;
@@ -328,6 +379,7 @@ export const clientFrame = z.discriminatedUnion("type", [
   listSessionsCommand,
   deleteSessionCommand,
   continueOnDesktopCommand,
+  getMessagesCommand,
 ]);
 
 export type ClientFrame = z.infer<typeof clientFrame>;
@@ -346,6 +398,7 @@ export const daemonFrame = z.discriminatedUnion("type", [
   listSessionsResponse,
   deleteSessionResponse,
   continueOnDesktopResponse,
+  getMessagesResponse,
 ]);
 
 export type DaemonFrame = z.infer<typeof daemonFrame>;

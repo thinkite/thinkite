@@ -216,6 +216,28 @@ describe("listDesktopSessions", () => {
       fileName: "local_no_id.json",
       body: { cwd: "/p" },
     });
+    // Empty cliSessionId disqualifies — without it iOS can't fetch messages
+    // and we'd ship a broken row.
+    writeSession(root, {
+      outer: OUTER_A,
+      inner: INNER_A,
+      fileName: "local_no_cli_id.json",
+      body: makeSessionBody({
+        sessionId: "local_no_cli_id",
+        cwd: "/p",
+        cliSessionId: "",
+      }),
+    });
+    writeSession(root, {
+      outer: OUTER_A,
+      inner: INNER_A,
+      fileName: "local_missing_cli_id.json",
+      body: {
+        sessionId: "local_missing_cli_id",
+        cwd: "/p",
+        // cliSessionId field absent entirely
+      },
+    });
     writeSession(root, {
       outer: OUTER_A,
       inner: INNER_A,
@@ -274,6 +296,7 @@ describe("listDesktopSessions", () => {
       fileName: "local_noorigin.json",
       body: {
         sessionId: "local_noorigin",
+        cliSessionId: "cli-noorigin",
         cwd: "/p",
         lastActivityAt: 1,
       },

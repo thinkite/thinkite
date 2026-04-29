@@ -15,6 +15,8 @@ import {
   deleteSessionResponse,
   errorFrame,
   event,
+  getMessagesCommand,
+  getMessagesResponse,
   HANDSHAKE_DOMAIN_TAG,
   HANDSHAKE_VERSION,
   handshakeRejectFrame,
@@ -344,9 +346,21 @@ describe("session metadata", () => {
       cwd: "/Users/x",
       lastActivityAt: 1,
       origin: "desktop-mirror",
+      cliSessionId: "cli-1",
     });
     expect(p.sessionId).toBe("s1");
     expect(p.title).toBeUndefined();
+  });
+
+  it("rejects SessionInfo missing cliSessionId", () => {
+    expect(
+      sessionInfo.safeParse({
+        sessionId: "s1",
+        cwd: "/Users/x",
+        lastActivityAt: 1,
+        origin: "desktop-mirror",
+      }).success,
+    ).toBe(false);
   });
 
   it("parses fully-populated SessionInfo", () => {
@@ -393,6 +407,7 @@ describe("request/response correlation", () => {
           cwd: "/tmp",
           lastActivityAt: 1,
           origin: "desktop-mirror",
+          cliSessionId: "cli-s1",
         },
       ],
     });
@@ -477,6 +492,78 @@ describe("request/response correlation", () => {
         ok: true,
       }).type,
     ).toBe("continueOnDesktop.response");
+  });
+
+  it("getMessages command requires cliSessionId + cwd", () => {
+    const req = getMessagesCommand.parse({
+      type: "getMessages",
+      requestId: "g1",
+      cliSessionId: "cli-abc",
+      cwd: "/Users/x/proj",
+    });
+    expect(req.cliSessionId).toBe("cli-abc");
+    expect(req.cwd).toBe("/Users/x/proj");
+    // cwd is mandatory — leaves the SDK to fall back to all-projects scan,
+    // which we never want from iOS where we always have it on hand.
+    expect(
+      getMessagesCommand.safeParse({
+        type: "getMessages",
+        requestId: "g1",
+        cliSessionId: "cli-abc",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("getMessages response carries SessionMessage[] (message left as unknown)", () => {
+    const res = getMessagesResponse.parse({
+      type: "getMessages.response",
+      requestId: "g1",
+      messages: [
+        {
+          type: "user",
+          uuid: "m-1",
+          sessionId: "cli-abc",
+          message: { role: "user", content: "hi" },
+        },
+        {
+          type: "assistant",
+          uuid: "m-2",
+          sessionId: "cli-abc",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "hello" }],
+          },
+        },
+      ],
+    });
+    expect(res.messages).toHaveLength(2);
+    expect(res.messages[0]?.type).toBe("user");
+  });
+
+  it("getMessages is included in command + clientFrame + daemonFrame unions", () => {
+    expect(
+      command.parse({
+        type: "getMessages",
+        requestId: "g",
+        cliSessionId: "x",
+        cwd: "/p",
+      }).type,
+    ).toBe("getMessages");
+    expect(
+      clientFrame.parse({
+        type: "getMessages",
+        requestId: "g",
+        cliSessionId: "x",
+        cwd: "/p",
+      }).type,
+    ).toBe("getMessages");
+    expect(
+      daemonFrame.parse({
+        type: "getMessages.response",
+        requestId: "g",
+        messages: [],
+      }).type,
+    ).toBe("getMessages.response");
   });
 });
 

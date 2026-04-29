@@ -1,4 +1,4 @@
-import type { SessionInfo } from "@sidecodeapp/protocol";
+import type { SessionInfo, SessionMessage } from "@sidecodeapp/protocol";
 import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
 import type { DesktopSession } from "./desktop/sessions.js";
 import type { CommandHandler } from "./ws-server.js";
@@ -13,6 +13,19 @@ export interface RouterDeps {
    * `listSessions()` — that returns automation / test noise (see feedback).
    */
   listSessions: (opts: { cwd?: string }) => Promise<DesktopSession[]>;
+  /**
+   * Read the full message transcript for a CLI session. Backed by the SDK's
+   * `getSessionMessages` which parses
+   * `~/.claude/projects/<projectKey>/<cliSessionId>.jsonl`. Empty array if
+   * the session file is missing — caller distinguishes via UX, not error.
+   *
+   * SDK's `listSessions` is shunned (test noise per feedback file) but
+   * `getSessionMessages` is per-id deterministic and safe to use.
+   */
+  getMessages: (
+    cliSessionId: string,
+    cwd: string,
+  ) => Promise<SessionMessage[]>;
 }
 
 /**
@@ -57,6 +70,24 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             type: "listSessions.response",
             requestId: cmd.requestId,
             sessions,
+          });
+        } catch (err) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
+      case "getMessages": {
+        try {
+          const messages = await deps.getMessages(cmd.cliSessionId, cmd.cwd);
+          ctx.send({
+            type: "getMessages.response",
+            requestId: cmd.requestId,
+            messages,
           });
         } catch (err) {
           ctx.send({
