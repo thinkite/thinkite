@@ -344,6 +344,7 @@ describe("session metadata", () => {
     const p = sessionInfo.parse({
       sessionId: "s1",
       cwd: "/Users/x",
+      originCwd: "/Users/x",
       lastActivityAt: 1,
       origin: "desktop-mirror",
       cliSessionId: "cli-1",
@@ -357,24 +358,39 @@ describe("session metadata", () => {
       sessionInfo.safeParse({
         sessionId: "s1",
         cwd: "/Users/x",
+        originCwd: "/Users/x",
         lastActivityAt: 1,
         origin: "desktop-mirror",
       }).success,
     ).toBe(false);
   });
 
-  it("parses fully-populated SessionInfo", () => {
+  it("rejects SessionInfo missing originCwd", () => {
+    expect(
+      sessionInfo.safeParse({
+        sessionId: "s1",
+        cwd: "/Users/x",
+        lastActivityAt: 1,
+        origin: "desktop-mirror",
+        cliSessionId: "cli-1",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("parses fully-populated SessionInfo with fork (cwd != originCwd)", () => {
     const p = sessionInfo.parse({
       sessionId: "local_119c4694-f67a-4e16-b99c-140567c682fd",
-      cwd: "/Users/x/proj",
+      cwd: "/Users/x/proj/worktrees/feature",
+      originCwd: "/Users/x/proj",
       lastActivityAt: 1777000000000,
       origin: "desktop-mirror",
       cliSessionId: "03f3f808-9702-4dda-82da-34a8b3f76879",
-      title: "Plan project folder structure",
+      title: "Plan project folder structure (fork)",
       model: "Opus 4.7",
       completedTurns: 21,
       isArchived: false,
     });
+    expect(p.cwd).not.toBe(p.originCwd);
     expect(p.completedTurns).toBe(21);
     expect(p.isArchived).toBe(false);
   });
@@ -405,6 +421,7 @@ describe("request/response correlation", () => {
         {
           sessionId: "s1",
           cwd: "/tmp",
+          originCwd: "/tmp",
           lastActivityAt: 1,
           origin: "desktop-mirror",
           cliSessionId: "cli-s1",

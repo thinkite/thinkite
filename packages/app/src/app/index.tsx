@@ -9,7 +9,9 @@ import type { SessionInfo } from "@/types/session";
 
 interface ProjectSection {
   title: string;
-  cwd: string;
+  /** Parent project root used as the section's identity / group key. Forks
+   *  in worktrees fold into the parent's section via this. */
+  originCwd: string;
   data: SessionInfo[];
 }
 
@@ -40,20 +42,23 @@ function Body({ query }: { query: ReturnType<typeof useSessions> }) {
 
   const sections = useMemo<ProjectSection[]>(() => {
     if (!sessions) return [];
+    // Group by originCwd so fork sessions in worktrees fold under their
+    // parent project. cwd is the actual run dir (worktree); originCwd is
+    // the parent root — see project_desktop_session_storage memory.
     const buckets = new Map<string, SessionInfo[]>();
     for (const s of sessions) {
-      const arr = buckets.get(s.cwd);
+      const arr = buckets.get(s.originCwd);
       if (arr) arr.push(s);
-      else buckets.set(s.cwd, [s]);
+      else buckets.set(s.originCwd, [s]);
     }
-    const groups = Array.from(buckets, ([cwd, data]) => {
+    const groups = Array.from(buckets, ([originCwd, data]) => {
       const mostRecent = Math.max(...data.map((d) => d.lastActivityAt));
-      return { cwd, data, mostRecent };
+      return { originCwd, data, mostRecent };
     });
     groups.sort((a, b) => b.mostRecent - a.mostRecent);
-    return groups.map(({ cwd, data }) => ({
-      title: projectName(cwd),
-      cwd,
+    return groups.map(({ originCwd, data }) => ({
+      title: projectName(originCwd),
+      originCwd,
       data,
     }));
   }, [sessions]);

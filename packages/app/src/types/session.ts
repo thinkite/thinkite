@@ -16,8 +16,12 @@ export interface SessionInfo {
   origin: "desktop-mirror" | "sidecode-created";
   /** Human-readable title. Empty string when Anthropic hasn't synthesized one yet. */
   title: string;
-  /** Absolute path; UI may truncate. */
+  /** Absolute path of where the session is running. May be a worktree if
+   *  this is a fork — group by `originCwd` instead. UI may truncate. */
   cwd: string;
+  /** Parent project root. Equal to `cwd` for non-fork sessions; differs for
+   *  forks (cwd = worktree, originCwd = repo root). The list groups by this. */
+  originCwd: string;
   /** Epoch ms. */
   lastActivityAt: number;
   /** Compact model display (e.g. "Opus 4.7"). */

@@ -118,6 +118,7 @@ function toSessionInfo(d: DesktopSession): SessionInfo {
   return {
     sessionId: d.sessionId,
     cwd: d.cwd,
+    originCwd: d.originCwd,
     lastActivityAt: d.lastActivityAt,
     origin: "desktop-mirror",
     cliSessionId: d.cliSessionId,

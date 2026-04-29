@@ -152,6 +152,7 @@ describe("createCommandHandler — listSessions", () => {
           {
             sessionId: "local_119c4694-f67a-4e16-b99c-140567c682fd",
             cwd: "/Users/x/proj",
+            originCwd: "/Users/x/proj",
             lastActivityAt: 1777000000500,
             origin: "desktop-mirror",
             cliSessionId: "03f3f808-9702-4dda-82da-34a8b3f76879",
@@ -177,6 +178,24 @@ describe("createCommandHandler — listSessions", () => {
     );
     const res = sent[0] as { sessions: { title?: string }[] };
     expect(res.sessions[0]?.title).toBeUndefined();
+  });
+
+  it("preserves originCwd from a fork (cwd != originCwd)", async () => {
+    const fork = makeDesktopSession({
+      sessionId: "local_fork",
+      cwd: "/Users/x/proj/worktrees/feature",
+      originCwd: "/Users/x/proj",
+      title: "Plan project folder structure (fork)",
+    });
+    const listSessions = vi.fn().mockResolvedValue([fork]);
+    const handler = createCommandHandler(makeDeps({ listSessions }));
+    const { ctx, sent } = makeCtx();
+    await handler({ type: "listSessions", requestId: "ls-fork" }, ctx);
+    const res = sent[0] as {
+      sessions: Array<{ cwd: string; originCwd: string }>;
+    };
+    expect(res.sessions[0]?.cwd).toBe("/Users/x/proj/worktrees/feature");
+    expect(res.sessions[0]?.originCwd).toBe("/Users/x/proj");
   });
 
   it("falls through unrecognized model strings as-is", async () => {

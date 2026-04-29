@@ -183,6 +183,14 @@ export type SessionOrigin = z.infer<typeof sessionOrigin>;
 export const sessionInfo = z.object({
   sessionId: z.string(),
   cwd: z.string(),
+  /**
+   * Parent project root. Equal to `cwd` for non-fork sessions; differs
+   * (points to the original project root) for forks running in worktrees.
+   * iOS groups the list by this — without it, each worktree would show
+   * up as its own pseudo-project section. Daemon always populates it
+   * (falls back to `cwd` when missing on disk).
+   */
+  originCwd: z.string(),
   lastActivityAt: z.number(),
   origin: sessionOrigin,
   /** CLI session UUID. Required because every code path that ships a session
