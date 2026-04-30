@@ -511,24 +511,27 @@ describe("request/response correlation", () => {
     ).toBe("continueOnDesktop.response");
   });
 
-  it("getMessages command requires cliSessionId + cwd", () => {
-    const req = getMessagesCommand.parse({
+  it("getMessages command requires cliSessionId; cwd is an optional hint", () => {
+    // cwd-less is the canonical V0 shape — fork sessions' JSONL location
+    // isn't deterministic, so iOS omits the hint and lets the SDK scan all
+    // projects.
+    const minimal = getMessagesCommand.parse({
+      type: "getMessages",
+      requestId: "g1",
+      cliSessionId: "cli-abc",
+    });
+    expect(minimal.cliSessionId).toBe("cli-abc");
+    expect(minimal.cwd).toBeUndefined();
+
+    // cwd is still allowed (forward-compat for a future "try cwd hint
+    // first" perf optimization).
+    const withHint = getMessagesCommand.parse({
       type: "getMessages",
       requestId: "g1",
       cliSessionId: "cli-abc",
       cwd: "/Users/x/proj",
     });
-    expect(req.cliSessionId).toBe("cli-abc");
-    expect(req.cwd).toBe("/Users/x/proj");
-    // cwd is mandatory — leaves the SDK to fall back to all-projects scan,
-    // which we never want from iOS where we always have it on hand.
-    expect(
-      getMessagesCommand.safeParse({
-        type: "getMessages",
-        requestId: "g1",
-        cliSessionId: "cli-abc",
-      }).success,
-    ).toBe(false);
+    expect(withHint.cwd).toBe("/Users/x/proj");
   });
 
   it("getMessages response carries SessionMessage[] (message left as unknown)", () => {
@@ -563,7 +566,6 @@ describe("request/response correlation", () => {
         type: "getMessages",
         requestId: "g",
         cliSessionId: "x",
-        cwd: "/p",
       }).type,
     ).toBe("getMessages");
     expect(
@@ -571,7 +573,6 @@ describe("request/response correlation", () => {
         type: "getMessages",
         requestId: "g",
         cliSessionId: "x",
-        cwd: "/p",
       }).type,
     ).toBe("getMessages");
     expect(

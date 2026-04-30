@@ -308,14 +308,19 @@ export const continueOnDesktopResponse = z.object({
  * sessions this is hundreds of messages at most, well within FlatList's
  * virtualized rendering envelope. Add `limit`/`offset` later (non-breaking)
  * if profiling shows it matters.
+ *
+ * `cwd` is intentionally optional. Empirically the JSONL location for fork
+ * sessions in worktrees isn't deterministic — sometimes it lives at the
+ * worktree's project key, sometimes at originCwd's. Omitting `cwd` makes
+ * the SDK do an all-projects scan (~20 stat calls, sub-ms on SSD), which
+ * is robust. Future optimization: pass `cwd` and `originCwd` as hints,
+ * daemon tries each before falling back to scan.
  */
 export const getMessagesCommand = z.object({
   type: z.literal("getMessages"),
   requestId: z.string(),
   cliSessionId: z.string(),
-  /** Project directory passed to the SDK as `dir`. Avoids an all-projects
-   *  scan; iOS already has this from the session's `SessionInfo.cwd`. */
-  cwd: z.string(),
+  cwd: z.string().optional(),
 });
 
 export const getMessagesResponse = z.object({

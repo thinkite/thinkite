@@ -24,7 +24,6 @@ function openSession(session: SessionInfo) {
     pathname: "/session/[cliSessionId]",
     params: {
       cliSessionId: session.cliSessionId,
-      cwd: session.cwd,
       title: session.title,
     },
   });

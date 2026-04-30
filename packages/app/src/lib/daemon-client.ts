@@ -141,14 +141,17 @@ export class DaemonClient {
    * Fetch a session's full message transcript. Returned shape is the wire
    * `SessionMessage[]` from `@sidecodeapp/protocol` — caller narrows
    * `message: unknown` against the Anthropic API shape when rendering.
+   *
+   * No `cwd` arg: the SDK does an all-projects scan to find the JSONL.
+   * Cheap (~20 stat calls) and robust against fork sessions where the
+   * file location varies between worktree and originCwd project keys.
    */
-  async getMessages(cliSessionId: string, cwd: string): Promise<unknown[]> {
+  async getMessages(cliSessionId: string): Promise<unknown[]> {
     const requestId = Crypto.randomUUID();
     const res = (await this.request({
       type: "getMessages",
       requestId,
       cliSessionId,
-      cwd,
     })) as { messages: unknown[] };
     return res.messages;
   }

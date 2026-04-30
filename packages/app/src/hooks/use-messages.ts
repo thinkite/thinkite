@@ -3,19 +3,19 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
 
 /**
  * Fetch a session's full transcript via the daemon (which proxies to the
- * SDK's `getSessionMessages`). `cwd` is required because the daemon command
- * is — without it the SDK falls back to an all-projects scan, and we
- * always have it on hand from the SessionInfo that drove this navigation.
+ * SDK's `getSessionMessages`). The SDK does an all-projects scan to find
+ * the JSONL — fork sessions have non-deterministic file locations and a
+ * cwd hint isn't reliable, so we eat the ~20-stat scan cost instead.
  *
  * Wire shape is `unknown[]` (the protocol leaves `message: unknown` for
  * Slice C to narrow into ContentBlock-aware components). This hook is
  * agnostic to that decision — it just ships the array.
  */
-export function useMessages(cliSessionId: string, cwd: string) {
+export function useMessages(cliSessionId: string) {
   const { client } = useDaemonClient();
   return useQuery<unknown[]>({
     queryKey: ["messages", cliSessionId],
-    queryFn: async () => client!.getMessages(cliSessionId, cwd),
+    queryFn: async () => client!.getMessages(cliSessionId),
     enabled: !!client,
   });
 }

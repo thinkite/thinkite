@@ -19,12 +19,15 @@ export interface RouterDeps {
    * `~/.claude/projects/<projectKey>/<cliSessionId>.jsonl`. Empty array if
    * the session file is missing — caller distinguishes via UX, not error.
    *
+   * `cwd` is an optional hint. When omitted, SDK scans every project key —
+   * robust for fork sessions where the JSONL location isn't deterministic.
+   *
    * SDK's `listSessions` is shunned (test noise per feedback file) but
    * `getSessionMessages` is per-id deterministic and safe to use.
    */
   getMessages: (
     cliSessionId: string,
-    cwd: string,
+    cwd?: string,
   ) => Promise<SessionMessage[]>;
 }
 

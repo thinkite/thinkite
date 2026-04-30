@@ -8,24 +8,25 @@ import { SafeAreaView } from "@/lib/styled";
 import { flattenToBlocks, type RenderBlock } from "@/lib/transcript-blocks";
 
 /**
- * Slice B: detail route. JSON-dumps the message array so we can verify the
- * pipe (iOS → daemon → SDK getSessionMessages → JSONL on disk). Slice C
- * replaces the dump with proper user/assistant/tool_use components.
+ * Detail route. Renders the transcript flattened into per-content-block
+ * rows (text + tool) with role attribution managed by a speaker state
+ * machine (see flattenToBlocks).
  *
- * Route: /session/<cliSessionId>?cwd=<path>&title=<encoded>
+ * Route: /session/<cliSessionId>?title=<encoded>
  *  - cliSessionId: path slug — the canonical conversation identity
- *  - cwd: query — passed to daemon's getMessages so the SDK skips its
- *    all-projects scan
- *  - title: query — header label; falls back if the user navigated here
- *    via deeplink (V0.5+) without one
+ *  - title: query — header label; falls back to "Session" for deeplink
+ *    navigations (V0.5+) where the caller didn't have one
+ *
+ * No cwd hint: daemon's getMessages does an all-projects scan since fork
+ * sessions in worktrees can have their JSONL at either the worktree's
+ * project key or originCwd's, with no deterministic rule to pick.
  */
 export default function SessionDetailScreen() {
-  const { cliSessionId, cwd, title } = useLocalSearchParams<{
+  const { cliSessionId, title } = useLocalSearchParams<{
     cliSessionId: string;
-    cwd: string;
     title?: string;
   }>();
-  const query = useMessages(cliSessionId, cwd);
+  const query = useMessages(cliSessionId);
 
   return (
     <>

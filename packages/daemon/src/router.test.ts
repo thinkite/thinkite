@@ -257,7 +257,7 @@ describe("createCommandHandler — listSessions", () => {
 });
 
 describe("createCommandHandler — getMessages", () => {
-  it("calls getMessages with cliSessionId + cwd and ships messages back", async () => {
+  it("calls getMessages with cliSessionId; cwd undefined when caller omits it", async () => {
     const messages = [
       {
         type: "user" as const,
@@ -283,11 +283,10 @@ describe("createCommandHandler — getMessages", () => {
         type: "getMessages",
         requestId: "gm-1",
         cliSessionId: "cli-abc",
-        cwd: "/Users/x/proj",
       },
       ctx,
     );
-    expect(getMessages).toHaveBeenCalledWith("cli-abc", "/Users/x/proj");
+    expect(getMessages).toHaveBeenCalledWith("cli-abc", undefined);
     expect(sent).toEqual([
       {
         type: "getMessages.response",
@@ -295,6 +294,22 @@ describe("createCommandHandler — getMessages", () => {
         messages,
       },
     ]);
+  });
+
+  it("forwards cwd hint when caller provides one", async () => {
+    const getMessages = vi.fn().mockResolvedValue([]);
+    const handler = createCommandHandler(makeDeps({ getMessages }));
+    const { ctx } = makeCtx();
+    await handler(
+      {
+        type: "getMessages",
+        requestId: "gm-hint",
+        cliSessionId: "cli-abc",
+        cwd: "/Users/x/proj",
+      },
+      ctx,
+    );
+    expect(getMessages).toHaveBeenCalledWith("cli-abc", "/Users/x/proj");
   });
 
   it("returns an error frame when getMessages throws", async () => {
@@ -308,7 +323,6 @@ describe("createCommandHandler — getMessages", () => {
         type: "getMessages",
         requestId: "gm-2",
         cliSessionId: "cli-x",
-        cwd: "/p",
       },
       ctx,
     );
@@ -330,7 +344,6 @@ describe("createCommandHandler — getMessages", () => {
         type: "getMessages",
         requestId: "gm-3",
         cliSessionId: "cli-empty",
-        cwd: "/p",
       },
       ctx,
     );

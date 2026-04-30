@@ -47,7 +47,16 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       // SDK returns its own SessionMessage shape (`session_id`, plus a
       // `parent_tool_use_id` we don't ship). Reshape to our wire type:
       // camelCase the field, drop the always-null tool-use parent.
-      const sdkMessages = await getSessionMessages(cliSessionId, { dir: cwd });
+      //
+      // `cwd` is a hint only — when undefined we let the SDK scan every
+      // project key. Fork sessions in worktrees may have their JSONL at
+      // the worktree's project key OR at originCwd's; the rule isn't
+      // deterministic, so iOS omits the hint and we eat the ~20-stat
+      // scan rather than mis-route.
+      const sdkMessages = await getSessionMessages(
+        cliSessionId,
+        cwd === undefined ? undefined : { dir: cwd },
+      );
       return sdkMessages.map<SessionMessage>((m) => ({
         type: m.type,
         uuid: m.uuid,
