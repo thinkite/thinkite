@@ -22,8 +22,16 @@ export function ToolBlock({ block }: { block: ToolRenderBlock }) {
   const isError = block.result?.isError === true;
 
   return (
-    <Accordion>
-      <Accordion.Item value={block.toolUseId}>
+    <View>
+      {block.showRoleHeader ? (
+        <View className="border-t border-gray-200 px-4 pt-3 dark:border-gray-800">
+          <Text className="mb-1 text-[10px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+            CLAUDE
+          </Text>
+        </View>
+      ) : null}
+      <Accordion>
+        <Accordion.Item value={block.toolUseId}>
         <Accordion.Trigger className="px-4 py-3">
           <View className="flex-1 flex-row items-center gap-2">
             <ToolChip name={block.name} isError={isError} />
@@ -60,9 +68,10 @@ export function ToolBlock({ block }: { block: ToolRenderBlock }) {
               (No result — session may be in progress)
             </Text>
           )}
-        </Accordion.Content>
-      </Accordion.Item>
-    </Accordion>
+          </Accordion.Content>
+        </Accordion.Item>
+      </Accordion>
+    </View>
   );
 }
 

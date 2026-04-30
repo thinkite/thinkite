@@ -16,16 +16,25 @@ const ROLE_LABEL: Record<TextRenderBlock["role"], string> = {
  * assistant text goes through EnrichedMarkdownText so code blocks, lists,
  * links, etc. render natively.
  *
- * The Anthropic-API-shaped tool_use / tool_result / thinking blocks aren't
- * rendered here — `flattenToTextBlocks` strips them upstream. We'll add
- * dedicated components in a follow-up.
+ * Follow-up blocks of the same role (`isFirstOfRoleRun: false`) drop the
+ * role header and top border so a multi-message assistant turn reads as
+ * one continuous response. flattenToBlocks computes the flag.
  */
 export function TextBlock({ block }: { block: TextRenderBlock }) {
+  const continued = !block.isFirstOfRoleRun;
   return (
-    <View className="border-t border-gray-200 px-4 py-3 dark:border-gray-800">
-      <Text className="mb-1 text-[10px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-        {ROLE_LABEL[block.role]}
-      </Text>
+    <View
+      className={
+        continued
+          ? "px-4 pb-3"
+          : "border-t border-gray-200 px-4 py-3 dark:border-gray-800"
+      }
+    >
+      {continued ? null : (
+        <Text className="mb-1 text-[10px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          {ROLE_LABEL[block.role]}
+        </Text>
+      )}
       {block.role === "assistant" ? (
         <EnrichedMarkdownText
           markdown={block.text}

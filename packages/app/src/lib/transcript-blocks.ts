@@ -25,6 +25,13 @@ export interface TextRenderBlock {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /**
+   * Renderer drops the role header when false. Computed by a "current
+   * speaker" state machine: text re-asserts the role only when the
+   * speaker actually changes. A `[CLAUDE text → tools → CLAUDE summary]`
+   * sequence is one turn — only the first text shows "CLAUDE".
+   */
+  isFirstOfRoleRun: boolean;
 }
 
 export interface ToolRenderBlock {
@@ -41,6 +48,13 @@ export interface ToolRenderBlock {
    *  legitimately happens for the trailing tool_use of an in-flight or
    *  interrupted session. */
   result?: { content: string; isError: boolean };
+  /**
+   * True when this is the first tool of an assistant turn that wasn't
+   * already opened by an assistant text. Renderer shows a "CLAUDE" header
+   * above the chip so the tool's attribution is unambiguous (otherwise it
+   * looks like the tool is hanging off the previous user message).
+   */
+  showRoleHeader: boolean;
 }
 
 interface RawSessionMessage {
@@ -91,6 +105,43 @@ export function flattenToBlocks(messages: unknown[]): RenderBlock[] {
   }
 
   const out: RenderBlock[] = [];
+  // "Speaker" state machine: who currently has the floor. Text/tool blocks
+  // attach their role header only on speaker transitions, so a single
+  // assistant turn (text → tools → summary) shows "CLAUDE" once at the top
+  // and reads as one continuous response.
+  let speaker: "user" | "assistant" | null = null;
+
+  const pushText = (id: string, role: "user" | "assistant", text: string) => {
+    out.push({
+      kind: "text",
+      id,
+      role,
+      text,
+      isFirstOfRoleRun: speaker !== role,
+    });
+    speaker = role;
+  };
+  const pushTool = (
+    id: string,
+    toolUseId: string,
+    name: string,
+    input: unknown,
+  ) => {
+    out.push({
+      kind: "tool",
+      id,
+      toolUseId,
+      name,
+      input,
+      result: resultByToolUseId.get(toolUseId),
+      // Tools always belong to the assistant. Show a CLAUDE header only when
+      // the speaker isn't already assistant — i.e. when the tool kicks off a
+      // turn that an assistant text block hadn't already opened.
+      showRoleHeader: speaker !== "assistant",
+    });
+    speaker = "assistant";
+  };
+
   for (const raw of messages) {
     if (!isSessionMessage(raw)) continue;
     if (raw.type === "system") continue;
@@ -99,7 +150,7 @@ export function flattenToBlocks(messages: unknown[]): RenderBlock[] {
 
     if (typeof content === "string") {
       if (content.trim().length > 0) {
-        out.push({ kind: "text", id: `${raw.uuid}:0`, role, text: content });
+        pushText(`${raw.uuid}:0`, role, content);
       }
       continue;
     }
@@ -108,25 +159,14 @@ export function flattenToBlocks(messages: unknown[]): RenderBlock[] {
     content.forEach((block, i) => {
       if (isTextBlock(block)) {
         if (block.text.trim().length === 0) return;
-        out.push({
-          kind: "text",
-          id: `${raw.uuid}:${i}`,
-          role,
-          text: block.text,
-        });
+        pushText(`${raw.uuid}:${i}`, role, block.text);
       } else if (isToolUseBlock(block)) {
-        out.push({
-          kind: "tool",
-          id: `${raw.uuid}:${i}`,
-          toolUseId: block.id,
-          name: block.name,
-          input: block.input,
-          result: resultByToolUseId.get(block.id),
-        });
+        pushTool(`${raw.uuid}:${i}`, block.id, block.name, block.input);
       }
       // tool_result, thinking, redacted_thinking, image: silently dropped
     });
   }
+
   return out;
 }
 
