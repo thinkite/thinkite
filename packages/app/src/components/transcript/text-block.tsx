@@ -39,6 +39,7 @@ export function TextBlock({ block }: { block: TextRenderBlock }) {
         <EnrichedMarkdownText
           markdown={block.text}
           selectable
+          flavor="github"
           markdownStyle={MARKDOWN_STYLE}
         />
       ) : (

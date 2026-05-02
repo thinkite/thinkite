@@ -1,6 +1,6 @@
 import { router, Stack } from "expo-router";
 import { useMemo } from "react";
-import { ActivityIndicator, SectionList, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, SectionList, Text, View } from "react-native";
 import { SessionRow } from "@/components/session-row";
 import { useSessions } from "@/hooks/use-sessions";
 import { projectName } from "@/lib/format";
@@ -36,10 +36,17 @@ export default function SessionsScreen() {
     <>
       <Stack.Screen options={{ headerShown: false }} />
       <SafeAreaView className="flex-1 bg-white dark:bg-black" edges={["top"]}>
-        <View className="px-4 pt-4 pb-3">
+        <View className="flex-row items-center justify-between px-4 pt-4 pb-3">
           <Text className="text-2xl font-semibold text-black dark:text-white">
             Sessions
           </Text>
+          {__DEV__ && (
+            <Pressable onPress={() => router.push("/dev/diffs")} hitSlop={8}>
+              <Text className="text-sm text-blue-600 dark:text-blue-400">
+                Diffs dev
+              </Text>
+            </Pressable>
+          )}
         </View>
         <Body query={query} />
       </SafeAreaView>
