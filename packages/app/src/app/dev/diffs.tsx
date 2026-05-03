@@ -1,5 +1,5 @@
 import { router, Stack } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -8,6 +8,7 @@ import {
   View,
 } from "react-native";
 import { DiffsView } from "react-native-diffs";
+import { MarkdownView } from "@/lib/markdown";
 import { SafeAreaView } from "@/lib/styled";
 
 // Dev page: probe react-native-diffs (DiffsView) with the kinds of content
@@ -19,6 +20,11 @@ interface TestCase {
   label: string;
   description: string;
   content: string;
+  // Which renderer to use. Defaults to "diffs" (raw DiffsView with flex:1).
+  // - "wrapper":  goes through @/lib/markdown's MarkdownView, exercising the
+  //   onContentSizeChange → measured-height path used by transcript chat blocks.
+  //   Use with the stream toggle to stress the height-callback loop on every tick.
+  engine?: "diffs" | "wrapper";
 }
 
 // ----- Edit tool variants (unified diff in fenced block) -----
@@ -281,19 +287,87 @@ const MULTI_BLOCK = `\`\`\`diff
 +const b = 2;
 \`\`\``;
 
-const MARKDOWN_MIXED = `# Design Doc
+// GFM coverage probe — exercises every block & inline node MarkdownView's
+// parser emits, plus GFM extensions (task list, table alignments, strikethrough,
+// LaTeX math). Use this to spot what MarkdownView renders vs. silently drops.
+const MARKDOWN_MIXED = `# H1 — GFM coverage probe
 
-This is a paragraph with **bold** and _italic_ text, plus inline \`code\`.
+## H2 heading
+### H3 heading
+#### H4 heading
+##### H5 heading
+###### H6 heading
 
-## Code block
+A paragraph with **bold**, _italic_, ***bold italic***, ~~strikethrough~~, inline \`code\`, an autolink https://example.com, and a [labelled link](https://example.com).
+This sentence is on the next source line — should join via softBreak.
+Hard break after the two trailing spaces.
+Next line should sit on its own row.
+
+> Blockquote level 1 with **bold** inside.
+>
+> > Nested blockquote level 2 — does it render the second level?
+> >
+> > - even nests a list
+
+---
+
+## Bulleted list (tight)
+
+- one
+- two
+- three
+
+## Bulleted list (loose, nested)
+
+- top item with a paragraph continuation that wraps
+
+  second paragraph inside the same item
+
+- another top
+
+  - nested A
+  - nested B
+    - deep nested C
+
+## Numbered list (custom start)
+
+5. five
+6. six
+7. seven
+
+## Task list (GFM)
+
+- [x] done item
+- [x] also done
+- [ ] open item
+- [ ] another open with **bold** and \`code\`
+
+## Table (GFM, mixed alignments — wide enough to force horizontal scroll)
+
+| ID | Name (left) | Status (center) | Score (right) | Owner | Created at | Tags | Notes (left) | Last update | Long description column to push width past viewport |
+|:---|:------------|:---------------:|--------------:|:------|:----------:|:-----|:-------------|------------:|:----------------------------------------------------|
+| 1  | alpha       | ✅ active       |         1,234 | yyq   | 2026-04-01 | \`gfm\` | first row notes  | 2026-05-02 | Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod. |
+| 2  | bravo       | ⏳ pending      |            42 | sm    | 2026-04-12 | \`wip\` | mid-length note that wraps maybe | 2026-04-30 | Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi. |
+| 3  | charlie-long-name | 🚫 blocked |             0 | yyq   | 2026-04-18 | \`bug\`, \`p0\` | **bold** + _em_ + \`code\` inside a cell | 2026-05-01 | Duis aute irure dolor in reprehenderit in voluptate velit esse cillum. |
+| 4  | delta       | ✅ active       |        99,999 | sm    | 2026-04-21 | —    | shortish     | 2026-05-02 | Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia. |
+| 5  | echo        | 🟡 review       |           512 | yyq   | 2026-04-25 | \`docs\` | strike ~~old~~ → new | 2026-05-02 | Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium. |
+
+## Fenced code (TS)
 
 \`\`\`tsx
-function hello() {
-  return "world";
+function add(a: number, b: number): number {
+  return a + b;
 }
 \`\`\`
 
-## Diff
+## Fenced code (Python)
+
+\`\`\`python
+def square(x: int) -> int:
+    return x * x
+\`\`\`
+
+## Diff inside markdown
 
 \`\`\`diff
 @@ -1,3 +1,3 @@
@@ -302,39 +376,179 @@ function hello() {
  unchanged
 \`\`\`
 
+## LaTeX math
+
+Inline math: $E = mc^2$ and $\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$.
+
+Block math:
+
+$$
+\\int_0^\\infty e^{-x^2}\\, dx = \\frac{\\sqrt{\\pi}}{2}
+$$
+
+## Image
+
+![alt text describing the image](https://placehold.co/240x80/png?text=img)
+
+## Inline HTML fallback
+
+Sentence with <em>inline HTML</em> and <kbd>Ctrl</kbd>+<kbd>C</kbd> — MarkdownView emits these as raw \`.html\` inline nodes.
+
 End of doc.`;
 
 const CASES: TestCase[] = [
-  { id: "small-edit", label: "Edit · small", description: "1-line change in 1 hunk", content: SMALL_EDIT },
-  { id: "multi-hunk", label: "Edit · multi-hunk", description: "2 hunks in 1 file", content: MULTI_HUNK },
-  { id: "additions", label: "Edit · adds only", description: "no -lines, only +", content: ADDITIONS_ONLY },
-  { id: "deletions", label: "Edit · dels only", description: "no +lines, only -", content: DELETIONS_ONLY },
-  { id: "write-new", label: "Write · new file", description: "/dev/null → file (Write tool encoding)", content: WRITE_NEW_FILE },
-  { id: "large", label: "Edit · large", description: "~50 lines, 2 hunks (perf check)", content: LARGE_DIFF },
-  { id: "read-ts", label: "Read · TS", description: "plain ```tsx code block (Read tool)", content: READ_TS },
-  { id: "read-py", label: "Read · Python", description: "plain ```python (test multi-language highlight)", content: READ_PYTHON },
-  { id: "read-json", label: "Read · JSON", description: "plain ```json (test data formatting)", content: READ_JSON },
-  { id: "read-rust", label: "Read · Rust", description: "plain ```rust (test less-common language)", content: READ_RUST },
-  { id: "bash", label: "Bash · output", description: "shell session in ```bash", content: BASH_OUTPUT },
-  { id: "long", label: "Long lines", description: "horizontal overflow behavior", content: LONG_LINES },
-  { id: "unicode", label: "Unicode", description: "CJK + emoji (sanity-check on iOS 26.4 sim)", content: UNICODE },
-  { id: "raw-no-fence", label: "Raw diff", description: "unified diff without ```diff fence", content: RAW_DIFF_NO_FENCE },
-  { id: "multi-block", label: "Multi-block", description: "two ```diff blocks in one content", content: MULTI_BLOCK },
-  { id: "markdown", label: "Markdown mixed", description: "headings + prose + code + diff", content: MARKDOWN_MIXED },
-  { id: "empty", label: "Empty", description: "edge case: empty string", content: EMPTY },
+  {
+    id: "small-edit",
+    label: "Edit · small",
+    description: "1-line change in 1 hunk",
+    content: SMALL_EDIT,
+  },
+  {
+    id: "multi-hunk",
+    label: "Edit · multi-hunk",
+    description: "2 hunks in 1 file",
+    content: MULTI_HUNK,
+  },
+  {
+    id: "additions",
+    label: "Edit · adds only",
+    description: "no -lines, only +",
+    content: ADDITIONS_ONLY,
+  },
+  {
+    id: "deletions",
+    label: "Edit · dels only",
+    description: "no +lines, only -",
+    content: DELETIONS_ONLY,
+  },
+  {
+    id: "write-new",
+    label: "Write · new file",
+    description: "/dev/null → file (Write tool encoding)",
+    content: WRITE_NEW_FILE,
+  },
+  {
+    id: "large",
+    label: "Edit · large",
+    description: "~50 lines, 2 hunks (perf check)",
+    content: LARGE_DIFF,
+  },
+  {
+    id: "read-ts",
+    label: "Read · TS",
+    description: "plain ```tsx code block (Read tool)",
+    content: READ_TS,
+  },
+  {
+    id: "read-py",
+    label: "Read · Python",
+    description: "plain ```python (test multi-language highlight)",
+    content: READ_PYTHON,
+  },
+  {
+    id: "read-json",
+    label: "Read · JSON",
+    description: "plain ```json (test data formatting)",
+    content: READ_JSON,
+  },
+  {
+    id: "read-rust",
+    label: "Read · Rust",
+    description: "plain ```rust (test less-common language)",
+    content: READ_RUST,
+  },
+  {
+    id: "bash",
+    label: "Bash · output",
+    description: "shell session in ```bash",
+    content: BASH_OUTPUT,
+  },
+  {
+    id: "long",
+    label: "Long lines",
+    description: "horizontal overflow behavior",
+    content: LONG_LINES,
+  },
+  {
+    id: "unicode",
+    label: "Unicode",
+    description: "CJK + emoji (sanity-check on iOS 26.4 sim)",
+    content: UNICODE,
+  },
+  {
+    id: "raw-no-fence",
+    label: "Raw diff",
+    description: "unified diff without ```diff fence",
+    content: RAW_DIFF_NO_FENCE,
+  },
+  {
+    id: "multi-block",
+    label: "Multi-block",
+    description: "two ```diff blocks in one content",
+    content: MULTI_BLOCK,
+  },
+  {
+    id: "markdown",
+    label: "Md · diffs",
+    description: "GFM probe via react-native-diffs (MarkdownView Swift)",
+    content: MARKDOWN_MIXED,
+  },
+  {
+    id: "markdown-wrapper",
+    label: "Md · wrapper",
+    description:
+      "MarkdownView wrapper (chat path) — auto-sizing via onContentSizeChange",
+    content: MARKDOWN_MIXED,
+    engine: "wrapper",
+  },
+  {
+    id: "empty",
+    label: "Empty",
+    description: "edge case: empty string",
+    content: EMPTY,
+  },
 ];
+
+// Streaming pace — ~80 chars/sec mimics a slowed-down LLM stream.
+// Slow enough to visually catch how each renderer handles incomplete markdown
+// (open fences, half-formed tables, dangling **bold tokens), fast enough not to be tedious.
+const STREAM_TICK_MS = 50;
+const STREAM_CHARS_PER_TICK = 4;
 
 export default function DiffsDevScreen() {
   const systemColorScheme = useColorScheme() ?? "light";
   const [caseId, setCaseId] = useState(CASES[0].id);
   const [showRaw, setShowRaw] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [streamPos, setStreamPos] = useState(0);
   const current = CASES.find((c) => c.id === caseId) ?? CASES[0];
+
+  // Restart stream from 0 on toggle-on or case switch while streaming.
+  useEffect(() => {
+    if (!streaming) return;
+    setStreamPos(0);
+    const id = setInterval(() => {
+      setStreamPos((p) => {
+        const next = p + STREAM_CHARS_PER_TICK;
+        if (next >= current.content.length) {
+          clearInterval(id);
+          return current.content.length;
+        }
+        return next;
+      });
+    }, STREAM_TICK_MS);
+    return () => clearInterval(id);
+  }, [streaming, current.content]);
+
+  const effectiveContent = streaming
+    ? current.content.slice(0, streamPos)
+    : current.content;
 
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
       <SafeAreaView className="flex-1 bg-white dark:bg-black" edges={["top"]}>
-        {/* Header row: back + raw toggle */}
+        {/* Header row: back + stream/raw toggles */}
         <View className="flex-row items-center justify-between px-4 pt-3">
           <Pressable onPress={() => router.back()} hitSlop={12}>
             <Text className="text-base text-blue-600 dark:text-blue-400">
@@ -344,54 +558,76 @@ export default function DiffsDevScreen() {
           <Text className="text-base font-semibold text-black dark:text-white">
             Diffs Dev
           </Text>
-          <Pressable onPress={() => setShowRaw((s) => !s)} hitSlop={12}>
-            <Text className="text-sm text-gray-600 dark:text-gray-400">
-              {showRaw ? "rendered" : "raw"}
-            </Text>
-          </Pressable>
+          <View className="flex-row items-center" style={{ gap: 12 }}>
+            <Pressable onPress={() => setStreaming((s) => !s)} hitSlop={12}>
+              <Text
+                className={
+                  streaming
+                    ? "text-sm font-medium text-blue-600 dark:text-blue-400"
+                    : "text-sm text-gray-600 dark:text-gray-400"
+                }
+              >
+                {streaming ? "stop" : "stream"}
+              </Text>
+            </Pressable>
+            <Pressable onPress={() => setShowRaw((s) => !s)} hitSlop={12}>
+              <Text className="text-sm text-gray-600 dark:text-gray-400">
+                {showRaw ? "rendered" : "raw"}
+              </Text>
+            </Pressable>
+          </View>
         </View>
 
         {/* Case picker (horizontal chips) */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          className="border-b border-gray-200 py-2 dark:border-gray-800"
-          contentContainerStyle={{ paddingHorizontal: 16, gap: 8 }}
-        >
-          {CASES.map((c) => {
-            const active = c.id === caseId;
-            return (
-              <Pressable
-                key={c.id}
-                onPress={() => setCaseId(c.id)}
-                className={
-                  active
-                    ? "rounded-full bg-blue-600 px-3 py-1.5"
-                    : "rounded-full bg-gray-100 px-3 py-1.5 dark:bg-gray-900"
-                }
-              >
-                <Text
+        <View className="border-b border-gray-200 dark:border-gray-800">
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={{ height: 44 }}
+            contentContainerStyle={{
+              paddingHorizontal: 16,
+              gap: 8,
+              alignItems: "center",
+            }}
+          >
+            {CASES.map((c) => {
+              const active = c.id === caseId;
+              return (
+                <Pressable
+                  key={c.id}
+                  onPress={() => setCaseId(c.id)}
+                  style={{ height: 28, justifyContent: "center" }}
                   className={
                     active
-                      ? "text-xs font-medium text-white"
-                      : "text-xs text-gray-700 dark:text-gray-300"
+                      ? "rounded-full bg-blue-600 px-3"
+                      : "rounded-full bg-gray-100 px-3 dark:bg-gray-900"
                   }
                 >
-                  {c.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
+                  <Text
+                    className={
+                      active
+                        ? "text-xs font-medium text-white"
+                        : "text-xs text-gray-700 dark:text-gray-300"
+                    }
+                  >
+                    {c.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
 
         {/* Description strip */}
         <View className="border-b border-gray-200 px-4 py-2 dark:border-gray-800">
           <Text className="text-xs text-gray-500 dark:text-gray-400">
-            {current.description} · {current.content.length} chars
+            {streaming
+              ? `streaming: ${streamPos} / ${current.content.length} chars · ${current.description}`
+              : `${current.description} · ${current.content.length} chars`}
           </Text>
         </View>
 
-        {/* Body: rendered DiffsView OR raw string */}
+        {/* Body: raw / wrapper (MarkdownView) / DiffsView depending on engine */}
         {showRaw ? (
           <ScrollView className="flex-1 bg-gray-50 dark:bg-gray-950">
             <Text
@@ -399,12 +635,19 @@ export default function DiffsDevScreen() {
               className="p-4 text-xs text-gray-800 dark:text-gray-200"
               style={{ fontFamily: "Menlo" }}
             >
-              {current.content || "(empty string)"}
+              {effectiveContent || "(empty string)"}
             </Text>
+          </ScrollView>
+        ) : current.engine === "wrapper" ? (
+          <ScrollView
+            className="flex-1 bg-white dark:bg-black"
+            contentContainerStyle={{ paddingBottom: 48 }}
+          >
+            <MarkdownView content={effectiveContent} />
           </ScrollView>
         ) : (
           <DiffsView
-            content={current.content}
+            content={effectiveContent}
             colorScheme={systemColorScheme}
             style={{ flex: 1 }}
           />

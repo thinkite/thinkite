@@ -1,8 +1,5 @@
-import {
-  EnrichedMarkdownText,
-  type MarkdownStyle,
-} from "react-native-enriched-markdown";
 import { Text, View } from "react-native";
+import { MarkdownView } from "@/lib/markdown";
 import type { TextRenderBlock } from "@/lib/transcript-blocks";
 
 const ROLE_LABEL: Record<TextRenderBlock["role"], string> = {
@@ -13,8 +10,9 @@ const ROLE_LABEL: Record<TextRenderBlock["role"], string> = {
 /**
  * One text block (a single ContentBlock from the transcript) rendered
  * top-down, full-width — reading-mode, not chat-mode. User text is plain;
- * assistant text goes through EnrichedMarkdownText so code blocks, lists,
- * links, etc. render natively.
+ * assistant text goes through MarkdownView (Apple MarkdownView via Nitro)
+ * so code blocks, lists, tables, links, diff blocks render natively with
+ * tree-sitter syntax highlighting and stay at 60fps under streaming.
  *
  * Follow-up blocks of the same role (`isFirstOfRoleRun: false`) drop the
  * role header and top border so a multi-message assistant turn reads as
@@ -36,12 +34,7 @@ export function TextBlock({ block }: { block: TextRenderBlock }) {
         </Text>
       )}
       {block.role === "assistant" ? (
-        <EnrichedMarkdownText
-          markdown={block.text}
-          selectable
-          flavor="github"
-          markdownStyle={MARKDOWN_STYLE}
-        />
+        <MarkdownView content={block.text} />
       ) : (
         <Text selectable className="text-base text-black dark:text-white">
           {block.text}
@@ -50,17 +43,3 @@ export function TextBlock({ block }: { block: TextRenderBlock }) {
     </View>
   );
 }
-
-// Light tweaks against the lib's defaults — let it own typography otherwise.
-// Dark mode is deferred until we have a theme context to feed the style obj.
-const MARKDOWN_STYLE: MarkdownStyle = {
-  paragraph: { color: "#000", fontSize: 16, lineHeight: 22 },
-  code: { backgroundColor: "#f3f4f6", color: "#111", fontSize: 14 },
-  codeBlock: {
-    backgroundColor: "#f3f4f6",
-    color: "#111",
-    fontSize: 13,
-    padding: 8,
-    borderRadius: 4,
-  },
-};
