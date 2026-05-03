@@ -20,13 +20,26 @@
  */
 
 /**
- * Just the lifecycle methods we care about from the SDK Query type. Lets
- * F1 stay SDK-free; F2 plugs in the real Query (which structurally
- * satisfies this) without changing this file.
+ * Just the lifecycle methods we care about from the SDK Query type.
+ * F2 assigns a real SDK Query (which structurally satisfies this) — no
+ * changes to this file needed when SDK signatures evolve, as long as
+ * `interrupt`/`close` shapes stay stable.
  */
 export interface RuntimeQueryHandle {
   interrupt(): Promise<void>;
   close(): void;
+}
+
+/**
+ * Structural slot for an `AsyncMessageInput<SDKUserMessage>` channel that
+ * F2 stuffs in. We intentionally avoid importing the SDK type here so
+ * SessionRuntime stays a pure data structure — `push` taking `unknown`
+ * is contravariant-friendly and a typed `AsyncMessageInput<T>` assigns
+ * cleanly. F2 holds the typed reference internally for actual pushing.
+ */
+export interface RuntimeInputChannel {
+  push(msg: unknown): void;
+  end(): void;
 }
 
 export interface RuntimeEvent<T> {
@@ -44,8 +57,12 @@ export interface SessionRuntimeOptions {
 
 export class SessionRuntime<T> {
   readonly sessionId: string;
-  /** SDK query handle slot; populated by F2 when sendPrompt spawns query(). */
+  /** SDK query handle slot; populated by F2 when ensureSessionLoop spawns query(). */
   query: RuntimeQueryHandle | null = null;
+  /** Streaming-input channel; populated by F2 alongside `query`. Used by F2's pushPrompt to feed new user prompts into the live SDK process. */
+  inputChannel: RuntimeInputChannel | null = null;
+  /** Promise that resolves when F2's consumer loop exits (graceful close, error, or natural end-of-iterator). Null when no loop is active. F3's daemon shutdown awaits this per runtime. */
+  loopPromise: Promise<void> | null = null;
 
   private readonly bufferCap: number;
   private readonly buffer: RuntimeEvent<T>[] = [];

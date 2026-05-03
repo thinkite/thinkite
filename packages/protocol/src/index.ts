@@ -356,6 +356,56 @@ export const timelineItem = z.discriminatedUnion("type", [
 ]);
 export type TimelineItem = z.infer<typeof timelineItem>;
 
+/**
+ * Incremental update applied to an iOS-side timeline during a live turn.
+ * The daemon's runtime emits these into a per-session ring buffer; the
+ * router fans them out to subscribers (slice G). iOS replays buffered
+ * deltas to reach the current rendering state.
+ *
+ * Shape rationale:
+ *   - `append` covers any whole new TimelineItem (assistant_message bubble
+ *     created from first text chunk; tool_call with status="running" when
+ *     a tool_use lands).
+ *   - `patch_text` is the hot path during streaming — appended to the most
+ *     recent assistant_message item identified by `uuid`.
+ *   - `patch_tool_call` flips status (running → completed/failed), sets
+ *     error text, and replaces detail with a fresh copy carrying tool_result
+ *     output text (slotted into the right per-variant field by the daemon
+ *     so iOS doesn't re-implement that logic).
+ *
+ * Identifier conventions during a live turn:
+ *   - assistant_message `uuid`: synthetic `${anthropicMessageId}:${blockIndex}`
+ *     (stable across the multiple stream_events for one content block, but
+ *     diverges from the JSONL envelope uuid that batch normalize uses on
+ *     cold-start). They never coexist in iOS view, so the divergence is OK.
+ *   - tool_call `callId`: Anthropic tool_use_id, identical live + settled.
+ */
+export const eventDelta = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("append"),
+    /** Whole TimelineItem to push at the end of the rendered transcript. */
+    item: timelineItem,
+  }),
+  z.object({
+    kind: z.literal("patch_text"),
+    /** uuid of the assistant_message item to append `deltaText` into. */
+    uuid: z.string(),
+    deltaText: z.string(),
+  }),
+  z.object({
+    kind: z.literal("patch_tool_call"),
+    /** Anthropic tool_use_id of the existing tool_call to update. */
+    callId: z.string(),
+    /** Terminal status — daemon never patches back to "running". */
+    status: z.enum(["completed", "failed"]),
+    /** Tool result error text when status="failed", null otherwise. */
+    error: z.string().nullable(),
+    /** Replacement detail with output slotted into the right field. */
+    detail: toolCallDetail,
+  }),
+]);
+export type EventDelta = z.infer<typeof eventDelta>;
+
 // ─── Commands: client → daemon (fire-and-forget; effects via events) ───────
 
 export const subscribeCommand = z.object({
