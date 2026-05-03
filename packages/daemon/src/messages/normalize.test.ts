@@ -122,6 +122,41 @@ describe("normalize", () => {
     expect(item.error).toBe("exit code 1");
   });
 
+  it("extracts error text from array-form tool_result.content", () => {
+    // Anthropic spec lets tool_result.content be either `string` or
+    // `[{type:"text", text:"..."}, ...]`. Edit/Read failures often arrive in
+    // the array form. Daemon should extract a flat string so iOS doesn't
+    // re-implement ContentBlock parsing.
+    const out = normalize([
+      assistantMsg("a-1", [
+        {
+          type: "tool_use",
+          id: "tu-1",
+          name: "Edit",
+          input: {
+            file_path: "/abs/foo.ts",
+            old_string: "missing",
+            new_string: "x",
+          },
+        },
+      ]),
+      userMsg("u-1", [
+        {
+          type: "tool_result",
+          tool_use_id: "tu-1",
+          content: [
+            { type: "text", text: "String to replace not found in file." },
+          ],
+          is_error: true,
+        },
+      ]),
+    ]);
+    const item = out[0];
+    if (item?.type !== "tool_call") throw new Error("expected tool_call");
+    expect(item.status).toBe("failed");
+    expect(item.error).toBe("String to replace not found in file.");
+  });
+
   it("Edit produces a unified diff via jsdiff", () => {
     const out = normalize([
       assistantMsg("a-1", [

@@ -64,7 +64,11 @@ export function normalize(messages: readonly SessionMessage[]): TimelineItem[] {
           if (target === undefined) continue; // orphan result, skip
           const outputText = extractText(b.content);
           target.status = b.is_error ? "failed" : "completed";
-          target.error = b.is_error ? b.content ?? null : null;
+          // Anthropic tool_result.content is `string | ContentBlock[]`; the
+          // array form (e.g. `[{type:"text", text:"..."}]`) shows up for some
+          // tools. Always store extracted text so iOS doesn't re-implement
+          // ContentBlock parsing just to display an error string.
+          target.error = b.is_error ? outputText : null;
           attachOutputToDetail(target.detail, outputText);
         }
       }

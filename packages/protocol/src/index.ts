@@ -324,10 +324,16 @@ const toolCallItem = z.object({
   name: z.string(),
   /** Daemon-derived chip label (e.g. "src/utils/foo.ts" for Edit, "5/12 todos" for TodoWrite). */
   summary: z.string(),
-  /** V0 is read-only: every tool_call we surface has settled. */
-  status: z.enum(["completed", "failed"]),
-  /** Tool result error payload when status="failed", null otherwise. */
-  error: z.unknown().nullable(),
+  /**
+   * V0 reads settled JSONL so most tool_calls arrive `completed` or `failed`.
+   * `running` is a forward-compat slot for the streaming slice — when we wire
+   * partial messages from `query()`, a tool_use without its paired tool_result
+   * will surface as `running` until the result lands. Producers in V0 never
+   * emit it; UI may still render it as a "no signal yet" placeholder.
+   */
+  status: z.enum(["completed", "failed", "running"]),
+  /** Tool result error text when status="failed", null otherwise. */
+  error: z.string().nullable(),
   detail: toolCallDetail,
   /** Reserved extension point — wire-stable when we eventually add fields. */
   metadata: z.record(z.string(), z.unknown()).optional(),

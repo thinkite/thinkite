@@ -38,7 +38,9 @@ export interface ToolRenderBlock {
   name: string;
   /** Daemon-computed chip label — basename, command summary, "5/12 todos", etc. */
   summary: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "running";
+  /** Tool result error text when `status === "failed"`, null otherwise. */
+  error: string | null;
   /** Server-computed structured detail; ToolBlock dispatches on `detail.type`. */
   detail: ToolCallDetail;
   /**
@@ -88,6 +90,7 @@ export function flattenToBlocks(items: readonly TimelineItem[]): RenderBlock[] {
           name: item.name,
           summary: item.summary,
           status: item.status,
+          error: item.error,
           detail: item.detail,
           // Tools always belong to the assistant. Show CLAUDE header only when
           // the speaker isn't already assistant — i.e. when the tool kicks off

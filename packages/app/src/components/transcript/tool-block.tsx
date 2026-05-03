@@ -61,7 +61,13 @@ export function ToolBlock({ block }: { block: ToolRenderBlock }) {
                   numberOfLines={1}
                   className="flex-1 text-sm text-gray-700 dark:text-gray-300"
                 >
-                  <Text className="text-gray-500 dark:text-gray-400">
+                  <Text
+                    className={
+                      isError
+                        ? "text-red-600 dark:text-red-400"
+                        : "text-gray-500 dark:text-gray-400"
+                    }
+                  >
                     Ran{" "}
                   </Text>
                   {block.summary}
@@ -90,6 +96,7 @@ export function ToolBlock({ block }: { block: ToolRenderBlock }) {
               name={block.name}
               summary={block.summary}
               isError={isError}
+              error={block.error}
             />
           </Accordion.Content>
         </Accordion.Item>
@@ -105,14 +112,20 @@ function DetailBody({
   name,
   summary,
   isError,
+  error,
 }: {
   detail: ToolCallDetail;
   name: string;
   summary: string;
   isError: boolean;
+  error: string | null;
 }) {
   switch (detail.type) {
     case "bash":
+      // Bash failure has no separate banner: the "Ran <cmd>" header turned red
+      // in the trigger, and the body's `output` already carries stderr/exit
+      // text the model saw. Showing a stderr blob as both "output" and "error
+      // banner" would just duplicate.
       return (
         <FencedDetail
           markdownContent={fence(
@@ -124,17 +137,13 @@ function DetailBody({
           isError={isError}
         />
       );
-    case "read":
-      return (
-        <FencedDetail
-          markdownContent={fence(detail.content, detail.language)}
-          toolName={name}
-          summary={summary}
-          isError={isError}
-        />
-      );
     case "edit":
     case "write":
+      // Failed Edit/Write: the unified diff was *computed from input* and
+      // never actually applied — rendering it would imply a successful change.
+      // Show the error string instead (e.g. "old_string not found in file",
+      // "File has not been read yet"). The diff itself stays hidden.
+      if (isError) return <ErrorBanner text={error ?? "Tool failed."} />;
       // Pass unifiedDiff RAW (no ```diff fence). MarkdownView's diff renderer
       // is the auto-detect path triggered by content starting with `--- ` /
       // `+++ ` / `@@`; wrapping in a fence makes it fall through to the
@@ -149,10 +158,28 @@ function DetailBody({
           isError={isError}
         />
       );
+    case "read":
+      // Failed Read (e.g. nonexistent path): `detail.content` would be the
+      // error string, so fenced syntax-highlight would mis-render it as code
+      // in `language`. Show as a plain banner instead.
+      if (isError) return <ErrorBanner text={error ?? "Read failed."} />;
+      return (
+        <FencedDetail
+          markdownContent={fence(detail.content, detail.language)}
+          toolName={name}
+          summary={summary}
+          isError={isError}
+        />
+      );
     case "todo":
+      // TodoWrite failures are exceedingly rare (input-only validation); if it
+      // somehow does fail, the next assistant turn will say so — no special UI.
       return <TodoDetail detail={detail} />;
     case "grep":
     case "glob":
+      // For grep/glob, the result text IS the rg/glob diagnostic on failure
+      // (e.g. "No such file or directory") — show as the regular fenced
+      // output, no separate banner.
       return (
         <FencedDetail
           markdownContent={fence(detail.output)}
@@ -163,9 +190,28 @@ function DetailBody({
       );
     case "unknown":
       return (
-        <UnknownDetail detail={detail} toolName={name} summary={summary} />
+        <UnknownDetail
+          detail={detail}
+          toolName={name}
+          summary={summary}
+          isError={isError}
+          error={error}
+        />
       );
   }
+}
+
+function ErrorBanner({ text }: { text: string }) {
+  return (
+    <View className="rounded border border-red-300 bg-red-50 p-2 dark:border-red-800 dark:bg-red-950">
+      <Text
+        selectable
+        className="text-xs text-red-700 dark:text-red-300"
+      >
+        {text}
+      </Text>
+    </View>
+  );
 }
 
 function FencedDetail({
@@ -299,15 +345,28 @@ function UnknownDetail({
   detail,
   toolName,
   summary,
+  isError,
+  error,
 }: {
   detail: Extract<ToolCallDetail, { type: "unknown" }>;
   toolName: string;
   summary: string;
+  isError: boolean;
+  error: string | null;
 }) {
   const inputJson = prettyJson(detail.input);
   const hasOutput = detail.output.length > 0;
+  // For unknown tools we don't know whether the diagnostic lives in `output`
+  // or only in `error` — surface the error banner only when output is empty
+  // (otherwise trust the output blob to contain the message).
+  const showErrorBanner = isError && !hasOutput;
   return (
     <View>
+      {showErrorBanner ? (
+        <View className="mb-3">
+          <ErrorBanner text={error ?? "Tool failed."} />
+        </View>
+      ) : null}
       <SectionLabel>Input</SectionLabel>
       <Text
         selectable
@@ -317,7 +376,7 @@ function UnknownDetail({
       </Text>
       {hasOutput ? (
         <View className="mt-3">
-          <SectionLabel>Output</SectionLabel>
+          <SectionLabel error={isError}>Output</SectionLabel>
           <Text
             selectable
             className="rounded bg-gray-100 p-2 text-xs text-gray-900 dark:bg-gray-900 dark:text-gray-100"
@@ -333,7 +392,7 @@ function UnknownDetail({
               toolName={toolName}
               summary={summary}
               markdownContent={fence(detail.output)}
-              isError={false}
+              isError={isError}
               measuredHeight={detail.output.split("\n").length * 14}
             />
           ) : null}
