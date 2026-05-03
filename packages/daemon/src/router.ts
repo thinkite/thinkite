@@ -1,4 +1,4 @@
-import type { SessionInfo, SessionMessage } from "@sidecodeapp/protocol";
+import type { SessionInfo, TimelineItem } from "@sidecodeapp/protocol";
 import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
 import type { DesktopSession } from "./desktop/sessions.js";
 import type { CommandHandler } from "./ws-server.js";
@@ -14,10 +14,12 @@ export interface RouterDeps {
    */
   listSessions: (opts: { cwd?: string }) => Promise<DesktopSession[]>;
   /**
-   * Read the full message transcript for a CLI session. Backed by the SDK's
-   * `getSessionMessages` which parses
-   * `~/.claude/projects/<projectKey>/<cliSessionId>.jsonl`. Empty array if
-   * the session file is missing — caller distinguishes via UX, not error.
+   * Read the full message transcript for a CLI session, normalized into a
+   * flat TimelineItem[]. Backed by the SDK's `getSessionMessages` which parses
+   * `~/.claude/projects/<projectKey>/<cliSessionId>.jsonl`; daemon then runs
+   * normalize() to flatten ContentBlock[] and pair tool_use+tool_result.
+   * Empty array if the session file is missing — caller distinguishes via
+   * UX, not error.
    *
    * `cwd` is an optional hint. When omitted, SDK scans every project key —
    * robust for fork sessions where the JSONL location isn't deterministic.
@@ -28,7 +30,7 @@ export interface RouterDeps {
   getMessages: (
     cliSessionId: string,
     cwd?: string,
-  ) => Promise<SessionMessage[]>;
+  ) => Promise<TimelineItem[]>;
 }
 
 /**
@@ -86,11 +88,11 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
       }
       case "getMessages": {
         try {
-          const messages = await deps.getMessages(cmd.cliSessionId, cmd.cwd);
+          const items = await deps.getMessages(cmd.cliSessionId, cmd.cwd);
           ctx.send({
             type: "getMessages.response",
             requestId: cmd.requestId,
-            messages,
+            items,
           });
         } catch (err) {
           ctx.send({

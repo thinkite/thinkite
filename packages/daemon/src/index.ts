@@ -1,8 +1,9 @@
 import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
-import { PROTOCOL_VERSION, type SessionMessage } from "@sidecodeapp/protocol";
+import { PROTOCOL_VERSION } from "@sidecodeapp/protocol";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { listDesktopSessions } from "./desktop/sessions.js";
+import { normalize } from "./messages/normalize.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
@@ -44,25 +45,19 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     continueOnDesktop,
     listSessions: listDesktopSessions,
     getMessages: async (cliSessionId, cwd) => {
-      // SDK returns its own SessionMessage shape (`session_id`, plus a
-      // `parent_tool_use_id` we don't ship). Reshape to our wire type:
-      // camelCase the field, drop the always-null tool-use parent.
-      //
       // `cwd` is a hint only — when undefined we let the SDK scan every
       // project key. Fork sessions in worktrees may have their JSONL at
       // the worktree's project key OR at originCwd's; the rule isn't
-      // deterministic, so iOS omits the hint and we eat the ~20-stat
-      // scan rather than mis-route.
+      // deterministic, so iOS omits the hint and we eat the ~20-stat scan
+      // rather than mis-route.
       const sdkMessages = await getSessionMessages(
         cliSessionId,
         cwd === undefined ? undefined : { dir: cwd },
       );
-      return sdkMessages.map<SessionMessage>((m) => ({
-        type: m.type,
-        uuid: m.uuid,
-        sessionId: m.session_id,
-        message: m.message,
-      }));
+      // normalize() flattens ContentBlock[] and pairs tool_use+tool_result
+      // into TimelineItem[]. See desktop/normalize.ts for the per-tool
+      // detail variants.
+      return normalize(sdkMessages);
     },
   });
   const ws = new WebSocketServer({

@@ -534,30 +534,35 @@ describe("request/response correlation", () => {
     expect(withHint.cwd).toBe("/Users/x/proj");
   });
 
-  it("getMessages response carries SessionMessage[] (message left as unknown)", () => {
+  it("getMessages response carries normalized TimelineItem[]", () => {
     const res = getMessagesResponse.parse({
       type: "getMessages.response",
       requestId: "g1",
-      messages: [
+      items: [
+        { type: "user_message", uuid: "m-1", text: "hi" },
+        { type: "assistant_message", uuid: "m-2", text: "hello" },
         {
-          type: "user",
-          uuid: "m-1",
-          sessionId: "cli-abc",
-          message: { role: "user", content: "hi" },
-        },
-        {
-          type: "assistant",
-          uuid: "m-2",
-          sessionId: "cli-abc",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: "hello" }],
+          type: "tool_call",
+          callId: "tu-1",
+          name: "Bash",
+          summary: "List files in current directory",
+          status: "completed",
+          error: null,
+          detail: {
+            type: "bash",
+            command: "ls",
+            description: "List files in current directory",
+            output: "file.txt\n",
           },
         },
       ],
     });
-    expect(res.messages).toHaveLength(2);
-    expect(res.messages[0]?.type).toBe("user");
+    expect(res.items).toHaveLength(3);
+    expect(res.items[0]?.type).toBe("user_message");
+    const tool = res.items[2];
+    if (tool?.type !== "tool_call")
+      throw new Error("expected tool_call as last item");
+    expect(tool.detail.type).toBe("bash");
   });
 
   it("getMessages is included in command + clientFrame + daemonFrame unions", () => {
@@ -579,7 +584,7 @@ describe("request/response correlation", () => {
       daemonFrame.parse({
         type: "getMessages.response",
         requestId: "g",
-        messages: [],
+        items: [],
       }).type,
     ).toBe("getMessages.response");
   });

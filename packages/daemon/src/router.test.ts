@@ -258,24 +258,11 @@ describe("createCommandHandler — listSessions", () => {
 
 describe("createCommandHandler — getMessages", () => {
   it("calls getMessages with cliSessionId; cwd undefined when caller omits it", async () => {
-    const messages = [
-      {
-        type: "user" as const,
-        uuid: "u-1",
-        sessionId: "cli-abc",
-        message: { role: "user", content: "hi" },
-      },
-      {
-        type: "assistant" as const,
-        uuid: "u-2",
-        sessionId: "cli-abc",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "hello" }],
-        },
-      },
+    const items = [
+      { type: "user_message" as const, uuid: "u-1", text: "hi" },
+      { type: "assistant_message" as const, uuid: "u-2", text: "hello" },
     ];
-    const getMessages = vi.fn().mockResolvedValue(messages);
+    const getMessages = vi.fn().mockResolvedValue(items);
     const handler = createCommandHandler(makeDeps({ getMessages }));
     const { ctx, sent } = makeCtx();
     await handler(
@@ -291,7 +278,7 @@ describe("createCommandHandler — getMessages", () => {
       {
         type: "getMessages.response",
         requestId: "gm-1",
-        messages,
+        items,
       },
     ]);
   });
@@ -334,7 +321,7 @@ describe("createCommandHandler — getMessages", () => {
     });
   });
 
-  it("ships an empty messages array when SDK returns []", async () => {
+  it("ships an empty items array when normalize returns []", async () => {
     const handler = createCommandHandler(
       makeDeps({ getMessages: vi.fn().mockResolvedValue([]) }),
     );
@@ -349,7 +336,7 @@ describe("createCommandHandler — getMessages", () => {
     );
     expect(sent[0]).toMatchObject({
       type: "getMessages.response",
-      messages: [],
+      items: [],
     });
   });
 });

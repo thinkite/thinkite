@@ -206,25 +206,149 @@ export const sessionInfo = z.object({
 
 export type SessionInfo = z.infer<typeof sessionInfo>;
 
-/**
- * One message from a session transcript. Mirrors the SDK's `SessionMessage`
- * but renames `session_id` → `sessionId` for wire consistency and drops
- * `parent_tool_use_id` (always null per SDK docs).
- *
- * `message` is the standard Anthropic API message shape (role + ContentBlock[]
- * for assistant; role + string|ContentBlock[] for user). Left as `unknown` on
- * the wire — iOS narrows when rendering. Tightening to a content-block schema
- * is straightforward later (Slice C) but locking it in now would couple the
- * protocol to render decisions we haven't made.
- */
-export const sessionMessage = z.object({
-  type: z.enum(["user", "assistant", "system"]),
-  uuid: z.string(),
-  sessionId: z.string(),
-  message: z.unknown(),
-});
+// ─── Timeline items (server-normalized message stream) ────────────────────
+//
+// Daemon translates raw SDK SessionMessage[] (Anthropic ContentBlock[] inside
+// `message`) into a flat TimelineItem[]: one item per assistant text segment,
+// one per user text segment, one per paired tool_use+tool_result. iOS just
+// renders — no flattening, no tool-pairing on the client.
+//
+// Field naming: camelCase throughout, even where SDK uses snake_case in INPUT
+// shapes (`file_path` → `filePath`, `old_string` → `oldString`). Output shapes
+// in SDK are already camelCase (`structuredPatch`, `numLines`).
 
-export type SessionMessage = z.infer<typeof sessionMessage>;
+export const todoStatus = z.enum(["pending", "in_progress", "completed"]);
+export type TodoStatus = z.infer<typeof todoStatus>;
+
+export const todoEntry = z.object({
+  content: z.string(),
+  status: todoStatus,
+  // SDK exposes both forms — `content` is imperative ("Implement X"),
+  // `activeForm` is the gerund ("Implementing X") shown next to in_progress.
+  activeForm: z.string(),
+});
+export type TodoEntry = z.infer<typeof todoEntry>;
+
+export const grepMode = z.enum(["content", "files_with_matches", "count"]);
+export type GrepMode = z.infer<typeof grepMode>;
+
+/**
+ * Per-tool semantic detail. Each variant is a render hint for iOS — bash/read
+ * fence the output for tree-sitter highlight, edit/write surface a unified
+ * diff, todo gets a checkbox list, grep/glob just dump the rg/glob text blob.
+ *
+ * Reality of the data we work from: `getSessionMessages()` strips the sidecar
+ * `toolUseResult` field that Claude Code writes to disk (see normalize.ts).
+ * What's left in tool_result is the textual content the model SAW — so we
+ * can't rebuild structuredPatch/gitDiff/exitCode/numFiles/etc. on the daemon.
+ * Detail variants therefore carry the raw input metadata + a single text
+ * `output` blob, and edit/write diffs are computed via jsdiff from input
+ * (Edit: old/new; Write: empty/content).
+ *
+ * `unknown` is the fallback for tools we don't specially-render in V0
+ * (WebFetch, WebSearch, Agent, NotebookEdit, MCP*, etc.). iOS renders it as
+ * `name` chip + accordion-revealed pretty-printed input + raw output text.
+ */
+export const toolCallDetail = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("bash"),
+    command: z.string(),
+    /** Claude-generated active-voice short summary (BashInput.description). */
+    description: z.string().optional(),
+    /** Combined text output the model saw (stdout+stderr+errors as one blob). */
+    output: z.string(),
+  }),
+  z.object({
+    type: z.literal("read"),
+    filePath: z.string(),
+    /** File content as the model saw it (line-number prefix stripped). */
+    content: z.string(),
+    /** tree-sitter language hint derived from file extension (sidecode-side). */
+    language: z.string().optional(),
+    offset: z.number().optional(),
+    limit: z.number().optional(),
+    /** PDF page range, only set for PDF reads. */
+    pages: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("edit"),
+    filePath: z.string(),
+    oldString: z.string(),
+    newString: z.string(),
+    replaceAll: z.boolean().optional(),
+    /** Unified diff computed by daemon via jsdiff(filePath, oldString, newString). */
+    unifiedDiff: z.string(),
+  }),
+  z.object({
+    type: z.literal("write"),
+    filePath: z.string(),
+    content: z.string(),
+    /** Unified diff against empty (treats every Write as "new file"); we can't
+     * tell create-vs-update without the sidecar, so we always show all-add. */
+    unifiedDiff: z.string(),
+  }),
+  z.object({
+    type: z.literal("todo"),
+    todos: z.array(todoEntry),
+  }),
+  z.object({
+    type: z.literal("grep"),
+    pattern: z.string(),
+    path: z.string().optional(),
+    mode: grepMode,
+    /** Raw rg output as the model saw it. */
+    output: z.string(),
+  }),
+  z.object({
+    type: z.literal("glob"),
+    pattern: z.string(),
+    path: z.string().optional(),
+    /** Raw glob output (newline-separated paths) as the model saw it. */
+    output: z.string(),
+  }),
+  z.object({
+    type: z.literal("unknown"),
+    /** Raw SDK tool name so iOS can show "WebFetch" / "Agent" / etc. on the chip. */
+    toolName: z.string(),
+    input: z.unknown(),
+    output: z.string(),
+  }),
+]);
+export type ToolCallDetail = z.infer<typeof toolCallDetail>;
+
+const toolCallItem = z.object({
+  type: z.literal("tool_call"),
+  /** Mirrors SDK tool_use_id; pairs the call with its result for daemon-side. */
+  callId: z.string(),
+  /** Raw SDK tool name ("Bash", "Edit", "Read", "WebFetch", ...). */
+  name: z.string(),
+  /** Daemon-derived chip label (e.g. "src/utils/foo.ts" for Edit, "5/12 todos" for TodoWrite). */
+  summary: z.string(),
+  /** V0 is read-only: every tool_call we surface has settled. */
+  status: z.enum(["completed", "failed"]),
+  /** Tool result error payload when status="failed", null otherwise. */
+  error: z.unknown().nullable(),
+  detail: toolCallDetail,
+  /** Reserved extension point — wire-stable when we eventually add fields. */
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type ToolCallItem = z.infer<typeof toolCallItem>;
+
+export const timelineItem = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("user_message"),
+    /** SDK SessionMessage uuid for the surrounding message envelope. */
+    uuid: z.string(),
+    text: z.string(),
+  }),
+  z.object({
+    type: z.literal("assistant_message"),
+    uuid: z.string(),
+    text: z.string(),
+  }),
+  toolCallItem,
+]);
+export type TimelineItem = z.infer<typeof timelineItem>;
 
 // ─── Commands: client → daemon (fire-and-forget; effects via events) ───────
 
@@ -326,7 +450,12 @@ export const getMessagesCommand = z.object({
 export const getMessagesResponse = z.object({
   type: z.literal("getMessages.response"),
   requestId: z.string(),
-  messages: z.array(sessionMessage),
+  /**
+   * Server-normalized timeline (assistant text / user text / paired tool_call).
+   * Replaces the previous raw `messages: SessionMessage[]` shape on
+   * 2026-05-02 — see Slice D normalization commit.
+   */
+  items: z.array(timelineItem),
 });
 
 // ─── Health + error ────────────────────────────────────────────────────────
