@@ -1,5 +1,6 @@
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
+import type { TimelineItem } from "@sidecodeapp/protocol";
 import { bytesToBase64Url } from "./base64";
 import {
   buildClientAuthTranscript,
@@ -138,22 +139,23 @@ export class DaemonClient {
   }
 
   /**
-   * Fetch a session's full message transcript. Returned shape is the wire
-   * `SessionMessage[]` from `@sidecodeapp/protocol` — caller narrows
-   * `message: unknown` against the Anthropic API shape when rendering.
+   * Fetch a session's full transcript, normalized server-side into
+   * `TimelineItem[]` (assistant text / user text / paired tool_call). See
+   * Slice D normalization in daemon/src/messages/normalize.ts for the
+   * detail shape.
    *
    * No `cwd` arg: the SDK does an all-projects scan to find the JSONL.
    * Cheap (~20 stat calls) and robust against fork sessions where the
    * file location varies between worktree and originCwd project keys.
    */
-  async getMessages(cliSessionId: string): Promise<unknown[]> {
+  async getMessages(cliSessionId: string): Promise<TimelineItem[]> {
     const requestId = Crypto.randomUUID();
     const res = (await this.request({
       type: "getMessages",
       requestId,
       cliSessionId,
-    })) as { messages: unknown[] };
-    return res.messages;
+    })) as { items: TimelineItem[] };
+    return res.items;
   }
 
   close(): void {

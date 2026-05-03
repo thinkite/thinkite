@@ -70,12 +70,16 @@ function Body({ query }: { query: ReturnType<typeof useMessages> }) {
     );
   }
 
-  const messages = query.data ?? [];
-  return <Transcript messages={messages} />;
+  const items = query.data ?? [];
+  return <Transcript items={items} />;
 }
 
-function Transcript({ messages }: { messages: unknown[] }) {
-  const blocks = useMemo(() => flattenToBlocks(messages), [messages]);
+function Transcript({
+  items,
+}: {
+  items: import("@sidecodeapp/protocol").TimelineItem[];
+}) {
+  const blocks = useMemo(() => flattenToBlocks(items), [items]);
 
   if (blocks.length === 0) {
     return (

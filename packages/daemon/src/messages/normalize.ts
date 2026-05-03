@@ -1,4 +1,4 @@
-import { createPatch } from "diff";
+import { structuredPatch } from "diff";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   grepMode,
@@ -229,7 +229,7 @@ function buildDetailFromInput(name: string, rawInput: unknown): ToolCallDetail {
         oldString: old_string,
         newString: new_string,
         replaceAll: replace_all,
-        unifiedDiff: createPatch(file_path, old_string, new_string),
+        unifiedDiff: makeUnifiedDiff(file_path, old_string, new_string),
       };
     }
 
@@ -246,7 +246,7 @@ function buildDetailFromInput(name: string, rawInput: unknown): ToolCallDetail {
         // content (sidecar stripped by getSessionMessages), so an "update"
         // diff isn't reconstructible. The all-green new-file diff is still
         // the right visual: shows what was written.
-        unifiedDiff: createPatch(file_path, "", content),
+        unifiedDiff: makeUnifiedDiff(file_path, "", content),
       };
     }
 
@@ -289,6 +289,41 @@ function buildDetailFromInput(name: string, rawInput: unknown): ToolCallDetail {
 
 function unknownDetail(name: string, rawInput: unknown): ToolCallDetail {
   return { type: "unknown", toolName: name, input: rawInput, output: "" };
+}
+
+/**
+ * Compose a clean unified-diff string of just `@@...@@` hunks, ready for
+ * MarkdownView's auto-detect diff renderer (no fence needed iOS-side).
+ *
+ * We use jsdiff's `structuredPatch` rather than `createPatch` to skip the
+ * full-file boilerplate (`Index:`, `===`, `--- file`, `+++ file`) that:
+ *   - CommonMark would otherwise mis-parse (`Index: foo\n====` becomes
+ *     a setext h1; `+`-prefixed lines become bullet lists)
+ *   - is cosmetic noise — MarkdownView's diff render already shows the
+ *     filename in the chip / accordion summary; repeating the path in a
+ *     `--- /Users/.../file` row above every diff is redundant.
+ *
+ * Output for a small Edit:
+ *   @@ -1,3 +1,3 @@
+ *   -const x = 1;
+ *   +const x = 2;
+ *    const y = 3;
+ *
+ * Empty oldString === newString produces an empty string (no hunks).
+ */
+function makeUnifiedDiff(
+  filePath: string,
+  oldString: string,
+  newString: string,
+): string {
+  const patch = structuredPatch(filePath, filePath, oldString, newString);
+  return patch.hunks
+    .map(
+      (h) =>
+        `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@\n` +
+        h.lines.join("\n"),
+    )
+    .join("\n");
 }
 
 /**

@@ -147,6 +147,31 @@ describe("normalize", () => {
     expect(item.summary).toBe("foo.ts");
   });
 
+  it("Edit unifiedDiff is hunk-only (`@@ ... @@\\n+/-/space lines`) with no Index/===/---/+++ preamble", () => {
+    const out = normalize([
+      assistantMsg("a-1", [
+        {
+          type: "tool_use",
+          id: "tu-1",
+          name: "Edit",
+          input: {
+            file_path: "/abs/foo.ts",
+            old_string: "old",
+            new_string: "new",
+          },
+        },
+      ]),
+    ]);
+    const item = out[0];
+    if (item?.type !== "tool_call") throw new Error("expected tool_call");
+    if (item.detail.type !== "edit") throw new Error("expected edit detail");
+    expect(item.detail.unifiedDiff.startsWith("@@")).toBe(true);
+    expect(item.detail.unifiedDiff).not.toContain("Index:");
+    expect(item.detail.unifiedDiff).not.toContain("===");
+    expect(item.detail.unifiedDiff).not.toContain("--- ");
+    expect(item.detail.unifiedDiff).not.toContain("+++ ");
+  });
+
   it("Write produces an all-add diff against empty (we lack prior content)", () => {
     const out = normalize([
       assistantMsg("a-1", [

@@ -10,7 +10,9 @@
  *
  * Refs: https://docs.uniwind.dev/api/with-uniwind
  */
+import { LinearGradient as ExpoLinearGradient } from "expo-linear-gradient";
 import { SafeAreaView as RNSafeAreaView } from "react-native-safe-area-context";
 import { withUniwind } from "uniwind";
 
 export const SafeAreaView = withUniwind(RNSafeAreaView);
+export const LinearGradient = withUniwind(ExpoLinearGradient);
