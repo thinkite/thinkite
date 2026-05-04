@@ -1,7 +1,13 @@
-import type { Command, DaemonFrame } from "@sidecodeapp/protocol";
+import type {
+  Command,
+  DaemonFrame,
+  EventDelta,
+  TimelineItem,
+} from "@sidecodeapp/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { DesktopSession } from "./desktop/sessions.js";
 import { createCommandHandler } from "./router.js";
+import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import type { CommandContext } from "./ws-server.js";
 
 function makeCtx(): {
@@ -23,6 +29,7 @@ function makeCtx(): {
       onDisconnect: (cb) => {
         callbacks.push(cb);
       },
+      state: new Map(),
     },
   };
 }
@@ -35,6 +42,7 @@ function makeDeps(
     continueOnDesktop: vi.fn().mockResolvedValue(undefined),
     listSessions: vi.fn().mockResolvedValue([]),
     getMessages: vi.fn().mockResolvedValue([]),
+    runtimeManager: new SessionRuntimeManager<EventDelta>(),
     ...overrides,
   };
 }
@@ -353,17 +361,24 @@ describe("createCommandHandler — getMessages", () => {
 
 describe("createCommandHandler — unsupported commands", () => {
   it("replies error/unsupported with the inbound requestId", async () => {
+    // sendPrompt is the next V0 RPC slated for G3 — until then router falls
+    // through to the unsupported-default branch.
     const handler = createCommandHandler(makeDeps());
     const { ctx, sent } = makeCtx();
     await handler(
-      { type: "subscribe", requestId: "sub-1", sessionId: "s" },
+      {
+        type: "sendPrompt",
+        requestId: "sp-1",
+        sessionId: "s",
+        text: "hi",
+      },
       ctx,
     );
     expect(sent[0]).toMatchObject({
       type: "error",
       code: "unsupported",
     });
-    expect((sent[0] as { requestId?: string }).requestId).toBe("sub-1");
+    expect((sent[0] as { requestId?: string }).requestId).toBe("sp-1");
   });
 
   it("does NOT call continueOnDesktop for other command types", async () => {
@@ -373,5 +388,217 @@ describe("createCommandHandler — unsupported commands", () => {
     await handler({ type: "stopTask", sessionId: "s" }, ctx);
     await handler({ type: "approve", requestId: "r", decision: "allow" }, ctx);
     expect(continueOnDesktop).not.toHaveBeenCalled();
+  });
+});
+
+describe("createCommandHandler — subscribe / unsubscribe", () => {
+  it("subscribe replies with settled + cursor and starts fanning out events", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        getMessages: vi
+          .fn()
+          .mockResolvedValue([
+            { type: "user_message", uuid: "u-1", text: "hi" },
+          ]),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-1", sessionId: "S" },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.response",
+      requestId: "sub-1",
+      sessionId: "S",
+      cursor: 0,
+    });
+    expect((sent[0] as { settled: TimelineItem[] }).settled).toEqual([
+      { type: "user_message", uuid: "u-1", text: "hi" },
+    ]);
+    // Now emit events on the runtime — fanout should ctx.send `event` frames.
+    const runtime = runtimeManager.get("S");
+    if (!runtime) throw new Error("expected runtime to exist");
+    runtime.addEvent({ kind: "turn_started" });
+    runtime.addEvent({
+      kind: "patch_text",
+      uuid: "msg:0",
+      deltaText: "hello",
+    });
+    expect(sent).toHaveLength(3); // subscribe.response + 2 event frames
+    expect(sent[1]).toMatchObject({
+      type: "event",
+      sessionId: "S",
+      cursor: 1,
+      delta: { kind: "turn_started" },
+    });
+    expect(sent[2]).toMatchObject({
+      type: "event",
+      sessionId: "S",
+      cursor: 2,
+      delta: { kind: "patch_text", uuid: "msg:0", deltaText: "hello" },
+    });
+  });
+
+  it("subscribe with sinceCursor=current skips replay (only live events)", async () => {
+    // Daemon's contract: subscribe sends settled (from JSONL) + cursor at
+    // subscribe time; subsequent fanout = events with cursor > that value.
+    // Pre-existing buffer events shouldn't be replayed (settled covers them).
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.addEvent({ kind: "turn_started" }); // cursor 1
+    runtime.addEvent({ kind: "turn_completed" }); // cursor 2
+
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-2", sessionId: "S" },
+      ctx,
+    );
+    // Only subscribe.response — no replay of cursor 1 / 2.
+    expect(sent).toHaveLength(1);
+    expect((sent[0] as { cursor: number }).cursor).toBe(2);
+
+    // Future events (cursor > 2) flow through.
+    runtime.addEvent({ kind: "turn_failed", error: "boom" });
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toMatchObject({
+      type: "event",
+      cursor: 3,
+      delta: { kind: "turn_failed", error: "boom" },
+    });
+  });
+
+  it("re-subscribe to the same session on the same conn replaces the prior fanout", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-1", sessionId: "S" },
+      ctx,
+    );
+    await handler(
+      { type: "subscribe", requestId: "sub-2", sessionId: "S" },
+      ctx,
+    );
+    // Manager should only carry ONE subscriber for this conn — the second
+    // subscribe call dropped the first cb before registering the new one.
+    const runtime = runtimeManager.get("S");
+    if (!runtime) throw new Error("expected runtime");
+    expect(runtime.subscriberCount).toBe(1);
+    runtime.addEvent({ kind: "turn_started" });
+    // Only ONE event frame emitted (no double-delivery).
+    const eventFrames = sent.filter((f) => f.type === "event");
+    expect(eventFrames).toHaveLength(1);
+  });
+
+  it("unsubscribe stops fanout and replies with the response frame", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-1", sessionId: "S" },
+      ctx,
+    );
+    await handler(
+      { type: "unsubscribe", requestId: "uns-1", sessionId: "S" },
+      ctx,
+    );
+    expect(sent.at(-1)).toMatchObject({
+      type: "unsubscribe.response",
+      requestId: "uns-1",
+    });
+    // Manager has no subscribers anymore → addEvent fans out to nobody.
+    const runtime = runtimeManager.get("S");
+    if (!runtime) throw new Error("expected runtime");
+    expect(runtime.subscriberCount).toBe(0);
+    const before = sent.length;
+    runtime.addEvent({ kind: "turn_started" });
+    expect(sent.length).toBe(before);
+  });
+
+  it("unsubscribe for a session we don't have a sub for is a silent ack", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "unsubscribe", requestId: "uns-orphan", sessionId: "no-such" },
+      ctx,
+    );
+    expect(sent).toEqual([
+      { type: "unsubscribe.response", requestId: "uns-orphan" },
+    ]);
+  });
+
+  it("ws disconnect (onDisconnect callback firing) clears all this conn's subs", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, fireDisconnect } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-1", sessionId: "S1" },
+      ctx,
+    );
+    await handler(
+      { type: "subscribe", requestId: "sub-2", sessionId: "S2" },
+      ctx,
+    );
+    expect(runtimeManager.get("S1")?.subscriberCount).toBe(1);
+    expect(runtimeManager.get("S2")?.subscriberCount).toBe(1);
+    fireDisconnect();
+    expect(runtimeManager.get("S1")?.subscriberCount).toBe(0);
+    expect(runtimeManager.get("S2")?.subscriberCount).toBe(0);
+  });
+
+  it("two connections subscribed to the same session each get their own fanout", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const a = makeCtx();
+    const b = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-a", sessionId: "S" },
+      a.ctx,
+    );
+    await handler(
+      { type: "subscribe", requestId: "sub-b", sessionId: "S" },
+      b.ctx,
+    );
+    const runtime = runtimeManager.get("S");
+    if (!runtime) throw new Error("expected runtime");
+    expect(runtime.subscriberCount).toBe(2);
+    runtime.addEvent({ kind: "turn_started" });
+    expect(a.sent.filter((f) => f.type === "event")).toHaveLength(1);
+    expect(b.sent.filter((f) => f.type === "event")).toHaveLength(1);
+    // Disconnecting only `a` doesn't affect `b`.
+    a.fireDisconnect();
+    expect(runtime.subscriberCount).toBe(1);
+    runtime.addEvent({ kind: "turn_completed" });
+    expect(a.sent.filter((f) => f.type === "event")).toHaveLength(1); // unchanged
+    expect(b.sent.filter((f) => f.type === "event")).toHaveLength(2);
+  });
+
+  it("subscribe error path: getMessages rejects → error frame, no runtime sub registered", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        getMessages: vi.fn().mockRejectedValue(new Error("disk read failed")),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-x", sessionId: "S" },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "error",
+      requestId: "sub-x",
+      code: "internal",
+      message: expect.stringContaining("disk read failed"),
+    });
+    // Runtime was getOrCreate'd but no subscriber registered (subscribe
+    // throws before runtime.subscribe runs).
+    expect(runtimeManager.get("S")?.subscriberCount).toBe(0);
   });
 });

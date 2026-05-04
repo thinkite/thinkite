@@ -1,6 +1,11 @@
-import type { SessionInfo, TimelineItem } from "@sidecodeapp/protocol";
+import type {
+  EventDelta,
+  SessionInfo,
+  TimelineItem,
+} from "@sidecodeapp/protocol";
 import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
 import type { DesktopSession } from "./desktop/sessions.js";
+import type { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import type { CommandHandler } from "./ws-server.js";
 
 export interface RouterDeps {
@@ -28,6 +33,32 @@ export interface RouterDeps {
    * `getSessionMessages` is per-id deterministic and safe to use.
    */
   getMessages: (cliSessionId: string, cwd?: string) => Promise<TimelineItem[]>;
+  /**
+   * Per-session runtime manager. G2's subscribe/unsubscribe handlers
+   * register their fanout callbacks on the runtime; G3+ will route
+   * sendPrompt/interrupt through here too. Daemon owns one manager per
+   * process (created in daemon.start, drained on shutdown).
+   */
+  runtimeManager: SessionRuntimeManager<EventDelta>;
+}
+
+// ─── Per-connection ctx.state keys (G2: subscriptions) ─────────────────────
+//
+// Router uses ctx.state — a free-form Map<string, unknown> scoped to the
+// ws connection — to track per-conn subscriptions. We pick the key here
+// once and namespace everything router-side under "router:".
+
+const SUBS_KEY = "router:subs";
+
+/** Per-conn map: sessionId → unsubscribe-fn returned by runtime.subscribe. */
+type SubsMap = Map<string, () => void>;
+
+function getOrCreateSubs(ctx: { state: Map<string, unknown> }): SubsMap {
+  const existing = ctx.state.get(SUBS_KEY) as SubsMap | undefined;
+  if (existing !== undefined) return existing;
+  const created: SubsMap = new Map();
+  ctx.state.set(SUBS_KEY, created);
+  return created;
 }
 
 /**
@@ -99,6 +130,74 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             message: err instanceof Error ? err.message : String(err),
           });
         }
+        return;
+      }
+      case "subscribe": {
+        try {
+          const runtime = deps.runtimeManager.getOrCreate(cmd.sessionId);
+          // Settled snapshot taken atomically with the cursor below. Race
+          // window: an event may land in the buffer between getMessages
+          // (reads JSONL on disk) and runtime.subscribe (registers the
+          // live fanout). V0 accepts this — see project_session_replay_model
+          // memory; user-perceived gap is bounded by SDK flush latency.
+          const settled = await deps.getMessages(cmd.sessionId);
+          const cursor = runtime.currentCursor;
+
+          // If iOS re-subscribes to the same session on the same connection
+          // (e.g. after a quick navigate-away-and-back), drop the previous
+          // fanout cb so we don't double-deliver events.
+          const subs = getOrCreateSubs(ctx);
+          const previous = subs.get(cmd.sessionId);
+          if (previous !== undefined) previous();
+
+          // sinceCursor=cursor → don't replay the buffer; iOS already has
+          // settled state up to this point. Live deltas only from here.
+          const sessionId = cmd.sessionId;
+          const unsubscribe = runtime.subscribe((event) => {
+            ctx.send({
+              type: "event",
+              sessionId,
+              cursor: event.cursor,
+              delta: event.payload,
+            });
+          }, cursor);
+          subs.set(sessionId, unsubscribe);
+          // ws.onclose → unsubscribe automatically. Safe to call twice
+          // (runtime.subscribe's returned closure is idempotent), so an
+          // explicit unsubscribe RPC followed by ws close is fine.
+          ctx.onDisconnect(unsubscribe);
+
+          ctx.send({
+            type: "subscribe.response",
+            requestId: cmd.requestId,
+            sessionId,
+            settled,
+            cursor,
+          });
+        } catch (err) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
+      case "unsubscribe": {
+        const subs = getOrCreateSubs(ctx);
+        const unsubscribe = subs.get(cmd.sessionId);
+        if (unsubscribe !== undefined) {
+          unsubscribe();
+          subs.delete(cmd.sessionId);
+        }
+        // Unsubscribing a session we don't have a sub for is a no-op (race
+        // with ws.onclose, double-unsubscribe, or wrong session id) —
+        // V0 silently acks rather than 404-ing.
+        ctx.send({
+          type: "unsubscribe.response",
+          requestId: cmd.requestId,
+        });
         return;
       }
       default: {

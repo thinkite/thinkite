@@ -69,6 +69,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       // detail variants.
       return normalize(sdkMessages);
     },
+    runtimeManager,
   });
   const ws = new WebSocketServer({
     pairing,

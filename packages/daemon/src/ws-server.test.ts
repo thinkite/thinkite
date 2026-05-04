@@ -12,15 +12,18 @@ import {
   buildClientAuthTranscript,
   type ClientAuthFrame,
   type ClientHelloFrame,
+  type EventDelta,
   HANDSHAKE_VERSION,
   type ServerHelloFrame,
   type TranscriptInput,
 } from "@sidecodeapp/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
 import { PairingService } from "./pairing.js";
+import { createCommandHandler } from "./router.js";
+import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import { type CommandHandler, WebSocketServer } from "./ws-server.js";
 
 interface MockClient {
@@ -599,6 +602,172 @@ describe("WebSocketServer authenticated dispatch", () => {
       new Promise((r) => setTimeout(() => r({ frame: null }), 200)),
     ]);
     expect((got as { frame: unknown }).frame).toBeNull();
+    ws.close();
+  });
+});
+
+describe("WebSocketServer end-to-end subscribe/unsubscribe", () => {
+  let home: string;
+  let server: WebSocketServer | null = null;
+  let url: string;
+  let pairing: PairingService;
+  let runtimeManager: SessionRuntimeManager<EventDelta>;
+
+  async function authenticate(): Promise<WebSocket> {
+    const client = makeMockClient();
+    const offer = pairing.createOffer("e2e");
+    const ws = await connect(url);
+    const hello: ClientHelloFrame = {
+      type: "client.hello",
+      v: HANDSHAKE_VERSION,
+      sessionId: `e2e-${Math.random().toString(36).slice(2)}`,
+      mode: "qr_bootstrap",
+      clientFingerprint: client.fingerprint,
+      clientIdentityPublicKey: client.publicKeyB64,
+      clientNonce: randomBytes(32).toString("base64url"),
+      offerExpiresAt: offer.expiresAt,
+      offerDaemonFingerprint: offer.daemonFingerprint,
+    };
+    ws.send(JSON.stringify(hello));
+    const sh = await nextFrame<ServerHelloFrame>(ws);
+    ws.send(JSON.stringify(buildAuth(sh, hello, client)));
+    await nextFrame<{ type: string }>(ws); // server.ready
+    return ws;
+  }
+
+  beforeEach(async () => {
+    home = mkdtempSync(join(tmpdir(), "sidecode-ws-e2e-"));
+    const identity = loadOrCreateIdentity(home);
+    const known = KnownClients.load(home);
+    pairing = new PairingService(identity, known);
+    runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const handler = createCommandHandler({
+      continueOnDesktop: vi.fn().mockResolvedValue(undefined),
+      listSessions: vi.fn().mockResolvedValue([]),
+      getMessages: vi
+        .fn()
+        .mockResolvedValue([{ type: "user_message", uuid: "u-1", text: "hi" }]),
+      runtimeManager,
+    });
+    server = new WebSocketServer({
+      pairing,
+      commandHandler: handler,
+      port: 0,
+      host: "127.0.0.1",
+      authTimeoutMs: 1000,
+      heartbeatIntervalMs: 60_000,
+    });
+    const bound = await server.start();
+    url = `ws://${bound.host}:${bound.port}`;
+  });
+
+  afterEach(async () => {
+    await server?.stop();
+    server = null;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("subscribe → daemon emits events for runtime.addEvent", async () => {
+    const ws = await authenticate();
+
+    // Subscribe.
+    const responsePromise = nextFrame<{
+      type: string;
+      requestId: string;
+      sessionId: string;
+      cursor: number;
+      settled: unknown[];
+    }>(ws);
+    ws.send(
+      JSON.stringify({
+        type: "subscribe",
+        requestId: "sub-e2e-1",
+        sessionId: "S",
+      }),
+    );
+    const response = await responsePromise;
+    expect(response.type).toBe("subscribe.response");
+    expect(response.sessionId).toBe("S");
+    expect(response.cursor).toBe(0);
+    expect(response.settled).toHaveLength(1);
+
+    // Daemon-side: emit a streaming event. Should arrive on the ws.
+    const eventPromise = nextFrame<{
+      type: string;
+      sessionId: string;
+      cursor: number;
+      delta: EventDelta;
+    }>(ws);
+    const runtime = runtimeManager.get("S");
+    if (!runtime) throw new Error("expected runtime");
+    runtime.addEvent({ kind: "turn_started" });
+    const evt = await eventPromise;
+    expect(evt.type).toBe("event");
+    expect(evt.sessionId).toBe("S");
+    expect(evt.cursor).toBe(1);
+    expect(evt.delta).toEqual({ kind: "turn_started" });
+
+    ws.close();
+  });
+
+  it("ws.close drops the runtime subscriber automatically (no explicit unsubscribe)", async () => {
+    const ws = await authenticate();
+    const subResponsePromise = nextFrame(ws);
+    ws.send(
+      JSON.stringify({
+        type: "subscribe",
+        requestId: "sub-e2e-2",
+        sessionId: "T",
+      }),
+    );
+    await subResponsePromise;
+    expect(runtimeManager.get("T")?.subscriberCount).toBe(1);
+    ws.close();
+    // Wait for server-side onClose to fire onDisconnect → runtime unsubscribe.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(runtimeManager.get("T")?.subscriberCount).toBe(0);
+  });
+
+  it("explicit unsubscribe stops live events on the wire", async () => {
+    const ws = await authenticate();
+    const subPromise = nextFrame(ws);
+    ws.send(
+      JSON.stringify({
+        type: "subscribe",
+        requestId: "sub-e2e-3",
+        sessionId: "U",
+      }),
+    );
+    await subPromise;
+
+    // Send an event, confirm it arrives.
+    const evt1Promise = nextFrame<{ type: string }>(ws);
+    const runtime = runtimeManager.get("U");
+    if (!runtime) throw new Error("expected runtime");
+    runtime.addEvent({ kind: "turn_started" });
+    const evt1 = await evt1Promise;
+    expect(evt1.type).toBe("event");
+
+    // Unsubscribe.
+    const unsubPromise = nextFrame<{ type: string }>(ws);
+    ws.send(
+      JSON.stringify({
+        type: "unsubscribe",
+        requestId: "uns-e2e-3",
+        sessionId: "U",
+      }),
+    );
+    const unsubResponse = await unsubPromise;
+    expect(unsubResponse.type).toBe("unsubscribe.response");
+
+    // Now addEvent should NOT reach the ws — confirm via timeout.
+    runtime.addEvent({ kind: "turn_completed" });
+    const got = await Promise.race([
+      nextFrame<unknown>(ws).then((f) => ({ frame: f })),
+      new Promise((r) => setTimeout(() => r({ frame: null }), 200)),
+    ]);
+    expect((got as { frame: unknown }).frame).toBeNull();
+
     ws.close();
   });
 });

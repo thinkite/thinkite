@@ -29,6 +29,18 @@ export interface CommandContext {
    * closures already are).
    */
   onDisconnect: (cb: () => void) => void;
+  /**
+   * Per-connection scratch storage shared across every CommandContext
+   * for this WebSocket — `ctx.send` itself is recreated per command so
+   * can't be a stable WeakMap key. Router uses this to track per-conn
+   * subscriptions: `Map<sessionId, unsubscribeFn>` keyed by a string the
+   * router picks (e.g. `"subs"`).
+   *
+   * Untyped on purpose so multiple handlers can stash their own state
+   * without coupling them through CommandContext shape. Router agrees on
+   * the keys + value types it uses; ws-server just owns the slot.
+   */
+  state: Map<string, unknown>;
 }
 
 /** Dispatched for every authenticated command frame. May be async. The
@@ -70,6 +82,14 @@ interface Connection {
    * runtime fanout subscriptions when the ws disconnects.
    */
   disconnectCallbacks: Array<() => void>;
+  /**
+   * Free-form per-connection scratch state, surfaced to handlers via
+   * `ctx.state`. Distinct from the auth-state-machine field above —
+   * named `scratch` here to avoid the field collision. Created once at
+   * connection open, lives until close. Key namespacing is the router's
+   * responsibility (currently just `"subs"` for G2's subscription map).
+   */
+  scratch: Map<string, unknown>;
 }
 
 export interface WebSocketServerOptions {
@@ -186,6 +206,7 @@ export class WebSocketServer {
       authTimer: null,
       isAlive: true,
       disconnectCallbacks: [],
+      scratch: new Map(),
     };
     this.connections.add(conn);
     this.log("conn.open", { ip });
@@ -274,6 +295,7 @@ export class WebSocketServer {
       onDisconnect: (cb) => {
         conn.disconnectCallbacks.push(cb);
       },
+      state: conn.scratch,
     };
     Promise.resolve()
       .then(() => handler(cmd, ctx))
