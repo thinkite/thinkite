@@ -158,6 +158,7 @@ describe("ensureSessionLoop — text streaming", () => {
   it("appends an assistant_message on first text content_block_start, then patches with deltas", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
+      mode: "resume",
       queryFactory: fakeQueryYielding([
         messageStart("msg_1"),
         contentBlockStartText(0),
@@ -181,6 +182,7 @@ describe("ensureSessionLoop — text streaming", () => {
   it("supports multiple text content blocks in one message (different uuids per index)", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
+      mode: "resume",
       queryFactory: fakeQueryYielding([
         messageStart("msg_X"),
         contentBlockStartText(0),
@@ -204,6 +206,7 @@ describe("ensureSessionLoop — text streaming", () => {
   it("ignores input_json_delta (V0 doesn't stream tool input partials)", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
+      mode: "resume",
       queryFactory: fakeQueryYielding([
         messageStart("msg_1"),
         contentBlockDeltaInputJson(0, '{"command":"ls'),
@@ -217,6 +220,7 @@ describe("ensureSessionLoop — text streaming", () => {
   it("text_delta before message_start is ignored (no currentMessageId yet)", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
+      mode: "resume",
       queryFactory: fakeQueryYielding([
         contentBlockStartText(0),
         contentBlockDeltaText(0, "stray"),
@@ -230,6 +234,7 @@ describe("ensureSessionLoop — tool_use append", () => {
   it("appends a running tool_call with detail built from input on assistant envelope", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
+      mode: "resume",
       queryFactory: fakeQueryYielding([
         assistantEnvelope([
           {
@@ -258,6 +263,7 @@ describe("ensureSessionLoop — tool_use append", () => {
   it("does not duplicate the append if the same tool_use_id appears in two assistant envelopes", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
+      mode: "resume",
       queryFactory: fakeQueryYielding([
         assistantEnvelope([
           { id: "tu_1", name: "Bash", input: { command: "ls" } },
@@ -275,6 +281,7 @@ describe("ensureSessionLoop — tool_result patch", () => {
   it("emits patch_tool_call (completed) with output slotted into detail.output", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
+      mode: "resume",
       queryFactory: fakeQueryYielding([
         assistantEnvelope([
           { id: "tu_1", name: "Bash", input: { command: "ls" } },
@@ -296,6 +303,7 @@ describe("ensureSessionLoop — tool_result patch", () => {
   it("emits patch_tool_call (failed) with error text from array-form tool_result.content", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
+      mode: "resume",
       queryFactory: fakeQueryYielding([
         assistantEnvelope([
           {
@@ -325,6 +333,7 @@ describe("ensureSessionLoop — tool_result patch", () => {
   it("drops orphan tool_results (no prior tool_use append for that id)", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
+      mode: "resume",
       queryFactory: fakeQueryYielding([userToolResult("tu_orphan", "...")]),
     });
     expect(payloads(runtime)).toEqual([]);
@@ -338,6 +347,7 @@ describe("ensureSessionLoop — lifecycle", () => {
     expect(runtime.inputChannel).toBeNull();
     expect(runtime.loopPromise).toBeNull();
     await ensureSessionLoop(runtime, {
+      mode: "resume",
       queryFactory: fakeQueryYielding([messageStart("msg_1"), messageStop()]),
     });
     expect(runtime.query).toBeNull();
@@ -345,7 +355,7 @@ describe("ensureSessionLoop — lifecycle", () => {
     expect(runtime.loopPromise).toBeNull();
   });
 
-  it("swallows iterator errors and still clears runtime state", async () => {
+  it("iterator errors → turn_failed EventDelta + runtime state cleared", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     // Hand-rolled async iterator whose `next()` rejects — biome's `useYield`
     // would flag a `function*` body that never yields, and "yield then
@@ -371,8 +381,10 @@ describe("ensureSessionLoop — lifecycle", () => {
         close: vi.fn(),
       }) as unknown as Query;
     }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
-    // No throw — V0 runner swallows; slice G replaces with turn_failed delta.
-    await ensureSessionLoop(runtime, { queryFactory: factory });
+    // No throw to caller — error surfaces as a turn_failed EventDelta in
+    // the buffer (G3 replacement for F2's swallow).
+    await ensureSessionLoop(runtime, { mode: "resume", queryFactory: factory });
+    expect(payloads(runtime)).toEqual([{ kind: "turn_failed", error: "boom" }]);
     expect(runtime.query).toBeNull();
     expect(runtime.inputChannel).toBeNull();
     expect(runtime.loopPromise).toBeNull();
@@ -393,8 +405,14 @@ describe("ensureSessionLoop — lifecycle", () => {
       }) as unknown as Query;
     }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
 
-    const p1 = ensureSessionLoop(runtime, { queryFactory: factory });
-    const p2 = ensureSessionLoop(runtime, { queryFactory: factory });
+    const p1 = ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: factory,
+    });
+    const p2 = ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: factory,
+    });
     expect(p1).toBe(p2);
     expect(queryCreations).toBe(1);
     await p1;
@@ -411,7 +429,7 @@ describe("ensureSessionLoop — lifecycle", () => {
         close: vi.fn(),
       }) as unknown as Query;
     }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
-    ensureSessionLoop(runtime, { queryFactory: factory });
+    ensureSessionLoop(runtime, { mode: "resume", queryFactory: factory });
     // Set synchronously before any microtask runs.
     expect(runtime.query).not.toBeNull();
     expect(runtime.inputChannel).not.toBeNull();
@@ -436,10 +454,168 @@ describe("pushPrompt", () => {
         close: vi.fn(),
       }) as unknown as Query;
     }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
-    ensureSessionLoop(runtime, { queryFactory: factory });
+    ensureSessionLoop(runtime, { mode: "resume", queryFactory: factory });
     // Just asserting it doesn't throw — actual SDK side wiring is verified
     // by the streaming + tool tests above (which yield synthesized SDK
     // messages back through the consumer loop).
     expect(() => pushPrompt(runtime, "hi")).not.toThrow();
+  });
+
+  it("emits user_message append + turn_started synchronously, in that order", () => {
+    // SDK's iterator never echoes the user prompt back — daemon synthesizes
+    // the user_message append so iOS's pure event-driven render sees it
+    // without needing client-side optimistic state.
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const factory = ((_params: unknown) => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {}
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(),
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    ensureSessionLoop(runtime, { mode: "resume", queryFactory: factory });
+    pushPrompt(runtime, "hi");
+    // After pushPrompt: cursor=2 (user_message at 1, turn_started at 2).
+    expect(runtime.currentCursor).toBe(2);
+    const out = payloads(runtime);
+    expect(out).toHaveLength(2);
+    const first = out[0];
+    if (first?.kind !== "append") throw new Error("expected append");
+    if (first.item.type !== "user_message") {
+      throw new Error("expected user_message item");
+    }
+    expect(first.item.text).toBe("hi");
+    expect(typeof first.item.uuid).toBe("string");
+    expect(out[1]).toEqual({ kind: "turn_started" });
+  });
+});
+
+describe("ensureSessionLoop — turn lifecycle from SDK envelopes", () => {
+  function resultEnvelope(
+    usage?: Record<string, number | undefined>,
+  ): SDKMessage {
+    return {
+      type: "result",
+      subtype: "success",
+      uuid: "env-result",
+      session_id: "s",
+      duration_ms: 100,
+      duration_api_ms: 80,
+      is_error: false,
+      num_turns: 1,
+      result: "ok",
+      stop_reason: "end_turn",
+      total_cost_usd: 0,
+      modelUsage: {},
+      permission_denials: [],
+      usage,
+    } as unknown as SDKMessage;
+  }
+
+  it("SDK `result` envelope → turn_completed with usage parsed", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        resultEnvelope({
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 5,
+        }),
+      ]),
+    });
+    expect(payloads(runtime)).toEqual([
+      {
+        kind: "turn_completed",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadInputTokens: 20,
+          cacheCreationInputTokens: 5,
+        },
+      },
+    ]);
+  });
+
+  it("`result` envelope without usage → turn_completed with usage=undefined", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([resultEnvelope(undefined)]),
+    });
+    expect(payloads(runtime)).toEqual([
+      { kind: "turn_completed", usage: undefined },
+    ]);
+  });
+
+  it("`result` envelope with partial usage → only known fields populate", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        resultEnvelope({ input_tokens: 100 }), // only input_tokens
+      ]),
+    });
+    const evts = payloads(runtime);
+    expect(evts).toHaveLength(1);
+    if (evts[0]?.kind !== "turn_completed")
+      throw new Error("expected turn_completed");
+    expect(evts[0].usage).toEqual({
+      inputTokens: 100,
+      outputTokens: undefined,
+      cacheReadInputTokens: undefined,
+      cacheCreationInputTokens: undefined,
+    });
+  });
+});
+
+describe("ensureSessionLoop — mode parameter passes correct option to SDK", () => {
+  it("mode=create passes options.sessionId (not resume)", async () => {
+    const runtime = new SessionRuntime<EventDelta>("created-uuid");
+    let capturedOptions: unknown;
+    const factory = ((params: unknown) => {
+      capturedOptions = (params as { options?: unknown }).options;
+      async function* gen(): AsyncGenerator<SDKMessage, void> {}
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(),
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    await ensureSessionLoop(runtime, {
+      mode: "create",
+      cwd: "/proj",
+      queryFactory: factory,
+    });
+    expect(capturedOptions).toMatchObject({
+      sessionId: "created-uuid",
+      cwd: "/proj",
+      includePartialMessages: true,
+    });
+    expect((capturedOptions as { resume?: string }).resume).toBeUndefined();
+  });
+
+  it("mode=resume passes options.resume (not sessionId)", async () => {
+    const runtime = new SessionRuntime<EventDelta>("existing-uuid");
+    let capturedOptions: unknown;
+    const factory = ((params: unknown) => {
+      capturedOptions = (params as { options?: unknown }).options;
+      async function* gen(): AsyncGenerator<SDKMessage, void> {}
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(),
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: factory,
+    });
+    expect(capturedOptions).toMatchObject({
+      resume: "existing-uuid",
+      includePartialMessages: true,
+    });
+    expect(
+      (capturedOptions as { sessionId?: string }).sessionId,
+    ).toBeUndefined();
   });
 });

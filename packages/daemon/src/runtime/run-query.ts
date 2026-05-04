@@ -96,6 +96,21 @@ function newStreamingState(): StreamingState {
 // ─── Public API ─────────────────────────────────────────────────────────
 
 export interface SessionLoopOptions {
+  /**
+   * `"create"` → SDK creates a new session at `runtime.sessionId` (passed
+   * via `options.sessionId`). `cwd` MUST be provided.
+   * `"resume"` → SDK loads existing JSONL via `options.resume`.
+   *
+   * Decision (existence check via `getSessionInfo`) lives in the router's
+   * sendPrompt handler — see project_session_replay_model memory and
+   * router.ts for why.
+   */
+  mode: "create" | "resume";
+  /**
+   * Working directory for the SDK process. REQUIRED when mode="create"
+   * (new session needs a cwd to root in). Ignored when mode="resume" —
+   * SDK uses the persisted cwd from the existing session.
+   */
   cwd?: string;
   /** Test seam: override the SDK's `query()` factory. */
   queryFactory?: typeof query;
@@ -103,19 +118,20 @@ export interface SessionLoopOptions {
 
 /**
  * Idempotent. First call: creates the input channel, spawns the SDK
- * query in streaming-input mode, and starts the consumer loop in the
- * background. Subsequent calls: returns the existing loop promise
- * without touching `runtime.query` or `runtime.inputChannel`.
+ * query in streaming-input mode (resume or create per `options.mode`),
+ * and starts the consumer loop in the background. Subsequent calls:
+ * returns the existing loop promise without touching `runtime.query`
+ * or `runtime.inputChannel`.
  *
  * The loop promise resolves when:
- *   - someone calls `runtime.query.close()` (F3's daemon shutdown)
+ *   - `runtime.query.close()` is called (F3's daemon shutdown)
  *   - `runtime.inputChannel.end()` is called and the SDK drains naturally
- *   - the SDK iterator throws (the error is caught and swallowed for V0;
- *     slice G will replace this with a turn_failed delta emission)
+ *   - the SDK iterator throws — caught here and surfaced as a
+ *     `turn_failed` EventDelta into the runtime buffer (slice G3)
  */
 export function ensureSessionLoop(
   runtime: SessionRuntime<EventDelta>,
-  options: SessionLoopOptions = {},
+  options: SessionLoopOptions,
 ): Promise<void> {
   if (runtime.loopPromise) return runtime.loopPromise;
 
@@ -123,13 +139,25 @@ export function ensureSessionLoop(
   runtime.inputChannel = channel;
 
   const factory = options.queryFactory ?? query;
+  // SDK requires sessionId XOR resume — they're mutually exclusive
+  // (sdk.d.ts:1538-1540 — "Cannot be used with continue or resume unless
+  // forkSession is also set"). We use sessionId for new sessions (so the
+  // SDK adopts our client-supplied UUID) and resume for existing ones.
+  const sdkOptions =
+    options.mode === "create"
+      ? {
+          sessionId: runtime.sessionId,
+          includePartialMessages: true as const,
+          cwd: options.cwd,
+        }
+      : {
+          resume: runtime.sessionId,
+          includePartialMessages: true as const,
+          cwd: options.cwd,
+        };
   const q: Query = factory({
     prompt: channel.iterable,
-    options: {
-      resume: runtime.sessionId,
-      includePartialMessages: true,
-      cwd: options.cwd,
-    },
+    options: sdkOptions,
   });
   // Query satisfies RuntimeQueryHandle structurally (interrupt + close).
   runtime.query = q;
@@ -140,9 +168,13 @@ export function ensureSessionLoop(
       for await (const msg of q) {
         handleSdkMessage(runtime, state, msg);
       }
-    } catch {
-      // V0: swallow. Slice G will replace this with a turn_failed
-      // EventDelta emission so iOS can render the failure.
+    } catch (err) {
+      // Surface the SDK error as a `turn_failed` so iOS can render it
+      // instead of seeing an unexplained gap in the stream.
+      runtime.addEvent({
+        kind: "turn_failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       runtime.query = null;
       runtime.inputChannel = null;
@@ -155,10 +187,25 @@ export function ensureSessionLoop(
 
 /**
  * Push a user prompt into the channel feeding the active SDK query.
- * `ensureSessionLoop` must have been called first — F2 throws otherwise
- * to surface the misuse loud and early. Slice G will wrap both into a
- * single `sendPromptRpc` so router callers don't need to remember the
- * order.
+ * `ensureSessionLoop` must have been called first — throws otherwise.
+ *
+ * Emits TWO EventDeltas synchronously into the runtime buffer BEFORE
+ * the prompt hits the channel:
+ *
+ *   1. `append { user_message }` — the SDK iterator NEVER echoes the
+ *      user's prompt back (only assistant + tool_result envelopes), so
+ *      without this iOS would never see its own message in the live
+ *      stream until the next cold-load read the settled JSONL. Daemon
+ *      synthesizes the append so iOS can render purely from event
+ *      stream — no client-side optimistic state needed.
+ *
+ *   2. `turn_started` — flips the iOS "thinking…" indicator immediately
+ *      (before SDK roundtrip + Claude's first byte; ~200-800ms gap).
+ *
+ * The user_message uuid we assign here matches the SDKUserMessage.uuid
+ * we push to the channel, so SDK's JSONL write uses the same id (per
+ * Paseo's pattern at claude-agent.ts:2298). Settled-from-JSONL and
+ * live-from-buffer therefore resolve to the same id — no divergence.
  */
 export function pushPrompt(
   runtime: SessionRuntime<EventDelta>,
@@ -170,10 +217,20 @@ export function pushPrompt(
       `pushPrompt: session ${runtime.sessionId} has no active loop — call ensureSessionLoop first`,
     );
   }
-  channel.push(buildUserMessage(runtime.sessionId, text));
+  const userMsgUuid = randomUUID();
+  runtime.addEvent({
+    kind: "append",
+    item: { type: "user_message", uuid: userMsgUuid, text },
+  });
+  runtime.addEvent({ kind: "turn_started" });
+  channel.push(buildUserMessage(runtime.sessionId, text, userMsgUuid));
 }
 
-function buildUserMessage(sessionId: string, text: string): SDKUserMessage {
+function buildUserMessage(
+  sessionId: string,
+  text: string,
+  uuid: string,
+): SDKUserMessage {
   return {
     type: "user",
     message: {
@@ -181,7 +238,7 @@ function buildUserMessage(sessionId: string, text: string): SDKUserMessage {
       content: [{ type: "text", text }],
     },
     parent_tool_use_id: null,
-    uuid: randomUUID(),
+    uuid,
     session_id: sessionId,
   } as unknown as SDKUserMessage;
 }
@@ -199,8 +256,41 @@ function handleSdkMessage(
     handleAssistantEnvelope(runtime, state, msg);
   } else if (msg.type === "user") {
     handleUserEnvelope(runtime, state, msg);
+  } else if (msg.type === "result") {
+    handleResultEnvelope(runtime, msg);
   }
   // Others ignored for V0.
+}
+
+/**
+ * Anthropic SDK fires one `result` envelope at the end of every turn —
+ * success OR error. We map both to a `turn_completed` EventDelta so iOS
+ * can hide the "thinking" indicator and re-enable the send button.
+ *
+ * Usage stats are best-effort: SDK shape uses snake_case fields. Parse
+ * defensively — missing fields just become `undefined` in our output.
+ */
+function handleResultEnvelope(
+  runtime: SessionRuntime<EventDelta>,
+  msg: SDKMessage,
+): void {
+  const r = msg as unknown as Record<string, unknown>;
+  const rawUsage = r.usage as Record<string, unknown> | undefined;
+  const usage = rawUsage
+    ? {
+        inputTokens: numberOrUndef(rawUsage.input_tokens),
+        outputTokens: numberOrUndef(rawUsage.output_tokens),
+        cacheReadInputTokens: numberOrUndef(rawUsage.cache_read_input_tokens),
+        cacheCreationInputTokens: numberOrUndef(
+          rawUsage.cache_creation_input_tokens,
+        ),
+      }
+    : undefined;
+  runtime.addEvent({ kind: "turn_completed", usage });
+}
+
+function numberOrUndef(v: unknown): number | undefined {
+  return typeof v === "number" ? v : undefined;
 }
 
 function handleStreamEvent(

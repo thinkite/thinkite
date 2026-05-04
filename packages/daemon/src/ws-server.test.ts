@@ -648,6 +648,9 @@ describe("WebSocketServer end-to-end subscribe/unsubscribe", () => {
         .fn()
         .mockResolvedValue([{ type: "user_message", uuid: "u-1", text: "hi" }]),
       runtimeManager,
+      hasSession: vi.fn().mockResolvedValue(true),
+      writeSidecodeSession: vi.fn(),
+      isShuttingDown: () => false,
     });
     server = new WebSocketServer({
       pairing,

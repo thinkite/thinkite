@@ -37,12 +37,15 @@ function makeCtx(): {
 /** Default deps for tests that don't exercise listSessions. */
 function makeDeps(
   overrides?: Partial<Parameters<typeof createCommandHandler>[0]>,
-) {
+): Parameters<typeof createCommandHandler>[0] {
   return {
     continueOnDesktop: vi.fn().mockResolvedValue(undefined),
     listSessions: vi.fn().mockResolvedValue([]),
     getMessages: vi.fn().mockResolvedValue([]),
     runtimeManager: new SessionRuntimeManager<EventDelta>(),
+    hasSession: vi.fn().mockResolvedValue(true),
+    writeSidecodeSession: vi.fn(),
+    isShuttingDown: () => false,
     ...overrides,
   };
 }
@@ -361,24 +364,19 @@ describe("createCommandHandler — getMessages", () => {
 
 describe("createCommandHandler — unsupported commands", () => {
   it("replies error/unsupported with the inbound requestId", async () => {
-    // sendPrompt is the next V0 RPC slated for G3 — until then router falls
-    // through to the unsupported-default branch.
+    // deleteSession is reserved for V1+ (per project_sidecode_persistence
+    // memory) — router falls through to the unsupported-default branch.
     const handler = createCommandHandler(makeDeps());
     const { ctx, sent } = makeCtx();
     await handler(
-      {
-        type: "sendPrompt",
-        requestId: "sp-1",
-        sessionId: "s",
-        text: "hi",
-      },
+      { type: "deleteSession", requestId: "del-1", sessionId: "s" },
       ctx,
     );
     expect(sent[0]).toMatchObject({
       type: "error",
       code: "unsupported",
     });
-    expect((sent[0] as { requestId?: string }).requestId).toBe("sp-1");
+    expect((sent[0] as { requestId?: string }).requestId).toBe("del-1");
   });
 
   it("does NOT call continueOnDesktop for other command types", async () => {
@@ -600,5 +598,212 @@ describe("createCommandHandler — subscribe / unsubscribe", () => {
     // Runtime was getOrCreate'd but no subscriber registered (subscribe
     // throws before runtime.subscribe runs).
     expect(runtimeManager.get("S")?.subscriberCount).toBe(0);
+  });
+});
+
+// ─── sendPrompt + interrupt + shuttingDown ────────────────────────────────
+//
+// These tests use a hand-rolled queryFactory that returns an empty,
+// immediately-completing iterator — we only care about the handler's
+// orchestration (path decision, runtime state, response shape), not what
+// the SDK does with the prompt afterward. F2's run-query.test.ts covers
+// the consumer-loop side.
+
+function emptyQueryFactory(): typeof import("@anthropic-ai/claude-agent-sdk").query {
+  return ((_params: unknown) => {
+    async function* gen(): AsyncGenerator<never, void> {}
+    const it = gen();
+    return Object.assign(it, {
+      interrupt: vi.fn(async () => {}),
+      close: vi.fn(),
+    }) as never;
+  }) as never;
+}
+
+describe("createCommandHandler — sendPrompt", () => {
+  it("resume path: existing session → ensureSessionLoop with mode=resume; turn_started emitted", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const writeMeta = vi.fn();
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        hasSession: vi.fn().mockResolvedValue(true),
+        writeSidecodeSession: writeMeta,
+        queryFactory: emptyQueryFactory(),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "sendPrompt",
+        requestId: "sp-1",
+        sessionId: "S",
+        text: "hello",
+      },
+      ctx,
+    );
+    expect(sent.at(-1)).toEqual({
+      type: "sendPrompt.response",
+      requestId: "sp-1",
+    });
+    // Resume path: NO sidecode metadata written (Desktop / CLI already
+    // own the session's local_*.json).
+    expect(writeMeta).not.toHaveBeenCalled();
+    // Runtime was created and pushPrompt fired turn_started into the buffer.
+    const runtime = runtimeManager.get("S");
+    if (!runtime) throw new Error("expected runtime");
+    expect(runtime.currentCursor).toBeGreaterThanOrEqual(1);
+  });
+
+  it("create path: new session + cwd → writes sidecode metadata before spawning query", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const writeMeta = vi.fn();
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        hasSession: vi.fn().mockResolvedValue(false),
+        writeSidecodeSession: writeMeta,
+        queryFactory: emptyQueryFactory(),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "sendPrompt",
+        requestId: "sp-2",
+        sessionId: "new-uuid",
+        text: "first message",
+        cwd: "/Users/me/proj",
+      },
+      ctx,
+    );
+    expect(writeMeta).toHaveBeenCalledExactlyOnceWith({
+      cliSessionId: "new-uuid",
+      cwd: "/Users/me/proj",
+    });
+    expect(sent.at(-1)).toEqual({
+      type: "sendPrompt.response",
+      requestId: "sp-2",
+    });
+  });
+
+  it("create path without cwd → invalid_message error, no runtime spawned", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const writeMeta = vi.fn();
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        hasSession: vi.fn().mockResolvedValue(false),
+        writeSidecodeSession: writeMeta,
+        queryFactory: emptyQueryFactory(),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "sendPrompt",
+        requestId: "sp-3",
+        sessionId: "new-uuid",
+        text: "hi",
+        // cwd missing
+      },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "error",
+      requestId: "sp-3",
+      code: "invalid_message",
+      message: expect.stringContaining("cwd is required"),
+    });
+    expect(writeMeta).not.toHaveBeenCalled();
+    expect(runtimeManager.has("new-uuid")).toBe(false);
+  });
+
+  it("rejected during shutdown → error frame, no runtime side-effect", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const writeMeta = vi.fn();
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        writeSidecodeSession: writeMeta,
+        isShuttingDown: () => true,
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "sendPrompt",
+        requestId: "sp-shut",
+        sessionId: "S",
+        text: "hi",
+        cwd: "/x",
+      },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "error",
+      requestId: "sp-shut",
+      message: expect.stringContaining("shutting down"),
+    });
+    expect(writeMeta).not.toHaveBeenCalled();
+    expect(runtimeManager.has("S")).toBe(false);
+  });
+});
+
+describe("createCommandHandler — interrupt", () => {
+  it("calls runtime.query.interrupt() and emits turn_canceled to subscribers", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S");
+    const interruptMock = vi.fn(async () => {});
+    runtime.query = {
+      interrupt: interruptMock,
+      close: () => {},
+    };
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "interrupt", requestId: "int-1", sessionId: "S" },
+      ctx,
+    );
+    expect(interruptMock).toHaveBeenCalledOnce();
+    expect(sent).toEqual([{ type: "interrupt.response", requestId: "int-1" }]);
+    // turn_canceled landed in the runtime buffer for any subscriber to see.
+    const events: EventDelta[] = [];
+    runtime.subscribe((e) => events.push(e.payload), 0);
+    expect(events).toContainEqual({ kind: "turn_canceled" });
+  });
+
+  it("interrupt on a session with no active runtime → silent ack (no-op)", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "interrupt", requestId: "int-orphan", sessionId: "no-such" },
+      ctx,
+    );
+    expect(sent).toEqual([
+      { type: "interrupt.response", requestId: "int-orphan" },
+    ]);
+  });
+
+  it("interrupt error path: query.interrupt() rejects → error frame", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.query = {
+      interrupt: vi.fn().mockRejectedValue(new Error("control_lost")),
+      close: () => {},
+    };
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "interrupt", requestId: "int-fail", sessionId: "S" },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "error",
+      requestId: "int-fail",
+      code: "internal",
+      message: expect.stringContaining("control_lost"),
+    });
   });
 });

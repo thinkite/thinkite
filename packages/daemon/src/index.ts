@@ -1,4 +1,7 @@
-import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+import {
+  getSessionInfo,
+  getSessionMessages,
+} from "@anthropic-ai/claude-agent-sdk";
 import { type EventDelta, PROTOCOL_VERSION } from "@sidecodeapp/protocol";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
@@ -10,6 +13,10 @@ import { normalize } from "./messages/normalize.js";
 import { PairingService } from "./pairing.js";
 import { createCommandHandler } from "./router.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
+import {
+  buildNewSidecodeSession,
+  writeSidecodeSession,
+} from "./sidecode-sessions.js";
 import { DEFAULT_HOST, DEFAULT_PORT, WebSocketServer } from "./ws-server.js";
 
 export interface DaemonOptions {
@@ -51,6 +58,10 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // Lazy-populated by slice G's router when it sees its first sendPrompt.
   // Drained on shutdown via daemon.stop() → runtimeManager.shutdown().
   const runtimeManager = new SessionRuntimeManager<EventDelta>();
+  // Set in daemon.stop() before runtimeManager.shutdown(). Router gates
+  // sendPrompt behind it (see RouterDeps.isShuttingDown rationale).
+  let shuttingDown = false;
+
   const commandHandler = createCommandHandler({
     continueOnDesktop,
     listSessions: listDesktopSessions,
@@ -70,6 +81,17 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       return normalize(sdkMessages);
     },
     runtimeManager,
+    hasSession: async (cliSessionId) => {
+      const info = await getSessionInfo(cliSessionId);
+      return info !== undefined;
+    },
+    writeSidecodeSession: ({ cliSessionId, cwd }) => {
+      writeSidecodeSession(
+        home,
+        buildNewSidecodeSession({ cliSessionId, cwd }),
+      );
+    },
+    isShuttingDown: () => shuttingDown,
   });
   const ws = new WebSocketServer({
     pairing,
@@ -114,6 +136,10 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     authenticatedConnectionCount: () => ws.authenticatedCount(),
     runtimeManager,
     async stop() {
+      // Flip the gate FIRST so any inflight subscribe / sendPrompt RPC
+      // racing with shutdown gets rejected before it can spawn a runtime
+      // we won't drain.
+      shuttingDown = true;
       // Drain SDK queries first so each subprocess gets the chance to
       // finish its current JSONL write before the ws server tears down
       // and the process exits. SDK's `close()` triggers an internal 5s

@@ -5,6 +5,11 @@ import type {
 } from "@sidecodeapp/protocol";
 import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
 import type { DesktopSession } from "./desktop/sessions.js";
+import {
+  ensureSessionLoop,
+  pushPrompt,
+  type SessionLoopOptions,
+} from "./runtime/run-query.js";
 import type { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import type { CommandHandler } from "./ws-server.js";
 
@@ -35,11 +40,45 @@ export interface RouterDeps {
   getMessages: (cliSessionId: string, cwd?: string) => Promise<TimelineItem[]>;
   /**
    * Per-session runtime manager. G2's subscribe/unsubscribe handlers
-   * register their fanout callbacks on the runtime; G3+ will route
-   * sendPrompt/interrupt through here too. Daemon owns one manager per
-   * process (created in daemon.start, drained on shutdown).
+   * register their fanout callbacks on the runtime; G3 wires sendPrompt /
+   * interrupt through here too. Daemon owns one manager per process
+   * (created in daemon.start, drained on shutdown).
    */
   runtimeManager: SessionRuntimeManager<EventDelta>;
+  /**
+   * Existence check for a CLI session. Wraps SDK's `getSessionInfo` —
+   * undefined ⇒ session JSONL not on disk yet ⇒ sendPrompt's "create"
+   * branch fires (sidecode mints a fresh `local_<id>.json`). Returning
+   * a defined record means the session exists and we should resume.
+   *
+   * Daemon's wiring uses SDK's `getSessionInfo(id)` directly. Test seam:
+   * stub this dep to control the create-vs-resume branch without
+   * touching the filesystem.
+   */
+  hasSession: (cliSessionId: string) => Promise<boolean>;
+  /**
+   * Persist sidecode-side metadata for a session sidecode is creating
+   * now. Called from the create-branch of sendPrompt before
+   * ensureSessionLoop spawns the SDK query. Tests stub this to a no-op
+   * to avoid touching `<home>/sessions/`.
+   */
+  writeSidecodeSession: (input: { cliSessionId: string; cwd: string }) => void;
+  /**
+   * Whether the daemon is mid-shutdown. Router gates sendPrompt and
+   * subscribe behind this — once shutdown starts, accepting new prompts
+   * spawns runtimes that can't be drained cleanly (`manager.shutdown`
+   * iterates a snapshot of the map). Returns `false` during normal
+   * operation; flips `true` synchronously in `daemon.stop()` before
+   * `manager.shutdown()` runs.
+   */
+  isShuttingDown: () => boolean;
+  /**
+   * Test seam for `ensureSessionLoop`'s `queryFactory` option. When
+   * provided, sendPrompt forwards it through so router-level tests can
+   * stub the SDK. Production omits this and the SDK's real `query` is
+   * used.
+   */
+  queryFactory?: SessionLoopOptions["queryFactory"];
 }
 
 // ─── Per-connection ctx.state keys (G2: subscriptions) ─────────────────────
@@ -196,6 +235,106 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         // V0 silently acks rather than 404-ing.
         ctx.send({
           type: "unsubscribe.response",
+          requestId: cmd.requestId,
+        });
+        return;
+      }
+      case "sendPrompt": {
+        // Reject during shutdown: any new query we spawn now can't be
+        // drained cleanly — manager.shutdown() iterates a snapshot.
+        if (deps.isShuttingDown()) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: "daemon is shutting down",
+          });
+          return;
+        }
+
+        try {
+          // Decide create-vs-resume from SDK's session existence check.
+          // We don't reach into the filesystem ourselves — getSessionInfo
+          // owns the projectKey-sanitization rule (see
+          // project_session_replay_model memory).
+          const exists = await deps.hasSession(cmd.sessionId);
+          if (!exists && cmd.cwd === undefined) {
+            ctx.send({
+              type: "error",
+              requestId: cmd.requestId,
+              code: "invalid_message",
+              message:
+                "cwd is required when sendPrompt creates a new session " +
+                "(no JSONL exists for this sessionId yet)",
+            });
+            return;
+          }
+
+          const runtime = deps.runtimeManager.getOrCreate(cmd.sessionId);
+          const mode: "create" | "resume" = exists ? "resume" : "create";
+
+          // Persist sidecode metadata FIRST, before spawning the SDK
+          // query — that way if iOS reconnects mid-create, listSessions
+          // already shows the entry. Resume path skips this (Desktop /
+          // CLI already wrote their own metadata).
+          if (mode === "create") {
+            deps.writeSidecodeSession({
+              cliSessionId: cmd.sessionId,
+              cwd: cmd.cwd as string,
+            });
+          }
+
+          // Idempotent — second sendPrompt for same session reuses the
+          // existing loop. Mode is only consulted on first call.
+          ensureSessionLoop(runtime, {
+            mode,
+            cwd: cmd.cwd,
+            queryFactory: deps.queryFactory,
+          });
+          // pushPrompt emits turn_started synchronously before the SDK
+          // even sees the message — iOS flips the spinner immediately.
+          pushPrompt(runtime, cmd.text);
+
+          ctx.send({
+            type: "sendPrompt.response",
+            requestId: cmd.requestId,
+          });
+        } catch (err) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
+      case "interrupt": {
+        const runtime = deps.runtimeManager.get(cmd.sessionId);
+        // Interrupt is best-effort: no active runtime / no in-flight query
+        // means there's nothing to interrupt. Still ack — matches the
+        // unsubscribe-orphan policy.
+        if (runtime?.query) {
+          try {
+            await runtime.query.interrupt();
+            // Emit turn_canceled directly into the runtime so all
+            // subscribers see the cancel even if the SDK doesn't fire its
+            // own terminal envelope — turn_completed/turn_failed should
+            // still arrive when the in-flight turn drains, but iOS gets
+            // a fast UX signal here.
+            runtime.addEvent({ kind: "turn_canceled" });
+          } catch (err) {
+            ctx.send({
+              type: "error",
+              requestId: cmd.requestId,
+              code: "internal",
+              message: err instanceof Error ? err.message : String(err),
+            });
+            return;
+          }
+        }
+        ctx.send({
+          type: "interrupt.response",
           requestId: cmd.requestId,
         });
         return;
