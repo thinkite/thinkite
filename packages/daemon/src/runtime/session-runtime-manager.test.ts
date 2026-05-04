@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { SessionRuntimeManager } from "./session-runtime-manager.js";
 import type { RuntimeQueryHandle } from "./session-runtime.js";
+import { SessionRuntimeManager } from "./session-runtime-manager.js";
 
-function fakeQuery(): RuntimeQueryHandle & { closeMock: ReturnType<typeof vi.fn> } {
+function fakeQuery(): RuntimeQueryHandle & {
+  closeMock: ReturnType<typeof vi.fn>;
+} {
   const closeMock = vi.fn();
   return {
     interrupt: async () => {},

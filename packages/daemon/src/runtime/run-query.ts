@@ -49,8 +49,8 @@
 
 import { randomUUID } from "node:crypto";
 import {
-  query,
   type Query,
+  query,
   type SDKAssistantMessage,
   type SDKMessage,
   type SDKPartialAssistantMessage,
@@ -66,8 +66,8 @@ import {
   toolUseBlock,
 } from "../messages/tool-detail.js";
 import {
-  createAsyncMessageInput,
   type AsyncMessageInput,
+  createAsyncMessageInput,
 } from "./async-message-input.js";
 import type { SessionRuntime } from "./session-runtime.js";
 

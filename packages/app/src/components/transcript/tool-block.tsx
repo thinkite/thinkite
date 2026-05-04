@@ -204,10 +204,7 @@ function DetailBody({
 function ErrorBanner({ text }: { text: string }) {
   return (
     <View className="rounded border border-red-300 bg-red-50 p-2 dark:border-red-800 dark:bg-red-950">
-      <Text
-        selectable
-        className="text-xs text-red-700 dark:text-red-300"
-      >
+      <Text selectable className="text-xs text-red-700 dark:text-red-300">
         {text}
       </Text>
     </View>
@@ -297,8 +294,12 @@ function TodoDetail({
   }
   return (
     <View className="gap-2">
-      {detail.todos.map((todo: (typeof detail.todos)[number], i: number) => (
-        <View key={i} className="flex-row items-start gap-2">
+      {detail.todos.map((todo: (typeof detail.todos)[number]) => (
+        // Anthropic's TodoWrite emits no stable id per item. Use content as
+        // the React key — if Claude ever emits two todos with identical
+        // content, React will warn about duplicate keys but the render
+        // still works. Empirically this hasn't happened.
+        <View key={todo.content} className="flex-row items-start gap-2">
           <TodoCheckbox status={todo.status} />
           <Text
             className={
@@ -499,7 +500,7 @@ function SectionLabel({
 
 function fence(body: string, lang?: string): string {
   if (body.length === 0) return "";
-  return "```" + (lang ?? "") + "\n" + body + "\n```";
+  return `\`\`\`${lang ?? ""}\n${body}\n\`\`\``;
 }
 
 /**

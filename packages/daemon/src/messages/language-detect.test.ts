@@ -24,7 +24,9 @@ describe("detectLanguageForPath", () => {
     expect(detectLanguageForPath("/abs/path/to/component.test.tsx")).toBe(
       "tsx",
     );
-    expect(detectLanguageForPath("/abs/path/to/foo.spec.ts")).toBe("typescript");
+    expect(detectLanguageForPath("/abs/path/to/foo.spec.ts")).toBe(
+      "typescript",
+    );
   });
 
   it("matches well-known extensionless filenames", () => {

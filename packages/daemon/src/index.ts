@@ -3,10 +3,10 @@ import { type EventDelta, PROTOCOL_VERSION } from "@sidecodeapp/protocol";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { listDesktopSessions } from "./desktop/sessions.js";
-import { normalize } from "./messages/normalize.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
+import { normalize } from "./messages/normalize.js";
 import { PairingService } from "./pairing.js";
 import { createCommandHandler } from "./router.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
@@ -76,7 +76,9 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     port,
     host,
     log: (event, data) =>
-      console.log(`[sidecode] ${event}${data ? ` ${JSON.stringify(data)}` : ""}`),
+      console.log(
+        `[sidecode] ${event}${data ? ` ${JSON.stringify(data)}` : ""}`,
+      ),
   });
   const bound = await ws.start();
 

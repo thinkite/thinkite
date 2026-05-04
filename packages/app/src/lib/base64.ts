@@ -11,10 +11,7 @@ export function bytesToBase64Url(bytes: Uint8Array): string {
   for (let i = 0; i < bytes.length; i += 1) {
     bin += String.fromCharCode(bytes[i] as number);
   }
-  return btoa(bin)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 export function base64UrlToBytes(b64url: string): Uint8Array {

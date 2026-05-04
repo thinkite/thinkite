@@ -1,8 +1,5 @@
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
-import {
-  type TimelineItem,
-  type ToolCallItem,
-} from "@sidecodeapp/protocol";
+import type { TimelineItem, ToolCallItem } from "@sidecodeapp/protocol";
 import {
   assistantContentBlock,
   attachOutputToDetail,

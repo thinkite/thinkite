@@ -27,10 +27,7 @@ export interface RouterDeps {
    * SDK's `listSessions` is shunned (test noise per feedback file) but
    * `getSessionMessages` is per-id deterministic and safe to use.
    */
-  getMessages: (
-    cliSessionId: string,
-    cwd?: string,
-  ) => Promise<TimelineItem[]>;
+  getMessages: (cliSessionId: string, cwd?: string) => Promise<TimelineItem[]>;
 }
 
 /**
@@ -106,7 +103,9 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
       }
       default: {
         const requestId =
-          "requestId" in cmd ? (cmd as { requestId: string }).requestId : undefined;
+          "requestId" in cmd
+            ? (cmd as { requestId: string }).requestId
+            : undefined;
         ctx.send({
           type: "error",
           requestId,

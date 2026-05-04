@@ -71,7 +71,11 @@ function DaemonGate({ children }: { children: React.ReactNode }) {
   if (!isInitialized) {
     if (error) {
       return (
-        <ConnectError message={error.message} onRetry={reset} retrying={isLoading} />
+        <ConnectError
+          message={error.message}
+          onRetry={reset}
+          retrying={isLoading}
+        />
       );
     }
     // Pre-init, no error yet → behind the native splash.

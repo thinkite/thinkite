@@ -15,23 +15,32 @@ import {
   deleteSessionResponse,
   errorFrame,
   event,
+  eventDelta,
+  eventFrame,
   getMessagesCommand,
   getMessagesResponse,
   HANDSHAKE_DOMAIN_TAG,
   HANDSHAKE_VERSION,
   handshakeRejectFrame,
+  interruptCommand,
+  interruptResponse,
   listSessionsCommand,
   listSessionsResponse,
+  PROTOCOL_VERSION,
   pairOfferFrame,
   pingFrame,
   pongFrame,
-  PROTOCOL_VERSION,
   sendPromptCommand,
+  sendPromptResponse,
   serverHelloFrame,
   serverReadyFrame,
   sessionDivergedEvent,
   sessionInfo,
+  subscribeCommand,
+  subscribeResponse,
   type TranscriptInput,
+  unsubscribeCommand,
+  unsubscribeResponse,
 } from "./index.js";
 
 describe("protocol version", () => {
@@ -116,9 +125,9 @@ describe("client.hello frame", () => {
   });
 
   it("rejects unknown mode", () => {
-    expect(
-      clientHelloFrame.safeParse({ ...valid, mode: "wat" }).success,
-    ).toBe(false);
+    expect(clientHelloFrame.safeParse({ ...valid, mode: "wat" }).success).toBe(
+      false,
+    );
   });
 });
 
@@ -308,14 +317,37 @@ describe("event union", () => {
 });
 
 describe("command union", () => {
-  it("accepts a minimal sendPrompt", () => {
+  it("accepts a minimal sendPrompt (resume — no cwd)", () => {
     expect(
       sendPromptCommand.parse({
         type: "sendPrompt",
+        requestId: "r1",
         sessionId: "x",
         text: "hi",
       }).text,
     ).toBe("hi");
+  });
+
+  it("accepts a sendPrompt with cwd (new-session create path)", () => {
+    expect(
+      sendPromptCommand.parse({
+        type: "sendPrompt",
+        requestId: "r2",
+        sessionId: "x",
+        text: "hi",
+        cwd: "/repo",
+      }).cwd,
+    ).toBe("/repo");
+  });
+
+  it("rejects sendPrompt missing requestId", () => {
+    expect(
+      sendPromptCommand.safeParse({
+        type: "sendPrompt",
+        sessionId: "x",
+        text: "hi",
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects approve with bad decision", () => {
@@ -329,13 +361,115 @@ describe("command union", () => {
   });
 
   it("includes listSessions and deleteSession", () => {
-    expect(
-      command.parse({ type: "listSessions", requestId: "r1" }).type,
-    ).toBe("listSessions");
+    expect(command.parse({ type: "listSessions", requestId: "r1" }).type).toBe(
+      "listSessions",
+    );
     expect(
       command.parse({ type: "deleteSession", requestId: "r2", sessionId: "s" })
         .type,
     ).toBe("deleteSession");
+  });
+
+  it("includes streaming-session commands", () => {
+    expect(
+      command.parse({ type: "subscribe", requestId: "r1", sessionId: "s" })
+        .type,
+    ).toBe("subscribe");
+    expect(
+      command.parse({ type: "unsubscribe", requestId: "r2", sessionId: "s" })
+        .type,
+    ).toBe("unsubscribe");
+    expect(
+      command.parse({ type: "interrupt", requestId: "r3", sessionId: "s" })
+        .type,
+    ).toBe("interrupt");
+  });
+});
+
+describe("eventDelta union", () => {
+  it("parses turn lifecycle variants", () => {
+    expect(eventDelta.parse({ kind: "turn_started" }).kind).toBe(
+      "turn_started",
+    );
+    expect(eventDelta.parse({ kind: "turn_canceled" }).kind).toBe(
+      "turn_canceled",
+    );
+    expect(eventDelta.parse({ kind: "turn_failed", error: "boom" }).kind).toBe(
+      "turn_failed",
+    );
+    expect(eventDelta.parse({ kind: "turn_completed" }).kind).toBe(
+      "turn_completed",
+    );
+  });
+
+  it("turn_completed accepts optional usage stats", () => {
+    const p = eventDelta.parse({
+      kind: "turn_completed",
+      usage: { inputTokens: 100, outputTokens: 50 },
+    });
+    if (p.kind !== "turn_completed") throw new Error("unexpected kind");
+    expect(p.usage?.inputTokens).toBe(100);
+  });
+
+  it("rejects unknown kind", () => {
+    expect(eventDelta.safeParse({ kind: "garbage" }).success).toBe(false);
+  });
+});
+
+describe("streaming-session response + event frames", () => {
+  it("subscribe.response carries settled + cursor", () => {
+    const p = subscribeResponse.parse({
+      type: "subscribe.response",
+      requestId: "r1",
+      sessionId: "s",
+      settled: [],
+      cursor: 0,
+    });
+    expect(p.cursor).toBe(0);
+  });
+
+  it("unsubscribe / sendPrompt / interrupt responses are minimal", () => {
+    expect(
+      unsubscribeResponse.parse({
+        type: "unsubscribe.response",
+        requestId: "r1",
+      }).requestId,
+    ).toBe("r1");
+    expect(
+      sendPromptResponse.parse({
+        type: "sendPrompt.response",
+        requestId: "r2",
+      }).requestId,
+    ).toBe("r2");
+    expect(
+      interruptResponse.parse({
+        type: "interrupt.response",
+        requestId: "r3",
+      }).requestId,
+    ).toBe("r3");
+  });
+
+  it("event frame wraps an EventDelta with sessionId + cursor", () => {
+    const p = eventFrame.parse({
+      type: "event",
+      sessionId: "s",
+      cursor: 5,
+      delta: { kind: "turn_started" },
+    });
+    expect(p.delta.kind).toBe("turn_started");
+  });
+
+  it("subscribe / unsubscribe / interrupt commands require requestId", () => {
+    expect(
+      subscribeCommand.safeParse({ type: "subscribe", sessionId: "s" }).success,
+    ).toBe(false);
+    expect(
+      unsubscribeCommand.safeParse({ type: "unsubscribe", sessionId: "s" })
+        .success,
+    ).toBe(false);
+    expect(
+      interruptCommand.safeParse({ type: "interrupt", sessionId: "s" }).success,
+    ).toBe(false);
   });
 });
 
@@ -651,8 +785,26 @@ describe("clientFrame union (handshake + commands)", () => {
   it("accepts ping and commands", () => {
     expect(clientFrame.parse({ type: "ping", t: 0 }).type).toBe("ping");
     expect(
-      clientFrame.parse({ type: "subscribe", sessionId: "s" }).type,
+      clientFrame.parse({
+        type: "subscribe",
+        requestId: "r1",
+        sessionId: "s",
+      }).type,
     ).toBe("subscribe");
+    expect(
+      clientFrame.parse({
+        type: "unsubscribe",
+        requestId: "r2",
+        sessionId: "s",
+      }).type,
+    ).toBe("unsubscribe");
+    expect(
+      clientFrame.parse({
+        type: "interrupt",
+        requestId: "r3",
+        sessionId: "s",
+      }).type,
+    ).toBe("interrupt");
   });
 
   it("rejects daemon-only frames sent by a client", () => {
@@ -713,6 +865,32 @@ describe("daemonFrame union", () => {
         message: "no",
       }).type,
     ).toBe("handshake.reject");
+  });
+
+  it("includes streaming-session response + event frames", () => {
+    expect(
+      daemonFrame.parse({
+        type: "subscribe.response",
+        requestId: "r",
+        sessionId: "s",
+        settled: [],
+        cursor: 0,
+      }).type,
+    ).toBe("subscribe.response");
+    expect(
+      daemonFrame.parse({
+        type: "event",
+        sessionId: "s",
+        cursor: 1,
+        delta: { kind: "turn_started" },
+      }).type,
+    ).toBe("event");
+    expect(
+      daemonFrame.parse({
+        type: "sendPrompt.response",
+        requestId: "r",
+      }).type,
+    ).toBe("sendPrompt.response");
   });
 
   it("rejects client-only frames sent by daemon", () => {

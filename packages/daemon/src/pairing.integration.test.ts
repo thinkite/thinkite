@@ -1,8 +1,8 @@
 import {
   createHash,
+  sign as cryptoSign,
   generateKeyPairSync,
   randomBytes,
-  sign as cryptoSign,
 } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

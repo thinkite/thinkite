@@ -1,9 +1,9 @@
 import {
-  type KeyObject,
   createHash,
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
+  type KeyObject,
 } from "node:crypto";
 import {
   chmodSync,

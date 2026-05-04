@@ -1,6 +1,6 @@
 module.exports = {
   dependencies: {
-    'react-native-diffs': {
+    "react-native-diffs": {
       platforms: { android: null },
     },
   },

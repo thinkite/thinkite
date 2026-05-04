@@ -1,9 +1,5 @@
-import { useCallback, useState, type ComponentProps } from "react";
-import {
-  useColorScheme,
-  type StyleProp,
-  type ViewStyle,
-} from "react-native";
+import { type ComponentProps, useCallback, useState } from "react";
+import { type StyleProp, useColorScheme, type ViewStyle } from "react-native";
 import { DiffsView } from "react-native-diffs";
 
 type DiffsProps = ComponentProps<typeof DiffsView>;

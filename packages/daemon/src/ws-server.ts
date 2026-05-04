@@ -1,8 +1,8 @@
-import { type AddressInfo } from "node:net";
+import type { AddressInfo } from "node:net";
 import {
   type ClientFrame,
-  clientFrame,
   type Command,
+  clientFrame,
   type DaemonFrame,
   HANDSHAKE_VERSION,
   type HandshakeRejectFrame,
@@ -16,6 +16,19 @@ export interface CommandContext {
   send: (frame: DaemonFrame) => void;
   /** ed25519 fingerprint (16 hex chars) of the authenticated client. */
   fingerprint: string;
+  /**
+   * Register a callback to fire when this connection closes. Used by
+   * subscription handlers (slice G2) to drop their runtime subscriber
+   * fanouts on ws disconnect — implicit unsubscribe-all-for-this-conn.
+   *
+   * Callbacks fire in registration order. Exceptions are logged and
+   * swallowed so one bad cleanup doesn't skip the rest. The same `cb`
+   * reference can be registered multiple times — useful is rare; harmless
+   * if it happens (just runs N times on close). Callers should ensure
+   * the underlying cleanup is idempotent (SessionRuntime's unsubscribe
+   * closures already are).
+   */
+  onDisconnect: (cb: () => void) => void;
 }
 
 /** Dispatched for every authenticated command frame. May be async. The
@@ -51,6 +64,12 @@ interface Connection {
   authTimer: ReturnType<typeof setTimeout> | null;
   /** Heartbeat: server's ping/pong tracking. */
   isAlive: boolean;
+  /**
+   * Cleanup callbacks fired on connection close — populated via
+   * `ctx.onDisconnect()`. Used by slice G2's subscribe handler to drop
+   * runtime fanout subscriptions when the ws disconnects.
+   */
+  disconnectCallbacks: Array<() => void>;
 }
 
 export interface WebSocketServerOptions {
@@ -115,7 +134,9 @@ export class WebSocketServer {
         resolve({ host: addr.address, port: addr.port });
       });
       server.once("error", (err) => reject(err));
-      server.on("connection", (ws, req) => this.onConnection(ws, req.socket.remoteAddress ?? "?"));
+      server.on("connection", (ws, req) =>
+        this.onConnection(ws, req.socket.remoteAddress ?? "?"),
+      );
     });
   }
 
@@ -164,6 +185,7 @@ export class WebSocketServer {
       state: "wait_hello",
       authTimer: null,
       isAlive: true,
+      disconnectCallbacks: [],
     };
     this.connections.add(conn);
     this.log("conn.open", { ip });
@@ -171,7 +193,12 @@ export class WebSocketServer {
     // Auth window timer: from connection open to authenticated state.
     conn.authTimer = setTimeout(() => {
       if (conn.state !== "authenticated" && conn.state !== "closed") {
-        this.sendReject(conn, undefined, "session_expired", "auth window expired");
+        this.sendReject(
+          conn,
+          undefined,
+          "session_expired",
+          "auth window expired",
+        );
         this.closeConnection(conn, 4001, "auth timeout");
       }
     }, this.authTimeoutMs);
@@ -180,7 +207,9 @@ export class WebSocketServer {
     ws.on("pong", () => {
       conn.isAlive = true;
     });
-    ws.on("close", (code, reason) => this.onClose(conn, code, reason.toString()));
+    ws.on("close", (code, reason) =>
+      this.onClose(conn, code, reason.toString()),
+    );
     ws.on("error", (err) => {
       this.log("conn.error", { ip, error: err.message });
     });
@@ -191,10 +220,14 @@ export class WebSocketServer {
 
     let frame: ClientFrame;
     try {
-      const text = typeof data === "string" ? data : (data as Buffer).toString("utf8");
+      const text =
+        typeof data === "string" ? data : (data as Buffer).toString("utf8");
       frame = clientFrame.parse(JSON.parse(text));
     } catch (err) {
-      this.log("conn.bad_frame", { ip: conn.ip, error: (err as Error).message });
+      this.log("conn.bad_frame", {
+        ip: conn.ip,
+        error: (err as Error).message,
+      });
       this.sendReject(conn, undefined, "internal", "malformed frame");
       this.closeConnection(conn, 4002, "malformed frame");
       return;
@@ -202,11 +235,14 @@ export class WebSocketServer {
 
     switch (conn.state) {
       case "wait_hello":
-        return this.handleHello(conn, frame);
+        this.handleHello(conn, frame);
+        return;
       case "wait_auth":
-        return this.handleAuth(conn, frame);
+        this.handleAuth(conn, frame);
+        return;
       case "authenticated":
-        return this.handleAuthenticated(conn, frame);
+        this.handleAuthenticated(conn, frame);
+        return;
     }
   }
 
@@ -235,6 +271,9 @@ export class WebSocketServer {
       send: (f) => this.send(conn, f),
       // Auth state guarantees fingerprint is set; the assertion is safe.
       fingerprint: conn.fingerprint as string,
+      onDisconnect: (cb) => {
+        conn.disconnectCallbacks.push(cb);
+      },
     };
     Promise.resolve()
       .then(() => handler(cmd, ctx))
@@ -246,7 +285,9 @@ export class WebSocketServer {
           error: message,
         });
         const requestId =
-          "requestId" in cmd ? (cmd as { requestId?: string }).requestId : undefined;
+          "requestId" in cmd
+            ? (cmd as { requestId?: string }).requestId
+            : undefined;
         this.send(conn, {
           type: "error",
           requestId,
@@ -258,7 +299,12 @@ export class WebSocketServer {
 
   private handleHello(conn: Connection, frame: ClientFrame): void {
     if (frame.type !== "client.hello") {
-      this.sendReject(conn, undefined, "internal", `expected client.hello, got ${frame.type}`);
+      this.sendReject(
+        conn,
+        undefined,
+        "internal",
+        `expected client.hello, got ${frame.type}`,
+      );
       this.closeConnection(conn, 4003, "wrong frame in wait_hello");
       return;
     }
@@ -310,7 +356,10 @@ export class WebSocketServer {
       conn.authTimer = null;
     }
     this.send(conn, result.ready);
-    this.log("conn.authenticated", { ip: conn.ip, fingerprint: result.client.fingerprint });
+    this.log("conn.authenticated", {
+      ip: conn.ip,
+      fingerprint: result.client.fingerprint,
+    });
   }
 
   private onClose(conn: Connection, code: number, reason: string): void {
@@ -320,6 +369,22 @@ export class WebSocketServer {
       clearTimeout(conn.authTimer);
       conn.authTimer = null;
     }
+    // Fire disconnect callbacks BEFORE we drop the conn from the set so
+    // that any subscriber-cleanup-driven sends (extremely unlikely, but
+    // theoretically a callback could try to send a final frame) still
+    // reach this.send → ws.send. Exceptions in any one cb don't skip
+    // the rest.
+    for (const cb of conn.disconnectCallbacks) {
+      try {
+        cb();
+      } catch (err) {
+        this.log("conn.disconnect_cb_error", {
+          ip: conn.ip,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    conn.disconnectCallbacks.length = 0;
     this.connections.delete(conn);
     this.log("conn.close", {
       ip: conn.ip,
@@ -329,7 +394,11 @@ export class WebSocketServer {
     });
   }
 
-  private closeConnection(conn: Connection, code: number, reason: string): void {
+  private closeConnection(
+    conn: Connection,
+    code: number,
+    reason: string,
+  ): void {
     if (conn.state === "closed") return;
     try {
       conn.ws.close(code, reason);
@@ -348,7 +417,10 @@ export class WebSocketServer {
     try {
       conn.ws.send(JSON.stringify(frame));
     } catch (err) {
-      this.log("conn.send_error", { ip: conn.ip, error: (err as Error).message });
+      this.log("conn.send_error", {
+        ip: conn.ip,
+        error: (err as Error).message,
+      });
     }
   }
 
@@ -389,7 +461,10 @@ export class WebSocketServer {
       }
     }, this.heartbeatIntervalMs);
     // Don't keep the process alive solely on the heartbeat timer.
-    if (this.heartbeatTimer && typeof this.heartbeatTimer.unref === "function") {
+    if (
+      this.heartbeatTimer &&
+      typeof this.heartbeatTimer.unref === "function"
+    ) {
       this.heartbeatTimer.unref();
     }
   }

@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import type { TimelineItem } from "@sidecodeapp/protocol";
+import { useQuery } from "@tanstack/react-query";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 
 /**

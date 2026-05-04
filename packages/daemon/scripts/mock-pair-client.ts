@@ -13,11 +13,11 @@ import {
   createHash,
   createPrivateKey,
   createPublicKey,
+  sign as cryptoSign,
   generateKeyPairSync,
   type KeyObject,
   randomBytes,
   randomUUID,
-  sign as cryptoSign,
 } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
@@ -86,13 +86,17 @@ async function runPair(offerB64: string, keyPath: string): Promise<void> {
     );
   }
   if (Date.now() > offer.expiresAt) {
-    fatal(`offer already expired at ${new Date(offer.expiresAt).toISOString()}`);
+    fatal(
+      `offer already expired at ${new Date(offer.expiresAt).toISOString()}`,
+    );
   }
   const keypair = generateOrLoadClientKeypair(keyPath);
   console.log(`mock client fingerprint: ${keypair.fingerprint}`);
   console.log(`daemon  fingerprint:     ${offer.daemonFingerprint}`);
   console.log(`daemon  address:         ${offer.daemonAddress}`);
-  console.log(`offer expires:           ${new Date(offer.expiresAt).toISOString()}`);
+  console.log(
+    `offer expires:           ${new Date(offer.expiresAt).toISOString()}`,
+  );
 
   const hello: ClientHelloFrame = {
     type: "client.hello",
@@ -192,7 +196,9 @@ async function runHandshake(args: ConnectArgs): Promise<void> {
     }),
   );
 
-  const ready = await waitFrame<{ type: string; daemonFingerprint: string }>(ws);
+  const ready = await waitFrame<{ type: string; daemonFingerprint: string }>(
+    ws,
+  );
   if (ready.type !== "server.ready") {
     fatal(`handshake failed; received ${JSON.stringify(ready)}`);
   }
@@ -215,9 +221,7 @@ function decodeOffer(b64: string): ReturnType<typeof pairOfferFrame.parse> {
 function generateOrLoadClientKeypair(path: string): MockKeyPair {
   if (existsSync(path)) return loadKeypair(path);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const pem = privateKey
-    .export({ format: "pem", type: "pkcs8" })
-    .toString();
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
   writeFileSync(path, pem, { mode: 0o600 });
   const jwk = publicKey.export({ format: "jwk" }) as { x: string };
   const fingerprint = createHash("sha256")
@@ -255,7 +259,9 @@ function waitFrame<T>(ws: WebSocket): Promise<T> {
         reject(err);
       }
     });
-    ws.once("close", (code) => reject(new Error(`closed before frame: ${code}`)));
+    ws.once("close", (code) =>
+      reject(new Error(`closed before frame: ${code}`)),
+    );
     ws.once("error", reject);
   });
 }

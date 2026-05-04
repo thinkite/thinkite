@@ -40,9 +40,7 @@ describe("KnownClients", () => {
       publicKeyB64: "k",
       pairedAt: 1,
     });
-    expect(
-      statSync(join(home, "known_clients.json")).mode & 0o777,
-    ).toBe(0o600);
+    expect(statSync(join(home, "known_clients.json")).mode & 0o777).toBe(0o600);
   });
 
   it("rejects duplicate fingerprint", () => {

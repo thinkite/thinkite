@@ -1,4 +1,4 @@
-const path = require("path");
+const path = require("node:path");
 const { getDefaultConfig } = require("expo/metro-config");
 const { withUniwindConfig } = require("uniwind/metro");
 
@@ -10,13 +10,18 @@ const config = getDefaultConfig(__dirname);
 //      clone) actually resolves
 //   2. watchFolders includes the clone path so Metro indexes its source files
 //      and picks up edits
-const reactNativeDiffsClone = path.resolve(__dirname, "../../../react-native-diffs");
+const reactNativeDiffsClone = path.resolve(
+  __dirname,
+  "../../../react-native-diffs",
+);
 config.resolver.unstable_enableSymlinks = true;
 config.watchFolders = [...(config.watchFolders ?? []), reactNativeDiffsClone];
 // Prevent Metro from descending into the clone's own node_modules and picking
 // up duplicate copies of react / react-native that conflict with this app's.
 config.resolver.blockList = [
-  ...(Array.isArray(config.resolver.blockList) ? config.resolver.blockList : []),
+  ...(Array.isArray(config.resolver.blockList)
+    ? config.resolver.blockList
+    : []),
   new RegExp(`${reactNativeDiffsClone}/node_modules/.*`),
 ];
 

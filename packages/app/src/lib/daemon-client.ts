@@ -1,6 +1,6 @@
+import type { TimelineItem } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
-import type { TimelineItem } from "@sidecodeapp/protocol";
 import { bytesToBase64Url } from "./base64";
 import {
   buildClientAuthTranscript,
@@ -37,10 +37,14 @@ export function decodePairOffer(b64: string): PairOffer {
   const json = atob(std);
   const offer = JSON.parse(json) as PairOffer;
   if (offer.v !== HANDSHAKE_VERSION) {
-    throw new Error(`offer v=${offer.v} != HANDSHAKE_VERSION=${HANDSHAKE_VERSION}`);
+    throw new Error(
+      `offer v=${offer.v} != HANDSHAKE_VERSION=${HANDSHAKE_VERSION}`,
+    );
   }
   if (Date.now() > offer.expiresAt) {
-    throw new Error(`offer expired at ${new Date(offer.expiresAt).toISOString()}`);
+    throw new Error(
+      `offer expired at ${new Date(offer.expiresAt).toISOString()}`,
+    );
   }
   return offer;
 }
@@ -261,7 +265,9 @@ async function runHandshake(
     throw new Error(`expected server.hello, got ${serverHello.type}`);
   }
   if (serverHello.clientNonce !== hello.clientNonce) {
-    throw new Error("server.hello did not echo our clientNonce — possible MITM");
+    throw new Error(
+      "server.hello did not echo our clientNonce — possible MITM",
+    );
   }
 
   const transcriptInput: TranscriptInput = {
@@ -278,7 +284,9 @@ async function runHandshake(
     expiresAt: serverHello.expiresAt,
   };
 
-  const signature = await identity.sign(buildClientAuthTranscript(transcriptInput));
+  const signature = await identity.sign(
+    buildClientAuthTranscript(transcriptInput),
+  );
   const readyP = waitFrame<{ type: string }>(ws);
   ws.send(
     JSON.stringify({
@@ -315,8 +323,7 @@ function waitFrame<T>(ws: WebSocket): Promise<T> {
     const onMsg = (ev: { data: unknown }) => {
       ws.onmessage = null;
       try {
-        const text =
-          typeof ev.data === "string" ? ev.data : String(ev.data);
+        const text = typeof ev.data === "string" ? ev.data : String(ev.data);
         resolve(JSON.parse(text) as T);
       } catch (err) {
         reject(err instanceof Error ? err : new Error(String(err)));

@@ -1,9 +1,9 @@
 import {
   createHash,
+  sign as cryptoSign,
   generateKeyPairSync,
   randomBytes,
   randomUUID,
-  sign as cryptoSign,
 } from "node:crypto";
 import { hostname } from "node:os";
 import {

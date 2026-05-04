@@ -1,7 +1,7 @@
-@import 'tailwindcss';
-@import 'uniwind';
+@import "tailwindcss";
+@import "uniwind";
 
-@import 'heroui-native/styles';
+@import "heroui-native/styles";
 
 /* Path to the heroui-native lib inside node_modules relative to global.css */
 /* Examples:
@@ -9,4 +9,4 @@
  *   - If global.css is in app/: ../node_modules/heroui-native/lib
  *   - If global.css is in src/styles/: ../../node_modules/heroui-native/lib
  */
-@source '../node_modules/heroui-native/lib';
+@source "../node_modules/heroui-native/lib";

@@ -29,7 +29,8 @@ export interface DesktopSession {
   environmentInner: string;
 }
 
-const DEFAULT_REL_PATH = "Library/Application Support/Claude/claude-code-sessions";
+const DEFAULT_REL_PATH =
+  "Library/Application Support/Claude/claude-code-sessions";
 
 export function desktopSessionsRoot(homeDirOverride?: string): string {
   return join(homeDirOverride ?? homedir(), DEFAULT_REL_PATH);

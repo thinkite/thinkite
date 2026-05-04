@@ -2,7 +2,7 @@ import type { Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { EventDelta } from "@sidecodeapp/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { ensureSessionLoop, pushPrompt } from "./run-query.js";
-import { SessionRuntime, type RuntimeEvent } from "./session-runtime.js";
+import { type RuntimeEvent, SessionRuntime } from "./session-runtime.js";
 
 /**
  * Cheap test seam: build a fake Query that iterates a static array of
@@ -87,7 +87,10 @@ function contentBlockDeltaText(index: number, text: string): SDKMessage {
   } as unknown as SDKMessage;
 }
 
-function contentBlockDeltaInputJson(index: number, partial: string): SDKMessage {
+function contentBlockDeltaInputJson(
+  index: number,
+  partial: string,
+): SDKMessage {
   return {
     type: "stream_event",
     uuid: `env-cbd-input-${index}`,
@@ -101,11 +104,13 @@ function contentBlockDeltaInputJson(index: number, partial: string): SDKMessage 
   } as unknown as SDKMessage;
 }
 
-function assistantEnvelope(toolUses: Array<{
-  id: string;
-  name: string;
-  input: unknown;
-}>): SDKMessage {
+function assistantEnvelope(
+  toolUses: Array<{
+    id: string;
+    name: string;
+    input: unknown;
+  }>,
+): SDKMessage {
   return {
     type: "assistant",
     uuid: `env-asst-${toolUses.map((t) => t.id).join(",")}`,
@@ -190,8 +195,8 @@ describe("ensureSessionLoop — text streaming", () => {
       e.kind === "append" && e.item.type === "assistant_message"
         ? e.item.uuid
         : e.kind === "patch_text"
-        ? e.uuid
-        : null,
+          ? e.uuid
+          : null,
     );
     expect(uuids).toEqual(["msg_X:0", "msg_X:0", "msg_X:1", "msg_X:1"]);
   });
@@ -239,7 +244,8 @@ describe("ensureSessionLoop — tool_use append", () => {
     expect(out).toHaveLength(1);
     const ev = out[0];
     if (ev?.kind !== "append") throw new Error("expected append");
-    if (ev.item.type !== "tool_call") throw new Error("expected tool_call item");
+    if (ev.item.type !== "tool_call")
+      throw new Error("expected tool_call item");
     expect(ev.item.callId).toBe("tu_1");
     expect(ev.item.name).toBe("Bash");
     expect(ev.item.status).toBe("running");
@@ -253,8 +259,12 @@ describe("ensureSessionLoop — tool_use append", () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
       queryFactory: fakeQueryYielding([
-        assistantEnvelope([{ id: "tu_1", name: "Bash", input: { command: "ls" } }]),
-        assistantEnvelope([{ id: "tu_1", name: "Bash", input: { command: "ls" } }]),
+        assistantEnvelope([
+          { id: "tu_1", name: "Bash", input: { command: "ls" } },
+        ]),
+        assistantEnvelope([
+          { id: "tu_1", name: "Bash", input: { command: "ls" } },
+        ]),
       ]),
     });
     expect(payloads(runtime)).toHaveLength(1);
@@ -337,11 +347,26 @@ describe("ensureSessionLoop — lifecycle", () => {
 
   it("swallows iterator errors and still clears runtime state", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
+    // Hand-rolled async iterator whose `next()` rejects — biome's `useYield`
+    // would flag a `function*` body that never yields, and "yield then
+    // throw" doesn't trigger the runtime's catch path the way "throw on
+    // first .next()" does.
     const factory = (() => {
-      async function* gen(): AsyncGenerator<SDKMessage, void> {
-        throw new Error("boom");
-      }
-      return Object.assign(gen(), {
+      const it: AsyncIterator<SDKMessage, void> & AsyncIterable<SDKMessage> = {
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        next() {
+          return Promise.reject(new Error("boom"));
+        },
+        async return() {
+          return { value: undefined, done: true };
+        },
+        async throw(err) {
+          throw err;
+        },
+      };
+      return Object.assign(it, {
         interrupt: vi.fn(async () => {}),
         close: vi.fn(),
       }) as unknown as Query;

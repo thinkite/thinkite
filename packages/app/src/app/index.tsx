@@ -1,6 +1,12 @@
 import { router, Stack } from "expo-router";
 import { useMemo } from "react";
-import { ActivityIndicator, Pressable, SectionList, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  SectionList,
+  Text,
+  View,
+} from "react-native";
 import { SessionRow } from "@/components/session-row";
 import { useSessions } from "@/hooks/use-sessions";
 import { projectName } from "@/lib/format";
@@ -15,9 +21,7 @@ interface ProjectSection {
   data: SessionInfo[];
 }
 
-const Separator = () => (
-  <View className="h-px bg-gray-200 dark:bg-gray-800" />
-);
+const Separator = () => <View className="h-px bg-gray-200 dark:bg-gray-800" />;
 
 function openSession(session: SessionInfo) {
   router.push({
@@ -95,7 +99,9 @@ function Body({ query }: { query: ReturnType<typeof useSessions> }) {
           Couldn't load sessions
         </Text>
         <Text className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400">
-          {query.error instanceof Error ? query.error.message : String(query.error)}
+          {query.error instanceof Error
+            ? query.error.message
+            : String(query.error)}
         </Text>
       </View>
     );

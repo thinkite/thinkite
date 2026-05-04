@@ -1,10 +1,10 @@
 import {
   createHash,
+  sign as cryptoSign,
   generateKeyPairSync,
   type KeyObject,
   randomBytes,
   randomUUID,
-  sign as cryptoSign,
 } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -290,7 +290,11 @@ describe("PairingService — qr_bootstrap failure modes", () => {
     const firstHelloRes = pairing.processClientHello(firstHello);
     expect(firstHelloRes.ok).toBe(true);
     if (!firstHelloRes.ok) return;
-    const firstAuth = signClientAuth(firstHelloRes.serverHello, firstHello, client);
+    const firstAuth = signClientAuth(
+      firstHelloRes.serverHello,
+      firstHello,
+      client,
+    );
     expect(pairing.processClientAuth(firstAuth).ok).toBe(true);
 
     // Second qr_bootstrap with same client — already paired, must reconnect instead.

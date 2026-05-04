@@ -403,20 +403,118 @@ export const eventDelta = z.discriminatedUnion("kind", [
     /** Replacement detail with output slotted into the right field. */
     detail: toolCallDetail,
   }),
+  // ─── Turn lifecycle ────────────────────────────────────────────────
+  // Bracket each Claude turn so iOS can render "thinking…" / show-stop /
+  // hide-stop / failure-toast / canceled-marker without inferring from
+  // event timing. Emitted by run-query (turn_started before pushPrompt
+  // fans out, turn_completed on `result` envelope, turn_failed in the
+  // catch where F2 swallowed errors) and by router's interrupt handler
+  // (turn_canceled after query.interrupt() resolves).
+  z.object({
+    kind: z.literal("turn_started"),
+  }),
+  z.object({
+    kind: z.literal("turn_completed"),
+    /** Optional usage stats lifted from the SDK `result` envelope. */
+    usage: z
+      .object({
+        inputTokens: z.number().optional(),
+        outputTokens: z.number().optional(),
+        cacheReadInputTokens: z.number().optional(),
+        cacheCreationInputTokens: z.number().optional(),
+      })
+      .optional(),
+  }),
+  z.object({
+    kind: z.literal("turn_failed"),
+    error: z.string(),
+  }),
+  z.object({
+    kind: z.literal("turn_canceled"),
+  }),
 ]);
 export type EventDelta = z.infer<typeof eventDelta>;
 
-// ─── Commands: client → daemon (fire-and-forget; effects via events) ───────
+// ─── Streaming-session commands (client → daemon) ──────────────────────────
+//
+// All four request a per-session control action and get a correlated response.
+// Live stream events arrive as `eventFrame`s tagged with `sessionId` (no
+// requestId) — those are server-initiated, fanned out from the runtime
+// to subscribers. ws disconnect is treated as an implicit `unsubscribe-all`
+// for that connection (no RPC needed).
 
 export const subscribeCommand = z.object({
   type: z.literal("subscribe"),
+  requestId: z.string(),
   sessionId: z.string(),
 });
 
+export const subscribeResponse = z.object({
+  type: z.literal("subscribe.response"),
+  requestId: z.string(),
+  sessionId: z.string(),
+  /** Settled JSONL state at subscribe time (empty if session has no transcript yet). */
+  settled: z.array(timelineItem),
+  /** Runtime cursor at subscribe time. iOS may use it for debug/log; live deltas carry their own cursor. */
+  cursor: z.number(),
+});
+
+export const unsubscribeCommand = z.object({
+  type: z.literal("unsubscribe"),
+  requestId: z.string(),
+  sessionId: z.string(),
+});
+
+export const unsubscribeResponse = z.object({
+  type: z.literal("unsubscribe.response"),
+  requestId: z.string(),
+});
+
+/**
+ * Send a user prompt into a session.
+ *
+ * `cwd` is REQUIRED on the first sendPrompt for a session that doesn't yet
+ * have JSONL on disk (= iOS-creating a new session). Daemon checks via
+ * SDK's `getSessionInfo(sessionId)`; missing-cwd-for-new-session → daemon
+ * replies with `{ type: "error", code: "invalid_message" }`. For resume
+ * (session already exists), `cwd` is ignored — SDK uses the persisted cwd.
+ */
 export const sendPromptCommand = z.object({
   type: z.literal("sendPrompt"),
+  requestId: z.string(),
   sessionId: z.string(),
   text: z.string(),
+  cwd: z.string().optional(),
+});
+
+export const sendPromptResponse = z.object({
+  type: z.literal("sendPrompt.response"),
+  requestId: z.string(),
+});
+
+/** User pressed "stop" on the live turn. Targets `runtime.query.interrupt()`
+ *  — turn ends, session/subprocess stays alive for follow-up prompts. */
+export const interruptCommand = z.object({
+  type: z.literal("interrupt"),
+  requestId: z.string(),
+  sessionId: z.string(),
+});
+
+export const interruptResponse = z.object({
+  type: z.literal("interrupt.response"),
+  requestId: z.string(),
+});
+
+/**
+ * Server-initiated streaming event — one per `runtime.addEvent`. Fanned out
+ * to every subscriber on the corresponding session. `cursor` is the
+ * runtime's monotonic counter for this event; clients may ignore it in V0.
+ */
+export const eventFrame = z.object({
+  type: z.literal("event"),
+  sessionId: z.string(),
+  cursor: z.number(),
+  delta: eventDelta,
 });
 
 export const approveCommand = z.object({
@@ -545,7 +643,9 @@ export const errorFrame = z.object({
 
 export const command = z.discriminatedUnion("type", [
   subscribeCommand,
+  unsubscribeCommand,
   sendPromptCommand,
+  interruptCommand,
   approveCommand,
   stopTaskCommand,
   listSessionsCommand,
@@ -557,6 +657,10 @@ export const command = z.discriminatedUnion("type", [
 export type Command = z.infer<typeof command>;
 
 export const response = z.discriminatedUnion("type", [
+  subscribeResponse,
+  unsubscribeResponse,
+  sendPromptResponse,
+  interruptResponse,
   listSessionsResponse,
   deleteSessionResponse,
   continueOnDesktopResponse,
@@ -571,7 +675,9 @@ export const clientFrame = z.discriminatedUnion("type", [
   clientAuthFrame,
   pingFrame,
   subscribeCommand,
+  unsubscribeCommand,
   sendPromptCommand,
+  interruptCommand,
   approveCommand,
   stopTaskCommand,
   listSessionsCommand,
@@ -593,6 +699,11 @@ export const daemonFrame = z.discriminatedUnion("type", [
   approvalRequestEvent,
   sessionDivergedEvent,
   sessionForkedEvent,
+  subscribeResponse,
+  unsubscribeResponse,
+  sendPromptResponse,
+  interruptResponse,
+  eventFrame,
   listSessionsResponse,
   deleteSessionResponse,
   continueOnDesktopResponse,

@@ -4,19 +4,33 @@ import type { DesktopSession } from "./desktop/sessions.js";
 import { createCommandHandler } from "./router.js";
 import type { CommandContext } from "./ws-server.js";
 
-function makeCtx(): { ctx: CommandContext; sent: DaemonFrame[] } {
+function makeCtx(): {
+  ctx: CommandContext;
+  sent: DaemonFrame[];
+  fireDisconnect: () => void;
+} {
   const sent: DaemonFrame[] = [];
+  const callbacks: Array<() => void> = [];
   return {
     sent,
+    fireDisconnect: () => {
+      for (const cb of callbacks) cb();
+      callbacks.length = 0;
+    },
     ctx: {
       send: (f) => sent.push(f),
       fingerprint: "0123456789abcdef",
+      onDisconnect: (cb) => {
+        callbacks.push(cb);
+      },
     },
   };
 }
 
 /** Default deps for tests that don't exercise listSessions. */
-function makeDeps(overrides?: Partial<Parameters<typeof createCommandHandler>[0]>) {
+function makeDeps(
+  overrides?: Partial<Parameters<typeof createCommandHandler>[0]>,
+) {
   return {
     continueOnDesktop: vi.fn().mockResolvedValue(undefined),
     listSessions: vi.fn().mockResolvedValue([]),
@@ -25,7 +39,9 @@ function makeDeps(overrides?: Partial<Parameters<typeof createCommandHandler>[0]
   };
 }
 
-function makeDesktopSession(over: Partial<DesktopSession> = {}): DesktopSession {
+function makeDesktopSession(
+  over: Partial<DesktopSession> = {},
+): DesktopSession {
   return {
     sessionId: "local_119c4694-f67a-4e16-b99c-140567c682fd",
     cliSessionId: "03f3f808-9702-4dda-82da-34a8b3f76879",
@@ -228,10 +244,7 @@ describe("createCommandHandler — listSessions", () => {
     const listSessions = vi.fn().mockRejectedValue(new Error("disk gone"));
     const handler = createCommandHandler(makeDeps({ listSessions }));
     const { ctx, sent } = makeCtx();
-    await handler(
-      { type: "listSessions", requestId: "ls-5", dir: "/x" },
-      ctx,
-    );
+    await handler({ type: "listSessions", requestId: "ls-5", dir: "/x" }, ctx);
     expect(sent[0]).toMatchObject({
       type: "error",
       requestId: "ls-5",
@@ -245,10 +258,7 @@ describe("createCommandHandler — listSessions", () => {
       makeDeps({ listSessions: vi.fn().mockResolvedValue([]) }),
     );
     const { ctx, sent } = makeCtx();
-    await handler(
-      { type: "listSessions", requestId: "ls-6", dir: "/x" },
-      ctx,
-    );
+    await handler({ type: "listSessions", requestId: "ls-6", dir: "/x" }, ctx);
     expect(sent[0]).toMatchObject({
       type: "listSessions.response",
       sessions: [],
@@ -342,15 +352,18 @@ describe("createCommandHandler — getMessages", () => {
 });
 
 describe("createCommandHandler — unsupported commands", () => {
-  it("replies error/unsupported for fire-and-forget commands (no requestId)", async () => {
+  it("replies error/unsupported with the inbound requestId", async () => {
     const handler = createCommandHandler(makeDeps());
     const { ctx, sent } = makeCtx();
-    await handler({ type: "subscribe", sessionId: "s" }, ctx);
+    await handler(
+      { type: "subscribe", requestId: "sub-1", sessionId: "s" },
+      ctx,
+    );
     expect(sent[0]).toMatchObject({
       type: "error",
       code: "unsupported",
     });
-    expect((sent[0] as { requestId?: string }).requestId).toBeUndefined();
+    expect((sent[0] as { requestId?: string }).requestId).toBe("sub-1");
   });
 
   it("does NOT call continueOnDesktop for other command types", async () => {

@@ -366,9 +366,7 @@ describe("normalize", () => {
       },
       userMsg("u-1", "hi"),
     ]);
-    expect(out).toEqual([
-      { type: "user_message", uuid: "u-1", text: "hi" },
-    ]);
+    expect(out).toEqual([{ type: "user_message", uuid: "u-1", text: "hi" }]);
   });
 
   it("Preserves order across mixed text + tool_use within one assistant turn", () => {

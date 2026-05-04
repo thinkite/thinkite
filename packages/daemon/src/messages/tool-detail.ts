@@ -19,12 +19,12 @@
  * unifiedDiff format only touches one place.
  */
 
-import { structuredPatch } from "diff";
 import {
   grepMode,
-  todoEntry,
   type ToolCallDetail,
+  todoEntry,
 } from "@sidecodeapp/protocol";
+import { structuredPatch } from "diff";
 import { z } from "zod";
 import { detectLanguageForPath } from "./language-detect.js";
 
@@ -343,5 +343,5 @@ function basenameOf(p: string): string {
 
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
-  return s.slice(0, max - 1) + "…";
+  return `${s.slice(0, max - 1)}…`;
 }

@@ -2,10 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  desktopSessionsRoot,
-  listDesktopSessions,
-} from "./sessions.js";
+import { desktopSessionsRoot, listDesktopSessions } from "./sessions.js";
 
 const OUTER_A = "5e7e6b95-3ce4-4a96-ba41-b12692e3924d";
 const INNER_A = "26c09711-7746-482e-a18e-6a754d683aae";

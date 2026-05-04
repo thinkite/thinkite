@@ -1,7 +1,7 @@
 import {
-  generateKeyPairSync,
   sign as cryptoSign,
   verify as cryptoVerify,
+  generateKeyPairSync,
 } from "node:crypto";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";

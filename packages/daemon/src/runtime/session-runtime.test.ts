@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SessionRuntime, type RuntimeQueryHandle } from "./session-runtime.js";
+import { type RuntimeQueryHandle, SessionRuntime } from "./session-runtime.js";
 
 describe("SessionRuntime", () => {
   it("addEvent assigns cursors monotonically starting at 1", () => {

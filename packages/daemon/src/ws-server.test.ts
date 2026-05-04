@@ -1,9 +1,9 @@
 import {
   createHash,
+  sign as cryptoSign,
   generateKeyPairSync,
   type KeyObject,
   randomBytes,
-  sign as cryptoSign,
 } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -164,7 +164,9 @@ describe("WebSocketServer", () => {
     expect(serverHello.clientNonce).toBe(hello.clientNonce);
 
     ws.send(JSON.stringify(buildAuth(serverHello, hello, client)));
-    const ready = await nextFrame<{ type: string; daemonFingerprint: string }>(ws);
+    const ready = await nextFrame<{ type: string; daemonFingerprint: string }>(
+      ws,
+    );
     expect(ready.type).toBe("server.ready");
 
     expect(server?.authenticatedCount()).toBe(1);
@@ -410,7 +412,11 @@ describe("WebSocketServer authenticated dispatch", () => {
   });
 
   it("calls commandHandler with the parsed command + send context", async () => {
-    const calls: Array<{ cmdType: string; cliSessionId?: string; fingerprint: string }> = [];
+    const calls: Array<{
+      cmdType: string;
+      cliSessionId?: string;
+      fingerprint: string;
+    }> = [];
     await startWith(async (cmd, ctx) => {
       calls.push({
         cmdType: cmd.type,
@@ -426,7 +432,9 @@ describe("WebSocketServer authenticated dispatch", () => {
       }
     });
     const ws = await authenticate();
-    const reply = nextFrame<{ type: string; requestId: string; ok: boolean }>(ws);
+    const reply = nextFrame<{ type: string; requestId: string; ok: boolean }>(
+      ws,
+    );
     ws.send(
       JSON.stringify({
         type: "continueOnDesktop",
@@ -450,7 +458,12 @@ describe("WebSocketServer authenticated dispatch", () => {
       throw new Error("boom");
     });
     const ws = await authenticate();
-    const reply = nextFrame<{ type: string; code: string; requestId?: string; message: string }>(ws);
+    const reply = nextFrame<{
+      type: string;
+      code: string;
+      requestId?: string;
+      message: string;
+    }>(ws);
     ws.send(
       JSON.stringify({
         type: "continueOnDesktop",
@@ -499,6 +512,65 @@ describe("WebSocketServer authenticated dispatch", () => {
     expect(pong.echoT).toBe(t);
     expect(handlerCalls).toBe(0);
     ws.close();
+  });
+
+  it("ctx.onDisconnect callbacks fire when the connection closes", async () => {
+    const fired: string[] = [];
+    await startWith((cmd, ctx) => {
+      if (cmd.type !== "continueOnDesktop") return;
+      ctx.onDisconnect(() => fired.push("a"));
+      ctx.onDisconnect(() => fired.push("b"));
+      ctx.send({
+        type: "continueOnDesktop.response",
+        requestId: cmd.requestId,
+        ok: true,
+      });
+    });
+    const ws = await authenticate();
+    const reply = nextFrame<{ type: string }>(ws);
+    ws.send(
+      JSON.stringify({
+        type: "continueOnDesktop",
+        requestId: "req-cb-1",
+        cliSessionId: "abc",
+      }),
+    );
+    await reply;
+    expect(fired).toEqual([]);
+    ws.close();
+    // Wait for server-side close handler to fire callbacks.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fired).toEqual(["a", "b"]);
+  });
+
+  it("ctx.onDisconnect: an exception in one cb does not skip the rest", async () => {
+    const fired: string[] = [];
+    await startWith((cmd, ctx) => {
+      if (cmd.type !== "continueOnDesktop") return;
+      ctx.onDisconnect(() => {
+        fired.push("first");
+        throw new Error("first cb blew up");
+      });
+      ctx.onDisconnect(() => fired.push("second"));
+      ctx.send({
+        type: "continueOnDesktop.response",
+        requestId: cmd.requestId,
+        ok: true,
+      });
+    });
+    const ws = await authenticate();
+    const reply = nextFrame<{ type: string }>(ws);
+    ws.send(
+      JSON.stringify({
+        type: "continueOnDesktop",
+        requestId: "req-cb-2",
+        cliSessionId: "abc",
+      }),
+    );
+    await reply;
+    ws.close();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fired).toEqual(["first", "second"]);
   });
 
   it("authenticated commands are silently dropped when no handler configured", async () => {

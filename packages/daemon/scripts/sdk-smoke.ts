@@ -7,24 +7,32 @@
 
 import {
   type CanUseTool,
+  listSessions,
   type PermissionResult,
   query,
   type SDKMessage,
   type SDKUserMessage,
-  listSessions,
 } from "@anthropic-ai/claude-agent-sdk";
 
 const log = (...args: unknown[]) => console.log("[smoke]", ...args);
 
-const canUseTool: CanUseTool = async (toolName, input, ctx): Promise<PermissionResult> => {
-  log(`canUseTool fired: tool=${toolName} title=${ctx.title ?? "—"} toolUseID=${ctx.toolUseID}`);
+const canUseTool: CanUseTool = async (
+  toolName,
+  input,
+  ctx,
+): Promise<PermissionResult> => {
+  log(
+    `canUseTool fired: tool=${toolName} title=${ctx.title ?? "—"} toolUseID=${ctx.toolUseID}`,
+  );
   log(`  input=${JSON.stringify(input).slice(0, 120)}`);
   // Allow Read but deny anything else, just to see both branches working.
   if (toolName === "Read") return { behavior: "allow" };
   return { behavior: "deny", message: "smoke-test: only Read allowed" };
 };
 
-async function summarizeStream(q: AsyncGenerator<SDKMessage, void>): Promise<void> {
+async function summarizeStream(
+  q: AsyncGenerator<SDKMessage, void>,
+): Promise<void> {
   let n = 0;
   for await (const msg of q) {
     n += 1;
@@ -72,7 +80,9 @@ async function test3_listSessions(): Promise<void> {
   const sessions = await listSessions({ dir: process.cwd() });
   log(`got ${sessions.length} sessions in ${process.cwd()}`);
   for (const s of sessions.slice(0, 3)) {
-    log(`  ${s.sessionId.slice(0, 8)}… "${s.summary.slice(0, 60)}" mtime=${new Date(s.lastModified).toISOString()}`);
+    log(
+      `  ${s.sessionId.slice(0, 8)}… "${s.summary.slice(0, 60)}" mtime=${new Date(s.lastModified).toISOString()}`,
+    );
   }
 }
 
