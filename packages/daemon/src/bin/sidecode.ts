@@ -14,10 +14,31 @@ async function main(): Promise<void> {
     case "up":
     case "start": {
       const daemon = await start(parsePortFlag(rest));
+      let shuttingDown = false;
       const shutdown = async (signal: string) => {
+        if (shuttingDown) {
+          console.log(`received ${signal} during shutdown — ignoring`);
+          return;
+        }
+        shuttingDown = true;
         console.log(`\nreceived ${signal}, shutting down…`);
-        await daemon.stop();
-        process.exit(0);
+        // Process-level safety net: if daemon.stop() (and the per-runtime
+        // 5s grace inside) still haven't finished after 10s, force exit.
+        // unref() so the timer doesn't itself prevent natural exit if
+        // shutdown DOES complete cleanly.
+        const forceExit = setTimeout(() => {
+          console.error("shutdown stalled past 10s, forcing exit");
+          process.exit(1);
+        }, 10_000);
+        forceExit.unref();
+        try {
+          await daemon.stop();
+        } catch (err) {
+          console.error("error during shutdown:", err);
+        } finally {
+          clearTimeout(forceExit);
+          process.exit(0);
+        }
       };
       process.on("SIGINT", () => void shutdown("SIGINT"));
       process.on("SIGTERM", () => void shutdown("SIGTERM"));

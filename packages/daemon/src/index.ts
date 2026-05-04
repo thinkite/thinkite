@@ -1,5 +1,5 @@
 import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
-import { PROTOCOL_VERSION } from "@sidecodeapp/protocol";
+import { type EventDelta, PROTOCOL_VERSION } from "@sidecodeapp/protocol";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { listDesktopSessions } from "./desktop/sessions.js";
@@ -9,6 +9,7 @@ import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
 import { PairingService } from "./pairing.js";
 import { createCommandHandler } from "./router.js";
+import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import { DEFAULT_HOST, DEFAULT_PORT, WebSocketServer } from "./ws-server.js";
 
 export interface DaemonOptions {
@@ -30,6 +31,12 @@ export interface Daemon {
   pairedClientCount(): number;
   /** Number of currently authenticated WS connections. */
   authenticatedConnectionCount(): number;
+  /**
+   * Per-session runtime manager. Empty until slice G wires it into the
+   * router; surfaced here so daemon.stop() can drain it on shutdown and
+   * tests can inspect it.
+   */
+  readonly runtimeManager: SessionRuntimeManager<EventDelta>;
 }
 
 export async function start(options: DaemonOptions = {}): Promise<Daemon> {
@@ -41,6 +48,9 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   const daemonAddress = options.daemonAddress ?? `ws://${host}:${port}`;
 
   const pairing = new PairingService(identity, knownClients, { daemonAddress });
+  // Lazy-populated by slice G's router when it sees its first sendPrompt.
+  // Drained on shutdown via daemon.stop() → runtimeManager.shutdown().
+  const runtimeManager = new SessionRuntimeManager<EventDelta>();
   const commandHandler = createCommandHandler({
     continueOnDesktop,
     listSessions: listDesktopSessions,
@@ -99,7 +109,15 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     fingerprint: identity.fingerprint,
     pairedClientCount: () => knownClients.list().length,
     authenticatedConnectionCount: () => ws.authenticatedCount(),
+    runtimeManager,
     async stop() {
+      // Drain SDK queries first so each subprocess gets the chance to
+      // finish its current JSONL write before the ws server tears down
+      // and the process exits. SDK's `close()` triggers an internal 5s
+      // grace; per-runtime timeoutMs caps how long we wait per session.
+      // bin/sidecode.ts's outer 10s forceExit guards against catastrophic
+      // hangs from there.
+      await runtimeManager.shutdown(5000);
       deleteDaemonLock(home);
       await ws.stop();
       console.log("sidecode daemon stopped");
