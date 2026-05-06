@@ -1,4 +1,4 @@
-import type { TimelineItem } from "@sidecodeapp/protocol";
+import type { EventDelta, TimelineItem } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { bytesToBase64Url } from "./base64";
@@ -72,8 +72,22 @@ interface PendingRequest {
   reject: (err: Error) => void;
 }
 
+/**
+ * Per-session callback receiving server-initiated `eventFrame` payloads.
+ * Function identity (not just sessionId) determines ownership: stale
+ * unsubscribes after a re-subscribe won't clobber the new owner.
+ */
+type EventCallback = (delta: EventDelta) => void;
+
 /** Minimal connected/authenticated daemon WS client. One per session. */
 export class DaemonClient {
+  /**
+   * Per-session live event callbacks. Set on `subscribe`, cleared on
+   * `unsubscribe` (only if the stored cb is still the same identity), and
+   * cleared en masse on ws close.
+   */
+  private readonly eventCallbacks = new Map<string, EventCallback>();
+
   private constructor(
     private readonly ws: WebSocket,
     private readonly pending: Map<string, PendingRequest>,
@@ -162,6 +176,107 @@ export class DaemonClient {
     return res.items;
   }
 
+  /**
+   * Subscribe to a session's live event stream. Returns the settled
+   * snapshot at subscribe time, the runtime cursor, and an `unsubscribe`
+   * thunk that drops the callback + sends the matching RPC.
+   *
+   * The callback is invoked once per `eventFrame` for this sessionId.
+   * Caller is responsible for applying `EventDelta`s to local state
+   * (see `timeline-reducer.ts`).
+   *
+   * Re-subscribe / re-mount safety: each subscribe gets a unique
+   * callback identity, and `unsubscribe` only deletes the registry
+   * slot if the stored cb still matches — so a stale cleanup after
+   * a quick remount won't clobber the new subscription.
+   */
+  async subscribe(
+    sessionId: string,
+    onEvent: EventCallback,
+  ): Promise<{
+    settled: TimelineItem[];
+    cursor: number;
+    unsubscribe: () => Promise<void>;
+  }> {
+    this.eventCallbacks.set(sessionId, onEvent);
+    let res: { settled: TimelineItem[]; cursor: number };
+    try {
+      const requestId = Crypto.randomUUID();
+      res = (await this.request({
+        type: "subscribe",
+        requestId,
+        sessionId,
+      })) as { settled: TimelineItem[]; cursor: number };
+    } catch (err) {
+      if (this.eventCallbacks.get(sessionId) === onEvent) {
+        this.eventCallbacks.delete(sessionId);
+      }
+      throw err;
+    }
+    return {
+      settled: res.settled,
+      cursor: res.cursor,
+      unsubscribe: () => this.unsubscribeOwned(sessionId, onEvent),
+    };
+  }
+
+  /**
+   * Send a user prompt into a session. `cwd` REQUIRED on the first
+   * sendPrompt for an iOS-created session (no JSONL yet); ignored for
+   * resume. Daemon validates and may reply with
+   * `{ type: "error", code: "invalid_message" }` for missing-cwd.
+   */
+  async sendPrompt(
+    sessionId: string,
+    text: string,
+    cwd?: string,
+  ): Promise<void> {
+    const requestId = Crypto.randomUUID();
+    const frame: { type: string; requestId: string } & Record<string, unknown> =
+      {
+        type: "sendPrompt",
+        requestId,
+        sessionId,
+        text,
+      };
+    if (cwd !== undefined) frame.cwd = cwd;
+    await this.request(frame);
+  }
+
+  /**
+   * User pressed stop on the live turn. Targets `runtime.query.interrupt()`
+   * on the daemon: cancels the current turn but keeps the session /
+   * subprocess alive for follow-up prompts.
+   */
+  async interrupt(sessionId: string): Promise<void> {
+    const requestId = Crypto.randomUUID();
+    await this.request({
+      type: "interrupt",
+      requestId,
+      sessionId,
+    });
+  }
+
+  /**
+   * Identity-checked unsubscribe — the local registry slot is only
+   * cleared if `owner` still matches the stored callback. RPC fires
+   * regardless (best-effort cleanup on the daemon side).
+   */
+  private async unsubscribeOwned(
+    sessionId: string,
+    owner: EventCallback,
+  ): Promise<void> {
+    if (this.eventCallbacks.get(sessionId) === owner) {
+      this.eventCallbacks.delete(sessionId);
+    }
+    const requestId = Crypto.randomUUID();
+    await this.request({
+      type: "unsubscribe",
+      requestId,
+      sessionId,
+    });
+  }
+
   close(): void {
     try {
       this.ws.close();
@@ -191,7 +306,13 @@ export class DaemonClient {
   ): DaemonClient {
     const client = new DaemonClient(ws, pending);
     ws.onmessage = (ev) => {
-      let frame: { type: string; requestId?: string; message?: string };
+      let frame: {
+        type?: string;
+        requestId?: string;
+        message?: string;
+        sessionId?: string;
+        delta?: EventDelta;
+      };
       try {
         frame =
           typeof ev.data === "string"
@@ -200,7 +321,19 @@ export class DaemonClient {
       } catch {
         return; // ignore non-JSON
       }
-      if (!frame.requestId) return; // unsolicited / event — V0 unused
+      // Server-initiated event frame (no requestId). Routed by sessionId
+      // to the subscribed callback. Unknown sessionId → silently drop
+      // (probably a frame for a session we just unsubscribed).
+      if (
+        frame.type === "event" &&
+        typeof frame.sessionId === "string" &&
+        frame.delta !== undefined
+      ) {
+        const cb = client.eventCallbacks.get(frame.sessionId);
+        if (cb) cb(frame.delta);
+        return;
+      }
+      if (!frame.requestId) return;
       const slot = pending.get(frame.requestId);
       if (!slot) return;
       pending.delete(frame.requestId);
@@ -214,6 +347,7 @@ export class DaemonClient {
       const err = new Error("daemon connection closed");
       for (const [, slot] of pending) slot.reject(err);
       pending.clear();
+      client.eventCallbacks.clear();
     };
     return client;
   }
