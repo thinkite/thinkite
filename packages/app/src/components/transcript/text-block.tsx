@@ -1,12 +1,17 @@
 import { Text, View } from "react-native";
-import { MarkdownView } from "@/lib/markdown";
+import { ChatMarkdown } from "@/lib/markdown";
 import type { TextRenderBlock } from "@/lib/transcript-blocks";
 
 /**
  * Chat-mode rendering: user messages get a right-aligned blue bubble
  * (~85% max width — the parent transcript container already provides
  * outer horizontal padding, so the bubble can use most of the inner
- * column). Assistant messages render full-width markdown.
+ * column). Assistant messages stream as full-width markdown via
+ * `ChatMarkdown` (react-native-enriched-markdown) — Fabric component
+ * that self-sizes via Yoga, so each row hits LegendList with its real
+ * height on first layout. Avoids the Nitro async-measurement flicker
+ * that DiffsView (used in tool-block) suffers from. See
+ * `ChatMarkdown.tsx` header for the full chat-vs-tool-detail rationale.
  *
  * Bubble shape mirrors Claude Desktop's user-message look — pale blue
  * background, dark navy text. Role labels (YOU / CLAUDE) are
@@ -27,7 +32,7 @@ export function TextBlock({ block }: { block: TextRenderBlock }) {
   }
   return (
     <View className="px-4 py-2">
-      <MarkdownView content={block.text} />
+      <ChatMarkdown markdown={block.text} />
     </View>
   );
 }
