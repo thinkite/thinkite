@@ -1,6 +1,7 @@
+import { LegendList } from "@legendapp/list/react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useMemo } from "react";
-import { ActivityIndicator, FlatList, Text, View } from "react-native";
+import { ActivityIndicator, Text, View } from "react-native";
 import { TextBlock } from "@/components/transcript/text-block";
 import { ToolBlock } from "@/components/transcript/tool-block";
 import { useMessages } from "@/hooks/use-messages";
@@ -92,7 +93,7 @@ function Transcript({
   }
 
   return (
-    <FlatList<RenderBlock>
+    <LegendList<RenderBlock>
       data={blocks}
       keyExtractor={(b) => b.id}
       renderItem={({ item }) =>
@@ -102,6 +103,21 @@ function Transcript({
           <ToolBlock block={item} />
         )
       }
+      // Mixed-block heuristic: short user bubble ~60pt, assistant text
+      // ~100pt, tool block ~150pt+. ~100 is a defensible average; Legend
+      // List re-measures actual sizes after first render.
+      estimatedItemSize={120}
+      // Chat-mode triple: stick the rendered content to the bottom when
+      // it doesn't fill the screen (alignItemsAtEnd), boot directly at
+      // the latest message (initialScrollAtEnd), and keep the viewport
+      // pinned to the bottom whenever the user is already near it
+      // (maintainScrollAtEnd). User scrolling up disengages the pin
+      // automatically — Legend List checks `maintainScrollAtEndThreshold`
+      // (default 10% of viewport).
+      initialScrollAtEnd
+      alignItemsAtEnd
+      maintainScrollAtEnd={{ animated: true }}
+      recycleItems={false}
     />
   );
 }

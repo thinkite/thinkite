@@ -45,13 +45,6 @@ export function ToolBlock({ block }: { block: ToolRenderBlock }) {
   const isBash = block.name === "Bash";
   return (
     <View>
-      {block.showRoleHeader ? (
-        <View className="border-t border-gray-200 px-4 pt-3 dark:border-gray-800">
-          <Text className="mb-1 text-[10px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-            CLAUDE
-          </Text>
-        </View>
-      ) : null}
       <Accordion>
         <Accordion.Item value={block.callId}>
           <Accordion.Trigger className="px-4 py-3">

@@ -2,44 +2,32 @@ import { Text, View } from "react-native";
 import { MarkdownView } from "@/lib/markdown";
 import type { TextRenderBlock } from "@/lib/transcript-blocks";
 
-const ROLE_LABEL: Record<TextRenderBlock["role"], string> = {
-  user: "YOU",
-  assistant: "CLAUDE",
-};
-
 /**
- * One text block (a single ContentBlock from the transcript) rendered
- * top-down, full-width — reading-mode, not chat-mode. User text is plain;
- * assistant text goes through MarkdownView (Apple MarkdownView via Nitro)
- * so code blocks, lists, tables, links, diff blocks render natively with
- * tree-sitter syntax highlighting and stay at 60fps under streaming.
+ * Chat-mode rendering: user messages get a right-aligned blue bubble
+ * (~85% max width — the parent transcript container already provides
+ * outer horizontal padding, so the bubble can use most of the inner
+ * column). Assistant messages render full-width markdown.
  *
- * Follow-up blocks of the same role (`isFirstOfRoleRun: false`) drop the
- * role header and top border so a multi-message assistant turn reads as
- * one continuous response. flattenToBlocks computes the flag.
+ * Bubble shape mirrors Claude Desktop's user-message look — pale blue
+ * background, dark navy text. Role labels (YOU / CLAUDE) are
+ * deliberately dropped — alignment + bubble styling carry the speaker
+ * signal, matching mainstream chat-app convention.
  */
 export function TextBlock({ block }: { block: TextRenderBlock }) {
-  const continued = !block.isFirstOfRoleRun;
+  if (block.role === "user") {
+    return (
+      <View className="px-4 py-1.5">
+        <View className="max-w-[85%] self-end rounded-xl bg-blue-100 px-3 py-2">
+          <Text selectable className="text-base leading-[22px] text-blue-900">
+            {block.text}
+          </Text>
+        </View>
+      </View>
+    );
+  }
   return (
-    <View
-      className={
-        continued
-          ? "px-4 pb-3"
-          : "border-t border-gray-200 px-4 py-3 dark:border-gray-800"
-      }
-    >
-      {continued ? null : (
-        <Text className="mb-1 text-[10px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-          {ROLE_LABEL[block.role]}
-        </Text>
-      )}
-      {block.role === "assistant" ? (
-        <MarkdownView content={block.text} />
-      ) : (
-        <Text selectable className="text-base text-black dark:text-white">
-          {block.text}
-        </Text>
-      )}
+    <View className="px-4 py-2">
+      <MarkdownView content={block.text} />
     </View>
   );
 }
