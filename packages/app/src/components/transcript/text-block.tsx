@@ -21,9 +21,9 @@ import type { TextRenderBlock } from "@/lib/transcript-blocks";
 export function TextBlock({ block }: { block: TextRenderBlock }) {
   if (block.role === "user") {
     return (
-      <View className="px-4 py-1.5">
+      <View className="px-4 py-2">
         <View className="max-w-[85%] self-end rounded-xl bg-blue-100 px-3 py-2">
-          <Text selectable className="text-base leading-[22px] text-blue-900">
+          <Text selectable className="text-base leading-5.5 text-blue-900">
             {block.text}
           </Text>
         </View>

@@ -62,6 +62,9 @@ interface ColorPalette {
   codeBlockBorder: string;
   blockquoteBorder: string;
   bullet: string;
+  tableHeaderBg: string;
+  tableRowBg: string;
+  tableBorder: string;
 }
 
 const LIGHT_PALETTE: ColorPalette = {
@@ -69,11 +72,14 @@ const LIGHT_PALETTE: ColorPalette = {
   textMuted: "#404040",
   link: "#2563eb",
   inlineCodeBg: "#f4f4f5",
-  inlineCodeBorder: "#e4e4e7",
+  inlineCodeBorder: "#f4f4f5",
   codeBlockBg: "#f4f4f5",
-  codeBlockBorder: "#e4e4e7",
+  codeBlockBorder: "#f4f4f5",
   blockquoteBorder: "#d4d4d8",
   bullet: "#525252",
+  tableHeaderBg: "#eeeeef",
+  tableRowBg: "#f4f4f5",
+  tableBorder: "#fffafa",
 };
 
 const DARK_PALETTE: ColorPalette = {
@@ -81,11 +87,14 @@ const DARK_PALETTE: ColorPalette = {
   textMuted: "#a1a1aa",
   link: "#60a5fa",
   inlineCodeBg: "#27272a",
-  inlineCodeBorder: "#3f3f46",
+  inlineCodeBorder: "#27272a",
   codeBlockBg: "#18181b",
-  codeBlockBorder: "#27272a",
+  codeBlockBorder: "#18181b",
   blockquoteBorder: "#3f3f46",
   bullet: "#a1a1aa",
+  tableHeaderBg: "#27272a", // zinc-800 — one shade lighter than chat bg
+  tableRowBg: "#18181b", // zinc-900
+  tableBorder: "#202023",
 };
 
 function buildStyle(p: ColorPalette): MarkdownStyle {
@@ -160,10 +169,9 @@ function buildStyle(p: ColorPalette): MarkdownStyle {
       color: p.text,
       backgroundColor: p.codeBlockBg,
       borderColor: p.codeBlockBorder,
-      borderRadius: 6,
-      borderWidth: 1,
+      borderRadius: 8,
       padding: 10,
-      marginTop: 4,
+      marginTop: 0,
       marginBottom: 12,
     },
     blockquote: {
@@ -173,8 +181,9 @@ function buildStyle(p: ColorPalette): MarkdownStyle {
       borderColor: p.blockquoteBorder,
       borderWidth: 3,
       gapWidth: 10,
-      marginTop: 4,
+      marginTop: 0,
       marginBottom: 12,
+      backgroundColor: "transparent",
     },
     list: {
       fontSize: BODY_FONT_SIZE,
@@ -182,13 +191,29 @@ function buildStyle(p: ColorPalette): MarkdownStyle {
       color: p.text,
       bulletColor: p.bullet,
       markerColor: p.bullet,
-      gapWidth: 8,
       marginTop: 0,
       marginBottom: 12,
     },
     link: {
       color: p.link,
       underline: true,
+    },
+    table: {
+      // Cell text inherits paragraph metrics so chat density carries through
+      // table content. Set explicitly because Table doesn't auto-inherit
+      // paragraph style.
+      fontSize: BODY_FONT_SIZE,
+      lineHeight: BODY_LINE_HEIGHT,
+      color: p.text,
+      marginTop: 0,
+      marginBottom: 12,
+      headerBackgroundColor: p.tableHeaderBg,
+      headerTextColor: p.text,
+      rowEvenBackgroundColor: p.tableRowBg,
+      rowOddBackgroundColor: p.tableRowBg,
+      borderColor: p.tableBorder,
+      borderWidth: 2,
+      borderRadius: 2,
     },
   };
 }
@@ -209,7 +234,7 @@ export function ChatMarkdown({ markdown }: ChatMarkdownProps) {
       markdown={markdown}
       flavor="github"
       streamingAnimation
-      streamingConfig={{ tableMode: "hidden" }}
+      streamingConfig={{ tableMode: "progressive" }}
       markdownStyle={markdownStyle}
       // Drop the trailing margin so the bubble's bottom padding controls
       // visual spacing between rows uniformly.
