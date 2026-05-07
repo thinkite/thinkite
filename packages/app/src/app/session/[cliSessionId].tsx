@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { TextBlock } from "@/components/transcript/text-block";
 import { ToolBlock } from "@/components/transcript/tool-block";
+import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 import { useMessages } from "@/hooks/use-messages";
 import { SafeAreaView } from "@/lib/styled";
 import { flattenToBlocks, type RenderBlock } from "@/lib/transcript-blocks";
@@ -41,7 +42,9 @@ export default function SessionDetailScreen() {
         className="flex-1 bg-white dark:bg-black"
         edges={["bottom"]}
       >
-        <Body query={query} />
+        <ToolCallSheetProvider>
+          <Body query={query} />
+        </ToolCallSheetProvider>
       </SafeAreaView>
     </>
   );
@@ -104,9 +107,10 @@ function Transcript({
         )
       }
       // Mixed-block heuristic: short user bubble ~60pt, assistant text
-      // ~100pt, tool block ~150pt+. ~100 is a defensible average; Legend
-      // List re-measures actual sizes after first render.
-      estimatedItemSize={120}
+      // ~100pt, tool block ~50pt (sheet-on-tap, no inline expanded
+      // content). ~80 is a defensible average post tool-block refactor;
+      // Legend List re-measures actual sizes after first render.
+      estimatedItemSize={80}
       // Chat-mode triple: stick the rendered content to the bottom when
       // it doesn't fill the screen (alignItemsAtEnd), boot directly at
       // the latest message (initialScrollAtEnd), and keep the viewport
@@ -117,7 +121,7 @@ function Transcript({
       initialScrollAtEnd
       alignItemsAtEnd
       maintainScrollAtEnd={{ animated: true }}
-      recycleItems={false}
+      recycleItems
     />
   );
 }

@@ -1,11 +1,13 @@
 import "@/global.css";
+import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import { HeroUINativeProvider } from "heroui-native";
 import { useEffect } from "react";
 import { Pressable, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { SafeAreaListener } from "react-native-safe-area-context";
+import { Uniwind } from "uniwind";
 import {
   DaemonClientProvider,
   useDaemonClient,
@@ -36,11 +38,17 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <QueryClientProvider client={queryClient}>
         <DaemonClientProvider>
-          <HeroUINativeProvider>
-            <DaemonGate>
-              <Stack />
-            </DaemonGate>
-          </HeroUINativeProvider>
+          <SafeAreaListener
+            onChange={({ insets }) => {
+              Uniwind.updateInsets(insets);
+            }}
+          >
+            <BottomSheetModalProvider>
+              <DaemonGate>
+                <Stack />
+              </DaemonGate>
+            </BottomSheetModalProvider>
+          </SafeAreaListener>
         </DaemonClientProvider>
       </QueryClientProvider>
     </GestureHandlerRootView>
