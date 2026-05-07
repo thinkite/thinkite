@@ -29,6 +29,11 @@ function openSession(session: SessionInfo) {
     params: {
       cliSessionId: session.cliSessionId,
       title: session.title,
+      // Pass cwd so the session screen can hand it to sendPrompt — the
+      // SDK derives the project key from cwd to locate the JSONL for
+      // `claude --resume`. Without it, daemon spawns in its own cwd and
+      // the SDK reports "No conversation found with session ID ..."
+      cwd: session.cwd,
     },
   });
 }

@@ -258,17 +258,27 @@ export class DaemonClient {
   }
 
   /**
-   * Identity-checked unsubscribe — the local registry slot is only
-   * cleared if `owner` still matches the stored callback. RPC fires
-   * regardless (best-effort cleanup on the daemon side).
+   * Identity-checked unsubscribe — both the local registry slot AND the
+   * RPC are gated on `owner` still matching the stored callback.
+   *
+   * Why gate the RPC too: in React 19 StrictMode dev, useEffect runs
+   * mount → cleanup → mount with the same key. The first mount's
+   * subscribe Promise often resolves AFTER the cleanup, by which point
+   * the second mount has already registered a new callback (overwriting
+   * the slot) and re-sent its own subscribe RPC. If we then send a stale
+   * unsubscribe RPC for the first mount, the daemon's per-connection
+   * `subs` map maps sessionId → unsubscribe handle for the NEW fanout,
+   * so the daemon would tear down the live one. Skipping the RPC when
+   * we no longer own the slot defers cleanup to whoever does — they'll
+   * either send their own unsubscribe later, or the ws.onclose hook will
+   * release everything at once.
    */
   private async unsubscribeOwned(
     sessionId: string,
     owner: EventCallback,
   ): Promise<void> {
-    if (this.eventCallbacks.get(sessionId) === owner) {
-      this.eventCallbacks.delete(sessionId);
-    }
+    if (this.eventCallbacks.get(sessionId) !== owner) return;
+    this.eventCallbacks.delete(sessionId);
     const requestId = Crypto.randomUUID();
     await this.request({
       type: "unsubscribe",

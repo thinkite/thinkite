@@ -1,32 +1,50 @@
-import { GlassView, GlassContainer } from "expo-glass-effect";
+import { GlassView } from "expo-glass-effect";
 import { SymbolView } from "expo-symbols";
 import { useState } from "react";
 import { Pressable, TextInput, useColorScheme, View } from "react-native";
 
 /**
- * Visual-only chat input bar (V0 W4 prototype). No keyboard handling, no
- * sendPrompt wiring yet — meant for tweaking the GlassView aesthetic
- * against Claude iOS in the simulator before functional plumbing.
+ * Chat input bar — pill-shaped GlassView with placeholder + action row.
  *
- * Layout matches Claude iOS: pill-shaped glass surface, two visual rows —
+ * Visual layout matches Claude iOS: glass surface, two visual rows —
  * placeholder/text on top, action row below (plus | spacer | mic | send).
- * Send button toggles between an up-arrow (when text) and a waveform
- * (when empty), mirroring Claude's "send vs voice" affordance.
+ * The send button has three states:
+ *   - `arrow.up` (active): user has typed text, tap → onSend(text)
+ *   - `waveform` (idle):   no text, tap is a no-op (voice slot, V0.5+)
+ *   - `stop.fill` (running): turn is in flight, tap → onInterrupt
  *
  * Liquid Glass requires iOS 26+. On older iOS / Android the GlassView
  * silently falls back to a plain View; the inline `backgroundColor`
  * provides the fallback fill so the surface stays visible.
  */
-export function InputBar({ onSend }: { onSend?: (text: string) => void }) {
+export function InputBar({
+  onSend,
+  onInterrupt,
+  isRunning,
+}: {
+  onSend?: (text: string) => void;
+  onInterrupt?: () => void;
+  isRunning?: boolean;
+}) {
   const [text, setText] = useState("");
   const colorScheme = useColorScheme() ?? "light";
   const hasText = text.length > 0;
 
-  const handleSend = () => {
+  const handlePress = () => {
+    if (isRunning) {
+      onInterrupt?.();
+      return;
+    }
     if (!hasText) return;
     onSend?.(text);
     setText("");
   };
+
+  const sendIconName: "arrow.up" | "waveform" | "stop.fill" = isRunning
+    ? "stop.fill"
+    : hasText
+      ? "arrow.up"
+      : "waveform";
 
   return (
     <View className="px-4">
@@ -77,13 +95,13 @@ export function InputBar({ onSend }: { onSend?: (text: string) => void }) {
                 />
               </Pressable>
               <Pressable
-                onPress={handleSend}
+                onPress={handlePress}
                 className={`p-1.75 items-center justify-center rounded-full ${
                   colorScheme === "dark" ? "bg-zinc-100" : "bg-zinc-900"
                 }`}
               >
                 <SymbolView
-                  name={hasText ? "arrow.up" : "waveform"}
+                  name={sendIconName}
                   size={22}
                   weight="semibold"
                   tintColor={colorScheme === "dark" ? "#0a0a0a" : "#fafafa"}
