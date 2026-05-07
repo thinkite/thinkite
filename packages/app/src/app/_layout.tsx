@@ -6,7 +6,11 @@ import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
 import { Pressable, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { SafeAreaListener } from "react-native-safe-area-context";
+import { KeyboardProvider } from "react-native-keyboard-controller";
+import {
+  SafeAreaListener,
+  SafeAreaProvider,
+} from "react-native-safe-area-context";
 import { Uniwind } from "uniwind";
 import {
   DaemonClientProvider,
@@ -36,21 +40,25 @@ const queryClient = new QueryClient({
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <QueryClientProvider client={queryClient}>
-        <DaemonClientProvider>
-          <SafeAreaListener
-            onChange={({ insets }) => {
-              Uniwind.updateInsets(insets);
-            }}
-          >
-            <BottomSheetModalProvider>
-              <DaemonGate>
-                <Stack />
-              </DaemonGate>
-            </BottomSheetModalProvider>
-          </SafeAreaListener>
-        </DaemonClientProvider>
-      </QueryClientProvider>
+      <SafeAreaProvider>
+        <KeyboardProvider>
+          <QueryClientProvider client={queryClient}>
+            <DaemonClientProvider>
+              <SafeAreaListener
+                onChange={({ insets }) => {
+                  Uniwind.updateInsets(insets);
+                }}
+              >
+                <BottomSheetModalProvider>
+                  <DaemonGate>
+                    <Stack />
+                  </DaemonGate>
+                </BottomSheetModalProvider>
+              </SafeAreaListener>
+            </DaemonClientProvider>
+          </QueryClientProvider>
+        </KeyboardProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }
