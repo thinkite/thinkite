@@ -236,13 +236,13 @@ export function ChatMarkdown({ markdown }: ChatMarkdownProps) {
   return (
     <EnrichedMarkdownText
       markdown={markdown}
+      md4cFlags={{
+        underline: true,
+      }}
       flavor="github"
       streamingAnimation
       streamingConfig={{ tableMode: "progressive" }}
       markdownStyle={markdownStyle}
-      // Drop the trailing margin so the bubble's bottom padding controls
-      // visual spacing between rows uniformly.
-      allowTrailingMargin={false}
     />
   );
 }

@@ -31,12 +31,12 @@ export function ToolBlock({ block }: { block: ToolRenderBlock }) {
   return (
     <Pressable
       onPress={() => openToolCall(block)}
-      className="flex-row items-center gap-2 px-4 py-3"
+      className="flex-row items-center gap-2 px-4 py-1.5"
     >
       {isBash ? (
         <Text
           numberOfLines={1}
-          className="flex-1 text-sm text-gray-700 dark:text-gray-300"
+          className="flex-1 text-base leading-5.5 text-gray-700 dark:text-gray-300"
         >
           <Text
             className={
@@ -55,7 +55,7 @@ export function ToolBlock({ block }: { block: ToolRenderBlock }) {
           {block.summary ? (
             <Text
               numberOfLines={1}
-              className="flex-1 text-sm text-gray-700 dark:text-gray-300"
+              className="flex-1 text-base leading-5.5 text-gray-700 dark:text-gray-300"
             >
               {block.summary}
             </Text>
