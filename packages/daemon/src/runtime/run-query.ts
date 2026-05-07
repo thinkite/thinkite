@@ -139,6 +139,16 @@ export function ensureSessionLoop(
   runtime.inputChannel = channel;
 
   const factory = options.queryFactory ?? query;
+  // V0 has no approval UI on iOS — every tool call must auto-approve or
+  // the iOS user sees nothing happen. SDK requires BOTH `permissionMode:
+  // "bypassPermissions"` AND `allowDangerouslySkipPermissions: true`
+  // (sdk.d.ts:1469,1485) to truly skip the gate; setting only one isn't
+  // enough. Equivalent to claude CLI's `--dangerously-skip-permissions`
+  // flag. Revisit when V0.5+ adds an approval-sheet on iOS.
+  const bypassFlags = {
+    permissionMode: "bypassPermissions" as const,
+    allowDangerouslySkipPermissions: true as const,
+  };
   // SDK requires sessionId XOR resume — they're mutually exclusive
   // (sdk.d.ts:1538-1540 — "Cannot be used with continue or resume unless
   // forkSession is also set"). We use sessionId for new sessions (so the
@@ -146,11 +156,13 @@ export function ensureSessionLoop(
   const sdkOptions =
     options.mode === "create"
       ? {
+          ...bypassFlags,
           sessionId: runtime.sessionId,
           includePartialMessages: true as const,
           cwd: options.cwd,
         }
       : {
+          ...bypassFlags,
           resume: runtime.sessionId,
           includePartialMessages: true as const,
           cwd: options.cwd,
