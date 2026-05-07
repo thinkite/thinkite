@@ -275,12 +275,23 @@ function handleSdkMessage(
 }
 
 /**
- * Anthropic SDK fires one `result` envelope at the end of every turn —
- * success OR error. We map both to a `turn_completed` EventDelta so iOS
- * can hide the "thinking" indicator and re-enable the send button.
+ * Anthropic SDK fires one `result` envelope at the end of every turn,
+ * shaped as a discriminated union on `subtype` (sdk.d.ts:3155):
+ *   - `SDKResultSuccess` (subtype: 'success') — `result: string` carries
+ *     the final assistant output text
+ *   - `SDKResultError` (subtype: 'error_during_execution' |
+ *     'error_max_turns' | 'error_max_budget_usd' |
+ *     'error_max_structured_output_retries') — `errors: string[]` carries
+ *     the failure reasons (NOT `result`)
  *
- * Usage stats are best-effort: SDK shape uses snake_case fields. Parse
- * defensively — missing fields just become `undefined` in our output.
+ * We must dispatch on subtype so iOS sees `turn_failed` (red banner) for
+ * the error case rather than a deceptive `turn_completed` followed by a
+ * second `turn_failed` from the catch block (the original bug observed
+ * when "No conversation found with session ID" fired before cwd was
+ * plumbed through).
+ *
+ * Usage stats are best-effort: SDK shape uses snake_case. Parse
+ * defensively — missing fields become `undefined`.
  */
 function handleResultEnvelope(
   runtime: SessionRuntime<EventDelta>,
@@ -298,7 +309,21 @@ function handleResultEnvelope(
         ),
       }
     : undefined;
-  runtime.addEvent({ kind: "turn_completed", usage });
+
+  if (r.subtype === "success") {
+    runtime.addEvent({ kind: "turn_completed", usage });
+    return;
+  }
+  // Any non-"success" subtype is an error variant. Pull the
+  // `errors: string[]` payload; fall back to the subtype name if absent.
+  const errors = Array.isArray(r.errors)
+    ? (r.errors as unknown[]).filter((e): e is string => typeof e === "string")
+    : [];
+  const message =
+    errors.length > 0
+      ? errors.join("\n")
+      : `SDK ${String(r.subtype ?? "error")}`;
+  runtime.addEvent({ kind: "turn_failed", error: message });
 }
 
 function numberOrUndef(v: unknown): number | undefined {
