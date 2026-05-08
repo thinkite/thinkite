@@ -21,6 +21,7 @@
   ],
   "scripts": {
     "dev": "tsx watch src/bin/sidecode.ts up",
+    "pair": "tsx src/bin/sidecode.ts pair",
     "build": "tsc -b tsconfig.json && chmod +x ./dist/bin/sidecode.js",
     "typecheck": "tsc -b tsconfig.json",
     "start": "node ./dist/bin/sidecode.js",

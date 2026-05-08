@@ -15,34 +15,47 @@ import {
   getPairedDaemon,
 } from "./daemon-client";
 import { loadOrCreateIdentity } from "./identity";
-import { DEV_PAIR_OFFER } from "./pair-config";
 
 type DaemonState =
   | { status: "connecting" }
   | { status: "ready"; client: DaemonClient }
+  | { status: "unpaired" }
   | { status: "error"; error: Error };
 
 interface DaemonClientContextValue {
   state: DaemonState;
   initialized: boolean;
   reset: () => void;
+  /**
+   * Run a first-time pair using a base64url-encoded `pair.offer` (the
+   * payload from `sidecode pair`'s QR or the printed base64 fallback).
+   * Resolves on successful handshake; subsequent reset()s will go
+   * through the trusted-reconnect path automatically. Throws on
+   * malformed payload, expired offer, or handshake failure.
+   */
+  pair: (offerB64: string) => Promise<void>;
 }
 
 const Ctx = createContext<DaemonClientContextValue | null>(null);
 
 /**
- * Owns the app's single live daemon connection. Handshake fires eagerly
- * on Provider mount (i.e. app boot) — the only screen consumer is the
- * session list, so deferring would just delay the same work.
+ * Owns the app's single live daemon connection. On mount it tries the
+ * trusted-reconnect path; if no PairedDaemon is on disk (or reconnect
+ * fails — typically a regenerated daemon identity), it lands on the
+ * `unpaired` state so the layout can route to the pair screen.
+ *
+ * `pair()` is the only state transition that introduces new credentials;
+ * `reset()` re-runs the boot path with whatever's already persisted.
  *
  * Wrap any tree that calls `useDaemonClient()` (typically inside
  * `<QueryClientProvider>` at the layout root).
  */
 export function DaemonClientProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<DaemonState>({ status: "connecting" });
-  // Sticky: flips to true on the first successful handshake, never flips back.
-  // Splash UX keys off this — `isLoading` flickers on every reset() and would
-  // briefly re-mount the splash branch, but the native splash is one-shot.
+  // Sticky: flips to true on the first successful handshake (or first
+  // unpaired determination), never flips back. Splash UX keys off this —
+  // `isLoading` flickers on every reset() and would briefly re-mount the
+  // splash branch, but the native splash is one-shot.
   const [initialized, setInitialized] = useState(false);
   // Bumped on every connect() call; in-flight handshakes that finish after
   // a newer connect started are dropped via this guard.
@@ -61,28 +74,28 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
       try {
         const identity = await loadOrCreateIdentity();
         const paired = await getPairedDaemon();
+        if (!paired) {
+          if (epoch !== epochRef.current) return;
+          setState({ status: "unpaired" });
+          setInitialized(true);
+          return;
+        }
         let client: DaemonClient;
-        if (paired) {
-          try {
-            client = await DaemonClient.reconnect(identity, paired);
-          } catch (err) {
-            await clearPairedDaemon();
-            if (!DEV_PAIR_OFFER) throw err;
-            client = await DaemonClient.pair(
-              identity,
-              decodePairOffer(DEV_PAIR_OFFER),
-            );
-          }
-        } else {
-          if (!DEV_PAIR_OFFER) {
-            throw new Error(
-              "No paired daemon. Paste a pair.offer into pair-config.ts (DEV_PAIR_OFFER).",
-            );
-          }
-          client = await DaemonClient.pair(
-            identity,
-            decodePairOffer(DEV_PAIR_OFFER),
-          );
+        try {
+          client = await DaemonClient.reconnect(identity, paired);
+        } catch (err) {
+          // Reconnect failed — most likely the daemon's identity rotated
+          // (fresh `~/.sidecode/identity.ed25519`) or the address moved.
+          // Clear the stale credential and fall back to unpaired so the
+          // user can re-scan / re-paste a fresh offer. Surface the
+          // underlying error message in console for debug; UI just shows
+          // "needs pairing".
+          console.warn("daemon reconnect failed, clearing pair:", err);
+          await clearPairedDaemon();
+          if (epoch !== epochRef.current) return;
+          setState({ status: "unpaired" });
+          setInitialized(true);
+          return;
         }
         if (epoch !== epochRef.current) {
           // A newer connect superseded us — discard.
@@ -102,6 +115,44 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
     })();
   }, []);
 
+  // First-time pair via a freshly-scanned / pasted offer. The DaemonClient
+  // call persists PairedDaemon on success, so subsequent boots skip the
+  // pair screen. We bump the epoch to invalidate any in-flight connect()
+  // attempt (e.g. if connect() lost the race against pair()).
+  //
+  // Important: we deliberately do NOT flip state to `connecting` while
+  // pairing — staying in `unpaired` keeps the `Stack.Protected` guard on
+  // /pair active throughout, so PairScreen stays mounted and its local
+  // error state survives a failed attempt. If we transitioned to
+  // `connecting` mid-pair, isUnpaired would briefly flip false, the
+  // router would redirect to /, and on failure flip back to /pair —
+  // unmounting PairScreen and wiping the error message we just set.
+  // Busy / spinner state is owned by PairScreen locally; this context
+  // only flips on outcome.
+  const pair = useCallback(async (offerB64: string): Promise<void> => {
+    epochRef.current += 1;
+    const epoch = epochRef.current;
+
+    try {
+      const identity = await loadOrCreateIdentity();
+      const offer = decodePairOffer(offerB64);
+      const client = await DaemonClient.pair(identity, offer);
+      if (epoch !== epochRef.current) {
+        client.close();
+        return;
+      }
+      clientRef.current?.close();
+      clientRef.current = client;
+      setState({ status: "ready", client });
+      setInitialized(true);
+    } catch (err) {
+      if (epoch !== epochRef.current) return;
+      // State is already `unpaired` (we never flipped it). Just rethrow
+      // so PairScreen's local catch can surface the error inline.
+      throw err;
+    }
+  }, []);
+
   useEffect(() => {
     connect();
     return () => {
@@ -112,25 +163,31 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   }, [connect]);
 
   const value = useMemo<DaemonClientContextValue>(
-    () => ({ state, initialized, reset: connect }),
-    [state, initialized, connect],
+    () => ({ state, initialized, reset: connect, pair }),
+    [state, initialized, connect, pair],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
 interface UseDaemonClientResult {
-  /** Live client when handshake has completed; `null` while connecting or after error. */
+  /** Live client when handshake has completed; `null` while connecting,
+   *  unpaired, or after error. */
   client: DaemonClient | null;
   /** True during any in-flight handshake (initial boot AND every reset/reconnect). */
   isLoading: boolean;
-  /** Sticky: true once the first handshake succeeded. Use this for one-shot UX
-   *  like the splash gate; use `isLoading` for "are we currently reconnecting"
-   *  states such as banners or disabled actions. */
+  /** True when there is no PairedDaemon on disk — the app should route
+   *  to the pair screen. Distinct from `error`: this is an expected
+   *  state on first launch / after a daemon identity rotation. */
+  isUnpaired: boolean;
+  /** Sticky: true once we've reached any settled state (ready, unpaired,
+   *  or error). Use this for one-shot UX like the splash gate. */
   isInitialized: boolean;
   error: Error | null;
-  /** Tear down the current connection (if any) and re-run the handshake. */
+  /** Tear down the current connection (if any) and re-run the boot path. */
   reset: () => void;
+  /** Run a first-time pair from a base64url offer string. */
+  pair: (offerB64: string) => Promise<void>;
 }
 
 export function useDaemonClient(): UseDaemonClientResult {
@@ -140,12 +197,14 @@ export function useDaemonClient(): UseDaemonClientResult {
       "useDaemonClient must be used inside <DaemonClientProvider>",
     );
   }
-  const { state, initialized, reset } = v;
+  const { state, initialized, reset, pair } = v;
   return {
     client: state.status === "ready" ? state.client : null,
     isLoading: state.status === "connecting",
+    isUnpaired: state.status === "unpaired",
     isInitialized: initialized,
     error: state.status === "error" ? state.error : null,
     reset,
+    pair,
   };
 }

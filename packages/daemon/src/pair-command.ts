@@ -5,7 +5,7 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { hostname } from "node:os";
+import { hostname, networkInterfaces } from "node:os";
 import {
   buildClientAuthTranscript,
   HANDSHAKE_VERSION,
@@ -47,11 +47,19 @@ export async function runPairCommand(args: readonly string[]): Promise<void> {
     process.exit(1);
   }
 
+  // Resolve the host the offer should point at. By default we trust the
+  // daemon-lock advertisement (loopback for local pairing). For physical-
+  // device dev builds the phone is on Wi-Fi and can't reach 127.0.0.1, so
+  // we accept `--host <ip>` (or `--lan` to auto-pick the first non-internal
+  // IPv4 from this Mac's network interfaces). Daemon itself binds 0.0.0.0
+  // by default, so any LAN-reachable IP just works.
+  const hostOverride = parseHostOverride(args, lock.host);
+
   // Build the offer pointing at the running daemon. PairingService here is
   // just a metadata builder; createOffer() is a pure function in the
   // post-revision design — it doesn't track issued offers.
   const pairing = new PairingService(identity, knownClients, {
-    daemonAddress: `ws://${lock.host}:${lock.port}`,
+    daemonAddress: `ws://${hostOverride}:${lock.port}`,
   });
   const offer = pairing.createOffer(`sidecode-${hostname()}`);
   const encoded = Buffer.from(JSON.stringify(offer)).toString("base64url");
@@ -84,6 +92,52 @@ export async function runPairCommand(args: readonly string[]): Promise<void> {
   console.log(
     "Offer is valid for ~5 minutes; multiple devices can scan within that window.",
   );
+}
+
+/**
+ * Resolve the host string the offer should advertise.
+ *
+ * `sidecode pair`            → use lock.host (loopback by default, OK for
+ *                              simulator pairing where the daemon and
+ *                              client share the loopback interface)
+ * `sidecode pair --host IP`  → use IP verbatim
+ * `sidecode pair --lan`      → first non-internal IPv4 on this Mac's
+ *                              network interfaces (the typical Wi-Fi IP)
+ *
+ * Phones on the same Wi-Fi network can't reach the daemon's loopback,
+ * which is why this exists.
+ */
+function parseHostOverride(args: readonly string[], lockHost: string): string {
+  const hostIdx = args.indexOf("--host");
+  if (hostIdx >= 0) {
+    const value = args[hostIdx + 1];
+    if (!value || value.startsWith("--")) {
+      console.error("✗ --host requires a value (IP or hostname)");
+      process.exit(1);
+    }
+    return value;
+  }
+  if (args.includes("--lan")) {
+    const lan = pickLanIpv4();
+    if (!lan) {
+      console.error(
+        "✗ --lan: no non-internal IPv4 address found. Pass --host <ip> explicitly.",
+      );
+      process.exit(1);
+    }
+    return lan;
+  }
+  return lockHost;
+}
+
+/** First non-internal IPv4 across all network interfaces, or undefined. */
+function pickLanIpv4(): string | undefined {
+  for (const ifaces of Object.values(networkInterfaces())) {
+    for (const ifc of ifaces ?? []) {
+      if (ifc.family === "IPv4" && !ifc.internal) return ifc.address;
+    }
+  }
+  return undefined;
 }
 
 /** Self-test: run the full handshake in-process. No WS, no network. */

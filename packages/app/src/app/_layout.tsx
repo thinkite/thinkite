@@ -49,21 +49,7 @@ export default function RootLayout() {
                 }}
               >
                 <DaemonGate>
-                  <Stack screenOptions={{ headerShown: false }}>
-                    {/* (drawer) is a route group hosting the main app:
-                        Drawer with custom session-list sidebar, plus the
-                        new-session create page (index) and session detail. */}
-                    <Stack.Screen name="(drawer)" />
-                    {/* Settings rendered as iOS pageSheet — same physics as
-                        the tool-detail BottomSheet but as a routable modal
-                        (gets a URL, supports deep linking). */}
-                    <Stack.Screen
-                      name="settings"
-                      options={{ presentation: "pageSheet" }}
-                    />
-                    {/* Dev probe page — keep as a standard push, no modal. */}
-                    <Stack.Screen name="dev/diffs" />
-                  </Stack>
+                  <RootStack />
                 </DaemonGate>
               </SafeAreaListener>
             </DaemonClientProvider>
@@ -74,22 +60,70 @@ export default function RootLayout() {
   );
 }
 
+/**
+ * Root Stack. Pair-vs-main routing is delegated to expo-router's
+ * `Stack.Protected` guards — when `isUnpaired` flips, the router
+ * auto-redirects to the next accessible screen:
+ *
+ *   isUnpaired = true   → only `pair` is reachable → user lands on /pair
+ *   isUnpaired = false  → `(drawer)` + `settings` + `dev/diffs` reachable
+ *                         → user lands on / (drawer index)
+ *
+ * Per expo-router docs, "if a screen becomes protected while it is
+ * active, they will be redirected to the anchor route or the first
+ * available screen in the stack" — so on first successful pair the user
+ * is automatically taken from /pair to the drawer index without any
+ * imperative `router.replace`.
+ *
+ * DaemonGate (below) still gates the entire Stack on `isInitialized`
+ * to keep the native splash up until we know which side of the guard
+ * the user belongs on.
+ */
+function RootStack() {
+  const { isUnpaired } = useDaemonClient();
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Protected guard={isUnpaired}>
+        {/* First-launch / re-pair gate. Component lives in
+            components/pair-screen.tsx; pair.tsx is just the route shell. */}
+        <Stack.Screen name="pair" />
+      </Stack.Protected>
+      <Stack.Protected guard={!isUnpaired}>
+        {/* (drawer) is a route group hosting the main app: Drawer with
+            custom session-list sidebar, plus the new-session create page
+            (index) and session detail. */}
+        <Stack.Screen name="(drawer)" />
+        {/* Settings rendered as iOS pageSheet — same physics as
+            the tool-detail BottomSheet but as a routable modal
+            (gets a URL, supports deep linking). */}
+        <Stack.Screen
+          name="settings"
+          options={{ presentation: "pageSheet" }}
+        />
+        {/* Dev probe page — keep as a standard push, no modal. */}
+        <Stack.Screen name="dev/diffs" />
+      </Stack.Protected>
+    </Stack>
+  );
+}
+
 // Splash gate. Two concerns are intentionally separate:
 //
-//   - `isInitialized` — sticky flag, "have we ever connected this launch?"
-//     Drives the splash branch. Native splash is one-shot; once we hide it,
-//     we never re-show it on later reconnects.
+//   - `isInitialized` — sticky flag, "have we reached any settled state
+//     this launch?" Drives the splash branch. Native splash is one-shot;
+//     once we hide it, we never re-show it on later reconnects.
 //   - `isLoading` / `error` — the live status. Used for the first-attempt
 //     error UI and to drive the Retry button's pending state.
 //
-// Once initialized, the Stack always renders. Reconnects don't gate the UI;
-// downstream consumers can opt into a banner via useDaemonClient().isLoading.
+// Pair-vs-main branching is NOT done here — that lives in `RootStack` via
+// `Stack.Protected` guards on `isUnpaired`. We keep this gate minimal so
+// the splash holds only on the "we don't know yet" window.
 function DaemonGate({ children }: { children: React.ReactNode }) {
   const { isInitialized, isLoading, error, reset } = useDaemonClient();
 
   useEffect(() => {
-    // Hide as soon as we have something user-meaningful to render — either
-    // the app (initialized) or the first-attempt error screen.
+    // Hide as soon as we have something user-meaningful to render — the
+    // app, the pair screen, or the first-attempt error.
     if (isInitialized || error) {
       SplashScreen.hideAsync().catch(() => undefined);
     }

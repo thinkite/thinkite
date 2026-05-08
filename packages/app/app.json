@@ -39,6 +39,12 @@
       ],
       "expo-secure-store",
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow sidecode to scan pair QR codes from your Mac."
+        }
+      ],
+      [
         "expo-build-properties",
         {
           "ios": {

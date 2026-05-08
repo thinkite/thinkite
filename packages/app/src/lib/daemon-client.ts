@@ -1,9 +1,11 @@
 import type { EventDelta, TimelineItem } from "@sidecodeapp/protocol";
+import * as ed25519 from "@noble/ed25519";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
-import { bytesToBase64Url } from "./base64";
+import { base64UrlToBytes, bytesToBase64Url } from "./base64";
 import {
   buildClientAuthTranscript,
+  buildTranscript,
   HANDSHAKE_VERSION,
   type HandshakeMode,
   type TranscriptInput,
@@ -114,7 +116,10 @@ export class DaemonClient {
       offerExpiresAt: offer.expiresAt,
       offerDaemonFingerprint: offer.daemonFingerprint,
     };
-    const client = await runHandshake(offer.daemonAddress, identity, hello);
+    const client = await runHandshake(offer.daemonAddress, identity, hello, {
+      fingerprint: offer.daemonFingerprint,
+      identityPublicKey: offer.daemonIdentityPublicKey,
+    });
     await setPairedDaemon({
       address: offer.daemonAddress,
       fingerprint: offer.daemonFingerprint,
@@ -139,7 +144,10 @@ export class DaemonClient {
       clientIdentityPublicKey: identity.publicKeyB64,
       clientNonce,
     };
-    return runHandshake(daemon.address, identity, hello);
+    return runHandshake(daemon.address, identity, hello, {
+      fingerprint: daemon.fingerprint,
+      identityPublicKey: daemon.identityPublicKey,
+    });
   }
 
   /**
@@ -395,8 +403,32 @@ async function runHandshake(
   url: string,
   identity: ClientIdentity,
   hello: HelloFrame,
+  expectDaemon: { fingerprint: string; identityPublicKey: string },
 ): Promise<DaemonClient> {
   const ws = new WebSocket(url);
+  // Close-on-throw: any error escaping below leaves a half-open ws on the
+  // daemon side, which sits there until the daemon's 10s auth-timer fires
+  // (`auth timeout` in daemon log). Catch + close + rethrow keeps the wire
+  // tidy; the catch is shape-only, the throw still surfaces to the caller.
+  try {
+    return await runHandshakeInner(ws, identity, hello, expectDaemon);
+  } catch (err) {
+    try {
+      ws.close();
+    } catch {
+      // Already-closed sockets throw — ignore, the caller just wants the
+      // original handshake error.
+    }
+    throw err;
+  }
+}
+
+async function runHandshakeInner(
+  ws: WebSocket,
+  identity: ClientIdentity,
+  hello: HelloFrame,
+  expectDaemon: { fingerprint: string; identityPublicKey: string },
+): Promise<DaemonClient> {
   await waitOpen(ws);
 
   // Awaiting first message before we install onmessage; ws-server's first
@@ -414,6 +446,25 @@ async function runHandshake(
     );
   }
 
+  // Pin daemon identity. Two checks against the trusted source (the QR
+  // offer for qr_bootstrap, the persisted PairedDaemon for trusted_-
+  // reconnect): if either drifts we refuse the handshake. Without these
+  // we'd be the equivalent of `ssh -o StrictHostKeyChecking=no` — anyone
+  // who can answer the WS address could claim to be the daemon by
+  // sending a self-signed transcript.
+  if (serverHello.daemonFingerprint !== expectDaemon.fingerprint) {
+    throw new Error(
+      `daemon fingerprint mismatch: expected ${expectDaemon.fingerprint}, got ${serverHello.daemonFingerprint}`,
+    );
+  }
+  if (
+    serverHello.daemonIdentityPublicKey !== expectDaemon.identityPublicKey
+  ) {
+    throw new Error(
+      "daemon identity public key mismatch — daemon identity rotated or MITM",
+    );
+  }
+
   const transcriptInput: TranscriptInput = {
     sessionId: hello.sessionId,
     protocolVersion: HANDSHAKE_VERSION,
@@ -427,6 +478,33 @@ async function runHandshake(
     serverNonce: serverHello.serverNonce,
     expiresAt: serverHello.expiresAt,
   };
+
+  // Verify daemon's transcript signature against the trusted pubkey. This
+  // closes the loop on the identity check above: the fingerprint match
+  // proves "the server claims to be the same daemon", and this signature
+  // proves "the server actually holds the matching private key". Without
+  // it, the daemonFingerprint check is just a string compare an attacker
+  // could trivially pass.
+  //
+  // Use noble's SYNC `verify` (not `verifyAsync`). Hermes (RN's JS engine)
+  // has a regression where the resolved value of `async (...) =>
+  // hashFinishA(...)` (concise-body async arrow returning a chained
+  // `.then` promise) comes through as `undefined` regardless of the inner
+  // promise's actual resolved value — exactly the shape noble v3's
+  // `verifyAsync` uses, so it always reads as a verify-fail in RN.
+  // `identity.ts` injects the sha512 sync hook at module load (its value
+  // import in daemon-client-context.tsx runs before any handshake), so
+  // the sync code path is fully wired.
+  const sigValid = ed25519.verify(
+    base64UrlToBytes(serverHello.daemonSignature),
+    buildTranscript(transcriptInput),
+    base64UrlToBytes(serverHello.daemonIdentityPublicKey),
+  );
+  if (!sigValid) {
+    throw new Error(
+      "daemon signature on server.hello did not verify — possible MITM",
+    );
+  }
 
   const signature = await identity.sign(
     buildClientAuthTranscript(transcriptInput),

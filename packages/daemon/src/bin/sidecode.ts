@@ -125,6 +125,8 @@ Commands:
 
 Options:
   --port <n>         Override default port (used with up/start)
+  --host <ip>        Force pair offer to advertise this host (used with pair)
+  --lan              Pick the first non-loopback IPv4 for the offer (used with pair)
   --self-test        Run pair end-to-end in-process (used with pair)`);
 }
 
