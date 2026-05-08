@@ -11,6 +11,7 @@ import {
   HANDSHAKE_VERSION,
   type TranscriptInput,
 } from "@sidecodeapp/protocol";
+import QRCode from "qrcode";
 import { readActiveDaemonLock } from "./daemon-lock.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
@@ -55,7 +56,23 @@ export async function runPairCommand(args: readonly string[]): Promise<void> {
   const offer = pairing.createOffer(`sidecode-${hostname()}`);
   const encoded = Buffer.from(JSON.stringify(offer)).toString("base64url");
 
-  console.log("Pair payload (paste into mobile client to pair):");
+  // ASCII QR for the iOS app to scan via expo-camera's CameraView.launchScanner.
+  // `small: true` uses half-block characters (▀) so the height is halved —
+  // a ~380-char base64url payload renders around 45 lines tall instead of 90,
+  // fits in a normal terminal without wrapping. `errorCorrectionLevel: "M"`
+  // (~15% recovery) is the qrcode default; bumping to "L" would shrink the
+  // grid further but matters very little at this payload size and trades
+  // away camera-angle robustness.
+  const qr = await QRCode.toString(encoded, {
+    type: "terminal",
+    small: true,
+    errorCorrectionLevel: "M",
+  });
+
+  console.log("Scan with sidecode iOS:");
+  console.log("");
+  console.log(qr);
+  console.log("Or paste this payload into the app:");
   console.log("");
   console.log(encoded);
   console.log("");
@@ -65,7 +82,7 @@ export async function runPairCommand(args: readonly string[]): Promise<void> {
   console.log(`Expires:      ${new Date(offer.expiresAt).toISOString()}`);
   console.log("");
   console.log(
-    "QR is valid for ~5 minutes; multiple devices can scan within that window.",
+    "Offer is valid for ~5 minutes; multiple devices can scan within that window.",
   );
 }
 
