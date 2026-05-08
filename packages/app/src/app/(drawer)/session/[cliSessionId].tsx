@@ -1,5 +1,5 @@
 import { KeyboardChatLegendList } from "@legendapp/list/keyboard-chat";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams, useNavigation } from "expo-router";
 import { useCallback, useMemo } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
@@ -11,6 +11,7 @@ import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 import { useLiveSession } from "@/hooks/use-live-session";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 import { flattenToBlocks, type RenderBlock } from "@/lib/transcript-blocks";
+import { DrawerActions } from "expo-router/react-navigation";
 
 /**
  * Detail route. Renders the transcript flattened into per-content-block
@@ -38,6 +39,11 @@ export default function SessionDetailScreen() {
   const { client } = useDaemonClient();
   const session = useLiveSession(cliSessionId);
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation("/(drawer)/session");
+
+  const openDrawer = useCallback(() => {
+    navigation.dispatch(DrawerActions.openDrawer());
+  }, [navigation]);
 
   const handleSend = useCallback(
     (text: string) => {
@@ -61,16 +67,20 @@ export default function SessionDetailScreen() {
 
   return (
     <>
-      <Stack.Screen
-        options={{
-          title: title || "Session",
-          headerBackTitle: "Sessions",
-        }}
-      />
+      {/* Title via Stack.Screen options. Header chrome (transparent + Liquid
+          Glass blur) and the hamburger button via the new SDK 56 Stack.Header
+          / Stack.Toolbar APIs — these render natively (UIKit
+          UINavigationBar), so the system handles blur strength tracking with
+          scroll, dynamic-type sizing, RTL, etc. */}
+      <Stack.Screen options={{ title: title || "Session" }} />
+      <Stack.Header transparent blurEffect="systemMaterial" />
+      <Stack.Toolbar placement="left">
+        <Stack.Toolbar.Button icon="line.3.horizontal" onPress={openDrawer} />
+      </Stack.Toolbar>
       <ToolCallSheetProvider>
         <View className="flex-1 bg-white dark:bg-black">
           {session.lastError ? (
-            <View className="absolute inset-x-0 top-0 z-10 border-b border-red-300 bg-red-50 px-4 py-2 dark:border-red-800 dark:bg-red-950">
+            <View className="border-b border-red-300 bg-red-50 px-4 py-2 dark:border-red-800 dark:bg-red-950">
               <Text className="text-xs font-medium text-red-700 dark:text-red-300">
                 Turn failed
               </Text>

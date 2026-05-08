@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  expo-router@56.1.0: 9a64c3f6835b3432fcf9e8c42feb74f3709eb2e96828bc0fd4f49d676b675eab
+
 importers:
 
   .:
@@ -73,7 +76,7 @@ importers:
         version: 56.0.3(expo@56.0.0-preview.6)(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       expo-router:
         specifier: ~56.1.0
-        version: 56.1.0(0067de383fbf9919103553fe326dfcb5)
+        version: 56.1.0(patch_hash=9a64c3f6835b3432fcf9e8c42feb74f3709eb2e96828bc0fd4f49d676b675eab)(0067de383fbf9919103553fe326dfcb5)
       expo-secure-store:
         specifier: ~56.0.3
         version: 56.0.3(expo@56.0.0-preview.6)
@@ -4933,7 +4936,7 @@ snapshots:
       ws: 8.20.0
       zod: 3.25.76
     optionalDependencies:
-      expo-router: 56.1.0(0067de383fbf9919103553fe326dfcb5)
+      expo-router: 56.1.0(patch_hash=9a64c3f6835b3432fcf9e8c42feb74f3709eb2e96828bc0fd4f49d676b675eab)(0067de383fbf9919103553fe326dfcb5)
       react-native: 0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3)
     transitivePeerDependencies:
       - '@expo/dom-webview'
@@ -5215,7 +5218,7 @@ snapshots:
       react: 19.2.3
     optionalDependencies:
       '@expo/metro-runtime': 56.0.4(@expo/dom-webview@56.0.4)(expo@56.0.0-preview.6)(react-dom@19.2.3(react@19.2.3))(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
-      expo-router: 56.1.0(0067de383fbf9919103553fe326dfcb5)
+      expo-router: 56.1.0(patch_hash=9a64c3f6835b3432fcf9e8c42feb74f3709eb2e96828bc0fd4f49d676b675eab)(0067de383fbf9919103553fe326dfcb5)
       react-dom: 19.2.3(react@19.2.3)
     transitivePeerDependencies:
       - supports-color
@@ -6615,7 +6618,7 @@ snapshots:
     dependencies:
       react-native: 0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3)
 
-  expo-router@56.1.0(0067de383fbf9919103553fe326dfcb5):
+  expo-router@56.1.0(patch_hash=9a64c3f6835b3432fcf9e8c42feb74f3709eb2e96828bc0fd4f49d676b675eab)(0067de383fbf9919103553fe326dfcb5):
     dependencies:
       '@expo/log-box': 56.0.5(@expo/dom-webview@56.0.4)(expo@56.0.0-preview.6)(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       '@expo/metro-runtime': 56.0.4(@expo/dom-webview@56.0.4)(expo@56.0.0-preview.6)(react-dom@19.2.3(react@19.2.3))(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)

@@ -49,7 +49,21 @@ export default function RootLayout() {
                 }}
               >
                 <DaemonGate>
-                  <Stack />
+                  <Stack screenOptions={{ headerShown: false }}>
+                    {/* (drawer) is a route group hosting the main app:
+                        Drawer with custom session-list sidebar, plus the
+                        new-session create page (index) and session detail. */}
+                    <Stack.Screen name="(drawer)" />
+                    {/* Settings rendered as iOS pageSheet — same physics as
+                        the tool-detail BottomSheet but as a routable modal
+                        (gets a URL, supports deep linking). */}
+                    <Stack.Screen
+                      name="settings"
+                      options={{ presentation: "pageSheet" }}
+                    />
+                    {/* Dev probe page — keep as a standard push, no modal. */}
+                    <Stack.Screen name="dev/diffs" />
+                  </Stack>
                 </DaemonGate>
               </SafeAreaListener>
             </DaemonClientProvider>
