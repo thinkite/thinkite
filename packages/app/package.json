@@ -11,14 +11,10 @@
     "lint": "expo lint"
   },
   "dependencies": {
-    "@expo/dom-webview": "^56.0.4",
     "@expo/ui": "~56.0.3",
     "@legendapp/list": "3.0.0-beta.52",
     "@noble/ed25519": "^3.1.0",
     "@noble/hashes": "^2.2.0",
-    "@react-navigation/bottom-tabs": "^7.15.5",
-    "@react-navigation/elements": "^2.9.10",
-    "@react-navigation/native": "^7.1.33",
     "@sidecodeapp/protocol": "workspace:*",
     "@tanstack/react-query": "^5.100.5",
     "expo": "56.0.0-preview.6",
