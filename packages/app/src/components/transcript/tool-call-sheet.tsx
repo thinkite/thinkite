@@ -1,9 +1,7 @@
 import {
-  BottomSheetBackdrop,
-  type BottomSheetBackdropProps,
   BottomSheetModal,
   BottomSheetScrollView,
-} from "@gorhom/bottom-sheet";
+} from "@expo/ui/community/bottom-sheet";
 import type { ToolCallDetail } from "@sidecodeapp/protocol";
 import {
   type ComponentRef,
@@ -15,23 +13,35 @@ import {
   useRef,
   useState,
 } from "react";
-import { Text, useColorScheme, View } from "react-native";
+import { Text, View } from "react-native";
 import { MarkdownView } from "@/lib/markdown";
 import type { ToolRenderBlock } from "@/lib/transcript-blocks";
 
 /**
  * Single shared BottomSheet at transcript level (Paseo pattern). Each
  * ToolBlock row is a Pressable that calls `openToolCall(block)` — the sheet
- * lives outside the virtualized list, so its Reanimated shared values are
- * created exactly once instead of once per row. Combined with the trigger
- * row losing the inline DiffsView, this lets LegendList run with
- * `recycleItems` enabled and uniform low estimated row height.
+ * lives outside the virtualized list, so its open state is independent of
+ * row-recycle lifecycle. Combined with the trigger row losing the inline
+ * DiffsView, this lets LegendList run with `recycleItems` enabled and a
+ * uniform low estimated row height.
  *
- * Lifecycle uses gorhom's imperative ref API (`present()`/`dismiss()`) so
- * the close animation can complete with content still mounted. `block`
- * holds the rendered detail across the slide-out and is cleared in
- * `onDismiss` (animation-complete callback) — derived `isOpen` from
- * `block !== null` would unmount content mid-animation and flash empty.
+ * Implementation: `@expo/ui/community/bottom-sheet` (gorhom-API drop-in
+ * backed by SwiftUI `.sheet(isPresented:)` → `UISheetPresentationController`
+ * on iOS). API stays gorhom-shaped (imperative ref `present()`/`dismiss()`,
+ * `snapPoints`, `onDismiss`); under the hood it's an iOS native sheet — no
+ * Reanimated layer, matches Apple Maps / Files location-card physics.
+ *
+ * Lifecycle: `block` holds the rendered detail across the slide-out and is
+ * cleared in `onDismiss`. Per the community-bottom-sheet iOS impl, user
+ * dismissals route through SwiftUI's @State change → JS handler runs AFTER
+ * the close animation, so content stays mounted during the slide-out and
+ * we don't flash empty content.
+ *
+ * Caveats vs gorhom (per node_modules/@expo/ui/src/community/bottom-sheet/CLAUDE.md):
+ *   - `BottomSheetBackdrop` not supported → SwiftUI provides system backdrop
+ *   - `handleIndicatorStyle` / `handleStyle` accepted but no-op on native
+ *   - `enablePanDownToClose` controls BOTH swipe-to-dismiss AND backdrop tap
+ *     (SwiftUI doesn't expose these separately)
  */
 
 type SheetRef = ComponentRef<typeof BottomSheetModal>;
@@ -55,23 +65,11 @@ export function useToolCallSheet(): ToolCallSheetContextValue {
   return ctx;
 }
 
-const SNAP_POINTS = ["45%", "80%"];
-
-function renderBackdrop(props: BottomSheetBackdropProps) {
-  return (
-    <BottomSheetBackdrop
-      {...props}
-      disappearsOnIndex={-1}
-      appearsOnIndex={0}
-      opacity={0.5}
-    />
-  );
-}
+const SNAP_POINTS = ["50%", "100%"];
 
 export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
   const sheetRef = useRef<SheetRef>(null);
   const [block, setBlock] = useState<ToolRenderBlock | null>(null);
-  const colorScheme = useColorScheme() ?? "light";
 
   const openToolCall = useCallback((b: ToolRenderBlock) => {
     setBlock(b);
@@ -91,20 +89,16 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
     [openToolCall, closeToolCall],
   );
 
-  const backgroundStyle = useMemo(
-    () => ({
-      backgroundColor: colorScheme === "dark" ? "#0a0a0a" : "#ffffff",
-    }),
-    [colorScheme],
-  );
-
-  const handleIndicatorStyle = useMemo(
-    () => ({
-      backgroundColor: colorScheme === "dark" ? "#52525b" : "#a1a1aa",
-    }),
-    [colorScheme],
-  );
-
+  // iOS 26's SwiftUI sheet uses Liquid Glass as the default presentation
+  // material — translucent over the transcript behind. We let that through
+  // (no backgroundColor override) so the sheet has a consistent glassy look
+  // edge-to-edge. Painting a solid color on just the inner ScrollView
+  // covers the middle but leaves the drag-handle strip and bottom safe-area
+  // chrome translucent → looks broken (those strips live OUTSIDE our
+  // ScrollView, inside community/bottom-sheet's internal RNHostView).
+  // SwiftUI's `presentationBackground` modifier (the proper override) isn't
+  // exposed by @expo/ui — until it is, embrace the glass aesthetic and tune
+  // child content (code blocks, diffs) for transparency instead.
   return (
     <ToolCallSheetContext.Provider value={value}>
       {children}
@@ -114,9 +108,6 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
         enableDynamicSizing={false}
         enablePanDownToClose
         onDismiss={handleDismiss}
-        backdropComponent={renderBackdrop}
-        backgroundStyle={backgroundStyle}
-        handleIndicatorStyle={handleIndicatorStyle}
       >
         <BottomSheetScrollView
           contentContainerStyle={{ padding: 16, paddingBottom: 48 }}
@@ -139,7 +130,7 @@ function SheetBody({ block }: { block: ToolRenderBlock }) {
         {block.summary ? (
           <Text
             numberOfLines={1}
-            className="flex-1 text-sm text-gray-700 dark:text-gray-300"
+            className="flex-1 text-base text-gray-700 dark:text-gray-300"
           >
             {block.summary}
           </Text>
@@ -238,8 +229,8 @@ function TodoDetail({
           <Text
             className={
               todo.status === "completed"
-                ? "flex-1 text-sm text-gray-500 line-through dark:text-gray-500"
-                : "flex-1 text-sm text-gray-900 dark:text-gray-100"
+                ? "flex-1 text-base text-gray-500 line-through dark:text-gray-500"
+                : "flex-1 text-base text-gray-900 dark:text-gray-100"
             }
           >
             {todo.status === "in_progress" ? todo.activeForm : todo.content}

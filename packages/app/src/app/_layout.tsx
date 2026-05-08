@@ -1,5 +1,4 @@
 import "@/global.css";
-import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -49,11 +48,9 @@ export default function RootLayout() {
                   Uniwind.updateInsets(insets);
                 }}
               >
-                <BottomSheetModalProvider>
-                  <DaemonGate>
-                    <Stack />
-                  </DaemonGate>
-                </BottomSheetModalProvider>
+                <DaemonGate>
+                  <Stack />
+                </DaemonGate>
               </SafeAreaListener>
             </DaemonClientProvider>
           </QueryClientProvider>

@@ -33,6 +33,17 @@ export type MarkdownViewProps = Omit<
 // inline code in tool detail is rare). fontFamily is NOT supported by
 // DiffsView's Theme (sizes-only; see reference_react_native_diffs.md) —
 // chat ↔ tool monospace face will diverge until upstream exposes it.
+//
+// Diff theme (gutter / hunk header / file header backgrounds) intentionally
+// left at upstream defaults: at the 100% snap point, iOS switches the sheet
+// chrome from Liquid Glass to opaque white/black — any custom transparent
+// or faint-tint overrides we picked for the glass aesthetic looked wrong
+// against that solid background. Upstream defaults integrate with both
+// chrome modes.
+//
+// Color-string note: react-native-diffs' iOS parser uses `UIColor(hex:)`
+// (Diffs.swift:161,229) — accepts only hex strings. "transparent" /
+// "rgba(...)" silently fall back to black.
 function buildDefaultTheme(scheme: "light" | "dark"): Theme {
   if (scheme === "dark") {
     return {

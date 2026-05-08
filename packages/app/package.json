@@ -13,7 +13,6 @@
   "dependencies": {
     "@expo/dom-webview": "^56.0.4",
     "@expo/ui": "~56.0.3",
-    "@gorhom/bottom-sheet": "^5.2.10",
     "@legendapp/list": "3.0.0-beta.52",
     "@noble/ed25519": "^3.1.0",
     "@noble/hashes": "^2.2.0",
@@ -48,7 +47,7 @@
     "react-native-enriched-markdown": "0.6.0-nightly-20260506-726887248",
     "react-native-gesture-handler": "^2.31.2",
     "react-native-get-random-values": "~1.11.0",
-    "react-native-keyboard-controller": "^1.21.6",
+    "react-native-keyboard-controller": "^1.21.7",
     "react-native-nitro-modules": "^0.35.6",
     "react-native-reanimated": "^4.3.0",
     "react-native-safe-area-context": "^5.7.0",
