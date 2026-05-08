@@ -52,6 +52,7 @@ export function InputBar({
         isInteractive
         style={{
           borderRadius: 24,
+          borderCurve: "continuous",
           // Fallback for iOS<26 / Android — GlassView degrades to plain
           // View, this color shows through. On iOS 26+ it sits behind the
           // Liquid Glass material and is mostly invisible.

@@ -28,7 +28,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.126",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.132",
     "@sidecodeapp/protocol": "workspace:*",
     "diff": "^9.0.0",
     "ws": "^8.20.0"
