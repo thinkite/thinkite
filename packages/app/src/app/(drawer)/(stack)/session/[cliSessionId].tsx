@@ -1,6 +1,7 @@
 import { KeyboardChatLegendList } from "@legendapp/list/keyboard-chat";
 import { Stack, useLocalSearchParams, useNavigation } from "expo-router";
-import { useCallback, useMemo } from "react";
+import { DrawerActions, useHeaderHeight } from "expo-router/react-navigation";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -10,8 +11,8 @@ import { ToolBlock } from "@/components/transcript/tool-block";
 import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 import { useLiveSession } from "@/hooks/use-live-session";
 import { useDaemonClient } from "@/lib/daemon-client-context";
+import { consumePendingPrompt } from "@/lib/submission-store";
 import { flattenToBlocks, type RenderBlock } from "@/lib/transcript-blocks";
-import { DrawerActions } from "expo-router/react-navigation";
 
 /**
  * Detail route. Renders the transcript flattened into per-content-block
@@ -39,7 +40,8 @@ export default function SessionDetailScreen() {
   const { client } = useDaemonClient();
   const session = useLiveSession(cliSessionId);
   const insets = useSafeAreaInsets();
-  const navigation = useNavigation("/(drawer)/session");
+  const navigation = useNavigation();
+  const headerHeight = useHeaderHeight();
 
   const openDrawer = useCallback(() => {
     navigation.dispatch(DrawerActions.openDrawer());
@@ -65,6 +67,29 @@ export default function SessionDetailScreen() {
     });
   }, [client, cliSessionId]);
 
+  // First-send-after-create flow. New-session screen stashed `{ text, cwd }`
+  // in the submission store before navigating; we fire `sendPrompt` here
+  // ONLY after `useLiveSession` has finished its initial subscribe — that
+  // way the daemon's live fanout callback is already registered before
+  // pushPrompt runs, so the synthesized user_message + turn_started events
+  // can't fall into the cursor race window. The ref + Map.delete combo
+  // makes this exactly-once: the consume removes the entry, and the ref
+  // prevents an effect re-run from re-firing if `client` identity churns.
+  const sentInitialRef = useRef(false);
+  useEffect(() => {
+    if (!client) return;
+    if (session.isInitialLoading) return;
+    if (sentInitialRef.current) return;
+    const pending = consumePendingPrompt(cliSessionId);
+    if (!pending) return;
+    sentInitialRef.current = true;
+    void client
+      .sendPrompt(cliSessionId, pending.text, pending.cwd)
+      .catch((err) => {
+        console.error("initial sendPrompt failed", err);
+      });
+  }, [client, cliSessionId, session.isInitialLoading]);
+
   return (
     <>
       {/* Title via Stack.Screen options. Header chrome (transparent + Liquid
@@ -73,29 +98,23 @@ export default function SessionDetailScreen() {
           UINavigationBar), so the system handles blur strength tracking with
           scroll, dynamic-type sizing, RTL, etc. */}
       <Stack.Screen options={{ title: title || "Session" }} />
-      <Stack.Header transparent blurEffect="systemMaterial" />
+      <Stack.Header transparent />
       <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button icon="line.3.horizontal" onPress={openDrawer} />
       </Stack.Toolbar>
       <ToolCallSheetProvider>
         <View className="flex-1 bg-white dark:bg-black">
-          {session.lastError ? (
-            <View className="border-b border-red-300 bg-red-50 px-4 py-2 dark:border-red-800 dark:bg-red-950">
-              <Text className="text-xs font-medium text-red-700 dark:text-red-300">
-                Turn failed
-              </Text>
-              <Text
-                selectable
-                className="mt-0.5 text-xs text-red-600 dark:text-red-400"
-              >
-                {session.lastError}
-              </Text>
-            </View>
-          ) : null}
-          <Body session={session} bottomInset={insets.bottom} />
-          {/* InputBar floats over the list so transcript content can scroll
-              behind it — Liquid Glass needs content underneath to actually
-              blur. KeyboardStickyView's translateY math is
+          <Body
+            session={session}
+            topInset={headerHeight}
+            bottomInset={insets.bottom}
+          />
+          {/* InputBar (and the error banner, when present) float over the
+              list so transcript content can scroll behind them — Liquid
+              Glass needs content underneath to actually blur. The banner
+              sits inside the same KeyboardStickyView so it rides up with
+              the keyboard instead of getting buried behind it.
+              KeyboardStickyView's translateY math is
               `height.value + offset(progress)` where height is 0 when
               closed and -keyboardHeight when open. We want to shift UP by
               insets.bottom when closed (so the bar clears the home
@@ -105,6 +124,19 @@ export default function SessionDetailScreen() {
             offset={{ closed: -insets.bottom, opened: -12 }}
             style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
           >
+            {session.lastError ? (
+              <View className="border-t border-red-300 bg-red-50 px-4 py-2 dark:border-red-800 dark:bg-red-950">
+                <Text className="text-xs font-medium text-red-700 dark:text-red-300">
+                  Turn failed
+                </Text>
+                <Text
+                  selectable
+                  className="mt-0.5 text-xs text-red-600 dark:text-red-400"
+                >
+                  {session.lastError}
+                </Text>
+              </View>
+            ) : null}
             <InputBar
               onSend={handleSend}
               onInterrupt={handleInterrupt}
@@ -119,9 +151,11 @@ export default function SessionDetailScreen() {
 
 function Body({
   session,
+  topInset,
   bottomInset,
 }: {
   session: ReturnType<typeof useLiveSession>;
+  topInset: number;
   bottomInset: number;
 }) {
   if (session.isInitialLoading) {
@@ -145,14 +179,22 @@ function Body({
     );
   }
 
-  return <Transcript items={session.items} bottomInset={bottomInset} />;
+  return (
+    <Transcript
+      items={session.items}
+      topInset={topInset}
+      bottomInset={bottomInset}
+    />
+  );
 }
 
 function Transcript({
   items,
+  topInset,
   bottomInset,
 }: {
   items: import("@sidecodeapp/protocol").TimelineItem[];
+  topInset: number;
   bottomInset: number;
 }) {
   const blocks = useMemo(() => flattenToBlocks(items), [items]);
@@ -183,7 +225,10 @@ function Transcript({
       // content). ~80 is a defensible average; the list re-measures
       // actual sizes after first render.
       estimatedItemSize={80}
-      contentContainerStyle={{ paddingBottom: 194 + bottomInset }}
+      contentContainerStyle={{
+        paddingTop: topInset,
+        paddingBottom: 194 + bottomInset,
+      }}
       // Chat-mode triple: stick rendered content to the bottom when it
       // doesn't fill the screen (alignItemsAtEnd), boot directly at the
       // latest message (initialScrollAtEnd), keep the viewport pinned to

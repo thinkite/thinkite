@@ -29,8 +29,10 @@ const Separator = () => <View className="h-px bg-gray-200 dark:bg-gray-800" />;
  *
  * The trigger row pattern mirrors Claude iOS: tap a session → close drawer →
  * navigate to the session detail. Tap "+" / new-session → close drawer →
- * navigate to (drawer)/index. Tap user pill → router.push("/settings") → root
- * Stack pushes the modal sheet over (drawer).
+ * navigate to "/" (the new-session create page; lives at
+ * `(drawer)/(stack)/index.tsx`, sibling of the detail inside the same
+ * inner Stack). Tap user pill → router.push("/settings") → root Stack
+ * pushes the modal sheet over (drawer).
  *
  * Drawer's `navigation` prop only needs `closeDrawer`; full
  * `DrawerContentComponentProps` shape lives at
@@ -84,7 +86,7 @@ export function SessionListSidebar({
   const handleOpenSession = (session: SessionInfo) => {
     navigation.closeDrawer();
     router.replace({
-      pathname: "/(drawer)/session/[cliSessionId]",
+      pathname: "/session/[cliSessionId]",
       params: {
         cliSessionId: session.cliSessionId,
         title: session.title,
@@ -98,9 +100,11 @@ export function SessionListSidebar({
 
   const handleNewSession = () => {
     navigation.closeDrawer();
-    // Likewise: replace, not push. Going back to the new-session create page
-    // is a switch (different Drawer screen), not a stack push.
-    router.replace("/(drawer)");
+    // Replace, not push: the new-session page is a sibling of the detail
+    // inside the same inner Stack ((drawer)/(stack)/index → URL "/"), so
+    // switching to it from a detail screen is a top-of-Stack swap (no
+    // back stack accumulating).
+    router.replace("/");
   };
 
   // Settings IS a push — it's a modal at the root Stack level, sliding up

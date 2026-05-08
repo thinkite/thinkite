@@ -14,7 +14,14 @@
  * types (`cloud_*.json` / `remote_*.json`) without re-keying the dir.
  */
 
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -41,12 +48,22 @@ export interface SidecodeSessionMetadata {
   /** Cumulative turn count; V0 starts at 0 and doesn't yet bump on each turn. */
   completedTurns: number;
   /**
-   * Display title — empty initially, SDK / Desktop fill in via auto-summary
-   * once the session has enough content. iOS shows "Untitled" fallback when
-   * empty (same as Desktop-mirrored sessions).
+   * Display title — empty initially. Filled in lazily by `listSessions`'s
+   * fetch-and-write-back pass: it reads SDK's `getSessionInfo().summary`
+   * and persists it here, so subsequent reads (and iOS display) come
+   * straight from this file. Sidecode metadata is the truth source for
+   * the app — display never falls back to `getSessionInfo` at render
+   * time.
    */
   title: string;
-  titleSource: "auto";
+  /**
+   * Provenance of `title`. `"auto"` means "filled by daemon from SDK
+   * summary"; daemon may overwrite freely. `"user"` means "set explicitly
+   * via `/rename`" (V0.5+); daemon must NOT overwrite — `/rename` writes
+   * only sidecode metadata, never the SDK's `renameSession`, so this
+   * field is the only authority on user intent.
+   */
+  titleSource: "auto" | "user";
   permissionMode: "bypassPermissions" | "default";
 }
 
@@ -86,7 +103,152 @@ export function writeSidecodeSession(
 }
 
 /**
+ * Read a single sidecode session metadata file. Returns `undefined` when
+ * the file is missing (cliSessionId never created by sidecode, or removed)
+ * or malformed (corrupt JSON, schema mismatch — caller can't act on it
+ * either way). Synchronous to match the rest of this module.
+ */
+export function readSidecodeSession(
+  home: string,
+  cliSessionId: string,
+): SidecodeSessionMetadata | undefined {
+  const path = sidecodeSessionPath(home, cliSessionId);
+  if (!existsSync(path)) return undefined;
+  try {
+    const raw = readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw) as SidecodeSessionMetadata;
+    if (!parsed?.cliSessionId) return undefined;
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * List every sidecode-created session under `<home>/sessions/`.
+ *
+ * Filename convention is `local_<cliSessionId>.json`; anything else is
+ * skipped. Malformed JSON files are skipped silently — a single corrupt
+ * file must not break the whole listing (matches Desktop's behavior).
+ *
+ * `opts.cwd` filters by exact-match cwd (same semantics as
+ * `listDesktopSessions`); omit to return all sessions across all cwds.
+ *
+ * Order is unspecified — the router unions with Desktop sessions and
+ * sorts by `lastActivityAt` once.
+ */
+export function listSidecodeSessions(
+  home: string,
+  opts: { cwd?: string } = {},
+): SidecodeSessionMetadata[] {
+  const dir = join(home, "sessions");
+  if (!existsSync(dir)) return [];
+
+  const out: SidecodeSessionMetadata[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+
+  for (const name of entries) {
+    if (!name.startsWith("local_") || !name.endsWith(".json")) continue;
+    if (name.endsWith(".tmp")) continue; // mid-rename atomic-write artifact
+    const path = join(dir, name);
+    let parsed: SidecodeSessionMetadata;
+    try {
+      parsed = JSON.parse(readFileSync(path, "utf8")) as SidecodeSessionMetadata;
+    } catch {
+      continue;
+    }
+    if (!parsed?.cliSessionId) continue;
+    if (opts.cwd !== undefined && parsed.cwd !== opts.cwd) continue;
+    out.push(parsed);
+  }
+  return out;
+}
+
+/**
+ * Atomically merge a new `title` into a sidecode session metadata file.
+ *
+ * Honors the `"user"` titleSource lock: if the on-disk record already has
+ * `titleSource === "user"` (set by `/rename`), this is a no-op — user
+ * intent always wins over auto-fetched SDK summaries. Otherwise writes
+ * `{ ...existing, title, titleSource: "auto" }` via the same atomic
+ * tmp+rename as `writeSidecodeSession`.
+ *
+ * Returns the title that ended up on disk (the new one, or the existing
+ * user-set one if locked, or empty when the metadata file is missing).
+ *
+ * V0 race note: there is no rename UI yet, so the read-then-write
+ * sequence here can't be raced by `/rename`. When V0.5+ adds rename,
+ * this function still re-reads inside, so a `/rename` write that lands
+ * between `readSidecodeSession` and `writeSidecodeSession` will be
+ * preserved on the second read here as long as it set `titleSource:
+ * "user"` first.
+ */
+export function updateSidecodeSessionTitle(
+  home: string,
+  cliSessionId: string,
+  title: string,
+): string {
+  const existing = readSidecodeSession(home, cliSessionId);
+  if (!existing) return "";
+  if (existing.titleSource === "user") return existing.title;
+  const updated: SidecodeSessionMetadata = {
+    ...existing,
+    title,
+    titleSource: "auto",
+  };
+  writeSidecodeSession(home, updated);
+  return title;
+}
+
+/**
+ * Maximum stored title length. The full prompt text can be paragraph-sized
+ * (an actual `Edit this file: ...\n\n<long context>`) but the title surface
+ * on the iOS row is one line — clipping at write time prevents pathological
+ * metadata bloat without changing the rendered look.
+ */
+const TITLE_MAX_LEN = 200;
+
+/**
+ * Derive the auto-title for a freshly-created sidecode session from the
+ * user's first prompt. Strips newlines (collapses to single line) and
+ * caps at TITLE_MAX_LEN — typical chat prompts fit; multi-paragraph
+ * pastes get truncated with an ellipsis.
+ */
+function deriveTitleFromFirstPrompt(text: string): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= TITLE_MAX_LEN) return oneLine;
+  return `${oneLine.slice(0, TITLE_MAX_LEN - 1).trimEnd()}…`;
+}
+
+/**
  * Build a fresh metadata record for a session sidecode is creating now.
+ *
+ * `firstPrompt` is the user's opening message — we snapshot it as
+ * `title` immediately (titleSource: "auto") so the iOS sidebar has a
+ * meaningful label as soon as the session exists. We deliberately do
+ * NOT later refresh from SDK `getSessionInfo().summary`: empirically
+ * (checked against ~7 of the user's own Desktop sessions on
+ * 2026-05-08), the SDK never writes `aiTitle` for either CLI or SDK-
+ * driven sessions, so its `summary` falls through to `lastPrompt` —
+ * which would mean our stored title rotates through every new user
+ * message the SDK appends. Freezing on firstPrompt matches the
+ * Claude iOS / ChatGPT title behavior that users expect.
+ *
+ * `/rename` (V0.5+) will set `titleSource: "user"` and overwrite
+ * `title` with whatever the user typed; `updateSidecodeSessionTitle`
+ * already enforces that lock.
+ *
+ * TODO(post-V0): an LLM-driven topic-summarizer pass after N turns
+ * would give a real "Discussion about X" style title. Cheap option:
+ * one Haiku call on `turn_completed` with the first ~500 tokens of
+ * the conversation, written to `metadata.title` only when
+ * `titleSource === "auto"`. Not in V0 scope.
+ *
  * `now` defaults to `Date.now()` but is injectable for deterministic
  * tests. `cliSessionId` is the UUID iOS supplied (= what we pass to
  * SDK's `options.sessionId`).
@@ -94,6 +256,7 @@ export function writeSidecodeSession(
 export function buildNewSidecodeSession(input: {
   cliSessionId: string;
   cwd: string;
+  firstPrompt: string;
   now?: number;
 }): SidecodeSessionMetadata {
   const now = input.now ?? Date.now();
@@ -106,7 +269,7 @@ export function buildNewSidecodeSession(input: {
     lastActivityAt: now,
     isArchived: false,
     completedTurns: 0,
-    title: "",
+    title: deriveTitleFromFirstPrompt(input.firstPrompt),
     titleSource: "auto",
     // V0 uses bypassPermissions — no in-app permission prompts yet (see
     // project_session_replay_model memory: permission_requested /

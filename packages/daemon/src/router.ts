@@ -11,18 +11,27 @@ import {
   type SessionLoopOptions,
 } from "./runtime/run-query.js";
 import type { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
+import type { SidecodeSessionMetadata } from "./sidecode-sessions.js";
 import type { CommandHandler } from "./ws-server.js";
 
 export interface RouterDeps {
   continueOnDesktop: (target: ContinueOnDesktopTarget) => Promise<void>;
   /**
-   * List sessions. With `{ cwd }` filter to that project; with `{}` return
-   * all sessions across every Desktop env-pair (iOS groups client-side).
-   * V0 W1 baseline reads only Desktop's `claude-code-sessions/` mirror;
-   * V0.5+ unions in sidecode-DB entries. Daemon never folds in SDK
-   * `listSessions()` — that returns automation / test noise (see feedback).
+   * List Desktop-mirrored sessions. With `{ cwd }` filter to that
+   * project; with `{}` return all sessions across every Desktop env-pair
+   * (iOS groups client-side). Daemon never folds in SDK `listSessions()`
+   * — that returns automation / test noise (see feedback).
    */
   listSessions: (opts: { cwd?: string }) => Promise<DesktopSession[]>;
+  /**
+   * List sidecode-created sessions from `<home>/sessions/local_*.json`.
+   * Same `cwd` filter semantics as `listSessions`. Sync because it's a
+   * trivial fs.readdir + JSON.parse over a small (~tens) directory;
+   * Promise.all in the handler tolerates plain array returns.
+   */
+  listSidecodeSessions: (opts: {
+    cwd?: string;
+  }) => SidecodeSessionMetadata[];
   /**
    * Read the full message transcript for a CLI session, normalized into a
    * flat TimelineItem[]. Backed by the SDK's `getSessionMessages` which parses
@@ -59,10 +68,18 @@ export interface RouterDeps {
   /**
    * Persist sidecode-side metadata for a session sidecode is creating
    * now. Called from the create-branch of sendPrompt before
-   * ensureSessionLoop spawns the SDK query. Tests stub this to a no-op
-   * to avoid touching `<home>/sessions/`.
+   * ensureSessionLoop spawns the SDK query. `firstPrompt` is the user's
+   * opening message text — daemon snapshots it as the auto-title at this
+   * point so the iOS sidebar has a meaningful label from session
+   * inception (no display-time SDK lookup, no later refresh — see
+   * sidecode-sessions.ts:buildNewSidecodeSession for the rationale).
+   * Tests stub this to a no-op to avoid touching `<home>/sessions/`.
    */
-  writeSidecodeSession: (input: { cliSessionId: string; cwd: string }) => void;
+  writeSidecodeSession: (input: {
+    cliSessionId: string;
+    cwd: string;
+    firstPrompt: string;
+  }) => void;
   /**
    * Whether the daemon is mid-shutdown. Router gates sendPrompt and
    * subscribe behind this — once shutdown starts, accepting new prompts
@@ -134,10 +151,32 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
       case "listSessions": {
         // `dir` is optional: omitted = "all projects", iOS groups by cwd.
         try {
-          const desktopSessions = await deps.listSessions(
-            cmd.dir ? { cwd: cmd.dir } : {},
+          const filter = cmd.dir ? { cwd: cmd.dir } : {};
+          // Read both sources in parallel. Sidecode is sync but Promise.all
+          // happily wraps plain values.
+          const [desktopSessions, sidecodeSessions] = await Promise.all([
+            deps.listSessions(filter),
+            Promise.resolve(deps.listSidecodeSessions(filter)),
+          ]);
+          // Union by cliSessionId. Sidecode metadata is the truth source
+          // for sessions sidecode created — if a session appears in both
+          // (e.g. Desktop later mirrored a sidecode-created one), prefer
+          // sidecode's record so user-set title / titleSource lock from
+          // `/rename` doesn't get overridden by Desktop's auto-summary.
+          //
+          // Title comes straight from sidecode metadata, written at
+          // session creation from the user's first prompt — no display-
+          // time SDK lookup. See sidecode-sessions.ts for the rationale.
+          const byCliSessionId = new Map<string, SessionInfo>();
+          for (const d of desktopSessions) {
+            byCliSessionId.set(d.cliSessionId, toSessionInfo(d));
+          }
+          for (const s of sidecodeSessions) {
+            byCliSessionId.set(s.cliSessionId, toSessionInfoFromSidecode(s));
+          }
+          const sessions = Array.from(byCliSessionId.values()).sort(
+            (a, b) => b.lastActivityAt - a.lastActivityAt,
           );
-          const sessions: SessionInfo[] = desktopSessions.map(toSessionInfo);
           ctx.send({
             type: "listSessions.response",
             requestId: cmd.requestId,
@@ -276,11 +315,14 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           // Persist sidecode metadata FIRST, before spawning the SDK
           // query — that way if iOS reconnects mid-create, listSessions
           // already shows the entry. Resume path skips this (Desktop /
-          // CLI already wrote their own metadata).
+          // CLI already wrote their own metadata). The user's first
+          // prompt becomes the auto-title; iOS sees the row labeled
+          // immediately on the next listSessions call.
           if (mode === "create") {
             deps.writeSidecodeSession({
               cliSessionId: cmd.sessionId,
               cwd: cmd.cwd as string,
+              firstPrompt: cmd.text,
             });
           }
 
@@ -368,6 +410,30 @@ function toSessionInfo(d: DesktopSession): SessionInfo {
     model: prettyModel(d.model),
     completedTurns: d.completedTurns,
     isArchived: d.isArchived,
+  };
+}
+
+function toSessionInfoFromSidecode(s: SidecodeSessionMetadata): SessionInfo {
+  return {
+    sessionId: s.sessionId,
+    cwd: s.cwd,
+    originCwd: s.originCwd,
+    // V0 gap: sidecode's `lastActivityAt` is set at creation and never
+    // updated, so the list ordering is "creation time" not real activity.
+    // Surfacing JSONL mtime via getSessionInfo on every entry would fix
+    // it but adds N file reads per list call — deferred until V0.5+.
+    lastActivityAt: s.lastActivityAt,
+    origin: "sidecode-created",
+    cliSessionId: s.cliSessionId,
+    // `title` is populated at session creation from the user's first
+    // prompt (see sidecode-sessions.ts:buildNewSidecodeSession) — never
+    // empty for a properly-created session. We don't fold model into
+    // sidecode metadata yet (V0 only tracks permissionMode), so iOS
+    // shows the row without a model chip; Desktop-mirrored entries
+    // still carry it.
+    title: s.title || undefined,
+    completedTurns: s.completedTurns,
+    isArchived: s.isArchived,
   };
 }
 

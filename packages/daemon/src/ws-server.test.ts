@@ -644,6 +644,7 @@ describe("WebSocketServer end-to-end subscribe/unsubscribe", () => {
     const handler = createCommandHandler({
       continueOnDesktop: vi.fn().mockResolvedValue(undefined),
       listSessions: vi.fn().mockResolvedValue([]),
+      listSidecodeSessions: vi.fn().mockReturnValue([]),
       getMessages: vi
         .fn()
         .mockResolvedValue([{ type: "user_message", uuid: "u-1", text: "hi" }]),

@@ -15,6 +15,7 @@ import { createCommandHandler } from "./router.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import {
   buildNewSidecodeSession,
+  listSidecodeSessions,
   writeSidecodeSession,
 } from "./sidecode-sessions.js";
 import { DEFAULT_HOST, DEFAULT_PORT, WebSocketServer } from "./ws-server.js";
@@ -85,10 +86,11 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       const info = await getSessionInfo(cliSessionId);
       return info !== undefined;
     },
-    writeSidecodeSession: ({ cliSessionId, cwd }) => {
+    listSidecodeSessions: (opts) => listSidecodeSessions(home, opts),
+    writeSidecodeSession: ({ cliSessionId, cwd, firstPrompt }) => {
       writeSidecodeSession(
         home,
-        buildNewSidecodeSession({ cliSessionId, cwd }),
+        buildNewSidecodeSession({ cliSessionId, cwd, firstPrompt }),
       );
     },
     isShuttingDown: () => shuttingDown,
