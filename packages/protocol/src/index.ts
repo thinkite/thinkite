@@ -47,7 +47,19 @@ export const pairOfferFrame = z.object({
   v: z.number().int(),
   daemonFingerprint: z.string(), // 16 hex chars, SHA256(pubkey).slice(0,16)
   daemonIdentityPublicKey: z.string(), // base64url ed25519 raw pubkey
-  daemonAddress: z.string(), // ws://host:port — direct connect, no relay in V0
+  /**
+   * Ordered candidate ws URLs the client should try, first-match-wins.
+   * Daemon advertises multiple paths so the same offer works whether the
+   * phone is on the same Wi-Fi (LAN address), on a Tailscale tailnet
+   * (CGNAT address), or on a simulator that shares loopback. Client
+   * tries them sequentially with a short per-attempt timeout — see
+   * Paseo's HostConnection candidate set for the inspiration.
+   *
+   * `min(1)`: at least one address (typically loopback for simulator
+   * pairing). Empty array would mean "no way to connect" which is never
+   * useful.
+   */
+  daemonAddresses: z.array(z.string()).min(1),
   serviceName: z.string(),
   expiresAt: z.number(), // epoch ms; daemon enforces now <= this on hello
 });

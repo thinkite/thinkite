@@ -69,7 +69,7 @@ describe("pair.offer frame", () => {
     v: 1,
     daemonFingerprint: "988d6cb2baa153ef",
     daemonIdentityPublicKey: "AAAA",
-    daemonAddress: "ws://192.168.1.10:41234",
+    daemonAddresses: ["ws://192.168.1.10:41234", "ws://100.64.0.1:41234"],
     serviceName: "sidecode-mac",
     expiresAt: 1700000000000,
   };
@@ -78,13 +78,23 @@ describe("pair.offer frame", () => {
     const parsed = pairOfferFrame.parse(valid);
     expect(parsed.daemonFingerprint).toBe("988d6cb2baa153ef");
     expect(parsed.v).toBe(1);
+    expect(parsed.daemonAddresses).toEqual([
+      "ws://192.168.1.10:41234",
+      "ws://100.64.0.1:41234",
+    ]);
     // Confirm sessionId is NOT a field on the offer.
     expect((parsed as Record<string, unknown>).sessionId).toBeUndefined();
   });
 
-  it("rejects when daemonAddress is missing", () => {
-    const { daemonAddress: _, ...rest } = valid;
+  it("rejects when daemonAddresses is missing", () => {
+    const { daemonAddresses: _, ...rest } = valid;
     expect(pairOfferFrame.safeParse(rest).success).toBe(false);
+  });
+
+  it("rejects when daemonAddresses is empty (need at least one path)", () => {
+    expect(
+      pairOfferFrame.safeParse({ ...valid, daemonAddresses: [] }).success,
+    ).toBe(false);
   });
 
   it("rejects when daemonIdentityPublicKey is missing", () => {

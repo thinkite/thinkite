@@ -23,8 +23,12 @@ import { DEFAULT_HOST, DEFAULT_PORT, WebSocketServer } from "./ws-server.js";
 export interface DaemonOptions {
   port?: number;
   host?: string;
-  /** Address advertised in pair.offer (defaults to ws://<host>:<port>). */
-  daemonAddress?: string;
+  /**
+   * Ordered candidate ws URLs the pair.offer should advertise. Defaults to
+   * a single `ws://<host>:<port>`. `sidecode pair --lan` adds LAN +
+   * Tailscale IPv4s on top of the loopback default — see pair-command.ts.
+   */
+  daemonAddresses?: string[];
   /** Override SIDECODE_HOME. */
   homeDir?: string;
 }
@@ -53,9 +57,11 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   const knownClients = KnownClients.load(home);
   const port = options.port ?? DEFAULT_PORT;
   const host = options.host ?? DEFAULT_HOST;
-  const daemonAddress = options.daemonAddress ?? `ws://${host}:${port}`;
+  const daemonAddresses = options.daemonAddresses ?? [`ws://${host}:${port}`];
 
-  const pairing = new PairingService(identity, knownClients, { daemonAddress });
+  const pairing = new PairingService(identity, knownClients, {
+    daemonAddresses,
+  });
   // Lazy-populated by slice G's router when it sees its first sendPrompt.
   // Drained on shutdown via daemon.stop() → runtimeManager.shutdown().
   const runtimeManager = new SessionRuntimeManager<EventDelta>();

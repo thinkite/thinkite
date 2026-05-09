@@ -33,8 +33,17 @@ export const TRANSCRIPT_TTL_MS = 30_000;
 
 export interface PairingServiceOptions {
   clock?: () => number;
-  /** Network address advertised in the offer (e.g. "ws://192.168.1.5:41234"). */
-  daemonAddress?: string;
+  /**
+   * Ordered candidate ws URLs the offer should advertise. The client tries
+   * them sequentially with a per-attempt timeout; first one that handshakes
+   * wins. Defaults to a single loopback URL — fine for simulator pairing.
+   *
+   * For physical-device pairing, callers (typically `sidecode pair --lan`)
+   * should populate this with LAN + Tailscale addresses too so the same
+   * offer works across network shapes (same Wi-Fi, Tailscale-over-cellular,
+   * etc.). See `pair-command.ts` for the priority ordering.
+   */
+  daemonAddresses?: string[];
   /** Override the default 5-minute offer expiry. */
   offerTtlMs?: number;
   /** Override the per-handshake transcript TTL. */
@@ -72,7 +81,7 @@ export class PairingService {
   private readonly clock: () => number;
   private readonly offerTtlMs: number;
   private readonly transcriptTtlMs: number;
-  private readonly daemonAddress: string;
+  private readonly daemonAddresses: string[];
   /** sessionId (client-generated) → in-flight transcript. */
   private readonly pendingTranscripts = new Map<
     string,
@@ -87,7 +96,11 @@ export class PairingService {
     this.clock = options.clock ?? Date.now;
     this.offerTtlMs = options.offerTtlMs ?? OFFER_TTL_MS;
     this.transcriptTtlMs = options.transcriptTtlMs ?? TRANSCRIPT_TTL_MS;
-    this.daemonAddress = options.daemonAddress ?? "ws://127.0.0.1:41234";
+    const addresses = options.daemonAddresses ?? ["ws://127.0.0.1:41234"];
+    if (addresses.length === 0) {
+      throw new Error("PairingService requires at least one daemon address");
+    }
+    this.daemonAddresses = addresses;
   }
 
   /**
@@ -102,7 +115,7 @@ export class PairingService {
       v: HANDSHAKE_VERSION,
       daemonFingerprint: this.identity.fingerprint,
       daemonIdentityPublicKey: this.identity.publicKeyB64,
-      daemonAddress: this.daemonAddress,
+      daemonAddresses: this.daemonAddresses,
       serviceName,
       expiresAt,
     };
@@ -149,11 +162,28 @@ export class PairingService {
       if (this.clock() > hello.offerExpiresAt) {
         return reject(hello.sessionId, "session_expired", "offer expired");
       }
-      if (this.knownClients.has(hello.clientFingerprint)) {
+      // Recovery-friendly qr_bootstrap: if this fingerprint is already
+      // in known_clients and the pubkey matches, treat the bootstrap as
+      // idempotent. Real-world trigger: iOS lost its PairedDaemon
+      // (SecureStore wipe / re-install / schema bump) so it can't do
+      // trusted_reconnect, but the client identity hasn't actually
+      // changed. Forcing the user to `rm known_clients.json` for what's
+      // effectively a credential restore is bad UX.
+      //
+      // Pubkey match is the security bar: a real attacker who somehow
+      // shared our 16-hex fingerprint would still need the matching
+      // ed25519 keypair to forge the client.auth signature later, so
+      // accepting the same pubkey here doesn't loosen the verify path.
+      // A different pubkey for the same fingerprint = SHA-256 collision
+      // or active attack — we still reject.
+      const existing = this.knownClients
+        .list()
+        .find((c) => c.fingerprint === hello.clientFingerprint);
+      if (existing && existing.publicKeyB64 !== hello.clientIdentityPublicKey) {
         return reject(
           hello.sessionId,
-          "client_already_paired",
-          "client is already paired; reconnect with mode=trusted_reconnect",
+          "invalid_signature",
+          "fingerprint already paired with a different pubkey",
         );
       }
       expiresAt = hello.offerExpiresAt;
@@ -286,9 +316,15 @@ export class PairingService {
       try {
         this.knownClients.add(client);
       } catch {
-        // Race: another concurrent qr_bootstrap added the same fingerprint
-        // between this hello and this auth. Treat as authenticated; just
-        // don't double-add.
+        // Two scenarios land here:
+        //   1. Concurrent-bootstrap race: another in-flight qr_bootstrap
+        //      added the same fingerprint between this hello and this
+        //      auth.
+        //   2. Idempotent recovery: client was already in known_clients
+        //      from an earlier pair; processClientHello allowed this hello
+        //      through because the pubkey matched (see comment there).
+        // In both cases the client is already persisted with the same
+        // pubkey — treat as authenticated, just don't double-add.
         client = this.knownClients
           .list()
           .find((c) => c.fingerprint === pending.input.clientFingerprint);

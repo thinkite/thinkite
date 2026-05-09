@@ -12,13 +12,24 @@ import {
 } from "./handshake";
 import type { ClientIdentity } from "./identity";
 
-// SecureStore restricts keys to [A-Za-z0-9._-] — no slashes / colons.
-const PAIRED_STORE_KEY = "sidecode_paired_daemon_v1";
+// SecureStore restricts keys to [A-Za-z0-9._-] — no slashes / colons. Bump
+// the trailing version when the persisted shape changes — older entries
+// with a different shape become unreadable, the consumer falls into the
+// `unpaired` state, and the user re-pairs cleanly. v2 = `addresses` array
+// (was `address` string in v1).
+const PAIRED_STORE_KEY = "sidecode_paired_daemon_v2";
 
-/** What we save after a successful first pair so subsequent launches can
- *  trusted_reconnect without re-scanning a QR. */
+/**
+ * What we save after a successful first pair so subsequent launches can
+ * trusted_reconnect without re-scanning a QR.
+ *
+ * `addresses` is the same ordered candidate list the offer carried — we
+ * persist all of them so reconnect can fall back across network shapes
+ * (LAN today, Tailscale-on-cellular tomorrow). On reconnect we try them
+ * sequentially with a per-attempt timeout; first success wins.
+ */
 export interface PairedDaemon {
-  address: string; // ws://host:port
+  addresses: string[]; // ordered ws://host:port candidates
   fingerprint: string; // 16 hex chars
   identityPublicKey: string; // base64url
 }
@@ -27,7 +38,7 @@ export interface PairOffer {
   v: number;
   daemonFingerprint: string;
   daemonIdentityPublicKey: string;
-  daemonAddress: string;
+  daemonAddresses: string[];
   serviceName: string;
   expiresAt: number;
 }
@@ -43,6 +54,12 @@ export function decodePairOffer(b64: string): PairOffer {
       `offer v=${offer.v} != HANDSHAKE_VERSION=${HANDSHAKE_VERSION}`,
     );
   }
+  if (
+    !Array.isArray(offer.daemonAddresses) ||
+    offer.daemonAddresses.length === 0
+  ) {
+    throw new Error("offer has no daemonAddresses");
+  }
   if (Date.now() > offer.expiresAt) {
     throw new Error(
       `offer expired at ${new Date(offer.expiresAt).toISOString()}`,
@@ -55,7 +72,16 @@ export async function getPairedDaemon(): Promise<PairedDaemon | null> {
   const raw = await SecureStore.getItemAsync(PAIRED_STORE_KEY);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as PairedDaemon;
+    const parsed = JSON.parse(raw) as Partial<PairedDaemon>;
+    if (
+      !Array.isArray(parsed.addresses) ||
+      parsed.addresses.length === 0 ||
+      typeof parsed.fingerprint !== "string" ||
+      typeof parsed.identityPublicKey !== "string"
+    ) {
+      return null;
+    }
+    return parsed as PairedDaemon;
   } catch {
     return null;
   }
@@ -96,58 +122,86 @@ export class DaemonClient {
   ) {}
 
   /**
-   * First-time pair via a QR offer. Persists `PairedDaemon` for next launch.
-   * Throws on handshake failure.
+   * First-time pair via a QR offer. Persists `PairedDaemon` for next
+   * launch with the address that won promoted to position 0, so the next
+   * reconnect tries it first.
+   *
+   * Tries each candidate address in `offer.daemonAddresses` sequentially
+   * with a per-attempt timeout, returning the first that completes the
+   * handshake. The same handshake state machine runs against whichever
+   * address answers first — daemon's pendingTranscripts are scoped to a
+   * sessionId, and we mint a fresh sessionId per attempt, so failed
+   * attempts don't leak state across addresses.
    */
   static async pair(
     identity: ClientIdentity,
     offer: PairOffer,
   ): Promise<DaemonClient> {
-    const sessionId = Crypto.randomUUID();
-    const clientNonce = randomBase64UrlBytes(32);
-    const hello = {
-      type: "client.hello" as const,
-      v: HANDSHAKE_VERSION,
-      sessionId,
-      mode: "qr_bootstrap" as HandshakeMode,
-      clientFingerprint: identity.fingerprint,
-      clientIdentityPublicKey: identity.publicKeyB64,
-      clientNonce,
-      offerExpiresAt: offer.expiresAt,
-      offerDaemonFingerprint: offer.daemonFingerprint,
-    };
-    const client = await runHandshake(offer.daemonAddress, identity, hello, {
-      fingerprint: offer.daemonFingerprint,
-      identityPublicKey: offer.daemonIdentityPublicKey,
+    const { client, address } = await connectFirstAvailable({
+      addresses: offer.daemonAddresses,
+      identity,
+      expectDaemon: {
+        fingerprint: offer.daemonFingerprint,
+        identityPublicKey: offer.daemonIdentityPublicKey,
+      },
+      buildHello: () => ({
+        type: "client.hello" as const,
+        v: HANDSHAKE_VERSION,
+        sessionId: Crypto.randomUUID(),
+        mode: "qr_bootstrap" as HandshakeMode,
+        clientFingerprint: identity.fingerprint,
+        clientIdentityPublicKey: identity.publicKeyB64,
+        clientNonce: randomBase64UrlBytes(32),
+        offerExpiresAt: offer.expiresAt,
+        offerDaemonFingerprint: offer.daemonFingerprint,
+      }),
     });
     await setPairedDaemon({
-      address: offer.daemonAddress,
+      addresses: promoteAddress(offer.daemonAddresses, address),
       fingerprint: offer.daemonFingerprint,
       identityPublicKey: offer.daemonIdentityPublicKey,
     });
     return client;
   }
 
-  /** Reconnect using a previously-paired daemon. */
+  /**
+   * Reconnect using a previously-paired daemon. Tries `daemon.addresses`
+   * in stored order — the last-known-good address sits at position 0, so
+   * a stable network reconnects in one attempt with no timeout tax. On
+   * fallback (network shape changed since last connect), promotes the
+   * new winner to head; next reconnect again hits position 0 first.
+   *
+   * Single SecureStore write only when the winner differs from the
+   * stored head — `promoteAddress` is identity-mapped in the steady-state
+   * case, and `setPairedDaemon` is skipped when the addresses array is
+   * unchanged.
+   */
   static async reconnect(
     identity: ClientIdentity,
     daemon: PairedDaemon,
   ): Promise<DaemonClient> {
-    const sessionId = Crypto.randomUUID();
-    const clientNonce = randomBase64UrlBytes(32);
-    const hello = {
-      type: "client.hello" as const,
-      v: HANDSHAKE_VERSION,
-      sessionId,
-      mode: "trusted_reconnect" as HandshakeMode,
-      clientFingerprint: identity.fingerprint,
-      clientIdentityPublicKey: identity.publicKeyB64,
-      clientNonce,
-    };
-    return runHandshake(daemon.address, identity, hello, {
-      fingerprint: daemon.fingerprint,
-      identityPublicKey: daemon.identityPublicKey,
+    const { client, address } = await connectFirstAvailable({
+      addresses: daemon.addresses,
+      identity,
+      expectDaemon: {
+        fingerprint: daemon.fingerprint,
+        identityPublicKey: daemon.identityPublicKey,
+      },
+      buildHello: () => ({
+        type: "client.hello" as const,
+        v: HANDSHAKE_VERSION,
+        sessionId: Crypto.randomUUID(),
+        mode: "trusted_reconnect" as HandshakeMode,
+        clientFingerprint: identity.fingerprint,
+        clientIdentityPublicKey: identity.publicKeyB64,
+        clientNonce: randomBase64UrlBytes(32),
+      }),
     });
+    const promoted = promoteAddress(daemon.addresses, address);
+    if (promoted !== daemon.addresses) {
+      await setPairedDaemon({ ...daemon, addresses: promoted });
+    }
+    return client;
   }
 
   /**
@@ -399,6 +453,14 @@ interface ServerHelloFrame {
   daemonSignature: string;
 }
 
+/**
+ * Per-attempt timeout for the full handshake (open → server.hello →
+ * client.auth → server.ready). Tuned for "user just clicked Connect" UX:
+ * each candidate gets ~2.5s before we move on. With 2-3 candidates the
+ * worst-case wait is bounded under 10s before all addresses fail.
+ */
+const HANDSHAKE_TIMEOUT_MS = 2500;
+
 async function runHandshake(
   url: string,
   identity: ClientIdentity,
@@ -410,8 +472,15 @@ async function runHandshake(
   // daemon side, which sits there until the daemon's 10s auth-timer fires
   // (`auth timeout` in daemon log). Catch + close + rethrow keeps the wire
   // tidy; the catch is shape-only, the throw still surfaces to the caller.
+  // The race-against-timeout puts the same hygiene on slow / unreachable
+  // candidates — without it, a phone trying a stale LAN IP would wait
+  // ~30+ seconds for the OS-level connect timeout.
   try {
-    return await runHandshakeInner(ws, identity, hello, expectDaemon);
+    return await raceWithTimeout(
+      runHandshakeInner(ws, identity, hello, expectDaemon),
+      HANDSHAKE_TIMEOUT_MS,
+      `handshake to ${url} timed out after ${HANDSHAKE_TIMEOUT_MS}ms`,
+    );
   } catch (err) {
     try {
       ws.close();
@@ -421,6 +490,74 @@ async function runHandshake(
     }
     throw err;
   }
+}
+
+function raceWithTimeout<T>(
+  inner: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutP = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([inner, timeoutP]).finally(() => {
+    if (timer !== null) clearTimeout(timer);
+  });
+}
+
+/**
+ * Try each address in sequence; first to complete the handshake wins.
+ * Returns BOTH the connected client and the address that worked, so the
+ * caller can promote that address to the front of the persisted list —
+ * next reconnect skips the timeout cost on stale entries.
+ *
+ * Each attempt mints a fresh `sessionId` + `clientNonce` (via
+ * `buildHello`) because the daemon's `pendingTranscripts` map is keyed by
+ * sessionId — a stale sessionId from a failed attempt would conflict
+ * with retries.
+ *
+ * On all-fail we throw a single error that pins which address failed
+ * why, so DaemonClientProvider's catch can surface it.
+ */
+async function connectFirstAvailable(opts: {
+  addresses: string[];
+  identity: ClientIdentity;
+  buildHello: () => HelloFrame;
+  expectDaemon: { fingerprint: string; identityPublicKey: string };
+}): Promise<{ client: DaemonClient; address: string }> {
+  const errors: string[] = [];
+  for (const address of opts.addresses) {
+    try {
+      const client = await runHandshake(
+        address,
+        opts.identity,
+        opts.buildHello(),
+        opts.expectDaemon,
+      );
+      return { client, address };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errors.push(`${address}: ${message}`);
+    }
+  }
+  throw new Error(
+    `all daemon addresses failed (${opts.addresses.length} tried) — ${errors.join("; ")}`,
+  );
+}
+
+/**
+ * Move `winner` to the front of `addresses` (no-op if already there).
+ * Pure function — caller passes the result back to `setPairedDaemon`.
+ *
+ * The "queue with last-good at head" pattern: every reconnect tries
+ * addresses[0] first, the winner gets promoted on success, so steady
+ * state on a stable network = zero wasted timeouts. Network changes
+ * pay one timeout to find the new working path, then settle.
+ */
+function promoteAddress(addresses: string[], winner: string): string[] {
+  if (addresses[0] === winner) return addresses;
+  return [winner, ...addresses.filter((a) => a !== winner)];
 }
 
 async function runHandshakeInner(

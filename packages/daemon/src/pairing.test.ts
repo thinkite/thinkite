@@ -134,13 +134,13 @@ describe("PairingService.createOffer", () => {
     const identity = loadOrCreateIdentity(home);
     const known = KnownClients.load(home);
     const pairing = new PairingService(identity, known, {
-      daemonAddress: "ws://10.0.0.1:41234",
+      daemonAddresses: ["ws://10.0.0.1:41234"],
     });
     const offer = pairing.createOffer("sidecode-test");
     expect(offer.type).toBe("pair.offer");
     expect(offer.daemonFingerprint).toBe(identity.fingerprint);
     expect(offer.daemonIdentityPublicKey).toBe(identity.publicKeyB64);
-    expect(offer.daemonAddress).toBe("ws://10.0.0.1:41234");
+    expect(offer.daemonAddresses).toEqual(["ws://10.0.0.1:41234"]);
     expect(offer.serviceName).toBe("sidecode-test");
     expect(offer.v).toBe(HANDSHAKE_VERSION);
     expect(offer.expiresAt).toBeGreaterThan(Date.now());
@@ -280,11 +280,15 @@ describe("PairingService — qr_bootstrap failure modes", () => {
     if (!res.ok) expect(res.reject.code).toBe("version_mismatch");
   });
 
-  it("rejects re-pair of an already-known client (qr_bootstrap)", () => {
+  it("accepts re-pair of an already-known client when pubkey matches (idempotent recovery)", () => {
+    // Real-world trigger: iOS lost its PairedDaemon (SecureStore wipe /
+    // re-install / schema bump) so it can't trusted_reconnect, but the
+    // client identity hasn't changed. The daemon should accept the
+    // qr_bootstrap and re-issue server.hello + accept the auth, leaving
+    // known_clients unchanged.
     const { pairing } = bootstrap();
     const client = makeMockClient();
 
-    // First pair.
     const firstOffer = pairing.createOffer("a");
     const firstHello = helloForOffer(client, firstOffer);
     const firstHelloRes = pairing.processClientHello(firstHello);
@@ -297,11 +301,50 @@ describe("PairingService — qr_bootstrap failure modes", () => {
     );
     expect(pairing.processClientAuth(firstAuth).ok).toBe(true);
 
-    // Second qr_bootstrap with same client — already paired, must reconnect instead.
+    // Second qr_bootstrap with the SAME client — accepted.
     const secondOffer = pairing.createOffer("b");
-    const res = pairing.processClientHello(helloForOffer(client, secondOffer));
+    const secondHello = helloForOffer(client, secondOffer);
+    const secondHelloRes = pairing.processClientHello(secondHello);
+    expect(secondHelloRes.ok).toBe(true);
+    if (!secondHelloRes.ok) return;
+    const secondAuth = signClientAuth(
+      secondHelloRes.serverHello,
+      secondHello,
+      client,
+    );
+    expect(pairing.processClientAuth(secondAuth).ok).toBe(true);
+  });
+
+  it("rejects qr_bootstrap when fingerprint matches but pubkey differs (collision / attack)", () => {
+    // Pathological case: same 16-hex fingerprint but different ed25519
+    // pubkey. Statistically impossible with SHA-256, but we still guard
+    // against it explicitly so the security boundary is the pubkey, not
+    // the fingerprint.
+    const { pairing } = bootstrap();
+    const original = makeMockClient();
+
+    // Pair the original.
+    const firstOffer = pairing.createOffer("a");
+    const firstHello = helloForOffer(original, firstOffer);
+    const firstHelloRes = pairing.processClientHello(firstHello);
+    expect(firstHelloRes.ok).toBe(true);
+    if (!firstHelloRes.ok) return;
+    expect(
+      pairing.processClientAuth(
+        signClientAuth(firstHelloRes.serverHello, firstHello, original),
+      ).ok,
+    ).toBe(true);
+
+    // Forge an attacker that claims `original.fingerprint` but has a
+    // different pubkey.
+    const attacker = makeMockClient();
+    const attackerHello: ClientHelloFrame = {
+      ...helloForOffer(attacker, pairing.createOffer("b")),
+      clientFingerprint: original.fingerprint, // claim the original's fp
+    };
+    const res = pairing.processClientHello(attackerHello);
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.reject.code).toBe("client_already_paired");
+    if (!res.ok) expect(res.reject.code).toBe("invalid_signature");
   });
 
   it("rejects bad client signature on auth", () => {

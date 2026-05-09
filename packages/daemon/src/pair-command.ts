@@ -47,19 +47,19 @@ export async function runPairCommand(args: readonly string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Resolve the host the offer should point at. By default we trust the
-  // daemon-lock advertisement (loopback for local pairing). For physical-
-  // device dev builds the phone is on Wi-Fi and can't reach 127.0.0.1, so
-  // we accept `--host <ip>` (or `--lan` to auto-pick the first non-internal
-  // IPv4 from this Mac's network interfaces). Daemon itself binds 0.0.0.0
-  // by default, so any LAN-reachable IP just works.
-  const hostOverride = parseHostOverride(args, lock.host);
+  // Build the offer's address candidate list. Order is what the iOS client
+  // tries sequentially with a per-attempt timeout; first to handshake wins.
+  // Priority within `--lan`: RFC1918 (192.168 / 10 / 172.16-31) before
+  // Tailscale CGNAT (100.64.0.0/10) before any other non-internal IPv4.
+  // We always append the lock host (loopback by default) at the end so
+  // simulator pairing keeps working with the same printed offer.
+  const addresses = buildAddressList(args, lock);
 
   // Build the offer pointing at the running daemon. PairingService here is
   // just a metadata builder; createOffer() is a pure function in the
   // post-revision design — it doesn't track issued offers.
   const pairing = new PairingService(identity, knownClients, {
-    daemonAddress: `ws://${hostOverride}:${lock.port}`,
+    daemonAddresses: addresses,
   });
   const offer = pairing.createOffer(`sidecode-${hostname()}`);
   const encoded = Buffer.from(JSON.stringify(offer)).toString("base64url");
@@ -86,7 +86,8 @@ export async function runPairCommand(args: readonly string[]): Promise<void> {
   console.log("");
   console.log(`Daemon PID:   ${lock.pid}`);
   console.log(`Fingerprint:  ${identity.fingerprint}`);
-  console.log(`Address:      ${offer.daemonAddress}`);
+  console.log("Addresses (tried in order):");
+  for (const addr of addresses) console.log(`  ${addr}`);
   console.log(`Expires:      ${new Date(offer.expiresAt).toISOString()}`);
   console.log("");
   console.log(
@@ -95,49 +96,107 @@ export async function runPairCommand(args: readonly string[]): Promise<void> {
 }
 
 /**
- * Resolve the host string the offer should advertise.
+ * Build the ordered ws URL list the offer should advertise.
  *
- * `sidecode pair`            → use lock.host (loopback by default, OK for
- *                              simulator pairing where the daemon and
- *                              client share the loopback interface)
- * `sidecode pair --host IP`  → use IP verbatim
- * `sidecode pair --lan`      → first non-internal IPv4 on this Mac's
- *                              network interfaces (the typical Wi-Fi IP)
+ * `sidecode pair`                  → [ws://<lock.host>:port]
+ *                                    (just loopback, fine for simulator)
+ * `sidecode pair --host IP`        → [ws://IP:port, ws://<lock.host>:port]
+ *                                    (multiple --host flags supported)
+ * `sidecode pair --lan`            → [LAN IPs (RFC1918), Tailscale (CGNAT),
+ *                                     other non-internal IPv4s,
+ *                                     ws://<lock.host>:port]
+ * `sidecode pair --host IP --lan`  → explicit IPs first, then auto-detected,
+ *                                    then loopback
  *
- * Phones on the same Wi-Fi network can't reach the daemon's loopback,
- * which is why this exists.
+ * Why include loopback last even with --lan: keeps the same offer usable on
+ * a simulator running on this Mac (the simulator can also reach the LAN
+ * IP, but loopback is fastest and immune to router-level firewall rules).
+ *
+ * Why RFC1918 before Tailscale CGNAT: when both endpoints are on the same
+ * Wi-Fi, LAN is direct and fast; Tailscale on the same LAN tends to fall
+ * back to a derp relay or to a peer-to-peer NAT punch that adds latency.
+ * On a different network (cellular, hotel Wi-Fi), Tailscale is the only
+ * reachable path — that's the fallback case.
+ *
+ * Dedupe + preserve insertion order: if a `--host` value collides with one
+ * the auto-detector would pick, the explicit one wins (placed first) and
+ * the duplicate is dropped from the auto-detected slice.
  */
-function parseHostOverride(args: readonly string[], lockHost: string): string {
-  const hostIdx = args.indexOf("--host");
-  if (hostIdx >= 0) {
-    const value = args[hostIdx + 1];
+function buildAddressList(
+  args: readonly string[],
+  lock: { host: string; port: number },
+): string[] {
+  const explicit = parseHostFlags(args).map((h) => `ws://${h}:${lock.port}`);
+  const auto = args.includes("--lan")
+    ? prioritizedLanIpv4s().map((h) => `ws://${h}:${lock.port}`)
+    : [];
+  const loopback = `ws://${lock.host}:${lock.port}`;
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const addr of [...explicit, ...auto, loopback]) {
+    if (seen.has(addr)) continue;
+    seen.add(addr);
+    out.push(addr);
+  }
+  return out;
+}
+
+/** All `--host <ip>` values in order. Errors out if any is missing a value. */
+function parseHostFlags(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] !== "--host") continue;
+    const value = args[i + 1];
     if (!value || value.startsWith("--")) {
       console.error("✗ --host requires a value (IP or hostname)");
       process.exit(1);
     }
-    return value;
+    out.push(value);
+    i += 1; // skip consumed value
   }
-  if (args.includes("--lan")) {
-    const lan = pickLanIpv4();
-    if (!lan) {
-      console.error(
-        "✗ --lan: no non-internal IPv4 address found. Pass --host <ip> explicitly.",
-      );
-      process.exit(1);
-    }
-    return lan;
-  }
-  return lockHost;
+  return out;
 }
 
-/** First non-internal IPv4 across all network interfaces, or undefined. */
-function pickLanIpv4(): string | undefined {
+/**
+ * All non-internal IPv4 addresses on this Mac, ordered: RFC1918 first
+ * (192.168.x, 10.x, 172.16-31.x) then Tailscale CGNAT (100.64.0.0/10) then
+ * everything else. Returns `[]` if none found.
+ */
+function prioritizedLanIpv4s(): string[] {
+  const found: string[] = [];
   for (const ifaces of Object.values(networkInterfaces())) {
     for (const ifc of ifaces ?? []) {
-      if (ifc.family === "IPv4" && !ifc.internal) return ifc.address;
+      if (ifc.family !== "IPv4" || ifc.internal) continue;
+      found.push(ifc.address);
     }
   }
-  return undefined;
+  found.sort((a, b) => addressPriority(a) - addressPriority(b));
+  return found;
+}
+
+function addressPriority(ip: string): number {
+  if (isRfc1918(ip)) return 0;
+  if (isTailscaleCgnat(ip)) return 1;
+  return 2;
+}
+
+function isRfc1918(ip: string): boolean {
+  if (ip.startsWith("192.168.")) return true;
+  if (ip.startsWith("10.")) return true;
+  // 172.16.0.0 – 172.31.255.255
+  if (ip.startsWith("172.")) {
+    const second = Number(ip.split(".")[1]);
+    return second >= 16 && second <= 31;
+  }
+  return false;
+}
+
+function isTailscaleCgnat(ip: string): boolean {
+  // 100.64.0.0/10 = 100.64.0.0 – 100.127.255.255
+  if (!ip.startsWith("100.")) return false;
+  const second = Number(ip.split(".")[1]);
+  return second >= 64 && second <= 127;
 }
 
 /** Self-test: run the full handshake in-process. No WS, no network. */

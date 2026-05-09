@@ -55,13 +55,13 @@ describe("pairing integration", () => {
     const identity = loadOrCreateIdentity(home);
     const known = KnownClients.load(home);
     const pairing = new PairingService(identity, known, {
-      daemonAddress: "ws://127.0.0.1:41234",
+      daemonAddresses: ["ws://127.0.0.1:41234"],
     });
 
     const offer = pairing.createOffer("integration-test");
     expect(offer.daemonFingerprint).toBe(identity.fingerprint);
     expect(offer.daemonIdentityPublicKey).toBe(identity.publicKeyB64);
-    expect(offer.daemonAddress).toBe("ws://127.0.0.1:41234");
+    expect(offer.daemonAddresses).toEqual(["ws://127.0.0.1:41234"]);
 
     const client = freshClient();
     const sessionId = `int-${Date.now()}`;
