@@ -15,19 +15,13 @@ import { SessionListSidebar } from "@/components/session-list-sidebar";
  * `(stack)` group is invisible in URLs, so cold launch lands on `/` (the
  * new-session page) directly without any redirect.
  *
- * `drawerType: "slide"` — drawer + main content slide together (drawer
- * pushes content rightward instead of overlaying). Closer to Claude iOS /
- * Notion / Cursor card-peel pattern than the default `front` overlay.
+ * Default `drawerType: "front"` — drawer slides over the main content
+ * with a system-managed dim overlay. Width 85% leaves a peek of the
+ * underlying screen, matching Claude.ai mobile / standard nav-drawer style.
  *
  * `swipeEdgeWidth: 120` — leftmost 120pt is swipe-to-open hot zone. Wide
  * enough to feel responsive but bounded so it doesn't fight horizontal-
  * scroll content (DiffsView etc) in the main pane.
- *
- * Note: expo-router 56 vendor'd a stripped-down `@react-navigation/drawer`
- * (only `drawerStyle` exposed; no `sceneContainerStyle` / `screenLayout`).
- * The "rounded card peel" effect on the main content edge can't be done
- * via screenOptions — would need per-screen wrapping or upstream PR.
- * Deferred to V0.5+ polish.
  *
  * Settings + other modal routes live at the ROOT Stack level (one level
  * above this Drawer), so `router.push("/settings")` slides up modally OVER
@@ -39,15 +33,10 @@ export default function DrawerLayout() {
     <Drawer
       drawerContent={(props) => <SessionListSidebar {...props} />}
       screenOptions={{
-        drawerType: "slide",
         drawerStyle: {
-          width: "100%",
+          width: "85%",
           backgroundColor: scheme === "dark" ? "#000000" : "#ffffff",
         },
-        // Slide drawerType already moves content together with drawer; an
-        // overlay tint isn't needed and would just dim the visible main
-        // content edge during the slide.
-        overlayColor: "transparent",
         swipeEdgeWidth: 120,
         headerShown: false,
       }}

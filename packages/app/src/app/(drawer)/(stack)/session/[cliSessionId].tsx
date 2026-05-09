@@ -247,6 +247,10 @@ function Transcript({
       // calculations (anchoredEndSpace, end detection) account for it.
       offset={bottomInset - 12}
       recycleItems
+      // Only push the list up by the keyboard height when the user is
+      // already pinned to the bottom; anywhere else the keyboard floats
+      // over the content so what they're reading stays put.
+      keyboardLiftBehavior="whenAtEnd"
     />
   );
 }

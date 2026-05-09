@@ -79,7 +79,7 @@ const LIGHT_PALETTE: ColorPalette = {
   bullet: "#525252",
   tableHeaderBg: "#eeeeef",
   tableRowBg: "#f4f4f5",
-  tableBorder: "#fffafa",
+  tableBorder: "#ffffff",
 };
 
 const DARK_PALETTE: ColorPalette = {
