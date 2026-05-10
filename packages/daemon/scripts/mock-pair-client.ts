@@ -93,7 +93,7 @@ async function runPair(offerB64: string, keyPath: string): Promise<void> {
   const keypair = generateOrLoadClientKeypair(keyPath);
   console.log(`mock client fingerprint: ${keypair.fingerprint}`);
   console.log(`daemon  fingerprint:     ${offer.daemonFingerprint}`);
-  console.log(`daemon  address:         ${offer.daemonAddress}`);
+  console.log(`daemon  address:         ${offer.daemonAddresses[0]}`);
   console.log(
     `offer expires:           ${new Date(offer.expiresAt).toISOString()}`,
   );
@@ -111,7 +111,7 @@ async function runPair(offerB64: string, keyPath: string): Promise<void> {
   };
 
   await runHandshake({
-    url: offer.daemonAddress,
+    url: offer.daemonAddresses[0],
     hello,
     keypair,
     successLabel: "✓ paired (qr_bootstrap)",
