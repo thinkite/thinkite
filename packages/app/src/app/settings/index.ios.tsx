@@ -1,17 +1,16 @@
 import {
   Button,
   Form,
-  HStack,
   Host,
+  HStack,
   Image,
   Section,
   Spacer,
   Text,
-  VStack,
 } from "@expo/ui/swift-ui";
-import { font, foregroundStyle } from "@expo/ui/swift-ui/modifiers";
+import { foregroundStyle } from "@expo/ui/swift-ui/modifiers";
 import { router, Stack } from "expo-router";
-import { useDaemonClient } from "@/lib/daemon-client-context";
+import { statusColor, useDaemonClient } from "@/lib/daemon-client-context";
 
 /**
  * Settings root, iOS-only. Uses `@expo/ui/swift-ui` (Form, Section, Button +
@@ -36,7 +35,7 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  * up `/settings` (it scans bare-extension files only, no platform suffix).
  */
 export default function SettingsIndexScreen() {
-  const { paired } = useDaemonClient();
+  const { paired, connectionStatus } = useDaemonClient();
   return (
     <>
       <Stack.Screen options={{ title: "Settings" }} />
@@ -52,38 +51,24 @@ export default function SettingsIndexScreen() {
           <Section title="Host">
             <Button onPress={() => router.push("/settings/host")}>
               <HStack alignment="center" spacing={8}>
-                <VStack alignment="leading">
-                  {/* Without an explicit foreground style, SwiftUI Button
-                      tints the title text with the current accent color
-                      (system blue). `foregroundStyle("primary")` forces
-                      the literal `Color.primary` (black/white auto-adapt). */}
-                  <Text modifiers={[foregroundStyle("primary")]}>
-                    {paired?.serviceName ?? "—"}
-                  </Text>
-                  {paired ? (
-                    <Text
-                      modifiers={[
-                        font({ size: 12 }),
-                        // Hex (not `foregroundStyle("secondary")`) — SwiftUI's
-                        // `.secondary` is hierarchical: it picks the secondary
-                        // level of the current foreground style. Inside a
-                        // Button (which has a tint), that's 60% opacity of
-                        // accent color = light blue, NOT the system gray
-                        // secondary-label we want. Same gotcha hits the
-                        // chevron Image below.
-                        foregroundStyle("#8E8E93"),
-                      ]}
-                    >
-                      {paired.fingerprint.slice(0, 8)}
-                    </Text>
-                  ) : null}
-                </VStack>
-                <Spacer />
+                {/* Leading status dot (Mail.app unread-indicator pattern) —
+                    scannable at-a-glance state without reading text. Same
+                    color as the host-detail Status section so the row's
+                    state matches the page it leads to. */}
                 <Image
-                  systemName="chevron.right"
-                  size={14}
-                  color="#8E8E93"
+                  systemName="circle.fill"
+                  size={10}
+                  color={statusColor(connectionStatus)}
                 />
+                {/* Without an explicit foreground style, SwiftUI Button
+                    tints the title text with the current accent color
+                    (system blue). `foregroundStyle("primary")` forces
+                    the literal `Color.primary` (black/white auto-adapt). */}
+                <Text modifiers={[foregroundStyle("primary")]}>
+                  {paired?.serviceName ?? "—"}
+                </Text>
+                <Spacer />
+                <Image systemName="chevron.right" size={14} color="#8E8E93" />
               </HStack>
             </Button>
           </Section>

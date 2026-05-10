@@ -1,5 +1,5 @@
-import type { EventDelta, TimelineItem } from "@sidecodeapp/protocol";
 import * as ed25519 from "@noble/ed25519";
+import type { EventDelta, TimelineItem } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { base64UrlToBytes, bytesToBase64Url } from "./base64";
@@ -121,10 +121,37 @@ export class DaemonClient {
    */
   private readonly eventCallbacks = new Map<string, EventCallback>();
 
+  /**
+   * `true` once `close()` has been called by the consumer — distinguishes
+   * "user / context tore down the connection" from "transport dropped on
+   * its own". Wired into the `ws.onclose` handler installed by `install()`:
+   * on close, if the flag is `false` AND `onUnexpectedClose` is set, the
+   * callback fires so the context can schedule a reconnect.
+   */
+  private intentionallyClosed = false;
+
+  /**
+   * Optional callback invoked when the WS closes WITHOUT a prior `close()`
+   * call. Set by the context provider after a successful pair / reconnect
+   * to wire up auto-reconnect. Reset to `null` is a no-op (the client is
+   * dead either way once `ws.onclose` fired).
+   */
+  private onUnexpectedClose: (() => void) | null = null;
+
   private constructor(
     private readonly ws: WebSocket,
     private readonly pending: Map<string, PendingRequest>,
   ) {}
+
+  /**
+   * Register a one-shot handler invoked when the underlying WS drops
+   * without an explicit `close()` from the consumer (network blip, daemon
+   * crash, NAT timeout, etc.). Call before any await yields after pair /
+   * reconnect resolves so the handler is wired before any close can fire.
+   */
+  setOnUnexpectedClose(cb: (() => void) | null): void {
+    this.onUnexpectedClose = cb;
+  }
 
   /**
    * First-time pair via a QR offer. Persists `PairedDaemon` for next
@@ -356,6 +383,7 @@ export class DaemonClient {
   }
 
   close(): void {
+    this.intentionallyClosed = true;
     try {
       this.ws.close();
     } catch {
@@ -426,6 +454,15 @@ export class DaemonClient {
       for (const [, slot] of pending) slot.reject(err);
       pending.clear();
       client.eventCallbacks.clear();
+      // If the consumer didn't call close(), this is a network-side drop —
+      // notify so the context can schedule a reconnect. The handler is
+      // one-shot per client instance (this client is dead either way once
+      // we get here; the context replaces it on the retry).
+      if (!client.intentionallyClosed) {
+        const cb = client.onUnexpectedClose;
+        client.onUnexpectedClose = null;
+        cb?.();
+      }
     };
     return client;
   }
@@ -600,9 +637,7 @@ async function runHandshakeInner(
       `daemon fingerprint mismatch: expected ${expectDaemon.fingerprint}, got ${serverHello.daemonFingerprint}`,
     );
   }
-  if (
-    serverHello.daemonIdentityPublicKey !== expectDaemon.identityPublicKey
-  ) {
+  if (serverHello.daemonIdentityPublicKey !== expectDaemon.identityPublicKey) {
     throw new Error(
       "daemon identity public key mismatch — daemon identity rotated or MITM",
     );

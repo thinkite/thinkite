@@ -1,8 +1,20 @@
-import { Button, Form, Host, Section, Text } from "@expo/ui/swift-ui";
+import {
+  Button,
+  Form,
+  Host,
+  HStack,
+  Image,
+  Section,
+  Text,
+} from "@expo/ui/swift-ui";
 import { font } from "@expo/ui/swift-ui/modifiers";
 import { Stack } from "expo-router";
 import { Alert } from "react-native";
-import { useDaemonClient } from "@/lib/daemon-client-context";
+import {
+  statusColor,
+  statusLabel,
+  useDaemonClient,
+} from "@/lib/daemon-client-context";
 
 /**
  * Single-host detail page, iOS-only. See settings/index.ios.tsx for why
@@ -21,7 +33,7 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  * and source the record by id; the section structure carries over.
  */
 export default function SettingsHostScreen() {
-  const { paired, unpair } = useDaemonClient();
+  const { paired, unpair, connectionStatus } = useDaemonClient();
 
   const onForget = () => {
     Alert.alert(
@@ -47,6 +59,16 @@ export default function SettingsHostScreen() {
       <Stack.Screen options={{ title: paired?.serviceName ?? "Host" }} />
       <Host style={{ flex: 1 }}>
         <Form>
+          <Section title="Status">
+            <HStack alignment="center" spacing={8}>
+              <Image
+                systemName="circle.fill"
+                size={10}
+                color={statusColor(connectionStatus)}
+              />
+              <Text>{statusLabel(connectionStatus)}</Text>
+            </HStack>
+          </Section>
           <Section title="Hostname">
             <Text>{paired?.serviceName ?? "—"}</Text>
           </Section>
@@ -61,11 +83,11 @@ export default function SettingsHostScreen() {
             </Text>
           </Section>
           <Section>
-            <Button
-              role="destructive"
-              label="Forget host"
-              onPress={onForget}
-            />
+            {/* biome-ignore lint/a11y/useValidAriaRole: SwiftUI ButtonRole
+                ('default' | 'cancel' | 'destructive'), not an HTML/ARIA
+                role attribute. Drives systemRed + VoiceOver "destructive"
+                hint at the SwiftUI layer. */}
+            <Button role="destructive" label="Forget host" onPress={onForget} />
           </Section>
         </Form>
       </Host>
