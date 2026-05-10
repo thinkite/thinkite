@@ -13,12 +13,13 @@ import {
   DaemonClient,
   decodePairOffer,
   getPairedDaemon,
+  type PairedDaemon,
 } from "./daemon-client";
 import { loadOrCreateIdentity } from "./identity";
 
 type DaemonState =
   | { status: "connecting" }
-  | { status: "ready"; client: DaemonClient }
+  | { status: "ready"; client: DaemonClient; paired: PairedDaemon }
   | { status: "unpaired" }
   | { status: "error"; error: Error };
 
@@ -34,6 +35,13 @@ interface DaemonClientContextValue {
    * malformed payload, expired offer, or handshake failure.
    */
   pair: (offerB64: string) => Promise<void>;
+  /**
+   * Tear down the current connection, wipe the persisted PairedDaemon,
+   * and flip to `unpaired`. The root layout's `Stack.Protected` guard
+   * picks this up and routes the user back to /pair automatically — no
+   * imperative navigation needed at the call site.
+   */
+  unpair: () => Promise<void>;
 }
 
 const Ctx = createContext<DaemonClientContextValue | null>(null);
@@ -103,7 +111,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
           return;
         }
         clientRef.current = client;
-        setState({ status: "ready", client });
+        setState({ status: "ready", client, paired });
         setInitialized(true);
       } catch (err) {
         if (epoch !== epochRef.current) return;
@@ -141,9 +149,22 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
         client.close();
         return;
       }
+      // DaemonClient.pair persists PairedDaemon synchronously before
+      // resolving, so this read always sees the freshly-written record.
+      const paired = await getPairedDaemon();
+      if (!paired) {
+        // Defensive — shouldn't happen, but if SecureStore lied we'd rather
+        // fall through to error than render `ready` with no `paired`.
+        client.close();
+        throw new Error("paired record missing after successful pair");
+      }
+      if (epoch !== epochRef.current) {
+        client.close();
+        return;
+      }
       clientRef.current?.close();
       clientRef.current = client;
-      setState({ status: "ready", client });
+      setState({ status: "ready", client, paired });
       setInitialized(true);
     } catch (err) {
       if (epoch !== epochRef.current) return;
@@ -151,6 +172,18 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
       // so PairScreen's local catch can surface the error inline.
       throw err;
     }
+  }, []);
+
+  // Explicit user-initiated unpair (settings → host → "Forget host"). Bumps
+  // the epoch like connect/pair so any in-flight reconnect is dropped, then
+  // closes the active client, wipes SecureStore, and flips state to
+  // `unpaired`. The root Stack.Protected guard does the route switch.
+  const unpair = useCallback(async (): Promise<void> => {
+    epochRef.current += 1;
+    clientRef.current?.close();
+    clientRef.current = null;
+    await clearPairedDaemon();
+    setState({ status: "unpaired" });
   }, []);
 
   useEffect(() => {
@@ -163,8 +196,8 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   }, [connect]);
 
   const value = useMemo<DaemonClientContextValue>(
-    () => ({ state, initialized, reset: connect, pair }),
-    [state, initialized, connect, pair],
+    () => ({ state, initialized, reset: connect, pair, unpair }),
+    [state, initialized, connect, pair, unpair],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -174,6 +207,9 @@ interface UseDaemonClientResult {
   /** Live client when handshake has completed; `null` while connecting,
    *  unpaired, or after error. */
   client: DaemonClient | null;
+  /** Persisted paired-daemon record (host name / addresses / fingerprint
+   *  / public key) when ready; `null` otherwise. */
+  paired: PairedDaemon | null;
   /** True during any in-flight handshake (initial boot AND every reset/reconnect). */
   isLoading: boolean;
   /** True when there is no PairedDaemon on disk — the app should route
@@ -188,6 +224,8 @@ interface UseDaemonClientResult {
   reset: () => void;
   /** Run a first-time pair from a base64url offer string. */
   pair: (offerB64: string) => Promise<void>;
+  /** Forget the paired host: close, wipe SecureStore, route to /pair. */
+  unpair: () => Promise<void>;
 }
 
 export function useDaemonClient(): UseDaemonClientResult {
@@ -197,14 +235,16 @@ export function useDaemonClient(): UseDaemonClientResult {
       "useDaemonClient must be used inside <DaemonClientProvider>",
     );
   }
-  const { state, initialized, reset, pair } = v;
+  const { state, initialized, reset, pair, unpair } = v;
   return {
     client: state.status === "ready" ? state.client : null,
+    paired: state.status === "ready" ? state.paired : null,
     isLoading: state.status === "connecting",
     isUnpaired: state.status === "unpaired",
     isInitialized: initialized,
     error: state.status === "error" ? state.error : null,
     reset,
     pair,
+    unpair,
   };
 }

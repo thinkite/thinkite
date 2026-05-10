@@ -61,7 +61,7 @@ export async function runPairCommand(args: readonly string[]): Promise<void> {
   const pairing = new PairingService(identity, knownClients, {
     daemonAddresses: addresses,
   });
-  const offer = pairing.createOffer(`sidecode-${hostname()}`);
+  const offer = pairing.createOffer(hostname());
   const encoded = Buffer.from(JSON.stringify(offer)).toString("base64url");
 
   // ASCII QR for the iOS app to scan via expo-camera's CameraView.launchScanner.

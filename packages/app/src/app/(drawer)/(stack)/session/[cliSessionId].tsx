@@ -41,7 +41,6 @@ export default function SessionDetailScreen() {
   const session = useLiveSession(cliSessionId);
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
-  const headerHeight = useHeaderHeight();
 
   const openDrawer = useCallback(() => {
     navigation.dispatch(DrawerActions.openDrawer());
@@ -104,11 +103,7 @@ export default function SessionDetailScreen() {
       </Stack.Toolbar>
       <ToolCallSheetProvider>
         <View className="flex-1 bg-white dark:bg-black">
-          <Body
-            session={session}
-            topInset={headerHeight}
-            bottomInset={insets.bottom}
-          />
+          <Body session={session} bottomInset={insets.bottom} />
           {/* InputBar (and the error banner, when present) float over the
               list so transcript content can scroll behind them — Liquid
               Glass needs content underneath to actually blur. The banner
@@ -151,11 +146,9 @@ export default function SessionDetailScreen() {
 
 function Body({
   session,
-  topInset,
   bottomInset,
 }: {
   session: ReturnType<typeof useLiveSession>;
-  topInset: number;
   bottomInset: number;
 }) {
   if (session.isInitialLoading) {
@@ -179,22 +172,14 @@ function Body({
     );
   }
 
-  return (
-    <Transcript
-      items={session.items}
-      topInset={topInset}
-      bottomInset={bottomInset}
-    />
-  );
+  return <Transcript items={session.items} bottomInset={bottomInset} />;
 }
 
 function Transcript({
   items,
-  topInset,
   bottomInset,
 }: {
   items: import("@sidecodeapp/protocol").TimelineItem[];
-  topInset: number;
   bottomInset: number;
 }) {
   const blocks = useMemo(() => flattenToBlocks(items), [items]);
@@ -225,8 +210,8 @@ function Transcript({
       // content). ~80 is a defensible average; the list re-measures
       // actual sizes after first render.
       estimatedItemSize={80}
+      contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{
-        paddingTop: topInset,
         paddingBottom: 194 + bottomInset,
       }}
       // Chat-mode triple: stick rendered content to the bottom when it

@@ -33,6 +33,7 @@ export default function DrawerLayout() {
     <Drawer
       drawerContent={(props) => <SessionListSidebar {...props} />}
       screenOptions={{
+        drawerType: "back",
         drawerStyle: {
           width: "85%",
           backgroundColor: scheme === "dark" ? "#000000" : "#ffffff",

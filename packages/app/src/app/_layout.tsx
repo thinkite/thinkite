@@ -94,8 +94,11 @@ function RootStack() {
             (index) and session detail. */}
         <Stack.Screen name="(drawer)" />
         {/* Settings rendered as iOS pageSheet — same physics as
-            the tool-detail BottomSheet but as a routable modal
-            (gets a URL, supports deep linking). */}
+            the tool-detail BottomSheet but as a routable modal (gets a
+            URL, supports deep linking). The route is a group
+            (`settings/_layout.tsx`) hosting an inner native Stack so
+            list → host detail pushes inside the sheet (with native back
+            arrow), instead of stacking a second sheet on top. */}
         <Stack.Screen
           name="settings"
           options={{ presentation: "pageSheet" }}

@@ -32,6 +32,10 @@ export interface PairedDaemon {
   addresses: string[]; // ordered ws://host:port candidates
   fingerprint: string; // 16 hex chars
   identityPublicKey: string; // base64url
+  // Daemon host's `os.hostname()` at pair time. Snapshot — not refreshed on
+  // reconnect, so a daemon-side `hostnamectl set-hostname` only takes
+  // effect after the next QR pair. Display label only, no semantic use.
+  serviceName: string;
 }
 
 export interface PairOffer {
@@ -77,7 +81,8 @@ export async function getPairedDaemon(): Promise<PairedDaemon | null> {
       !Array.isArray(parsed.addresses) ||
       parsed.addresses.length === 0 ||
       typeof parsed.fingerprint !== "string" ||
-      typeof parsed.identityPublicKey !== "string"
+      typeof parsed.identityPublicKey !== "string" ||
+      typeof parsed.serviceName !== "string"
     ) {
       return null;
     }
@@ -160,6 +165,7 @@ export class DaemonClient {
       addresses: promoteAddress(offer.daemonAddresses, address),
       fingerprint: offer.daemonFingerprint,
       identityPublicKey: offer.daemonIdentityPublicKey,
+      serviceName: offer.serviceName,
     });
     return client;
   }
