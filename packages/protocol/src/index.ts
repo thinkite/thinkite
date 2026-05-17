@@ -229,17 +229,10 @@ export type SessionInfo = z.infer<typeof sessionInfo>;
 // shapes (`file_path` → `filePath`, `old_string` → `oldString`). Output shapes
 // in SDK are already camelCase (`structuredPatch`, `numLines`).
 
-export const todoStatus = z.enum(["pending", "in_progress", "completed"]);
-export type TodoStatus = z.infer<typeof todoStatus>;
-
-export const todoEntry = z.object({
-  content: z.string(),
-  status: todoStatus,
-  // SDK exposes both forms — `content` is imperative ("Implement X"),
-  // `activeForm` is the gerund ("Implementing X") shown next to in_progress.
-  activeForm: z.string(),
-});
-export type TodoEntry = z.infer<typeof todoEntry>;
+// NOTE: TodoWrite removed in prep for Agent SDK 0.3.142+, which replaces
+// TodoWrite with TaskCreate / TaskUpdate / TaskGet / TaskList (per-id
+// increments, not snapshot writes). Re-add a `task` detail variant + daemon
+// accumulator when we wire those tools back in.
 
 export const grepMode = z.enum(["content", "files_with_matches", "count"]);
 export type GrepMode = z.infer<typeof grepMode>;
@@ -247,7 +240,7 @@ export type GrepMode = z.infer<typeof grepMode>;
 /**
  * Per-tool semantic detail. Each variant is a render hint for iOS — bash/read
  * fence the output for tree-sitter highlight, edit/write surface a unified
- * diff, todo gets a checkbox list, grep/glob just dump the rg/glob text blob.
+ * diff, grep/glob just dump the rg/glob text blob.
  *
  * Reality of the data we work from: `getSessionMessages()` strips the sidecar
  * `toolUseResult` field that Claude Code writes to disk (see normalize.ts).
@@ -300,10 +293,6 @@ export const toolCallDetail = z.discriminatedUnion("type", [
     unifiedDiff: z.string(),
   }),
   z.object({
-    type: z.literal("todo"),
-    todos: z.array(todoEntry),
-  }),
-  z.object({
     type: z.literal("grep"),
     pattern: z.string(),
     path: z.string().optional(),
@@ -334,7 +323,7 @@ const toolCallItem = z.object({
   callId: z.string(),
   /** Raw SDK tool name ("Bash", "Edit", "Read", "WebFetch", ...). */
   name: z.string(),
-  /** Daemon-derived chip label (e.g. "src/utils/foo.ts" for Edit, "5/12 todos" for TodoWrite). */
+  /** Daemon-derived chip label (e.g. "src/utils/foo.ts" for Edit, "TODO" for Grep). */
   summary: z.string(),
   /**
    * V0 reads settled JSONL so most tool_calls arrive `completed` or `failed`.

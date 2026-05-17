@@ -259,32 +259,6 @@ describe("normalize", () => {
     expect(item.detail.language).toBe("python");
   });
 
-  it("TodoWrite summary counts done/total", () => {
-    const out = normalize([
-      assistantMsg("a-1", [
-        {
-          type: "tool_use",
-          id: "tu-1",
-          name: "TodoWrite",
-          input: {
-            todos: [
-              { content: "A", status: "completed", activeForm: "A-ing" },
-              { content: "B", status: "completed", activeForm: "B-ing" },
-              { content: "C", status: "in_progress", activeForm: "C-ing" },
-              { content: "D", status: "pending", activeForm: "D-ing" },
-            ],
-          },
-        },
-      ]),
-    ]);
-    const item = out[0];
-    if (item?.type !== "tool_call") throw new Error("expected tool_call");
-    expect(item.summary).toBe("2/4 todos");
-    if (item.detail.type !== "todo") throw new Error("expected todo detail");
-    expect(item.detail.todos).toHaveLength(4);
-    expect(item.detail.todos[2]?.status).toBe("in_progress");
-  });
-
   it("Grep summary embeds the pattern + basename of path", () => {
     const out = normalize([
       assistantMsg("a-1", [

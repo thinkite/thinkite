@@ -178,8 +178,6 @@ function DetailBody({
           markdownContent={fence(detail.content, detail.language)}
         />
       );
-    case "todo":
-      return <TodoDetail detail={detail} />;
     case "grep":
     case "glob":
       return <FencedDetail markdownContent={fence(detail.output)} />;
@@ -207,64 +205,6 @@ function ErrorBanner({ text }: { text: string }) {
       </Text>
     </View>
   );
-}
-
-function TodoDetail({
-  detail,
-}: {
-  detail: Extract<ToolCallDetail, { type: "todo" }>;
-}) {
-  if (detail.todos.length === 0) {
-    return (
-      <Text className="text-xs italic text-gray-500 dark:text-gray-400">
-        (empty todo list)
-      </Text>
-    );
-  }
-  return (
-    <View className="gap-2">
-      {detail.todos.map((todo) => (
-        <View key={todo.content} className="flex-row items-start gap-2">
-          <TodoCheckbox status={todo.status} />
-          <Text
-            className={
-              todo.status === "completed"
-                ? "flex-1 text-base text-gray-500 line-through dark:text-gray-500"
-                : "flex-1 text-base text-gray-900 dark:text-gray-100"
-            }
-          >
-            {todo.status === "in_progress" ? todo.activeForm : todo.content}
-          </Text>
-        </View>
-      ))}
-    </View>
-  );
-}
-
-function TodoCheckbox({
-  status,
-}: {
-  status: "pending" | "in_progress" | "completed";
-}) {
-  const base = "mt-0.5 h-4 w-4 rounded border items-center justify-center";
-  switch (status) {
-    case "completed":
-      return (
-        <View className={`${base} border-green-500 bg-green-500`}>
-          <Text className="text-[10px] font-bold text-white">✓</Text>
-        </View>
-      );
-    case "in_progress":
-      return (
-        <View
-          className={`${base} border-blue-500 bg-blue-100 dark:bg-blue-900`}
-        />
-      );
-    case "pending":
-      return (
-        <View className={`${base} border-gray-400 dark:border-gray-600`} />
-      );
-  }
 }
 
 function UnknownDetail({

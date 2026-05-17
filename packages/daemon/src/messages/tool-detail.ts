@@ -4,7 +4,7 @@
  *
  *   - Anthropic ContentBlock zod schemas (text/tool_use/tool_result + the
  *     per-role discriminated unions)
- *   - Per-tool input schemas (Bash, Read, Edit, Write, TodoWrite, Grep, Glob)
+ *   - Per-tool input schemas (Bash, Read, Edit, Write, Grep, Glob)
  *   - `buildDetailFromInput(name, rawInput)`: maps SDK tool_use into a typed
  *     `ToolCallDetail` variant, with a fallback `unknown` for tools we don't
  *     specially-render in V0
@@ -19,11 +19,7 @@
  * unifiedDiff format only touches one place.
  */
 
-import {
-  grepMode,
-  type ToolCallDetail,
-  todoEntry,
-} from "@sidecodeapp/protocol";
+import { grepMode, type ToolCallDetail } from "@sidecodeapp/protocol";
 import { structuredPatch } from "diff";
 import { z } from "zod";
 import { detectLanguageForPath } from "./language-detect.js";
@@ -87,10 +83,6 @@ const editInputSchema = z.object({
 const writeInputSchema = z.object({
   file_path: z.string(),
   content: z.string(),
-});
-
-const todoInputSchema = z.object({
-  todos: z.array(todoEntry),
 });
 
 const grepInputSchema = z.object({
@@ -169,12 +161,6 @@ export function buildDetailFromInput(
         // the right visual: shows what was written.
         unifiedDiff: makeUnifiedDiff(file_path, "", content),
       };
-    }
-
-    case "TodoWrite": {
-      const parsed = todoInputSchema.safeParse(rawInput);
-      if (!parsed.success) return unknownDetail(name, rawInput);
-      return { type: "todo", todos: parsed.data.todos };
     }
 
     case "Grep": {
@@ -268,10 +254,9 @@ export function attachOutputToDetail(
     case "unknown":
       detail.output = output;
       return;
-    // edit/write/todo don't surface tool_result text — input is sufficient.
+    // edit/write don't surface tool_result text — input is sufficient.
     case "edit":
     case "write":
-    case "todo":
       return;
   }
 }
@@ -286,11 +271,6 @@ export function summaryFor(detail: ToolCallDetail, name: string): string {
     case "edit":
     case "write":
       return basenameOf(detail.filePath);
-    case "todo": {
-      const total = detail.todos.length;
-      const done = detail.todos.filter((t) => t.status === "completed").length;
-      return `${done}/${total} todos`;
-    }
     case "grep":
       return detail.path
         ? `"${detail.pattern}" in ${basenameOf(detail.path)}`
