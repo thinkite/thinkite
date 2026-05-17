@@ -2,6 +2,7 @@ packages:
   - "packages/*"
 allowBuilds:
   esbuild: true
+  msw: false
 nodeLinker: hoisted
 patchedDependencies:
   expo-router@56.1.1: patches/expo-router@56.1.1.patch

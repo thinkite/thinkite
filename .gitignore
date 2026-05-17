@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-electron
 .expo
 *.log
 .DS_Store
