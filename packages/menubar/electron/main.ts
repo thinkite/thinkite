@@ -1,164 +1,240 @@
-import { app, BrowserWindow, Tray, ipcMain, nativeImage, screen } from "electron";
+import { app, BrowserWindow, Tray, Menu, nativeImage } from "electron";
 import path from "node:path";
 import { type Daemon, start as startDaemon } from "@sidecodeapp/daemon";
 
-const POP_W = 320;
-const POP_H = 440;
-
 let tray: Tray | null = null;
-let popover: BrowserWindow | null = null;
 let pairWindow: BrowserWindow | null = null;
-let popoverVisible = false;
 let isQuitting = false;
 let daemon: Daemon | null = null;
 
-function createPopover() {
-	const win = new BrowserWindow({
-		width: POP_W,
-		height: POP_H,
-		show: false,
-		frame: false,
-		resizable: false,
-		skipTaskbar: true,
-		fullscreenable: false,
-		vibrancy: "menu",
-		visualEffectState: "active",
-		webPreferences: {
-			contextIsolation: true,
-			nodeIntegration: false,
-			preload: path.join(import.meta.dirname, "preload.mjs"),
-		},
-	});
-	win.setAlwaysOnTop(true, "pop-up-menu");
-	win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-	win.setHiddenInMissionControl(true);
+// --- Mock data (replace with real fetches before V0 ship) ---
 
-	const url = process.env.VITE_DEV_SERVER_URL;
-	if (url) {
-		void win.loadURL(url);
-	} else {
-		void win.loadFile(path.join(import.meta.dirname, "../dist/index.html"));
-	}
+const MOCK_PLAN_USAGE = {
+  fiveHour: { utilization: 0.91, resetsAt: nowPlus(6 * 3600 + 31 * 60) },
+  sevenDay: { utilization: 0.99, resetsAt: nowPlus(7 * 86400) },
+  sevenDayOpus: { utilization: 0.45 },
+  sevenDaySonnet: { utilization: 0.99 },
+};
 
-	win.on("blur", () => {
-		if (popoverVisible) {
-			win.hide();
-			popoverVisible = false;
-		}
-	});
+const MOCK_USAGE_STATS = {
+  allTime: { tokens: 3_200_000 },
+  last7d: { tokens: 850_000 },
+  last30d: { tokens: 2_100_000 },
+};
 
-	return win;
+const MOCK_UPDATE_AVAILABLE = true;
+const MOCK_UPDATE_VERSION = "1.2.0";
+
+function nowPlus(seconds: number): string {
+  return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
-function positionPopoverUnderTray() {
-	if (!tray || !popover) return;
-	const trayBounds = tray.getBounds();
-	const display =
-		screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y }) ??
-		screen.getPrimaryDisplay();
-	const trayCenterX = trayBounds.x + trayBounds.width / 2;
-	const rawX = Math.round(trayCenterX - POP_W / 2);
-	const minX = display.bounds.x + 6;
-	const maxX = display.bounds.x + display.bounds.width - POP_W - 6;
-	const x = Math.max(minX, Math.min(rawX, maxX));
-	const y = display.workArea.y + 4;
-	popover.setBounds({ x, y, width: POP_W, height: POP_H });
+// --- Formatters ---
+
+function formatPercent(util: number): string {
+  return `${Math.round(util * 100)}%`;
 }
+
+function formatCountdown(resetsAt: string): string {
+  const ms = new Date(resetsAt).getTime() - Date.now();
+  if (ms <= 0) return "0:00";
+  const totalMin = Math.floor(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${h}:${m.toString().padStart(2, "0")}`;
+}
+
+function formatResetDate(resetsAt: string): string {
+  const d = new Date(resetsAt);
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+  return String(n);
+}
+
+function formatUsageLine(tokens: number): string {
+  return formatTokens(tokens);
+}
+
+// SF Symbol → 16x16 template image (auto-tints to follow menu fg color,
+// turns white when item is highlighted). macOS HIG recommends 16x16 for
+// menu item icons.
+const MENU_ICON_SIZE = 16;
+function symbolIcon(name: string): Electron.NativeImage {
+  const img = nativeImage
+    .createFromNamedImage(name)
+    .resize({ width: MENU_ICON_SIZE, height: MENU_ICON_SIZE });
+  img.setTemplateImage(true);
+  return img;
+}
+
+// --- Menu builder ---
+
+function buildMenu(): Electron.Menu {
+  const plan = MOCK_PLAN_USAGE;
+  const usage = MOCK_USAGE_STATS;
+
+  const items: Electron.MenuItemConstructorOptions[] = [
+    { label: `sidecode ${app.getVersion()}`, type: "header" },
+    { type: "separator" },
+    { label: "Claude Plan", type: "header" },
+    {
+      label: `5h - ${formatPercent(plan.fiveHour.utilization)} · ${formatCountdown(plan.fiveHour.resetsAt)}`,
+      enabled: false,
+    },
+    {
+      label: `Weekly - ${formatPercent(plan.sevenDay.utilization)} · ${formatResetDate(plan.sevenDay.resetsAt)}`,
+      enabled: false,
+    },
+    {
+      label: `Opus - ${formatPercent(plan.sevenDayOpus.utilization)}`,
+      enabled: false,
+    },
+    {
+      label: `Sonnet - ${formatPercent(plan.sevenDaySonnet.utilization)}`,
+      enabled: false,
+    },
+    { type: "separator" },
+    { label: "Token Stats", type: "header" },
+    {
+      label: `All - ${formatUsageLine(usage.allTime.tokens)}`,
+      enabled: false,
+    },
+    {
+      label: `7d - ${formatUsageLine(usage.last7d.tokens)}`,
+      enabled: false,
+    },
+    {
+      label: `30d - ${formatUsageLine(usage.last30d.tokens)}`,
+      enabled: false,
+    },
+    { type: "separator" },
+    {
+      label: "Pair new device",
+      icon: symbolIcon("link"),
+      click: () => openPairWindow(),
+    },
+    { type: "separator" },
+  ];
+
+  if (MOCK_UPDATE_AVAILABLE) {
+    items.push({
+      label: `Update v${MOCK_UPDATE_VERSION} · Install`,
+      icon: symbolIcon("exclamationmark.circle"),
+      click: () => {
+        console.log("[main] update install clicked (mock)");
+      },
+    });
+  }
+
+  items.push({
+    label: "Quit sidecode",
+    accelerator: "CommandOrControl+Q",
+    click: () => app.quit(),
+  });
+
+  return Menu.buildFromTemplate(items);
+}
+
+function refreshMenu() {
+  tray?.setContextMenu(buildMenu());
+}
+
+// --- Pair window ---
 
 function openPairWindow() {
-	if (pairWindow && !pairWindow.isDestroyed()) {
-		pairWindow.focus();
-		return;
-	}
-	const win = new BrowserWindow({
-		width: 360,
-		height: 440,
-		show: false,
-		resizable: false,
-		fullscreenable: false,
-		minimizable: false,
-		maximizable: false,
-		titleBarStyle: "hiddenInset",
-		title: "Pair iPhone",
-		backgroundColor: "#18181b",
-		webPreferences: {
-			contextIsolation: true,
-			nodeIntegration: false,
-			preload: path.join(import.meta.dirname, "preload.mjs"),
-		},
-	});
-	const url = process.env.VITE_DEV_SERVER_URL;
-	if (url) {
-		void win.loadURL(`${url}#pair`);
-	} else {
-		void win.loadFile(path.join(import.meta.dirname, "../dist/index.html"), {
-			hash: "pair",
-		});
-	}
-	win.once("ready-to-show", () => win.show());
-	win.on("closed", () => {
-		pairWindow = null;
-	});
-	pairWindow = win;
+  if (pairWindow && !pairWindow.isDestroyed()) {
+    pairWindow.focus();
+    return;
+  }
+  const win = new BrowserWindow({
+    width: 360,
+    height: 440,
+    show: false,
+    resizable: false,
+    fullscreenable: false,
+    minimizable: false,
+    maximizable: false,
+    titleBarStyle: "hiddenInset",
+    title: "Pair iPhone",
+    backgroundColor: "#18181b",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(import.meta.dirname, "preload.mjs"),
+    },
+  });
+  const url = process.env.VITE_DEV_SERVER_URL;
+  if (url) {
+    void win.loadURL(`${url}#pair`);
+  } else {
+    void win.loadFile(path.join(import.meta.dirname, "../dist/index.html"), {
+      hash: "pair",
+    });
+  }
+  win.once("ready-to-show", () => win.show());
+  win.on("closed", () => {
+    pairWindow = null;
+  });
+  pairWindow = win;
 }
 
-function togglePopover() {
-	if (!popover) return;
-	if (popoverVisible) {
-		popover.hide();
-		popoverVisible = false;
-		return;
-	}
-	positionPopoverUnderTray();
-	popover.show();
-	popover.focus();
-	popoverVisible = true;
-}
+// --- Lifecycle ---
 
-ipcMain.handle("open-pair-window", () => openPairWindow());
+// Menu bar apps must override Electron's default "quit when all BrowserWindows
+// closed" behavior — otherwise closing the pair window would kill the daemon.
+// Just registering a (no-op) handler is enough on Electron 42+.
+app.on("window-all-closed", () => {});
 
 app.whenReady().then(async () => {
-	app.dock?.hide();
+  app.dock?.hide();
 
-	console.log("[main] starting daemon...");
-	daemon = await startDaemon({ port: 0 });
-	console.log(
-		`[main] daemon ready at ${daemon.address.host}:${daemon.address.port}`,
-	);
+  // Register an application-level menu so Cmd+Q works when the Pair window
+  // has focus. The menu doesn't render visually (LSUIElement app via
+  // dock.hide()), but its accelerator bindings are active app-wide.
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      {
+        label: app.name,
+        submenu: [{ role: "quit" }],
+      },
+    ]),
+  );
 
-	const trayImage = nativeImage.createEmpty();
-	tray = new Tray(trayImage);
-	tray.setTitle("◉ sc");
-	tray.on("click", togglePopover);
-	tray.on("right-click", togglePopover);
+  console.log("[main] starting daemon...");
+  daemon = await startDaemon({ port: 0 });
+  console.log(
+    `[main] daemon ready at ${daemon.address.host}:${daemon.address.port}`,
+  );
 
-	popover = createPopover();
+  const trayImage = nativeImage.createEmpty();
+  tray = new Tray(trayImage);
+  tray.setTitle("◉ sc");
+  tray.on("click", refreshMenu);
+  tray.on("right-click", refreshMenu);
 
-	console.log("[main] tray + popover ready");
-});
-
-app.on("did-resign-active", () => {
-	if (popoverVisible && popover) {
-		popover.hide();
-		popoverVisible = false;
-	}
+  refreshMenu();
+  console.log("[main] tray + menu ready");
 });
 
 app.on("before-quit", (event: Electron.Event) => {
-	if (isQuitting) return;
-	event.preventDefault();
-	isQuitting = true;
-	console.log("[main] before-quit: stopping daemon...");
-	const stopPromise = daemon ? daemon.stop() : Promise.resolve();
-	void stopPromise.then(() => {
-		console.log("[main] daemon stopped, quitting");
-		app.quit();
-	});
+  if (isQuitting) return;
+  event.preventDefault();
+  isQuitting = true;
+  console.log("[main] before-quit: stopping daemon...");
+  const stopPromise = daemon ? daemon.stop() : Promise.resolve();
+  void stopPromise.then(() => {
+    console.log("[main] daemon stopped, quitting");
+    app.quit();
+  });
 });
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
-	process.on(sig, () => {
-		console.log(`[main] received ${sig}`);
-		app.quit();
-	});
+  process.on(sig, () => {
+    console.log(`[main] received ${sig}`);
+    app.quit();
+  });
 }
