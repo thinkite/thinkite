@@ -1,4 +1,12 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage } from "electron";
+import {
+  app,
+  BrowserWindow,
+  Tray,
+  Menu,
+  nativeImage,
+  powerSaveBlocker,
+  shell,
+} from "electron";
 import path from "node:path";
 import { type Daemon, start as startDaemon } from "@sidecodeapp/daemon";
 
@@ -6,6 +14,7 @@ let tray: Tray | null = null;
 let pairWindow: BrowserWindow | null = null;
 let isQuitting = false;
 let daemon: Daemon | null = null;
+let keepAwakeId: number | null = null;
 
 // --- Mock data (replace with real fetches before V0 ship) ---
 
@@ -78,9 +87,7 @@ function buildMenu(): Electron.Menu {
   const usage = MOCK_USAGE_STATS;
 
   const items: Electron.MenuItemConstructorOptions[] = [
-    { label: `sidecode ${app.getVersion()}`, type: "header" },
-    { type: "separator" },
-    { label: "Claude Plan", type: "header" },
+    { label: "Claude Plan Usage", type: "header" },
     {
       label: `5h - ${formatPercent(plan.fiveHour.utilization)} · ${formatCountdown(plan.fiveHour.resetsAt)}`,
       enabled: false,
@@ -117,24 +124,76 @@ function buildMenu(): Electron.Menu {
       icon: symbolIcon("link"),
       click: () => openPairWindow(),
     },
+    {
+      label: "Settings",
+      icon: symbolIcon("gear"),
+      submenu: [
+        {
+          label: "Launch at login",
+          type: "checkbox",
+          checked: app.isPackaged && app.getLoginItemSettings().openAtLogin,
+          enabled: app.isPackaged,
+          sublabel: app.isPackaged ? undefined : "Packaged build only",
+          click: (item) => {
+            app.setLoginItemSettings({ openAtLogin: item.checked });
+          },
+        },
+        {
+          label: "Keep computer awake",
+          type: "checkbox",
+          checked:
+            keepAwakeId !== null && powerSaveBlocker.isStarted(keepAwakeId),
+          click: (item) => {
+            if (item.checked) {
+              keepAwakeId = powerSaveBlocker.start("prevent-display-sleep");
+            } else if (keepAwakeId !== null) {
+              powerSaveBlocker.stop(keepAwakeId);
+              keepAwakeId = null;
+            }
+          },
+        },
+      ],
+    },
     { type: "separator" },
   ];
 
   if (MOCK_UPDATE_AVAILABLE) {
     items.push({
       label: `Update v${MOCK_UPDATE_VERSION} · Install`,
-      icon: symbolIcon("exclamationmark.circle"),
+      icon: symbolIcon("arrow.up.circle"),
       click: () => {
         console.log("[main] update install clicked (mock)");
       },
     });
   }
 
-  items.push({
-    label: "Quit sidecode",
-    accelerator: "CommandOrControl+Q",
-    click: () => app.quit(),
-  });
+  items.push(
+    {
+      label: "About sidecode",
+      icon: symbolIcon("info.circle"),
+      submenu: [
+        { label: `Version ${app.getVersion()}`, enabled: false },
+        {
+          label: "Check for updates",
+          click: () => {
+            console.log("[main] check for updates clicked (mock)");
+          },
+        },
+        {
+          label: "View on GitHub",
+          click: () => {
+            void shell.openExternal("https://github.com/sidecodeapp/sidecode");
+          },
+        },
+      ],
+    },
+    { type: "separator" },
+    {
+      label: "Quit",
+      accelerator: "CommandOrControl+Q",
+      click: () => app.quit(),
+    },
+  );
 
   return Menu.buildFromTemplate(items);
 }
