@@ -1,231 +1,267 @@
-import { CameraView, useCameraPermissions } from "expo-camera";
-import { Stack } from "expo-router";
-import { SymbolView } from "expo-symbols";
-import { useCallback, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  useColorScheme,
-  View,
-} from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Button, Column, Host, Text } from "@expo/ui";
+import { router, Stack, useLocalSearchParams } from "expo-router";
+import { useEffect, useMemo, useState } from "react";
+import { decodePairOffer, type PairOffer } from "@/lib/daemon-client";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 
 /**
- * `/pair` — first-launch / re-pair gate. Two entry methods:
+ * `/pair` — modal route, the **Universal Link landing** for
+ * `https://sidecode.app/pair?o=<base64url(pair.offer)>`.
  *
- *   1. **Scan QR** — `CameraView.launchScanner` opens the iOS 16+
- *      `DataScannerViewController` modal. We register the result via
- *      `CameraView.onModernBarcodeScanned` BEFORE calling launchScanner;
- *      iOS auto-dismisses the scanner on Android, but on iOS we call
- *      `dismissScanner()` explicitly so the modal goes away as soon as
- *      we have a value. Permission is requested lazily on the first tap.
+ * Unlike `/onboarding` (the fullscreen card a freshly-installed user
+ * sees on cold start), this route is presented as an iOS form sheet at
+ * a half-screen detent so the underlying screen stays visible. Two
+ * scenarios:
  *
- *   2. **Paste payload** — TextInput accepting the base64url string
- *      that `sidecode pair` prints next to the QR. This is the simulator
- *      path (no real camera) and the fallback if the user can't get
- *      VisionKit to focus.
+ *   1. **Unpaired user taps a UL** — `Stack.Protected` shows
+ *      `/onboarding` underneath; this modal expands over it asking
+ *      the user to confirm the Mac that issued the QR.
+ *   2. **Paired user adds another Mac (V0.5+)** — sheet appears over
+ *      whichever drawer screen they were on.
  *
- * Both paths feed the same `pair()` from the daemon-client context;
- * success flips `isUnpaired` to false, the root layout's
- * `Stack.Protected` guard inverts, and expo-router auto-redirects to the
- * first accessible sibling — i.e. the `(drawer)` group's index, `/`.
+ * The confirmation step exists to defend against drive-by pair URLs
+ * (a malicious link in iMessage / Mail / a web page). Decoding +
+ * `serviceName` + first LAN IP + countdown give the user enough
+ * surface to recognize a legitimate offer from one of their own Macs.
  *
- * UX notes:
- *  - Scan and paste are visible side-by-side; we don't gate the scan
- *    button on `Device.isDevice` because (a) the simulator behavior of
- *    launchScanner is to reject (caught below and surfaced as a hint)
- *    rather than crash, and (b) hiding native UI when a paste path is
- *    present would just confuse anyone running on a simulator. The bias
- *    is "if it doesn't work, the paste field is right below it."
- *  - We keep a single in-flight pair attempt at a time. The "Connect"
- *    button + scanner stay disabled while pairing is running so we
- *    don't double-fire `DaemonClient.pair`.
+ * UX nuance — explicit (in-app scanner / paste on /onboarding) and
+ * implicit (UL) pair entries diverge here:
+ *   - in-app scan / paste → no confirmation modal, the user just
+ *     showed clear intent.
+ *   - UL → this modal, always.
+ *
+ * All visuals use `@expo/ui` (SwiftUI / Jetpack Compose bridge) so the
+ * sheet feels native on each platform without manual Liquid Glass
+ * theming on our side.
  */
-export default function PairRoute() {
-  const insets = useSafeAreaInsets();
-  const scheme = useColorScheme() ?? "light";
+export default function PairModal() {
+  const { o } = useLocalSearchParams<{ o?: string }>();
   const { pair } = useDaemonClient();
-  // Tuple shape from useCameraPermissions: [status, request, get]. We only
-  // need the request action — there's no UI dependency on `status`, the
-  // user always taps "Scan QR" first which fires the request.
-  const [, requestCameraPermission] = useCameraPermissions();
 
-  const [pasteValue, setPasteValue] = useState("");
+  const decoded = useMemo(() => decode(o), [o]);
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Guards against a stale onModernBarcodeScanned callback firing after
-  // we've already started a pair attempt (the scanner can deliver
-  // multiple results in quick succession before dismiss completes).
-  const handlingScanRef = useRef(false);
+  const [now, setNow] = useState(() => Date.now());
 
-  const submit = useCallback(
-    async (raw: string) => {
-      const trimmed = raw.trim();
-      if (!trimmed) {
-        setError("Empty payload");
-        return;
-      }
-      setBusy(true);
-      setError(null);
-      try {
-        await pair(trimmed);
-        // On success, the context flips to `ready` and the protected-route
-        // guard auto-redirects us off /pair. No further state to clean up.
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-        setBusy(false);
-      }
-    },
-    [pair],
-  );
+  // Countdown tick — only when a valid offer is mounted, so the
+  // invalid / missing branches don't leak timers.
+  useEffect(() => {
+    if (decoded.status !== "ok") return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [decoded.status]);
 
-  const handleScan = useCallback(async () => {
+  // Cold-launch UL lands on /pair with an empty back stack — `router.back()`
+  // fails with "The action 'GO_BACK' was not handled". canGoBack() lets us
+  // detect that case and replace into the root, which Stack.Protected then
+  // resolves to (drawer) when paired or onboarding when unpaired.
+  const dismiss = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/");
+    }
+  };
+
+  const handleCancel = () => {
     if (busy) return;
+    dismiss();
+  };
+
+  const handleConfirm = async () => {
+    if (decoded.status !== "ok" || busy) return;
+    setBusy(true);
     setError(null);
     try {
-      const perm = await requestCameraPermission();
-      if (!perm.granted) {
-        setError("Camera permission denied. Use 'Paste payload' below.");
-        return;
-      }
-      handlingScanRef.current = false;
-      const sub = CameraView.onModernBarcodeScanned((event) => {
-        if (handlingScanRef.current) return;
-        handlingScanRef.current = true;
-        sub.remove();
-        void CameraView.dismissScanner();
-        void submit(event.data);
-      });
-      try {
-        await CameraView.launchScanner({ barcodeTypes: ["qr"] });
-      } catch (err) {
-        sub.remove();
-        // launchScanner rejects on simulator (no DataScannerViewController
-        // hardware path) — surface a clear hint pointing at the paste
-        // field instead of dropping the user into a generic error.
-        setError(
-          `Scanner unavailable on this device. Paste the payload from \`sidecode pair\` below. (${
-            err instanceof Error ? err.message : String(err)
-          })`,
-        );
-      }
+      await pair(decoded.raw);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+      return;
     }
-  }, [busy, requestCameraPermission, submit]);
+    // pair() flipped isUnpaired to false; Stack.Protected swaps the
+    // background to (drawer). Dismissing the modal lets the user land
+    // on the new anchor. Clear busy before navigate so a re-mount of
+    // this route (e.g. user immediately scans another QR) doesn't
+    // inherit a stuck "Pairing…" label.
+    setBusy(false);
+    dismiss();
+  };
 
-  const handlePaste = useCallback(() => {
-    void submit(pasteValue);
-  }, [pasteValue, submit]);
+  if (decoded.status === "missing") {
+    return (
+      <ModalShell
+        title="No pair code"
+        body="To pair, scan a QR from sidecode on your Mac."
+        onClose={handleCancel}
+      />
+    );
+  }
+
+  if (decoded.status === "invalid") {
+    return (
+      <ModalShell
+        title="Invalid pair code"
+        body="This QR isn't a valid sidecode pair code, or it's expired. Get a fresh one from your Mac."
+        onClose={handleCancel}
+      />
+    );
+  }
+
+  const { offer } = decoded;
+  const remainingMs = offer.expiresAt - now;
+  const isExpired = remainingMs <= 0;
+  const lanIp = firstLanIp(offer.daemonAddresses);
+  const subtitle = isExpired
+    ? "Pair code expired"
+    : lanIp
+      ? `${lanIp} · expires in ${formatCountdown(remainingMs)}`
+      : `expires in ${formatCountdown(remainingMs)}`;
 
   return (
-    <>
-      <Stack.Screen options={{ headerShown: false }} />
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        style={{ flex: 1 }}
+    <Host style={{ flex: 1 }}>
+      {/* Block swipe-down while pair() is in flight so an accidental
+          dismiss doesn't leave the daemon side mid-handshake. */}
+      <Stack.Screen options={{ gestureEnabled: !busy }} />
+      <Column
+        spacing={24}
+        alignment="center"
+        style={{
+          paddingHorizontal: 24,
+          paddingTop: 32,
+          paddingBottom: 16,
+          width: "100%",
+        }}
       >
-        <ScrollView
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{
-            flexGrow: 1,
-            paddingTop: insets.top + 24,
-            paddingBottom: insets.bottom + 24,
-            paddingHorizontal: 24,
-          }}
-          className="bg-white dark:bg-black"
-        >
-          {/* Brand + intro */}
-          <View className="mb-8">
-            <Text className="text-3xl font-semibold text-black dark:text-white">
-              sidecode
-            </Text>
-            <Text className="mt-3 text-sm leading-relaxed text-gray-600 dark:text-gray-400">
-              Connect this phone to your Mac's sidecode daemon. On your Mac, run{" "}
-              <Text className="font-mono text-gray-900 dark:text-gray-200">
-                sidecode pair
-              </Text>{" "}
-              and either scan the QR code or paste the payload below.
-            </Text>
-          </View>
-
-          {/* Scan CTA */}
-          <Pressable
-            onPress={handleScan}
-            disabled={busy}
-            className="mb-3 flex-row items-center justify-center gap-3 rounded-2xl bg-black px-5 py-4 dark:bg-white"
-            style={busy ? { opacity: 0.5 } : undefined}
-          >
-            <SymbolView
-              name="qrcode.viewfinder"
-              size={22}
-              tintColor={scheme === "dark" ? "#0a0a0a" : "#ffffff"}
-            />
-            <Text className="text-base font-semibold text-white dark:text-black">
-              Scan QR code
-            </Text>
-          </Pressable>
-
-          {/* Divider */}
-          <View className="my-5 flex-row items-center">
-            <View className="h-px flex-1 bg-gray-200 dark:bg-gray-800" />
-            <Text className="mx-3 text-xs uppercase tracking-wider text-gray-500 dark:text-gray-500">
-              or
-            </Text>
-            <View className="h-px flex-1 bg-gray-200 dark:bg-gray-800" />
-          </View>
-
-          {/* Paste field */}
-          <Text className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            Paste payload
+        <Column spacing={12} alignment="center">
+          <Text textStyle={{ fontSize: 20, fontWeight: "600" }}>
+            Pair with this Mac?
           </Text>
-          <TextInput
-            value={pasteValue}
-            onChangeText={setPasteValue}
-            placeholder="eyJ0eXBlIjoicGFpci5vZmZlciIsInYiOjEs…"
-            placeholderTextColor={scheme === "dark" ? "#52525b" : "#a1a1aa"}
-            autoCapitalize="none"
-            autoCorrect={false}
-            autoComplete="off"
-            spellCheck={false}
-            multiline
-            editable={!busy}
-            className="min-h-24 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 font-mono text-xs text-black dark:border-gray-800 dark:bg-gray-950 dark:text-white"
-          />
-          <Pressable
-            onPress={handlePaste}
-            disabled={busy || !pasteValue.trim()}
-            className="mt-3 flex-row items-center justify-center gap-2 rounded-2xl border border-gray-300 bg-white px-5 py-4 dark:border-gray-700 dark:bg-gray-950"
-            style={busy || !pasteValue.trim() ? { opacity: 0.5 } : undefined}
-          >
-            {busy ? (
-              <ActivityIndicator />
-            ) : (
-              <Text className="text-base font-medium text-black dark:text-white">
-                Connect
-              </Text>
-            )}
-          </Pressable>
+          <Column spacing={4} alignment="center">
+            <Text textStyle={{ fontSize: 22, fontWeight: "500" }}>
+              {offer.serviceName}
+            </Text>
+            <Text textStyle={{ fontSize: 14, color: "#8E8E93" }}>
+              {subtitle}
+            </Text>
+          </Column>
+        </Column>
 
-          {/* Error / status */}
+        <Column style={{ width: "100%" }} spacing={12}>
           {error && (
-            <View className="mt-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 dark:border-red-800 dark:bg-red-950">
-              <Text
-                selectable
-                className="text-xs text-red-700 dark:text-red-300"
-              >
-                {error}
-              </Text>
-            </View>
+            <Text
+              textStyle={{
+                fontSize: 13,
+                color: "#FF3B30",
+                textAlign: "center",
+              }}
+            >
+              {error}
+            </Text>
           )}
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </>
+          <Button
+            variant="filled"
+            label={busy ? "Pairing…" : "Pair this Mac"}
+            style={{ width: "100%" }}
+            onPress={handleConfirm}
+            disabled={busy || isExpired}
+          />
+          <Button
+            variant="outlined"
+            label="Cancel"
+            style={{ width: "100%" }}
+            onPress={handleCancel}
+            disabled={busy}
+          />
+        </Column>
+      </Column>
+    </Host>
   );
+}
+
+function ModalShell({
+  title,
+  body,
+  onClose,
+}: {
+  title: string;
+  body: string;
+  onClose: () => void;
+}) {
+  return (
+    <Host style={{ flex: 1 }}>
+      <Column
+        spacing={20}
+        alignment="center"
+        style={{
+          paddingHorizontal: 24,
+          paddingTop: 32,
+          paddingBottom: 16,
+          width: "100%",
+        }}
+      >
+        <Column spacing={8} alignment="center">
+          <Text textStyle={{ fontSize: 20, fontWeight: "600" }}>{title}</Text>
+          <Text
+            textStyle={{
+              fontSize: 14,
+              color: "#8E8E93",
+              textAlign: "center",
+            }}
+          >
+            {body}
+          </Text>
+        </Column>
+        <Button
+          variant="filled"
+          label="Close"
+          style={{ width: "100%" }}
+          onPress={onClose}
+        />
+      </Column>
+    </Host>
+  );
+}
+
+type DecodeResult =
+  | { status: "ok"; offer: PairOffer; raw: string }
+  | { status: "missing" }
+  | { status: "invalid"; error: Error };
+
+function decode(o: string | undefined): DecodeResult {
+  if (typeof o !== "string" || !o) return { status: "missing" };
+  try {
+    return { status: "ok", offer: decodePairOffer(o), raw: o };
+  } catch (err) {
+    return {
+      status: "invalid",
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
+}
+
+/**
+ * Extract the first non-loopback host from the daemon's address list.
+ * Order in the offer is LAN → Tailscale → loopback, so the first match
+ * is the most identifiable for the user ("192.168.1.42" means "same
+ * wifi as me", "100.x.x.x" means "Tailscale"). Loopback (`127.0.0.1`)
+ * is omitted — only the simulator ever sees it as "their network."
+ */
+function firstLanIp(addresses: readonly string[]): string | null {
+  for (const addr of addresses) {
+    const match = addr.match(/^wss?:\/\/([^:/]+)/);
+    if (!match) continue;
+    const host = match[1];
+    if (host === "127.0.0.1" || host === "localhost") continue;
+    return host;
+  }
+  return null;
+}
+
+function formatCountdown(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }

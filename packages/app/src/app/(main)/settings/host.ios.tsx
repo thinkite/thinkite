@@ -23,7 +23,7 @@ import {
  * V0 is single-paired-daemon, so the route has no dynamic segment.
  * "Forget host" calls `unpair()` which closes the WS, wipes SecureStore,
  * and flips state to `unpaired` — the root Stack.Protected guard then
- * routes back to /pair automatically (no imperative router call needed).
+ * routes back to /onboarding automatically (no imperative router call needed).
  *
  * Destructive action uses `<Button role="destructive" label="...">` —
  * SwiftUI gives us systemRed (auto light/dark adapt), red-tinted cell

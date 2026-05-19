@@ -11,10 +11,7 @@ import {
   SafeAreaProvider,
 } from "react-native-safe-area-context";
 import { Uniwind } from "uniwind";
-import {
-  DaemonClientProvider,
-  useDaemonClient,
-} from "@/lib/daemon-client-context";
+import { DaemonClientProvider, useDaemonClient } from "@/lib/daemon-client-context";
 import { SafeAreaView } from "@/lib/styled";
 
 // Hold the native splash open through the daemon handshake. Per Expo docs,
@@ -22,6 +19,22 @@ import { SafeAreaView } from "@/lib/styled";
 // time a useEffect fires, the splash has already auto-hidden.
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
 SplashScreen.setOptions({ duration: 200, fade: true });
+
+// expo-router modal anchor: when a deep link / Universal Link lands
+// directly on the `/pair` modal (cold-launch from a tapped QR link),
+// the router needs a background route to materialize underneath the
+// modal — otherwise the iOS formSheet has nothing to attach to and
+// silently degrades into a fullscreen card.
+//
+// The anchor MUST point to a route that's currently accessible. With
+// Stack.Protected previously at the root, anchoring to either
+// `onboarding` or `(drawer)` broke the opposite state. Hoisting the
+// gating one level down into `app/(main)/_layout.tsx` lets us anchor
+// to the group itself — `(main)` is always reachable, and its inner
+// stack handles the unpaired/paired routing.
+export const unstable_settings = {
+  anchor: "(main)",
+};
 
 // One QueryClient for the app's lifetime. Defaults are deliberately quiet —
 // V0 fetches are cheap and the daemon push events (W3) will eventually
@@ -61,51 +74,38 @@ export default function RootLayout() {
 }
 
 /**
- * Root Stack. Pair-vs-main routing is delegated to expo-router's
- * `Stack.Protected` guards — when `isUnpaired` flips, the router
- * auto-redirects to the next accessible screen:
+ * Root Stack — just two siblings:
  *
- *   isUnpaired = true   → only `pair` is reachable → user lands on /pair
- *   isUnpaired = false  → `(drawer)` + `settings` + `dev/diffs` reachable
- *                         → user lands on / (drawer index)
+ *   - `pair` — UL landing modal (formSheet, half-detent). Always
+ *     accessible because cold-launch UL has no history to fall back
+ *     on; this slot has to be unguarded.
+ *   - `(main)` — group hosting the real app surface. Its own
+ *     `_layout.tsx` runs the Stack.Protected gating between
+ *     `onboarding` (unpaired) and `(drawer) / settings / dev/diffs`
+ *     (paired).
  *
- * Per expo-router docs, "if a screen becomes protected while it is
- * active, they will be redirected to the anchor route or the first
- * available screen in the stack" — so on first successful pair the user
- * is automatically taken from /pair to the drawer index without any
- * imperative `router.replace`.
+ * Anchor (declared above) points at `(main)` so the formSheet has a
+ * stable background regardless of paired state. URL paths are
+ * unaffected: route groups are URL-transparent.
  *
  * DaemonGate (below) still gates the entire Stack on `isInitialized`
- * to keep the native splash up until we know which side of the guard
- * the user belongs on.
+ * to keep the native splash up until the daemon-client state settles.
  */
 function RootStack() {
-  const { isUnpaired } = useDaemonClient();
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Protected guard={isUnpaired}>
-        {/* First-launch / re-pair gate. Component lives in
-            components/pair-screen.tsx; pair.tsx is just the route shell. */}
-        <Stack.Screen name="pair" />
-      </Stack.Protected>
-      <Stack.Protected guard={!isUnpaired}>
-        {/* (drawer) is a route group hosting the main app: Drawer with
-            custom session-list sidebar, plus the new-session create page
-            (index) and session detail. */}
-        <Stack.Screen name="(drawer)" />
-        {/* Settings rendered as iOS pageSheet — same physics as
-            the tool-detail BottomSheet but as a routable modal (gets a
-            URL, supports deep linking). The route is a group
-            (`settings/_layout.tsx`) hosting an inner native Stack so
-            list → host detail pushes inside the sheet (with native back
-            arrow), instead of stacking a second sheet on top. */}
-        <Stack.Screen
-          name="settings"
-          options={{ presentation: "pageSheet" }}
-        />
-        {/* Dev probe page — keep as a standard push, no modal. */}
-        <Stack.Screen name="dev/diffs" />
-      </Stack.Protected>
+      <Stack.Screen name="(main)" />
+      <Stack.Screen
+        name="pair"
+        options={{
+          presentation: "formSheet",
+          // [0.5] = half-screen detent. The named `"medium"` literal is
+          // only available on the lower-level react-native-screens type;
+          // expo-router's wrapper accepts `number[] | "fitToContents"`.
+          sheetAllowedDetents: [0.5],
+          sheetGrabberVisible: true,
+        }}
+      />
     </Stack>
   );
 }
@@ -118,8 +118,8 @@ function RootStack() {
 //   - `isLoading` / `error` — the live status. Used for the first-attempt
 //     error UI and to drive the Retry button's pending state.
 //
-// Pair-vs-main branching is NOT done here — that lives in `RootStack` via
-// `Stack.Protected` guards on `isUnpaired`. We keep this gate minimal so
+// Pair-vs-main branching is NOT done here — that lives inside `(main)/_layout`
+// via `Stack.Protected` guards on `isUnpaired`. We keep this gate minimal so
 // the splash holds only on the "we don't know yet" window.
 function DaemonGate({ children }: { children: React.ReactNode }) {
   const { isInitialized, isLoading, error, reset } = useDaemonClient();
