@@ -9,7 +9,8 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "app.sidecode"
+      "bundleIdentifier": "app.sidecode",
+      "associatedDomains": ["applinks:sidecode.app"]
     },
     "android": {
       "adaptiveIcon": {
