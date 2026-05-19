@@ -1,0 +1,14 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["KX4PZHC9R3.app.sidecode"],
+        "components": [
+          {
+            "/": "/pair"
+          }
+        ]
+      }
+    ]
+  }
+}
