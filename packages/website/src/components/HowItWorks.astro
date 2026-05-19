@@ -1,0 +1,51 @@
+---
+import PictPlaceholder from "./PictPlaceholder.astro";
+
+const steps = [
+  {
+    n: "01",
+    title: "Install",
+    body: "One click to download. Drag sidecode into Applications. No installer, no settings.",
+    desc: "Applications folder · sidecode.app drop",
+  },
+  {
+    n: "02",
+    title: "Pair",
+    body: "Click <em style='font-style:normal'>Pair</em>, scan the QR with your iPhone. The link opens sidecode — or the App Store on first scan.",
+    desc: "Pair sheet with QR · menu bar context",
+  },
+  {
+    n: "03",
+    title: "Pick up",
+    body: "Open sidecode and your work is right there. Send a prompt, start a fresh one, or just watch the agent work — wherever you are.",
+    desc: "iPhone in hand · session resumed",
+  },
+];
+---
+
+<section class="section" id="how">
+  <div class="wrap">
+    <div class="section-head is-stacked">
+      <div class="eyebrow">/ three steps</div>
+      <div>
+        <h2>Install. Pair. <span class="ital">Done.</span></h2>
+      </div>
+    </div>
+
+    <div class="steps">
+      {
+        steps.map((step) => (
+          <div class="step">
+            <div class="n">
+              {step.n}
+              <span class="slash">/</span>
+            </div>
+            <h3>{step.title}</h3>
+            <p set:html={step.body} />
+            <PictPlaceholder desc={step.desc} />
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>

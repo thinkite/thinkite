@@ -1,0 +1,54 @@
+---
+import PictPlaceholder from "./PictPlaceholder.astro";
+---
+
+<div class="wrap showcase-wrap">
+  <div class="showcase">
+    <div class="showcase-inner">
+      {/* macOS menu bar */}
+      <div class="showcase-cell">
+        <span class="showcase-tag">01 · macOS</span>
+        <PictPlaceholder
+          variant="showcase"
+          desc="Menu bar dropdown · plan + tokens + Pair"
+        />
+      </div>
+
+      {/* iPhone */}
+      <div class="showcase-cell">
+        <span class="showcase-tag">02 · iPhone</span>
+        <div
+          class="phone"
+          role="img"
+          aria-label="iPhone frame with placeholder for screenshot"
+        >
+          <div class="phone-screen phone-todo">
+            <div class="phone-statusbar">
+              <span>9:41</span>
+              <span class="dots">
+                <i></i><i></i><i></i><i class="lo"></i>
+              </span>
+            </div>
+            <div class="pict-tag">TODO · image</div>
+            <div class="pict-desc">iOS session view · transcript or list</div>
+          </div>
+        </div>
+      </div>
+
+      {/* iPad mini landscape */}
+      <div class="showcase-cell">
+        <span class="showcase-tag">03 · iPad</span>
+        <div
+          class="ipad"
+          role="img"
+          aria-label="iPad mini landscape frame with placeholder for screenshot"
+        >
+          <div class="ipad-screen phone-todo">
+            <div class="pict-tag">TODO · image</div>
+            <div class="pict-desc">iPad · landscape session view</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,62 @@
+---
+import { links } from "../config";
+---
+
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-grid">
+      <div>
+        <h1>
+          By your<br />
+          side<span style="color:var(--accent)">.</span><br />
+          <span class="mute">Code anywhere</span><br />
+          <span class="mute">with </span><span class="ital">Claude.</span>
+        </h1>
+      </div>
+
+      <aside class="hero-side">
+        <div data-show-on="desktop">
+          <p>Lives in your menu bar.<br />Code from your iPhone, iPad, and (soon) Fold.</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href={links.download}>
+              Download for macOS <span class="arr">↓</span>
+            </a>
+            <a class="btn btn-ghost" href={links.github} target="_blank" rel="noopener">
+              View source <span class="arr">↗</span>
+            </a>
+          </div>
+        </div>
+
+        <div data-show-on="ios">
+          <p>
+            <strong style="font-weight:500;color:var(--ink)">Companion to sidecode for Mac.</strong>
+            <br />Install here — pair from your Mac to start coding.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href={links.appStore} target="_blank" rel="noopener">
+              Get on the App Store <span class="arr">↗</span>
+            </a>
+            <a class="btn btn-ghost" href="#download">
+              On a Mac? <span class="arr">↓</span>
+            </a>
+          </div>
+        </div>
+
+        <div data-show-on="android">
+          <p>
+            <strong style="font-weight:500;color:var(--ink)">macOS + iOS today.</strong>
+            <br />Android is on the roadmap — the iOS app is built on <code>@expo/ui</code>, so the port is approachable. Star the repo to hear when it ships.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href={links.github} target="_blank" rel="noopener">
+              Star on GitHub <span class="arr">↗</span>
+            </a>
+            <a class="btn btn-ghost" href="#faq">
+              Why iOS first <span class="arr">↓</span>
+            </a>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</section>

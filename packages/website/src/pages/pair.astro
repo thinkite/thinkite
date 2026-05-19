@@ -1,0 +1,68 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { links } from "../config";
+---
+
+<BaseLayout
+  title="Open in sidecode"
+  description="Open this pair link in the sidecode iOS app, or download from the App Store."
+>
+  <main class="wrap pair-main">
+    <div class="pair-box">
+      <h1 class="pair-h1">Open in sidecode</h1>
+      <p class="pair-lede">
+        Looks like sidecode isn't installed yet. Get it from the App Store to
+        complete pairing.
+      </p>
+
+      <a
+        class="btn btn-primary"
+        href={links.appStore}
+        target="_blank"
+        rel="noopener"
+      >
+        Get sidecode for iPhone <span class="arr">↗</span>
+      </a>
+
+      <p class="pair-hint">
+        If you already have sidecode installed, this page should have opened
+        the app automatically. Try re-scanning the pair code from inside the
+        app.
+      </p>
+    </div>
+  </main>
+</BaseLayout>
+
+<style>
+  .pair-main {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .pair-box {
+    text-align: center;
+    max-width: 28rem;
+    padding-block: 6rem;
+  }
+  .pair-h1 {
+    font-family: var(--font-display);
+    font-size: clamp(32px, 5vw, 48px);
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    margin: 0 0 1rem;
+  }
+  .pair-lede {
+    color: var(--ink-2);
+    font-size: 17px;
+    line-height: 1.55;
+    margin: 0 0 2.5rem;
+  }
+  .pair-hint {
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.6;
+    margin: 4rem 0 0;
+  }
+</style>

@@ -1,0 +1,83 @@
+---
+import { links, site } from "../config";
+
+interface Props {
+  /** When true, renders only the bottom meta row (copyright + links).
+      Use on content pages like /privacy that don't need the giant
+      "sidecode." sign-off and download CTAs. */
+  minimal?: boolean;
+}
+
+const { minimal = false } = Astro.props;
+const currentYear = new Date().getFullYear();
+---
+
+<footer
+  class={`foot ${minimal ? "is-minimal" : ""}`}
+  id={minimal ? undefined : "download"}
+>
+  <div class="wrap">
+    {
+      !minimal && (
+        <>
+          <h2 class="foot-huge">
+            sidecode<span class="ital">.</span>
+          </h2>
+
+          <div data-show-on="desktop">
+            <div class="foot-actions">
+              <a class="btn btn-accent" href={links.download}>
+                Download for macOS
+              </a>
+              <a
+                class="btn btn-ghost"
+                href={links.github}
+                target="_blank"
+                rel="noopener"
+              >
+                View on GitHub <span class="arr">↗</span>
+              </a>
+            </div>
+          </div>
+
+          <div data-show-on="ios">
+            <div class="foot-actions">
+              <a
+                class="btn btn-accent"
+                href={links.appStore}
+                target="_blank"
+                rel="noopener"
+              >
+                Get on the App Store <span class="arr">↗</span>
+              </a>
+              <a class="btn btn-ghost" href={links.download}>
+                Download for macOS <span class="arr">↓</span>
+              </a>
+            </div>
+          </div>
+
+          <div data-show-on="android">
+            <div class="foot-actions">
+              <a
+                class="btn btn-accent"
+                href={links.github}
+                target="_blank"
+                rel="noopener"
+              >
+                Star on GitHub <span class="arr">↗</span>
+              </a>
+            </div>
+          </div>
+        </>
+      )
+    }
+
+    <div class="foot-grid">
+      <div class="meta">© {currentYear} · {site.author} · {site.license}</div>
+      <div class="links">
+        <a href="/privacy">Privacy</a>
+        <a href={`mailto:${links.contactEmail}`}>{links.contactEmail}</a>
+      </div>
+    </div>
+  </div>
+</footer>

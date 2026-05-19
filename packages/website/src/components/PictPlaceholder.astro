@@ -1,0 +1,18 @@
+---
+interface Props {
+  desc: string;
+  variant?: "default" | "showcase";
+  class?: string;
+}
+const { desc, variant = "default", class: className = "" } = Astro.props;
+const variantClass = variant === "showcase" ? "pict-showcase" : "";
+---
+
+<div
+  class={`pict ${variantClass} ${className}`.trim()}
+  role="img"
+  aria-label={`Placeholder: ${desc}`}
+>
+  <span class="pict-tag">TODO · image</span>
+  <span class="pict-desc">{desc}</span>
+</div>

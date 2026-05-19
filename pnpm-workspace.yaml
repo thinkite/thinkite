@@ -3,6 +3,7 @@ packages:
 allowBuilds:
   esbuild: true
   msw: false
+  sharp: true
 nodeLinker: hoisted
 patchedDependencies:
   expo-router@56.1.1: patches/expo-router@56.1.1.patch

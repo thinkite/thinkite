@@ -1,0 +1,45 @@
+---
+const faqs = [
+  {
+    q: "Does sidecode cost anything?",
+    a: "No. Apache 2.0 licensed, free and open source.",
+  },
+  {
+    q: "Where does my data go?",
+    a: "Nowhere. Pairing and sessions run device-to-device over your local network (or Tailscale, if you've set it up). There is no sidecode server.",
+  },
+  {
+    q: "Do I need to log in or sign up?",
+    a: "No. sidecode uses your existing Claude Code authentication. You need a Claude Pro or Max plan.",
+  },
+  {
+    q: "Can I approve permission requests from my phone?",
+    a: "Yes — for sessions you've sent prompts to from sidecode. Sessions you're only observing still route approval to Claude Desktop or your terminal. This is deliberate: if your phone is unreachable, we don't want to freeze a session.",
+  },
+  {
+    q: "Is there an Android version?",
+    a: "Not yet. The iOS app uses <code>@expo/ui</code>, so the path is clear — but iPad mini and iPhone Fold come first. Open source, contributions welcome.",
+  },
+];
+---
+
+<section class="section" id="faq">
+  <div class="wrap-tx">
+    <div class="section-head" style="grid-template-columns: 1fr;">
+      <div>
+        <h2>Questions, briefly.</h2>
+      </div>
+    </div>
+
+    <dl class="faq-list">
+      {
+        faqs.map((faq) => (
+          <div class="faq-item">
+            <dt>{faq.q}</dt>
+            <dd set:html={faq.a} />
+          </div>
+        ))
+      }
+    </dl>
+  </div>
+</section>

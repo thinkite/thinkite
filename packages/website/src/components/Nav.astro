@@ -1,0 +1,36 @@
+---
+import BrandMark from "./BrandMark.astro";
+import { links } from "../config";
+---
+
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/#top" aria-label="sidecode home">
+      <span class="mark"><BrandMark /></span>
+      sidecode
+    </a>
+
+    <div class="nav-cta">
+      <div data-show-on="desktop">
+        <a href={links.github} target="_blank" rel="noopener">GitHub ↗</a>
+        <a class="btn btn-primary" href={links.download}>
+          Download <span class="arr">↓</span>
+        </a>
+      </div>
+
+      <div data-show-on="ios">
+        <a href={links.github} target="_blank" rel="noopener">GitHub ↗</a>
+        <a class="btn btn-primary" href={links.appStore} target="_blank" rel="noopener">
+          App Store <span class="arr">↗</span>
+        </a>
+      </div>
+
+      <div data-show-on="android">
+        <a href="#faq">FAQ</a>
+        <a class="btn btn-primary" href={links.github} target="_blank" rel="noopener">
+          Star on GitHub <span class="arr">↗</span>
+        </a>
+      </div>
+    </div>
+  </div>
+</nav>

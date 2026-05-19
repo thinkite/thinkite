@@ -1,0 +1,70 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Nav from "../components/Nav.astro";
+import Footer from "../components/Footer.astro";
+---
+
+<BaseLayout
+  title="Privacy — sidecode"
+  description="sidecode runs entirely on your local network. No telemetry, no analytics, no cookies."
+>
+  <Nav />
+  <main class="wrap privacy-main">
+    <article class="privacy-article">
+      <h1 class="privacy-h1">Privacy</h1>
+
+      <div class="privacy-body">
+        <p>sidecode runs entirely on your local network.</p>
+
+        <p>
+          No telemetry. No analytics. No cookies. No third-party services.
+          Pairing, sessions, prompts, and approvals never leave your devices.
+        </p>
+
+        <p>
+          The only outbound network call sidecode makes is to Apple's App Store
+          on first scan — and only if you don't already have the iOS app
+          installed.
+        </p>
+
+        <p>
+          Plan utilization data is fetched directly from Anthropic's OAuth
+          endpoint using your existing Claude Code authentication. sidecode
+          does not store, log, or transmit your token.
+        </p>
+
+        <p>
+          Source code is published under Apache 2.0 — every claim above can be
+          verified by reading the source.
+        </p>
+
+        <p class="privacy-updated">Last updated: 2026-05-18.</p>
+      </div>
+    </article>
+  </main>
+  <Footer minimal />
+</BaseLayout>
+
+<style>
+  .privacy-main { padding-block: 96px; }
+  .privacy-article { max-width: var(--max-tx); margin: 0 auto; }
+  .privacy-h1 {
+    font-family: var(--font-display);
+    font-size: clamp(36px, 4.6vw, 56px);
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    margin: 0 0 2rem;
+  }
+  .privacy-body {
+    color: var(--ink-2);
+    font-size: 16.5px;
+    line-height: 1.65;
+  }
+  .privacy-body p { margin: 0 0 1.25rem; }
+  .privacy-updated {
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 3rem !important;
+  }
+</style>

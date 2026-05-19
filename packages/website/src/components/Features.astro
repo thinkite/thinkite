@@ -1,0 +1,38 @@
+---
+const features = [
+  {
+    title: "Open it like any Mac app.",
+    body: "Click the icon for your numbers, click Pair to add a phone. That's the whole app — no npm install, no config file, no terminal window left running.",
+  },
+  {
+    title: "Same sessions as Desktop.",
+    body: "Reads Desktop's local session store directly — no export, no copy-paste, no second account. Approvals follow whichever device sent the last prompt. <em>(Soon: changes sync back.)</em>",
+  },
+  {
+    title: 'Same numbers as <code>/status</code>.',
+    body: "5h / weekly / Design / Sonnet usage and token totals — straight from the same local cache your CLI already uses. No JSONL re-parsing, no fork-counting errors.",
+  },
+];
+---
+
+<section class="section" id="why">
+  <div class="wrap">
+    <div class="section-head is-stacked">
+      <div class="eyebrow">/ why sidecode</div>
+      <div>
+        <h2>It's just a <span class="ital">menu bar.</span></h2>
+      </div>
+    </div>
+
+    <div class="features">
+      {
+        features.map((feature) => (
+          <div class="feature">
+            <h3 set:html={feature.title} />
+            <p set:html={feature.body} />
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>
