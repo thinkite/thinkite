@@ -54,9 +54,7 @@ describe("pairing integration", () => {
     const home = resolveSidecodeHome();
     const identity = loadOrCreateIdentity(home);
     const known = KnownClients.load(home);
-    const pairing = new PairingService(identity, known, {
-      daemonAddresses: ["ws://127.0.0.1:41234"],
-    });
+    const pairing = new PairingService(identity, known);
 
     const offer = pairing.createOffer("integration-test");
     expect(offer.daemonFingerprint).toBe(identity.fingerprint);

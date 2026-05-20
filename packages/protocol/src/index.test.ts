@@ -27,6 +27,8 @@ import {
   listSessionsCommand,
   listSessionsResponse,
   PROTOCOL_VERSION,
+  decodePairOfferPayload,
+  encodePairOffer,
   pairOfferFrame,
   pingFrame,
   pongFrame,
@@ -100,6 +102,14 @@ describe("pair.offer frame", () => {
   it("rejects when daemonIdentityPublicKey is missing", () => {
     const { daemonIdentityPublicKey: _, ...rest } = valid;
     expect(pairOfferFrame.safeParse(rest).success).toBe(false);
+  });
+
+  it("encodePairOffer round-trips through decodePairOfferPayload", () => {
+    const encoded = encodePairOffer(valid);
+    // base64url alphabet, no padding.
+    expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/);
+    const decoded = decodePairOfferPayload(encoded);
+    expect(decoded).toEqual(valid);
   });
 });
 

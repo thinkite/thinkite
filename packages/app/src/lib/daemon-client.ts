@@ -1,5 +1,9 @@
 import * as ed25519 from "@noble/ed25519";
-import type { EventDelta, TimelineItem } from "@sidecodeapp/protocol";
+import {
+  decodePairOfferPayload,
+  type EventDelta,
+  type TimelineItem,
+} from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { base64UrlToBytes, bytesToBase64Url } from "./base64";
@@ -47,22 +51,19 @@ export interface PairOffer {
   expiresAt: number;
 }
 
-/** Decode a pair.offer payload (the base64url string from a QR / dev paste). */
-export function decodePairOffer(b64: string): PairOffer {
-  const padded = b64 + "===".slice(0, (4 - (b64.length % 4)) % 4);
-  const std = padded.replace(/-/g, "+").replace(/_/g, "/");
-  const json = atob(std);
-  const offer = JSON.parse(json) as PairOffer;
+/**
+ * Decode a pair.offer payload (the base64url string from a QR / dev paste).
+ *
+ * Wire format is base64url of JSON with one-letter keys. The encoding +
+ * key-shortening both live in the protocol package; iOS receives the
+ * verbose PairOffer shape ready to use.
+ */
+export function decodePairOffer(payload: string): PairOffer {
+  const offer = decodePairOfferPayload(payload);
   if (offer.v !== HANDSHAKE_VERSION) {
     throw new Error(
       `offer v=${offer.v} != HANDSHAKE_VERSION=${HANDSHAKE_VERSION}`,
     );
-  }
-  if (
-    !Array.isArray(offer.daemonAddresses) ||
-    offer.daemonAddresses.length === 0
-  ) {
-    throw new Error("offer has no daemonAddresses");
   }
   if (Date.now() > offer.expiresAt) {
     throw new Error(

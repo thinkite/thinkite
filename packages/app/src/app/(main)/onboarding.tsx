@@ -48,6 +48,31 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  *    button + scanner stay disabled while pairing is running so we
  *    don't double-fire `DaemonClient.pair`.
  */
+/**
+ * The menu bar app encodes the pair offer as a Universal Link URL
+ * (`https://sidecode.app/pair?o=<base64url>`) so the iPhone's built-in
+ * Camera app can scan it and open straight into the app. The in-app
+ * scanner / paste field accepts either form — bare base64url (legacy
+ * `sidecode pair` CLI output) or the full URL.
+ */
+function extractOfferPayload(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  // Tolerate any URL whose `o` query param holds the offer — keeps the
+  // scanner working if we ever change the canonical host (preview /
+  // staging) without re-rolling the iOS app.
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      const o = url.searchParams.get("o");
+      if (o) return o;
+    } catch {
+      // Fall through — treat malformed URL as bare payload.
+    }
+  }
+  return trimmed;
+}
+
 export default function OnboardingRoute() {
   const insets = useSafeAreaInsets();
   const scheme = useColorScheme() ?? "light";
@@ -67,15 +92,15 @@ export default function OnboardingRoute() {
 
   const submit = useCallback(
     async (raw: string) => {
-      const trimmed = raw.trim();
-      if (!trimmed) {
+      const payload = extractOfferPayload(raw);
+      if (!payload) {
         setError("Empty payload");
         return;
       }
       setBusy(true);
       setError(null);
       try {
-        await pair(trimmed);
+        await pair(payload);
         // On success, the context flips to `ready` and the protected-route
         // guard auto-redirects us off /onboarding. No further state to clean up.
       } catch (err) {

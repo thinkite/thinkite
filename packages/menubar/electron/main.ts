@@ -1,12 +1,14 @@
 import {
   app,
   BrowserWindow,
+  ipcMain,
   Tray,
   Menu,
   nativeImage,
   powerSaveBlocker,
   shell,
 } from "electron";
+import { hostname } from "node:os";
 import path from "node:path";
 import { type Daemon, start as startDaemon } from "@sidecodeapp/daemon";
 
@@ -210,16 +212,18 @@ function openPairWindow() {
     return;
   }
   const win = new BrowserWindow({
-    width: 360,
-    height: 440,
+    width: 420,
+    height: 540,
     show: false,
     resizable: false,
     fullscreenable: false,
     minimizable: false,
     maximizable: false,
+    // Hidden title bar — traffic lights stay overlaid at top-left, the
+    // rest of the chrome is owned by the React shell. Drag is enabled
+    // via a `-webkit-app-region: drag` strip in PairView's Shell.
     titleBarStyle: "hiddenInset",
-    title: "Pair iPhone",
-    backgroundColor: "#18181b",
+    title: "",
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -268,6 +272,18 @@ app.whenReady().then(async () => {
   console.log(
     `[main] daemon ready at ${daemon.address.host}:${daemon.address.port}`,
   );
+
+  // Pair window IPC. Offers are stateless, so a fresh one per call is
+  // fine — PairView mints on mount and rotates on a fixed cadence below
+  // the 5-min TTL. The daemon rebuilds the address list per call from
+  // `os.networkInterfaces()`, so the QR picks up Wi-Fi changes without
+  // us having to restart anything. `hostname()` is the Mac's
+  // `os.hostname()` which iOS surfaces as `serviceName` in the confirm
+  // modal.
+  ipcMain.handle("sidecode:getPairOffer", () => {
+    if (!daemon) throw new Error("daemon not ready");
+    return daemon.createPairOffer(hostname());
+  });
 
   const trayImage = nativeImage.createEmpty();
   tray = new Tray(trayImage);

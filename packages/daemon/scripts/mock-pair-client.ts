@@ -24,6 +24,7 @@ import {
   buildClientAuthTranscript,
   type ClientHelloFrame,
   HANDSHAKE_VERSION,
+  decodePairOfferPayload,
   pairOfferFrame,
   type ServerHelloFrame,
   type TranscriptInput,
@@ -209,10 +210,11 @@ async function runHandshake(args: ConnectArgs): Promise<void> {
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
-function decodeOffer(b64: string): ReturnType<typeof pairOfferFrame.parse> {
+function decodeOffer(
+  payload: string,
+): ReturnType<typeof pairOfferFrame.parse> {
   try {
-    const json = Buffer.from(b64, "base64url").toString("utf8");
-    return pairOfferFrame.parse(JSON.parse(json));
+    return decodePairOfferPayload(payload);
   } catch (err) {
     fatal(`could not decode pair.offer: ${(err as Error).message}`);
   }

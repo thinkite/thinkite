@@ -2,13 +2,18 @@ import {
   getSessionInfo,
   getSessionMessages,
 } from "@anthropic-ai/claude-agent-sdk";
-import { type EventDelta, PROTOCOL_VERSION } from "@sidecodeapp/protocol";
+import {
+  encodePairOffer,
+  type EventDelta,
+  PROTOCOL_VERSION,
+} from "@sidecodeapp/protocol";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { listDesktopSessions } from "./desktop/sessions.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
+import { buildLanAddresses } from "./lan-addresses.js";
 import { normalize } from "./messages/normalize.js";
 import { PairingService } from "./pairing.js";
 import { createCommandHandler } from "./router.js";
@@ -23,12 +28,6 @@ import { DEFAULT_HOST, DEFAULT_PORT, WebSocketServer } from "./ws-server.js";
 export interface DaemonOptions {
   port?: number;
   host?: string;
-  /**
-   * Ordered candidate ws URLs the pair.offer should advertise. Defaults to
-   * a single `ws://<host>:<port>`. `sidecode pair --lan` adds LAN +
-   * Tailscale IPv4s on top of the loopback default — see pair-command.ts.
-   */
-  daemonAddresses?: string[];
   /** Override SIDECODE_HOME. */
   homeDir?: string;
 }
@@ -44,6 +43,15 @@ export interface Daemon {
   /** Number of currently authenticated WS connections. */
   authenticatedConnectionCount(): number;
   /**
+   * Mint a fresh pair offer pointing at this daemon. Stateless — calling
+   * twice produces two independent offers, both valid until their own
+   * `expiresAt`. The offer's `daemonAddresses` is rebuilt from
+   * `os.networkInterfaces()` at call time (RFC1918 first, then Tailscale
+   * CGNAT, then loopback) so a long-lived daemon picks up the user's
+   * current Wi-Fi without restarting.
+   */
+  createPairOffer(serviceName: string): { encoded: string; expiresAt: number };
+  /**
    * Per-session runtime manager. Empty until slice G wires it into the
    * router; surfaced here so daemon.stop() can drain it on shutdown and
    * tests can inspect it.
@@ -57,11 +65,8 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   const knownClients = KnownClients.load(home);
   const port = options.port ?? DEFAULT_PORT;
   const host = options.host ?? DEFAULT_HOST;
-  const daemonAddresses = options.daemonAddresses ?? [`ws://${host}:${port}`];
 
-  const pairing = new PairingService(identity, knownClients, {
-    daemonAddresses,
-  });
+  const pairing = new PairingService(identity, knownClients);
   // Lazy-populated by slice G's router when it sees its first sendPrompt.
   // Drained on shutdown via daemon.stop() → runtimeManager.shutdown().
   const runtimeManager = new SessionRuntimeManager<EventDelta>();
@@ -142,6 +147,13 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     fingerprint: identity.fingerprint,
     pairedClientCount: () => knownClients.list().length,
     authenticatedConnectionCount: () => ws.authenticatedCount(),
+    createPairOffer: (serviceName) => {
+      const offer = pairing.createOffer(
+        serviceName,
+        buildLanAddresses(bound.port),
+      );
+      return { encoded: encodePairOffer(offer), expiresAt: offer.expiresAt };
+    },
     runtimeManager,
     async stop() {
       // Flip the gate FIRST so any inflight subscribe / sendPrompt RPC

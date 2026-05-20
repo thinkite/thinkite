@@ -134,6 +134,99 @@ export const handshakeRejectFrame = z.object({
 });
 
 export type PairOfferFrame = z.infer<typeof pairOfferFrame>;
+
+/**
+ * On-the-wire pair offer with one-character keys. The QR is the only
+ * place this frame ever appears, and every character in the QR payload
+ * costs us ~1 module in the rendered grid — long keys like
+ * `daemonIdentityPublicKey` chew through ~30 chars per occurrence
+ * before any value bytes. Compacting to single letters drops the QR
+ * roughly two version steps (sparser, easier to scan).
+ *
+ * Daemon and iOS both speak the `PairOfferFrame` shape in code; the
+ * mapping is contained to `toPairOfferWire` / `fromPairOfferWire`.
+ *
+ * Schema is deliberately permissive — only what we need to validate
+ * before mapping to PairOfferFrame. The handshake's safety doesn't hang
+ * on offer schema strictness (per-frame signatures + nonces do that
+ * work), so we keep this validation light.
+ */
+const pairOfferWire = z.object({
+  v: z.number().int(),
+  f: z.string(), // daemonFingerprint
+  k: z.string(), // daemonIdentityPublicKey
+  a: z.array(z.string()).min(1), // daemonAddresses
+  s: z.string(), // serviceName
+  e: z.number(), // expiresAt
+});
+export type PairOfferWire = z.infer<typeof pairOfferWire>;
+
+export function toPairOfferWire(offer: PairOfferFrame): PairOfferWire {
+  return {
+    v: offer.v,
+    f: offer.daemonFingerprint,
+    k: offer.daemonIdentityPublicKey,
+    a: offer.daemonAddresses,
+    s: offer.serviceName,
+    e: offer.expiresAt,
+  };
+}
+
+export function fromPairOfferWire(wire: unknown): PairOfferFrame {
+  const parsed = pairOfferWire.parse(wire);
+  return {
+    type: "pair.offer",
+    v: parsed.v,
+    daemonFingerprint: parsed.f,
+    daemonIdentityPublicKey: parsed.k,
+    daemonAddresses: parsed.a,
+    serviceName: parsed.s,
+    expiresAt: parsed.e,
+  };
+}
+
+/**
+ * Encode a pair offer to its QR wire form: base64url of UTF-8 JSON.
+ *
+ * We picked base64url over base32 after measuring: base32's only edge
+ * is the all-uppercase alphabet that QR's alphanumeric mode can pack at
+ * 5.5 bits/char vs byte mode's 8 bits/char. But the URL prefix
+ * `https://sidecode.app/pair?o=` is lowercase, so the engine encodes
+ * the whole input in byte mode regardless — alphanumeric savings get
+ * stranded. The actual difference at ecLevel M was V11 vs V12, i.e.
+ * one version step (~4 modules per side). Not worth a custom codec.
+ */
+export function encodePairOffer(offer: PairOfferFrame): string {
+  const json = JSON.stringify(toPairOfferWire(offer));
+  return base64urlEncodeUtf8(json);
+}
+
+/** Decode the wire form produced by `encodePairOffer`. */
+export function decodePairOfferPayload(payload: string): PairOfferFrame {
+  return fromPairOfferWire(JSON.parse(base64urlDecodeUtf8(payload)));
+}
+
+function base64urlEncodeUtf8(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    bin += String.fromCharCode(bytes[i]);
+  }
+  return btoa(bin)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function base64urlDecodeUtf8(b64: string): string {
+  const padded = b64 + "===".slice(0, (4 - (b64.length % 4)) % 4);
+  const std = padded.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(std);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
 export type ClientHelloFrame = z.infer<typeof clientHelloFrame>;
 export type ServerHelloFrame = z.infer<typeof serverHelloFrame>;
 export type ClientAuthFrame = z.infer<typeof clientAuthFrame>;

@@ -5,9 +5,10 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { hostname, networkInterfaces } from "node:os";
+import { hostname } from "node:os";
 import {
   buildClientAuthTranscript,
+  encodePairOffer,
   HANDSHAKE_VERSION,
   type TranscriptInput,
 } from "@sidecodeapp/protocol";
@@ -16,6 +17,7 @@ import { readActiveDaemonLock } from "./daemon-lock.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
+import { buildLanAddresses, prioritizedLanIpv4s } from "./lan-addresses.js";
 import { PairingService } from "./pairing.js";
 
 /**
@@ -49,28 +51,21 @@ export async function runPairCommand(args: readonly string[]): Promise<void> {
 
   // Build the offer's address candidate list. Order is what the iOS client
   // tries sequentially with a per-attempt timeout; first to handshake wins.
-  // Priority within `--lan`: RFC1918 (192.168 / 10 / 172.16-31) before
-  // Tailscale CGNAT (100.64.0.0/10) before any other non-internal IPv4.
-  // We always append the lock host (loopback by default) at the end so
-  // simulator pairing keeps working with the same printed offer.
+  // Priority: any `--host IP` overrides first, then auto-detected LAN
+  // (RFC1918 → Tailscale CGNAT → other non-internal IPv4), then loopback.
   const addresses = buildAddressList(args, lock);
 
-  // Build the offer pointing at the running daemon. PairingService here is
-  // just a metadata builder; createOffer() is a pure function in the
-  // post-revision design — it doesn't track issued offers.
-  const pairing = new PairingService(identity, knownClients, {
-    daemonAddresses: addresses,
-  });
-  const offer = pairing.createOffer(hostname());
-  const encoded = Buffer.from(JSON.stringify(offer)).toString("base64url");
+  // PairingService is just a metadata builder here; createOffer() is a
+  // pure function in the post-revision design — it doesn't track issued
+  // offers.
+  const pairing = new PairingService(identity, knownClients);
+  const offer = pairing.createOffer(hostname(), addresses);
+  const encoded = encodePairOffer(offer);
 
   // ASCII QR for the iOS app to scan via expo-camera's CameraView.launchScanner.
-  // `small: true` uses half-block characters (▀) so the height is halved —
-  // a ~380-char base64url payload renders around 45 lines tall instead of 90,
-  // fits in a normal terminal without wrapping. `errorCorrectionLevel: "M"`
-  // (~15% recovery) is the qrcode default; bumping to "L" would shrink the
-  // grid further but matters very little at this payload size and trades
-  // away camera-angle robustness.
+  // `small: true` uses half-block characters (▀) so the height is halved,
+  // fitting comfortably in a normal terminal. `errorCorrectionLevel: "M"`
+  // is the `qrcode` default (~15% recovery).
   const qr = await QRCode.toString(encoded, {
     type: "terminal",
     small: true,
@@ -98,19 +93,21 @@ export async function runPairCommand(args: readonly string[]): Promise<void> {
 /**
  * Build the ordered ws URL list the offer should advertise.
  *
- * `sidecode pair`                  → [ws://<lock.host>:port]
- *                                    (just loopback, fine for simulator)
- * `sidecode pair --host IP`        → [ws://IP:port, ws://<lock.host>:port]
- *                                    (multiple --host flags supported)
- * `sidecode pair --lan`            → [LAN IPs (RFC1918), Tailscale (CGNAT),
- *                                     other non-internal IPv4s,
- *                                     ws://<lock.host>:port]
- * `sidecode pair --host IP --lan`  → explicit IPs first, then auto-detected,
- *                                    then loopback
+ * `sidecode pair`            → [LAN IPs (RFC1918), Tailscale (CGNAT),
+ *                               other non-internal IPv4s,
+ *                               ws://<lock.host>:port]
+ * `sidecode pair --host IP`  → [ws://IP:port, …auto LAN…,
+ *                               ws://<lock.host>:port]
+ *                              (multiple --host flags supported)
  *
- * Why include loopback last even with --lan: keeps the same offer usable on
- * a simulator running on this Mac (the simulator can also reach the LAN
- * IP, but loopback is fastest and immune to router-level firewall rules).
+ * LAN auto-detection is always on — a CLI that printed loopback-only
+ * QRs would only work for the simulator, and the menubar is the canonical
+ * physical-device flow anyway. `--host IP` is retained for unusual
+ * topologies (e.g. force a specific Tailscale IP over LAN).
+ *
+ * Why include loopback last: keeps the same offer usable on a simulator
+ * running on this Mac (it can also reach the LAN IP, but loopback is
+ * fastest and immune to router-level firewall rules).
  *
  * Why RFC1918 before Tailscale CGNAT: when both endpoints are on the same
  * Wi-Fi, LAN is direct and fast; Tailscale on the same LAN tends to fall
@@ -127,9 +124,10 @@ function buildAddressList(
   lock: { host: string; port: number },
 ): string[] {
   const explicit = parseHostFlags(args).map((h) => `ws://${h}:${lock.port}`);
-  const auto = args.includes("--lan")
-    ? prioritizedLanIpv4s().map((h) => `ws://${h}:${lock.port}`)
-    : [];
+  if (explicit.length === 0) {
+    return buildLanAddresses(lock.port, lock.host);
+  }
+  const auto = prioritizedLanIpv4s().map((h) => `ws://${h}:${lock.port}`);
   const loopback = `ws://${lock.host}:${lock.port}`;
 
   const seen = new Set<string>();
@@ -158,47 +156,6 @@ function parseHostFlags(args: readonly string[]): string[] {
   return out;
 }
 
-/**
- * All non-internal IPv4 addresses on this Mac, ordered: RFC1918 first
- * (192.168.x, 10.x, 172.16-31.x) then Tailscale CGNAT (100.64.0.0/10) then
- * everything else. Returns `[]` if none found.
- */
-function prioritizedLanIpv4s(): string[] {
-  const found: string[] = [];
-  for (const ifaces of Object.values(networkInterfaces())) {
-    for (const ifc of ifaces ?? []) {
-      if (ifc.family !== "IPv4" || ifc.internal) continue;
-      found.push(ifc.address);
-    }
-  }
-  found.sort((a, b) => addressPriority(a) - addressPriority(b));
-  return found;
-}
-
-function addressPriority(ip: string): number {
-  if (isRfc1918(ip)) return 0;
-  if (isTailscaleCgnat(ip)) return 1;
-  return 2;
-}
-
-function isRfc1918(ip: string): boolean {
-  if (ip.startsWith("192.168.")) return true;
-  if (ip.startsWith("10.")) return true;
-  // 172.16.0.0 – 172.31.255.255
-  if (ip.startsWith("172.")) {
-    const second = Number(ip.split(".")[1]);
-    return second >= 16 && second <= 31;
-  }
-  return false;
-}
-
-function isTailscaleCgnat(ip: string): boolean {
-  // 100.64.0.0/10 = 100.64.0.0 – 100.127.255.255
-  if (!ip.startsWith("100.")) return false;
-  const second = Number(ip.split(".")[1]);
-  return second >= 64 && second <= 127;
-}
-
 /** Self-test: run the full handshake in-process. No WS, no network. */
 async function runSelfTest(): Promise<void> {
   const home = resolveSidecodeHome();
@@ -210,7 +167,7 @@ async function runSelfTest(): Promise<void> {
   console.log(`home:        ${home}`);
   console.log(`fingerprint: ${identity.fingerprint}`);
 
-  const offer = pairing.createOffer("self-test");
+  const offer = pairing.createOffer("self-test", ["ws://127.0.0.1:41234"]);
   console.log(`offer expiresAt: ${new Date(offer.expiresAt).toISOString()}`);
 
   const { publicKey: clientPub, privateKey: clientPriv } =

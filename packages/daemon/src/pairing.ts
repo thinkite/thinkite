@@ -23,8 +23,10 @@ import type { KnownClient, KnownClients } from "./known-clients.js";
 
 /**
  * Default lifetime of an offer. Long enough to scan + connect with margin
- * for menu bar UX (user opens popover, scans, completes); short enough that
- * a captured QR isn't usable for days.
+ * for the menu bar Pair window (user opens window, scans, completes);
+ * short enough that a captured QR isn't usable for days. The menubar
+ * rotates the visible QR every TTL/2 so the displayed code always has
+ * plenty of headroom.
  */
 export const OFFER_TTL_MS = 5 * 60_000; // 5 minutes
 
@@ -33,17 +35,6 @@ export const TRANSCRIPT_TTL_MS = 30_000;
 
 export interface PairingServiceOptions {
   clock?: () => number;
-  /**
-   * Ordered candidate ws URLs the offer should advertise. The client tries
-   * them sequentially with a per-attempt timeout; first one that handshakes
-   * wins. Defaults to a single loopback URL — fine for simulator pairing.
-   *
-   * For physical-device pairing, callers (typically `sidecode pair --lan`)
-   * should populate this with LAN + Tailscale addresses too so the same
-   * offer works across network shapes (same Wi-Fi, Tailscale-over-cellular,
-   * etc.). See `pair-command.ts` for the priority ordering.
-   */
-  daemonAddresses?: string[];
   /** Override the default 5-minute offer expiry. */
   offerTtlMs?: number;
   /** Override the per-handshake transcript TTL. */
@@ -81,7 +72,6 @@ export class PairingService {
   private readonly clock: () => number;
   private readonly offerTtlMs: number;
   private readonly transcriptTtlMs: number;
-  private readonly daemonAddresses: string[];
   /** sessionId (client-generated) → in-flight transcript. */
   private readonly pendingTranscripts = new Map<
     string,
@@ -96,26 +86,33 @@ export class PairingService {
     this.clock = options.clock ?? Date.now;
     this.offerTtlMs = options.offerTtlMs ?? OFFER_TTL_MS;
     this.transcriptTtlMs = options.transcriptTtlMs ?? TRANSCRIPT_TTL_MS;
-    const addresses = options.daemonAddresses ?? ["ws://127.0.0.1:41234"];
-    if (addresses.length === 0) {
-      throw new Error("PairingService requires at least one daemon address");
-    }
-    this.daemonAddresses = addresses;
   }
 
   /**
    * Generate a fresh pair.offer. Pure function — does not mutate any
    * service state. The returned offer is valid for `expiresAt` worth of
    * time and can be scanned multiple times within that window.
+   *
+   * `addresses` is the ordered candidate ws URL list the iOS client will
+   * try sequentially. Production callers (Daemon.createPairOffer,
+   * `sidecode pair`) always build this via `buildLanAddresses()` so the
+   * QR reflects the current network shape. The loopback-only default is
+   * a test-bench convenience, never emitted to a real client.
    */
-  createOffer(serviceName: string): PairOfferFrame {
+  createOffer(
+    serviceName: string,
+    addresses: string[] = ["ws://127.0.0.1:41234"],
+  ): PairOfferFrame {
+    if (addresses.length === 0) {
+      throw new Error("createOffer requires at least one daemon address");
+    }
     const expiresAt = this.clock() + this.offerTtlMs;
     return {
       type: "pair.offer",
       v: HANDSHAKE_VERSION,
       daemonFingerprint: this.identity.fingerprint,
       daemonIdentityPublicKey: this.identity.publicKeyB64,
-      daemonAddresses: this.daemonAddresses,
+      daemonAddresses: addresses,
       serviceName,
       expiresAt,
     };

@@ -133,10 +133,10 @@ describe("PairingService.createOffer", () => {
   it("returns a stateless offer with our identity", () => {
     const identity = loadOrCreateIdentity(home);
     const known = KnownClients.load(home);
-    const pairing = new PairingService(identity, known, {
-      daemonAddresses: ["ws://10.0.0.1:41234"],
-    });
-    const offer = pairing.createOffer("sidecode-test");
+    const pairing = new PairingService(identity, known);
+    const offer = pairing.createOffer("sidecode-test", [
+      "ws://10.0.0.1:41234",
+    ]);
     expect(offer.type).toBe("pair.offer");
     expect(offer.daemonFingerprint).toBe(identity.fingerprint);
     expect(offer.daemonIdentityPublicKey).toBe(identity.publicKeyB64);
