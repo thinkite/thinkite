@@ -124,8 +124,8 @@ interface DaemonClientContextValue {
   /**
    * Tear down the current connection, wipe the persisted PairedDaemon,
    * and flip to `unpaired`. The root layout's `Stack.Protected` guard
-   * picks this up and routes the user back to /pair automatically — no
-   * imperative navigation needed at the call site.
+   * picks this up and routes the user back to /onboarding automatically
+   * — no imperative navigation needed at the call site.
    */
   unpair: () => Promise<void>;
 }
@@ -142,7 +142,7 @@ const Ctx = createContext<DaemonClientContextValue | null>(null);
  * exponential-backoff retry loop instead of giving up. The first connect
  * itself does NOT retry — if the daemon's identity rotated between app
  * launches the existing `clearPairedDaemon()` path sends the user back
- * to /pair (unchanged behavior). The line is `everConnectedRef`.
+ * to /onboarding (unchanged behavior). The line is `everConnectedRef`.
  *
  * `pair()` introduces new credentials. `reset()` re-runs the boot path
  * with whatever's already persisted. `unpair()` is the explicit user
@@ -182,7 +182,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   // Once `true`, transient reconnect failures retry instead of clearing
   // the paired record. Flipped on the first successful handshake (whether
   // via boot reconnect or `pair()`); reset on `unpair()`. Distinguishes
-  // "daemon identity rotated since last launch — boot to /pair" from
+  // "daemon identity rotated since last launch — boot to /onboarding" from
   // "we know this daemon, just keep trying".
   const everConnectedRef = useRef(false);
 
@@ -286,7 +286,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
             // First-launch boot failure: most likely the daemon's
             // identity rotated (fresh `~/.sidecode/identity.ed25519`)
             // or the address moved permanently. Clear the stale
-            // credential and fall through to /pair.
+            // credential and fall through to /onboarding.
             console.warn(
               "daemon initial reconnect failed, clearing pair:",
               err,
@@ -328,13 +328,14 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   //
   // Important: we deliberately do NOT flip state to `connecting` while
   // pairing — staying in `unpaired` keeps the `Stack.Protected` guard on
-  // /pair active throughout, so PairScreen stays mounted and its local
-  // error state survives a failed attempt. If we transitioned to
-  // `connecting` mid-pair, isUnpaired would briefly flip false, the
-  // router would redirect to /, and on failure flip back to /pair —
-  // unmounting PairScreen and wiping the error message we just set.
-  // Busy / spinner state is owned by PairScreen locally; this context
-  // only flips on outcome.
+  // /onboarding active throughout, so OnboardingRoute (and any pair
+  // modal stacked on top of it) stays mounted and its local error state
+  // survives a failed attempt. If we transitioned to `connecting`
+  // mid-pair, isUnpaired would briefly flip false, the router would
+  // redirect to /, and on failure flip back to /onboarding — unmounting
+  // OnboardingRoute and wiping the error message we just set. Busy /
+  // spinner state is owned by the caller (OnboardingRoute or
+  // PairModal) locally; this context only flips on outcome.
   const pair = useCallback(
     async (offerB64: string): Promise<void> => {
       epochRef.current += 1;
@@ -374,7 +375,8 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         if (epoch !== epochRef.current) return;
         // State is already `unpaired` (we never flipped it). Just rethrow
-        // so PairScreen's local catch can surface the error inline.
+        // so the caller (OnboardingRoute / PairModal) can surface the
+        // error in its local UI state.
         throw err;
       }
     },
@@ -454,7 +456,7 @@ interface UseDaemonClientResult {
   reset: () => void;
   /** Run a first-time pair from a base64url offer string. */
   pair: (offerB64: string) => Promise<void>;
-  /** Forget the paired host: close, wipe SecureStore, route to /pair. */
+  /** Forget the paired host: close, wipe SecureStore, route to /onboarding. */
   unpair: () => Promise<void>;
 }
 

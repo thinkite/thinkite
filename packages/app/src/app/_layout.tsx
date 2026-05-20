@@ -11,7 +11,10 @@ import {
   SafeAreaProvider,
 } from "react-native-safe-area-context";
 import { Uniwind } from "uniwind";
-import { DaemonClientProvider, useDaemonClient } from "@/lib/daemon-client-context";
+import {
+  DaemonClientProvider,
+  useDaemonClient,
+} from "@/lib/daemon-client-context";
 import { SafeAreaView } from "@/lib/styled";
 
 // Hold the native splash open through the daemon handshake. Per Expo docs,
@@ -104,6 +107,7 @@ function RootStack() {
           // expo-router's wrapper accepts `number[] | "fitToContents"`.
           sheetAllowedDetents: [0.5],
           sheetGrabberVisible: true,
+          title: "",
         }}
       />
     </Stack>

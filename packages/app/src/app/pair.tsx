@@ -1,4 +1,5 @@
-import { Button, Column, Host, Text } from "@expo/ui";
+import { Button, Column, Host, Icon, Spacer, Text } from "@expo/ui";
+import { controlSize, frame } from "@expo/ui/swift-ui/modifiers";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { decodePairOffer, type PairOffer } from "@/lib/daemon-client";
@@ -19,8 +20,8 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  *   2. **Paired user adds another Mac (V0.5+)** — sheet appears over
  *      whichever drawer screen they were on.
  *
- * The confirmation step exists to defend against drive-by pair URLs
- * (a malicious link in iMessage / Mail / a web page). Decoding +
+ * The confirmation step defends against drive-by pair URLs (a
+ * malicious link in iMessage / Mail / a web page). Decoded
  * `serviceName` + first LAN IP + countdown give the user enough
  * surface to recognize a legitimate offer from one of their own Macs.
  *
@@ -30,9 +31,27 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  *     showed clear intent.
  *   - UL → this modal, always.
  *
- * All visuals use `@expo/ui` (SwiftUI / Jetpack Compose bridge) so the
- * sheet feels native on each platform without manual Liquid Glass
- * theming on our side.
+ * Visual language mirrors the iOS system sign-in / passkey sheet:
+ *   - Native iOS sheet header with X close button (top-right)
+ *   - Computer SF Symbol, title and body text top-leading
+ *   - Two full-width stacked buttons pinned to the bottom (primary
+ *     filled + secondary outlined)
+ *
+ * Implementation:
+ * - Universal `@expo/ui` components (variant="filled"/"outlined" map
+ *   to SwiftUI .borderedProminent/.bordered on iOS; same shape will
+ *   render via Compose on Android once we add modifiers).
+ * - SwiftUI escape hatch only where Universal can't reach: button
+ *   `controlSize("large")` and the `.frame(maxWidth: .infinity)` on
+ *   the label Text that triggers the "Button hugs label, so widen
+ *   label" SwiftUI idiom for full-width sheet CTAs.
+ * - When Android lands (V0.5+), mirror the modifier paths via
+ *   `@expo/ui/jetpack-compose/modifiers` in a `pair.android.tsx`.
+ *
+ * Layout structure: single Host + Stack.Toolbar wrapping the route,
+ * with the three decode states (ok / missing / invalid) branching
+ * only on text + button contents inside the same outer Column. Keeps
+ * chrome (header, padding, button layout) defined once.
  */
 export default function PairModal() {
   const { o } = useLocalSearchParams<{ o?: string }>();
@@ -89,136 +108,117 @@ export default function PairModal() {
     dismiss();
   };
 
+  // Per-state copy + actions. Chrome (Host, Toolbar, Column, padding)
+  // is shared across states, so we only vary the title / body / buttons.
+  let title: string;
+  let body: string;
+  let primaryAction: { label: string; onPress: () => void; disabled: boolean };
+  let secondary: { label: string; onPress: () => void } | null = null;
+
   if (decoded.status === "missing") {
-    return (
-      <ModalShell
-        title="No pair code"
-        body="To pair, scan a QR from sidecode on your Mac."
-        onClose={handleCancel}
-      />
-    );
+    title = "No pair code";
+    body = "To pair, scan a QR from sidecode on your Mac.";
+    primaryAction = { label: "Close", onPress: handleCancel, disabled: false };
+  } else if (decoded.status === "invalid") {
+    title = "Invalid pair code";
+    body =
+      "This QR isn't a valid sidecode pair code, or it's expired. Get a fresh one from your Mac.";
+    primaryAction = { label: "Close", onPress: handleCancel, disabled: false };
+  } else {
+    const { offer } = decoded;
+    const remainingMs = offer.expiresAt - now;
+    const isExpired = remainingMs <= 0;
+    const lanIp = firstLanIp(offer.daemonAddresses);
+    title = "Pair with this Mac?";
+    body = isExpired
+      ? "Pair code expired"
+      : lanIp
+        ? `${lanIp} · expires in ${formatCountdown(remainingMs)}`
+        : `expires in ${formatCountdown(remainingMs)}`;
+    primaryAction = {
+      label: busy ? "Pairing…" : "Pair this Mac",
+      onPress: handleConfirm,
+      disabled: busy || isExpired,
+    };
+    secondary = { label: "Cancel", onPress: handleCancel };
   }
 
-  if (decoded.status === "invalid") {
-    return (
-      <ModalShell
-        title="Invalid pair code"
-        body="This QR isn't a valid sidecode pair code, or it's expired. Get a fresh one from your Mac."
-        onClose={handleCancel}
-      />
-    );
-  }
-
-  const { offer } = decoded;
-  const remainingMs = offer.expiresAt - now;
-  const isExpired = remainingMs <= 0;
-  const lanIp = firstLanIp(offer.daemonAddresses);
-  const subtitle = isExpired
-    ? "Pair code expired"
-    : lanIp
-      ? `${lanIp} · expires in ${formatCountdown(remainingMs)}`
-      : `expires in ${formatCountdown(remainingMs)}`;
+  const serviceName =
+    decoded.status === "ok" ? decoded.offer.serviceName : null;
 
   return (
     <Host style={{ flex: 1 }}>
       {/* Block swipe-down while pair() is in flight so an accidental
           dismiss doesn't leave the daemon side mid-handshake. */}
       <Stack.Screen options={{ gestureEnabled: !busy }} />
+      {/* Header X (top-right). placement="right" auto-enables the native
+          header — no separate headerShown:true needed. */}
+      <Stack.Toolbar placement="right">
+        <Stack.Toolbar.Button
+          icon="xmark"
+          onPress={handleCancel}
+          accessibilityLabel="Close"
+        />
+      </Stack.Toolbar>
       <Column
-        spacing={24}
-        alignment="center"
-        style={{
-          paddingHorizontal: 24,
-          paddingTop: 32,
-          paddingBottom: 16,
-          width: "100%",
-        }}
+        alignment="start"
+        modifiers={[frame({ maxWidth: Infinity, alignment: "topLeading" })]}
+        style={{ paddingHorizontal: 20 }}
       >
-        <Column spacing={12} alignment="center">
-          <Text textStyle={{ fontSize: 20, fontWeight: "600" }}>
-            Pair with this Mac?
-          </Text>
-          <Column spacing={4} alignment="center">
-            <Text textStyle={{ fontSize: 22, fontWeight: "500" }}>
-              {offer.serviceName}
-            </Text>
-            <Text textStyle={{ fontSize: 14, color: "#8E8E93" }}>
-              {subtitle}
-            </Text>
+        <Column alignment="start" spacing={12}>
+          <Icon name="laptopcomputer.and.iphone" size={56} color="#007AFF" />
+          <Column alignment="start" spacing={6}>
+            <Text textStyle={{ fontSize: 22, fontWeight: "600" }}>{title}</Text>
+            {serviceName && (
+              <Text textStyle={{ fontSize: 17 }}>{serviceName}</Text>
+            )}
+            <Text textStyle={{ fontSize: 15, color: "#8E8E93" }}>{body}</Text>
           </Column>
+          {error && (
+            <Text textStyle={{ fontSize: 13, color: "#FF3B30" }}>{error}</Text>
+          )}
         </Column>
 
-        <Column style={{ width: "100%" }} spacing={12}>
-          {error && (
-            <Text
-              textStyle={{
-                fontSize: 13,
-                color: "#FF3B30",
-                textAlign: "center",
-              }}
-            >
-              {error}
-            </Text>
-          )}
+        <Spacer flexible />
+
+        <Column
+          alignment="start"
+          spacing={8}
+          modifiers={[frame({ maxWidth: Infinity, alignment: "topLeading" })]}
+        >
           <Button
             variant="filled"
-            label={busy ? "Pairing…" : "Pair this Mac"}
-            style={{ width: "100%" }}
-            onPress={handleConfirm}
-            disabled={busy || isExpired}
-          />
-          <Button
-            variant="outlined"
-            label="Cancel"
-            style={{ width: "100%" }}
-            onPress={handleCancel}
-            disabled={busy}
-          />
-        </Column>
-      </Column>
-    </Host>
-  );
-}
-
-function ModalShell({
-  title,
-  body,
-  onClose,
-}: {
-  title: string;
-  body: string;
-  onClose: () => void;
-}) {
-  return (
-    <Host style={{ flex: 1 }}>
-      <Column
-        spacing={20}
-        alignment="center"
-        style={{
-          paddingHorizontal: 24,
-          paddingTop: 32,
-          paddingBottom: 16,
-          width: "100%",
-        }}
-      >
-        <Column spacing={8} alignment="center">
-          <Text textStyle={{ fontSize: 20, fontWeight: "600" }}>{title}</Text>
-          <Text
-            textStyle={{
-              fontSize: 14,
-              color: "#8E8E93",
-              textAlign: "center",
-            }}
+            onPress={primaryAction.onPress}
+            disabled={primaryAction.disabled}
+            modifiers={[controlSize("large")]}
           >
-            {body}
-          </Text>
+            <Text
+              textStyle={{
+                fontSize: 17,
+                fontWeight: "600",
+                textAlign: "center",
+              }}
+              modifiers={[frame({ maxWidth: Infinity })]}
+            >
+              {primaryAction.label}
+            </Text>
+          </Button>
+          {secondary && (
+            <Button
+              variant="outlined"
+              onPress={secondary.onPress}
+              disabled={busy}
+              modifiers={[controlSize("large")]}
+            >
+              <Text
+                textStyle={{ fontSize: 17, textAlign: "center" }}
+                modifiers={[frame({ maxWidth: Infinity })]}
+              >
+                {secondary.label}
+              </Text>
+            </Button>
+          )}
         </Column>
-        <Button
-          variant="filled"
-          label="Close"
-          style={{ width: "100%" }}
-          onPress={onClose}
-        />
       </Column>
     </Host>
   );
@@ -227,17 +227,14 @@ function ModalShell({
 type DecodeResult =
   | { status: "ok"; offer: PairOffer; raw: string }
   | { status: "missing" }
-  | { status: "invalid"; error: Error };
+  | { status: "invalid" };
 
 function decode(o: string | undefined): DecodeResult {
   if (typeof o !== "string" || !o) return { status: "missing" };
   try {
     return { status: "ok", offer: decodePairOffer(o), raw: o };
-  } catch (err) {
-    return {
-      status: "invalid",
-      error: err instanceof Error ? err : new Error(String(err)),
-    };
+  } catch {
+    return { status: "invalid" };
   }
 }
 
