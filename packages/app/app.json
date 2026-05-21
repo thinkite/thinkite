@@ -10,7 +10,9 @@
     "ios": {
       "icon": "./assets/expo.icon",
       "bundleIdentifier": "app.sidecode",
-      "associatedDomains": ["applinks:sidecode.app"]
+      "associatedDomains": [
+        "applinks:sidecode.app"
+      ]
     },
     "android": {
       "adaptiveIcon": {
@@ -54,7 +56,8 @@
         }
       ],
       "expo-image",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true,
