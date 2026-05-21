@@ -57,7 +57,8 @@
       ],
       "expo-image",
       "expo-web-browser",
-      "expo-font"
+      "expo-font",
+      "@config-plugins/react-native-webrtc"
     ],
     "experiments": {
       "typedRoutes": true,

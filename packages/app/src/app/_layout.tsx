@@ -110,6 +110,10 @@ function RootStack() {
           title: "",
         }}
       />
+      {/* Temporary spike route — verifies react-native-webrtc loads under
+          New Arch. Reachable independently of pair state. Delete once
+          WebRTC integration is real. */}
+      <Stack.Screen name="webrtc-spike" />
     </Stack>
   );
 }
