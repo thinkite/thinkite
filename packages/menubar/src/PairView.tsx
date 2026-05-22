@@ -20,9 +20,9 @@ import sidecodeLogo from "@/assets/sidecode-logo.svg";
  * admission window lapses on its own. No countdown shown — rotation is
  * silent and the QR "always works" while the window is open.
  *
- * Visual: plain square modules + small center logo. ecLevel M (15%
- * recovery) leaves ~10% of area for safely-occluded codewords; a 48px
- * logo on a 320px QR covers only ~2.25% area, well inside the budget.
+ * Visual: plain square modules + center logo. ecLevel M (15%
+ * recovery) leaves ~10% of area for safely-occluded codewords; a 72px
+ * logo on a 320px QR covers ~5% area, comfortably inside the budget.
  * The result lands on Version 12 / 65×65 modules.
  */
 
@@ -73,8 +73,8 @@ export default function PairView() {
   return (
     <Shell>
       <div className="rounded-lg bg-white p-1.5 shadow-sm">
-        {/* Plain square modules + small center logo at ecLevel M.
-            48px logo on 320px QR = 15% per side / 2.25% area, well
+        {/* Plain square modules + center logo at ecLevel M.
+            72px logo on 320px QR = 22.5% per side / ~5% area, still
             under the ~10% area budget M's 15% codeword recovery
             covers. `removeQrCodeBehindLogo` clears the modules
             beneath instead of relying on z-overlay so the SVG
@@ -85,8 +85,8 @@ export default function PairView() {
           ecLevel="M"
           quietZone={8}
           logoImage={sidecodeLogo}
-          logoWidth={48}
-          logoHeight={48}
+          logoWidth={72}
+          logoHeight={72}
           logoPadding={4}
           logoPaddingStyle="square"
           removeQrCodeBehindLogo
