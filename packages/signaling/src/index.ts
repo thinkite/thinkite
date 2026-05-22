@@ -265,7 +265,6 @@ function base64UrlDecode(s: string): Uint8Array {
 async function authenticate(
   request: Request,
   lobby: Lobby<Env>,
-  env: Env,
 ): Promise<Response | undefined> {
   // `lobby.name` is the room name extracted by PartyServer's router,
   // which we use as the daemon pubkey.
@@ -278,14 +277,6 @@ async function authenticate(
   const role = url.searchParams.get("role");
   if (role !== "daemon" && role !== "client") {
     return new Response("bad_role", { status: 400 });
-  }
-
-  // Connect-rate cap keyed by room pubkey. Cheaper than Ed25519 verify,
-  // so applied first — an attacker flooding the endpoint pays the
-  // ratelimit lookup cost (~free) instead of the crypto cost.
-  const rl = await env.RL_CONNECT.limit({ key: `connect:${roomPubkey}` });
-  if (!rl.success) {
-    return new Response("rate_limited", { status: 429 });
   }
 
   if (role === "daemon") {
@@ -316,14 +307,30 @@ async function authenticate(
  */
 export default {
   async fetch(request, env) {
-    if (new URL(request.url).pathname === "/health") {
+    const url = new URL(request.url);
+    if (url.pathname === "/health") {
       return Response.json({ status: "ok" });
     }
+
+    // Connect-rate cap applied at the outer fetch boundary so it runs
+    // BEFORE any PartyServer routing / DO instantiation. Cheaper than
+    // Ed25519 verify, so attackers flooding the endpoint pay only the
+    // ratelimit lookup cost.
+    //
+    // Keyed by room pubkey (URL path segment) so a flood at one daemon
+    // doesn't starve unrelated rooms.
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts[0] === "parties" && parts[2]) {
+      const roomPubkey = parts[2];
+      const rl = await env.RL_CONNECT.limit({ key: `connect:${roomPubkey}` });
+      if (!rl.success) {
+        return new Response("rate_limited", { status: 429 });
+      }
+    }
+
     return (
       (await routePartykitRequest(request, env, {
-        // Closure captures `env` so authenticate can call env.RL_CONNECT —
-        // partyserver's Lobby type doesn't expose env directly.
-        onBeforeConnect: (req, lobby) => authenticate(req, lobby, env),
+        onBeforeConnect: authenticate,
       })) || new Response("not found", { status: 404 })
     );
   },
