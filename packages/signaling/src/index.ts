@@ -309,7 +309,32 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
-      return Response.json({ status: "ok" });
+      return Response.json({ status: "ok", v: "193e1f0+diag" });
+    }
+
+    // Temporary diagnostic: smash RL_CONNECT N times with the same key
+    // and return success/blocked counts. Verifies whether the binding
+    // is actually enforcing — to be deleted once we confirm behavior.
+    if (url.pathname === "/_diag/ratelimit") {
+      const key = url.searchParams.get("key") ?? "diag-key";
+      const n = Math.min(50, Number(url.searchParams.get("n") ?? "30"));
+      let ok = 0;
+      let blocked = 0;
+      const samples: boolean[] = [];
+      for (let i = 0; i < n; i += 1) {
+        const r = await env.RL_CONNECT.limit({ key });
+        samples.push(r.success);
+        if (r.success) ok += 1;
+        else blocked += 1;
+      }
+      return Response.json({
+        binding_present: typeof env.RL_CONNECT?.limit === "function",
+        key,
+        n,
+        ok,
+        blocked,
+        samples,
+      });
     }
 
     // Connect-rate cap applied at the outer fetch boundary so it runs
