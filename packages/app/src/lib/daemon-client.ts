@@ -116,9 +116,10 @@ type EventCallback = (delta: EventDelta) => void;
 /**
  * Max time we wait from "start connecting" to "DataChannel open". Covers:
  * signaling open + roster + (daemon mints offer) + ICE gather + DTLS.
- * On a healthy LAN the whole flow completes in <200ms; the slack is for
- * Cloudflare TURN fallback paths and for daemon-side delays admitting an
- * unknown pubkey (pair-window open vs not).
+ * On a healthy LAN the whole flow completes in <200ms; the slack is
+ * for slow ICE gathering on hostile networks (STUN-only today; TURN
+ * fallback deferred to sidecodeapp/sidecode#6) and for daemon-side
+ * delays admitting an unknown pubkey (pair-window open vs not).
  *
  * If this trips, the UX message blames the most likely cause: the user
  * forgot to open the menubar Pair window on their Mac.
