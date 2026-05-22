@@ -139,7 +139,6 @@ export class WebRTCPeerServer {
   private readonly signalingHost: string;
   private readonly signalingScheme: "ws" | "wss";
   private readonly iceServers: RTCIceServer[];
-  private totalAuths = 0;
 
   constructor(options: WebRTCPeerServerOptions) {
     this.identity = options.identity;
@@ -219,16 +218,6 @@ export class WebRTCPeerServer {
     let n = 0;
     for (const p of this.peers.values()) if (p.authenticated) n += 1;
     return n;
-  }
-
-  /** Cumulative successful authentications since start(). */
-  totalAuthenticatedCount(): number {
-    return this.totalAuths;
-  }
-
-  /** All peers with an active PeerConnection (any state). Diagnostics. */
-  peerCount(): number {
-    return this.peers.size;
   }
 
   // ─── Signaling-frame router ──────────────────────────────────────
@@ -462,7 +451,6 @@ export class WebRTCPeerServer {
       clearTimeout(slot.setupTimeoutId);
       slot.setupTimeoutId = null;
     }
-    this.totalAuths += 1;
     this.log("peer.authenticated", {
       clientId: slot.clientId,
       fingerprint: slot.fingerprint,
