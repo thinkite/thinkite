@@ -110,17 +110,6 @@ function RootStack() {
           title: "",
         }}
       />
-      {/* Temporary spike route — verifies react-native-webrtc loads under
-          New Arch. Reachable independently of pair state. Delete once
-          WebRTC integration is real. */}
-      <Stack.Screen name="webrtc-spike" />
-      {/* P3.1 spike — partysocket → signaling worker round-trip from RN.
-          Delete with the SignalingClient integration. */}
-      <Stack.Screen name="signaling-spike" />
-      {/* P3.4b spike — full iOS↔daemon e2e handshake via SignalingClient
-          + WebRTCPeer + SDP-fp pinning. Requires Mac running
-          packages/daemon/scripts/run-paired-daemon.mjs. */}
-      <Stack.Screen name="p3-handshake-spike" />
     </Stack>
   );
 }
