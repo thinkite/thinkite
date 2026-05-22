@@ -6,6 +6,7 @@ import { type EventDelta, PROTOCOL_VERSION } from "@sidecodeapp/protocol";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { listDesktopSessions } from "./desktop/sessions.js";
+import { GitWatcherRegistry } from "./git-watch.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
@@ -80,6 +81,9 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // Set in daemon.stop() before runtimeManager.shutdown(). Router gates
   // sendPrompt behind it (see RouterDeps.isShuttingDown rationale).
   let shuttingDown = false;
+  // One GitWatcher per cwd, shared across all connections + sessions.
+  // Disposed on daemon.stop() to release fs.watch handles cleanly.
+  const gitWatchers = new GitWatcherRegistry();
 
   const commandHandler = createCommandHandler({
     continueOnDesktop,
@@ -112,6 +116,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       );
     },
     isShuttingDown: () => shuttingDown,
+    gitWatchers,
   });
 
   const webrtc = new WebRTCPeerServer({
@@ -173,6 +178,9 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       // bin/sidecode.ts's outer 10s forceExit guards against catastrophic
       // hangs from there.
       await runtimeManager.shutdown(5000);
+      // Release fs.watch handles + cached SimpleGit instances; safe to
+      // call before or after webrtc.stop(), no interaction with peers.
+      gitWatchers.disposeAll();
       deleteDaemonLock(home);
       await webrtc.stop();
       console.log("sidecode daemon stopped");

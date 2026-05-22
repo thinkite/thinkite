@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type {
   Command,
   DaemonFrame,
@@ -7,6 +10,7 @@ import type {
 } from "@sidecodeapp/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { DesktopSession } from "./desktop/sessions.js";
+import { GitWatcherRegistry } from "./git-watch.js";
 import { createCommandHandler } from "./router.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import type { SidecodeSessionMetadata } from "./sidecode-sessions.js";
@@ -49,6 +53,7 @@ function makeDeps(
     hasSession: vi.fn().mockResolvedValue(true),
     writeSidecodeSession: vi.fn(),
     isShuttingDown: () => false,
+    gitWatchers: new GitWatcherRegistry(),
     ...overrides,
   };
 }
@@ -941,5 +946,104 @@ describe("createCommandHandler — interrupt", () => {
       code: "internal",
       message: expect.stringContaining("control_lost"),
     });
+  });
+});
+
+describe("createCommandHandler — subscribeGitStatus / unsubscribeGitStatus", () => {
+  // Uses a real GitWatcherRegistry against a tmp non-git directory. The
+  // happy snapshot for non-repo dirs is deterministic (`isRepo:false`,
+  // all numeric fields zero) so we can assert the wire shape without
+  // invoking the `git` binary or fs.watch.
+  let cwd: string;
+  let registry: GitWatcherRegistry;
+
+  function makeGitDeps() {
+    cwd = mkdtempSync(path.join(tmpdir(), "sidecode-router-git-"));
+    registry = new GitWatcherRegistry();
+    return makeDeps({ gitWatchers: registry });
+  }
+
+  function cleanup() {
+    registry.disposeAll();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+
+  it("replies with a non-repo snapshot for a plain directory", async () => {
+    const handler = createCommandHandler(makeGitDeps());
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribeGitStatus", requestId: "g1", cwd } satisfies Command,
+      ctx,
+    );
+    expect(sent.length).toBeGreaterThanOrEqual(1);
+    const response = sent.find(
+      (f) => f.type === "subscribeGitStatus.response",
+    );
+    expect(response).toBeDefined();
+    expect(response).toMatchObject({
+      type: "subscribeGitStatus.response",
+      requestId: "g1",
+      cwd,
+      status: {
+        isRepo: false,
+        project: path.basename(cwd),
+        branch: null,
+        ahead: 0,
+        behind: 0,
+        insertions: 0,
+        deletions: 0,
+        isDirty: false,
+      },
+    });
+    cleanup();
+  });
+
+  it("unsubscribe responds even when nothing was subscribed", async () => {
+    const handler = createCommandHandler(makeGitDeps());
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "unsubscribeGitStatus",
+        requestId: "g2",
+        cwd,
+      } satisfies Command,
+      ctx,
+    );
+    expect(sent).toEqual([
+      { type: "unsubscribeGitStatus.response", requestId: "g2" },
+    ]);
+    cleanup();
+  });
+
+  it("disconnect cleans up the per-conn subscription", async () => {
+    const handler = createCommandHandler(makeGitDeps());
+    const { ctx, fireDisconnect } = makeCtx();
+    await handler(
+      { type: "subscribeGitStatus", requestId: "g3", cwd } satisfies Command,
+      ctx,
+    );
+    const watcher = registry.getOrCreate(cwd);
+    expect(watcher.listenerCount()).toBe(1);
+    fireDisconnect();
+    expect(watcher.listenerCount()).toBe(0);
+    cleanup();
+  });
+
+  it("re-subscribe on same conn replaces the previous listener", async () => {
+    const handler = createCommandHandler(makeGitDeps());
+    const { ctx } = makeCtx();
+    await handler(
+      { type: "subscribeGitStatus", requestId: "g4a", cwd } satisfies Command,
+      ctx,
+    );
+    await handler(
+      { type: "subscribeGitStatus", requestId: "g4b", cwd } satisfies Command,
+      ctx,
+    );
+    const watcher = registry.getOrCreate(cwd);
+    // Two subscribe calls on the same connection should leave exactly
+    // one listener attached, not two.
+    expect(watcher.listenerCount()).toBe(1);
+    cleanup();
   });
 });

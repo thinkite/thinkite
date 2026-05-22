@@ -627,6 +627,66 @@ export const getMessagesResponse = z.object({
   items: z.array(timelineItem),
 });
 
+// ─── Git status subscription (workspace info bar) ─────────────────────────
+//
+// Push-based per-cwd live status. Client opens a subscription on a cwd
+// (resolved iOS-side from `sessionInfo`), gets an initial snapshot in the
+// response, and then receives `gitStatus` events whenever the daemon's
+// per-cwd watcher detects a change. Closing the DataChannel implicitly
+// unsubscribes; an explicit `unsubscribeGitStatus` releases the watcher
+// ref-count early so the daemon can dispose its fs.watch handles.
+
+export const gitStatus = z.object({
+  /** False when `cwd` isn't a git repository. Numeric fields are zero,
+   *  `branch` is null, `project` is still filled with basename(cwd). */
+  isRepo: z.boolean(),
+  /** `path.basename(cwd)`. Daemon's heuristic — what the user sees in
+   *  Finder, no `package.json` peek, works for any language. */
+  project: z.string(),
+  /** Null when not a repo OR in detached-HEAD state. */
+  branch: z.string().nullable(),
+  ahead: z.number().int().nonnegative(),
+  behind: z.number().int().nonnegative(),
+  insertions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+  isDirty: z.boolean(),
+});
+export type GitStatus = z.infer<typeof gitStatus>;
+
+export const subscribeGitStatusCommand = z.object({
+  type: z.literal("subscribeGitStatus"),
+  requestId: z.string(),
+  cwd: z.string(),
+});
+
+export const subscribeGitStatusResponse = z.object({
+  type: z.literal("subscribeGitStatus.response"),
+  requestId: z.string(),
+  cwd: z.string(),
+  /** Snapshot at subscribe time — saves a follow-up roundtrip before the
+   *  iOS bar can render. Live deltas follow via `gitStatus` events. */
+  status: gitStatus,
+});
+
+export const unsubscribeGitStatusCommand = z.object({
+  type: z.literal("unsubscribeGitStatus"),
+  requestId: z.string(),
+  cwd: z.string(),
+});
+
+export const unsubscribeGitStatusResponse = z.object({
+  type: z.literal("unsubscribeGitStatus.response"),
+  requestId: z.string(),
+});
+
+/** Server-initiated push. `cwd` is the routing key — iOS may subscribe
+ *  to multiple cwds (e.g. listing pages) and route by this field. */
+export const gitStatusEvent = z.object({
+  type: z.literal("gitStatus"),
+  cwd: z.string(),
+  status: gitStatus,
+});
+
 // ─── Health + error ────────────────────────────────────────────────────────
 
 export const pingFrame = z.object({
@@ -693,6 +753,8 @@ export const command = z.discriminatedUnion("type", [
   deleteSessionCommand,
   continueOnDesktopCommand,
   getMessagesCommand,
+  subscribeGitStatusCommand,
+  unsubscribeGitStatusCommand,
 ]);
 
 export type Command = z.infer<typeof command>;
@@ -706,6 +768,8 @@ export const response = z.discriminatedUnion("type", [
   deleteSessionResponse,
   continueOnDesktopResponse,
   getMessagesResponse,
+  subscribeGitStatusResponse,
+  unsubscribeGitStatusResponse,
 ]);
 
 export type Response = z.infer<typeof response>;
@@ -729,6 +793,8 @@ export const clientFrame = z.discriminatedUnion("type", [
   deleteSessionCommand,
   continueOnDesktopCommand,
   getMessagesCommand,
+  subscribeGitStatusCommand,
+  unsubscribeGitStatusCommand,
 ]);
 
 export type ClientFrame = z.infer<typeof clientFrame>;
@@ -753,6 +819,9 @@ export const daemonFrame = z.discriminatedUnion("type", [
   deleteSessionResponse,
   continueOnDesktopResponse,
   getMessagesResponse,
+  subscribeGitStatusResponse,
+  unsubscribeGitStatusResponse,
+  gitStatusEvent,
 ]);
 
 export type DaemonFrame = z.infer<typeof daemonFrame>;

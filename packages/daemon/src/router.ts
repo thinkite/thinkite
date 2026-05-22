@@ -5,6 +5,7 @@ import type {
 } from "@sidecodeapp/protocol";
 import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
 import type { DesktopSession } from "./desktop/sessions.js";
+import type { GitWatcherRegistry } from "./git-watch.js";
 import {
   ensureSessionLoop,
   pushPrompt,
@@ -96,6 +97,12 @@ export interface RouterDeps {
    * used.
    */
   queryFactory?: SessionLoopOptions["queryFactory"];
+  /**
+   * Per-daemon registry of `GitWatcher`s keyed by `cwd`. Shared across
+   * connections so two iOS clients on the same project re-use one watch
+   * + cache. Daemon disposes the whole registry on shutdown.
+   */
+  gitWatchers: GitWatcherRegistry;
 }
 
 // ─── Per-connection ctx.state keys (G2: subscriptions) ─────────────────────
@@ -114,6 +121,20 @@ function getOrCreateSubs(ctx: { state: Map<string, unknown> }): SubsMap {
   if (existing !== undefined) return existing;
   const created: SubsMap = new Map();
   ctx.state.set(SUBS_KEY, created);
+  return created;
+}
+
+const GIT_SUBS_KEY = "router:gitSubs";
+
+/** Per-conn map: cwd → unsubscribe-fn returned by GitWatcher.subscribe.
+ *  Separate namespace from session subs so the two can't collide. */
+type GitSubsMap = Map<string, () => void>;
+
+function getOrCreateGitSubs(ctx: { state: Map<string, unknown> }): GitSubsMap {
+  const existing = ctx.state.get(GIT_SUBS_KEY) as GitSubsMap | undefined;
+  if (existing !== undefined) return existing;
+  const created: GitSubsMap = new Map();
+  ctx.state.set(GIT_SUBS_KEY, created);
   return created;
 }
 
@@ -274,6 +295,60 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         // V0 silently acks rather than 404-ing.
         ctx.send({
           type: "unsubscribe.response",
+          requestId: cmd.requestId,
+        });
+        return;
+      }
+      case "subscribeGitStatus": {
+        try {
+          const watcher = deps.gitWatchers.getOrCreate(cmd.cwd);
+          const gitSubs = getOrCreateGitSubs(ctx);
+
+          // Re-subscribe to the same cwd on the same conn replaces the old
+          // listener — mirrors the `subscribe` handler's behavior for
+          // session subs (rapid navigate-away-and-back).
+          const previous = gitSubs.get(cmd.cwd);
+          if (previous !== undefined) previous();
+
+          const cwd = cmd.cwd;
+          const unsubscribe = watcher.subscribe((status) => {
+            ctx.send({ type: "gitStatus", cwd, status });
+          });
+          gitSubs.set(cwd, unsubscribe);
+          // Auto-clean on DC.close. The closure is idempotent (GitWatcher
+          // tolerates double-delete), so an explicit unsubscribeGitStatus
+          // followed by DC.close is fine.
+          ctx.onDisconnect(unsubscribe);
+
+          // Initial snapshot — primes the iOS bar without a follow-up
+          // event roundtrip. Cache + inFlight dedup handle the case where
+          // refresh() races the listener's own initial push.
+          const status = await watcher.refresh();
+          ctx.send({
+            type: "subscribeGitStatus.response",
+            requestId: cmd.requestId,
+            cwd,
+            status,
+          });
+        } catch (err) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
+      case "unsubscribeGitStatus": {
+        const gitSubs = getOrCreateGitSubs(ctx);
+        const unsubscribe = gitSubs.get(cmd.cwd);
+        if (unsubscribe !== undefined) {
+          unsubscribe();
+          gitSubs.delete(cmd.cwd);
+        }
+        ctx.send({
+          type: "unsubscribeGitStatus.response",
           requestId: cmd.requestId,
         });
         return;

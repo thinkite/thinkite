@@ -233,6 +233,11 @@ export class GitWatcher {
     }
   }
 
+  /** Strictly for tests — number of currently-attached listeners. */
+  listenerCount(): number {
+    return this.listeners.size;
+  }
+
   private async fetchStatus(): Promise<GitStatus> {
     let isRepo: boolean;
     try {
@@ -260,5 +265,37 @@ export class GitWatcher {
       deletions: diffResult?.deletions ?? 0,
       isDirty: (statusResult?.files.length ?? 0) > 0,
     };
+  }
+}
+
+/**
+ * Singleton-ish per-daemon registry mapping `cwd` → `GitWatcher`. Multiple
+ * subscribers (different connections / different sessions on the same
+ * cwd) share one underlying watcher + cache. The watcher stops its
+ * fs.watch handles when its last subscriber leaves, but the instance
+ * stays in the map so the next subscriber on the same cwd reuses the
+ * cache + warms up without re-creating SimpleGit.
+ */
+export class GitWatcherRegistry {
+  private readonly watchers = new Map<string, GitWatcher>();
+
+  getOrCreate(cwd: string): GitWatcher {
+    let w = this.watchers.get(cwd);
+    if (w === undefined) {
+      w = new GitWatcher(cwd);
+      this.watchers.set(cwd, w);
+    }
+    return w;
+  }
+
+  /** Dispose all watchers + drop the map. Called on daemon shutdown. */
+  disposeAll(): void {
+    for (const w of this.watchers.values()) w.dispose();
+    this.watchers.clear();
+  }
+
+  /** Tests only. */
+  size(): number {
+    return this.watchers.size;
   }
 }
