@@ -84,6 +84,7 @@ export default function PairView() {
           size={320}
           ecLevel="M"
           quietZone={8}
+          qrStyle="dots"
           logoImage={sidecodeLogo}
           logoWidth={72}
           logoHeight={72}
