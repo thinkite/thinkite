@@ -35,5 +35,17 @@
       "tag": "v1",
       "new_sqlite_classes": ["Signaling"]
     }
+  ],
+  // Per-room connect-rate cap. Keyed by daemon pubkey so a flood against
+  // one daemon doesn't starve unrelated rooms. 20 connects / 60s is well
+  // above legitimate use (a normal user reconnects a few times per day)
+  // and well below what would noticeably consume free-tier quota.
+  // Cheaper than Ed25519 verify, so applied before signature check.
+  "ratelimits": [
+    {
+      "name": "RL_CONNECT",
+      "namespace_id": "100",
+      "simple": { "limit": 20, "period": 60 }
+    }
   ]
 }

@@ -19,8 +19,10 @@
 
 import { generateKeyPairSync, sign as cryptoSign, randomBytes } from "node:crypto";
 
-const PORT = 8787;
-const HOST = `ws://localhost:${PORT}`;
+// Default to local `wrangler dev`; override with SIGNALING_URL=wss://... to
+// smoke-test a deployed Worker. Example:
+//   SIGNALING_URL=wss://sidecode-signaling.<acct>.workers.dev node scripts/smoke.mjs
+const HOST = process.env.SIGNALING_URL ?? "ws://localhost:8787";
 
 let failures = 0;
 function assert(cond, msg) {

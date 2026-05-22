@@ -3,6 +3,7 @@ import {
   Server,
   type Connection,
   type ConnectionContext,
+  type Lobby,
   type WSMessage,
 } from "partyserver";
 
@@ -261,18 +262,30 @@ function base64UrlDecode(s: string): Uint8Array {
  * Pre-upgrade rejection is also cheaper: failed auth doesn't consume a
  * DO invocation or count against per-DO request quotas.
  */
-async function authenticate(request: Request): Promise<Response | undefined> {
-  const url = new URL(request.url);
-  // URL shape: /parties/signaling/<roomPubkey>?role=...
-  const parts = url.pathname.split("/").filter(Boolean);
-  const roomPubkey = parts[2];
+async function authenticate(
+  request: Request,
+  lobby: Lobby<Env>,
+  env: Env,
+): Promise<Response | undefined> {
+  // `lobby.name` is the room name extracted by PartyServer's router,
+  // which we use as the daemon pubkey.
+  const roomPubkey = lobby.name;
   if (!roomPubkey) {
     return new Response("missing_room", { status: 400 });
   }
 
+  const url = new URL(request.url);
   const role = url.searchParams.get("role");
   if (role !== "daemon" && role !== "client") {
     return new Response("bad_role", { status: 400 });
+  }
+
+  // Connect-rate cap keyed by room pubkey. Cheaper than Ed25519 verify,
+  // so applied first — an attacker flooding the endpoint pays the
+  // ratelimit lookup cost (~free) instead of the crypto cost.
+  const rl = await env.RL_CONNECT.limit({ key: `connect:${roomPubkey}` });
+  if (!rl.success) {
+    return new Response("rate_limited", { status: 429 });
   }
 
   if (role === "daemon") {
@@ -308,7 +321,9 @@ export default {
     }
     return (
       (await routePartykitRequest(request, env, {
-        onBeforeConnect: authenticate,
+        // Closure captures `env` so authenticate can call env.RL_CONNECT —
+        // partyserver's Lobby type doesn't expose env directly.
+        onBeforeConnect: (req, lobby) => authenticate(req, lobby, env),
       })) || new Response("not found", { status: 404 })
     );
   },
