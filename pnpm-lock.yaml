@@ -257,6 +257,9 @@ importers:
 
   packages/protocol:
     dependencies:
+      semver:
+        specifier: ^7.8.0
+        version: 7.8.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -264,6 +267,9 @@ importers:
       '@types/node':
         specifier: ^24.12.2
         version: 24.12.2
+      '@types/semver':
+        specifier: ^7.7.1
+        version: 7.7.1
 
   packages/signaling:
     dependencies:
@@ -2629,6 +2635,9 @@ packages:
 
   '@types/react@19.2.14':
     resolution: {integrity: sha512-ilcTH/UniCkMdtexkoCN0bI7pMcJDvmQFPvuPvmEaYA/NSfFTAgdUSLAoVjaRJm7+6PvcM+q1zYOwS4wTYMF9w==}
+
+  '@types/semver@7.7.1':
+    resolution: {integrity: sha512-FmgJfu+MOcQ370SD0ev7EI8TlCAfKYU+B4m5T3yXc1CiRN94g/SZPtsCkk506aUDtlMnFZvasDwHHUcZUEaYuA==}
 
   '@types/set-cookie-parser@2.4.10':
     resolution: {integrity: sha512-GGmQVGpQWUe5qglJozEjZV/5dyxbOOZ0LHe/lqyWssB88Y4svNfst0uqBVscdDeIKl5Jy5+aPSvy7mI9tYRguw==}
@@ -5813,6 +5822,11 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
+  semver@7.8.0:
+    resolution: {integrity: sha512-AcM7dV/5ul4EekoQ29Agm5vri8JNqRyj39o0qpX6vDF2GZrtutZl5RwgD1XnZjiTAfncsJhMI48QQH3sN87YNA==}
+    engines: {node: '>=10'}
+    hasBin: true
+
   send@0.19.2:
     resolution: {integrity: sha512-VMbMxbDeehAxpOtWJXlcUS5E8iXh6QmN+BkRX1GARS3wRaXEEgzCcB10gTQazO42tpNIya8xIyNx8fll1OFPrg==}
     engines: {node: '>= 0.8.0'}
@@ -8795,7 +8809,9 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
+      - bufferutil
       - supports-color
+      - utf-8-validate
 
   '@react-native/normalize-colors@0.85.3': {}
 
@@ -9165,6 +9181,8 @@ snapshots:
   '@types/react@19.2.14':
     dependencies:
       csstype: 3.2.3
+
+  '@types/semver@7.7.1': {}
 
   '@types/set-cookie-parser@2.4.10':
     dependencies:
@@ -12987,6 +13005,8 @@ snapshots:
   semver@6.3.1: {}
 
   semver@7.7.4: {}
+
+  semver@7.8.0: {}
 
   send@0.19.2:
     dependencies:

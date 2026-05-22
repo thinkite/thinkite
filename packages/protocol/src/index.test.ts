@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   approveCommand,
@@ -42,20 +39,11 @@ import {
 } from "./index.js";
 
 describe("PROTOCOL_VERSION", () => {
-  it("is a valid semver string", () => {
+  it("is a valid semver string sourced from package.json", () => {
+    // PROTOCOL_VERSION is read directly from packages/protocol/package.json
+    // at module load — no hand-maintained duplicate constant, no drift
+    // possible. Just sanity-check it parses as semver.
     expect(PROTOCOL_VERSION).toMatch(/^\d+\.\d+\.\d+/);
-  });
-
-  it("matches package.json `version` (hand-maintained sync)", () => {
-    // The constant is hand-maintained (Metro JSON-import bundling is
-    // fragile across RN versions, so we can't safely read package.json
-    // at runtime on the iOS side). This test fails loudly if the two
-    // drift — bump them together.
-    const here = dirname(fileURLToPath(import.meta.url));
-    const pkg = JSON.parse(
-      readFileSync(join(here, "..", "package.json"), "utf8"),
-    ) as { version: string };
-    expect(PROTOCOL_VERSION).toBe(pkg.version);
   });
 });
 
@@ -64,17 +52,38 @@ describe("isProtocolCompatible", () => {
     expect(isProtocolCompatible(PROTOCOL_VERSION)).toBe(true);
   });
 
-  it("0.x rule: same minor compatible, different minor incompatible", () => {
-    // The local version is 0.0.x, so the rule for the current build is
-    // "match major + minor exactly; patch is free." We synthesize the
-    // remote against the LOCAL parsed major/minor so this stays valid
-    // as PROTOCOL_VERSION bumps within the 0.x range.
-    const [major, minor] = PROTOCOL_VERSION.split(".").map(Number);
-    if (major === 0) {
-      expect(isProtocolCompatible(`${major}.${minor}.99`)).toBe(true);
-      expect(isProtocolCompatible(`${major}.${minor + 1}.0`)).toBe(false);
-      expect(isProtocolCompatible(`${major + 1}.0.0`)).toBe(false);
+  it("npm caret semantics for 0.0.x: exact-match only (every change is breaking)", () => {
+    // npm convention: ^0.0.0 → >=0.0.0 <0.0.1. No upgrades allowed
+    // because at 0.0.x every change is potentially breaking. We surface
+    // this through `^PROTOCOL_VERSION`. If PROTOCOL_VERSION is in this
+    // range, anything other than exact-match is rejected.
+    if (PROTOCOL_VERSION.startsWith("0.0.")) {
+      const [, , patch] = PROTOCOL_VERSION.split(".").map(Number);
+      expect(isProtocolCompatible(`0.0.${patch + 1}`)).toBe(false);
+      expect(isProtocolCompatible(`0.1.0`)).toBe(false);
+      expect(isProtocolCompatible(`1.0.0`)).toBe(false);
     }
+  });
+
+  it("npm caret semantics for 0.x.y (x≥1): same minor + patch ≥ local", () => {
+    // ^0.5.3 → >=0.5.3 <0.6.0. Patch upgrades OK, minor bump breaking.
+    if (
+      PROTOCOL_VERSION.startsWith("0.") &&
+      !PROTOCOL_VERSION.startsWith("0.0.")
+    ) {
+      const [, minor, patch] = PROTOCOL_VERSION.split(".").map(Number);
+      expect(isProtocolCompatible(`0.${minor}.${patch + 5}`)).toBe(true);
+      expect(isProtocolCompatible(`0.${minor + 1}.0`)).toBe(false);
+    }
+  });
+
+  it("pre-release versions don't satisfy a stable caret range", () => {
+    // npm convention: 1.0.0-beta.1 does NOT satisfy ^1.0.0. We surface
+    // semver's default behavior here (`includePrerelease: false`) so a
+    // dev build pointed at a stable client doesn't get silently
+    // approved. If the user wants to test prereleases together, both
+    // ends will be on the same prerelease tag and exact-match.
+    expect(isProtocolCompatible(`${PROTOCOL_VERSION}-beta.1`)).toBe(false);
   });
 
   it("rejects garbage / non-semver input (defensive)", () => {

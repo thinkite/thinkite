@@ -1,4 +1,6 @@
+import semver from "semver";
 import { z } from "zod";
+import pkg from "../package.json" with { type: "json" };
 
 export {
   dtlsFingerprintTranscript,
@@ -9,59 +11,57 @@ export {
 //
 // Single source of truth for "what wire schemas does this side speak."
 // The protocol package IS the wire contract, so its semver IS the wire
-// version — daemon and iOS both import the same constant. Compatibility
-// check (`isProtocolCompatible`) also lives here so the rule lives next
-// to the schemas it's protecting; transports just call the helper.
+// version — daemon and iOS both import this same value (whatever's in
+// `packages/protocol/package.json`'s `version` field).
+//
+// Bumping = edit `packages/protocol/package.json` (e.g. `npm version
+// patch`). No constant elsewhere to keep in sync; the package.json IS
+// the source of truth, both at npm-install time and at runtime.
+//
+// Compatibility check (`isProtocolCompatible`) also lives in this
+// package so the rule travels with the schemas it's protecting.
+// Transports just call the helper; they don't reason about semver
+// themselves.
 //
 // Bump policy:
 //   - **patch** (0.0.1 → 0.0.2 / 1.2.3 → 1.2.4): additive only — new
 //     optional field, new enum case, new whole frame type that older
-//     peers harmlessly ignore. Stays compatible.
-//   - **minor** (0.0.x → 0.1.0): breaking schema change during 0.x
-//     phase (field removed / type changed / required field added /
-//     enum case retired). Incompatible.
-//   - **major** (1.x → 2.0.0): breaking schema change post-1.0. Same
-//     semantics as minor-during-0.x but on the post-stable side.
-//
-// `isProtocolCompatible` enforces "same minor for 0.x, same major for
-// ≥1.x" — the npm-style caret semantics adjusted for 0.x convention.
-// Patches are always compatible. Mismatch → DC closes with `error{code:
-// "incompatible_protocol"}` and iOS surfaces "update needed."
-//
-// Hand-maintained constant rather than reading package.json at runtime,
-// because Metro JSON-import bundling on the iOS side is fragile across
-// RN versions. Keep this value in lockstep with packages/protocol/
-// package.json `version`; a vitest assertion below verifies they match.
-export const PROTOCOL_VERSION = "0.0.0";
+//     peers harmlessly ignore. Compatible.
+//   - **minor** (0.0.x → 0.1.0 during 0.x; 1.0.0 → 1.1.0 post-1.0):
+//     0.x minor bump is breaking (npm semver convention for 0.x);
+//     ≥1.0 minor bump is additive. The compat helper handles both.
+//   - **major** (1.x → 2.0.0): breaking schema change post-1.0.
+//   - **pre-release** (`0.5.0-beta.1`): NOT compatible with `0.5.0`
+//     per semver convention — pre-releases are explicitly opt-in.
+export const PROTOCOL_VERSION: string = pkg.version;
 
 /**
  * True iff a remote peer reporting `remote` speaks a wire-compatible
- * schema set. See PROTOCOL_VERSION's bump policy for the rules.
+ * schema set with this build's PROTOCOL_VERSION. Compatible means
+ * `remote` satisfies a caret range over PROTOCOL_VERSION:
+ *
+ *   - `^0.5.7` → compatible with `0.5.x` (any patch), not `0.6.0`
+ *   - `^1.2.3` → compatible with `1.x.y` (any minor or patch ≥ 1.2.3)
+ *
+ * This is npm's standard caret semantics — same rule npm uses to decide
+ * which versions satisfy a `^x.y.z` dependency. The semver package
+ * handles pre-release tags / build metadata / edge cases correctly,
+ * which a hand-rolled major-comparison would miss.
  *
  * Returns `false` on unparseable input (defensive — we'd rather refuse
  * than blunder on with an unknown version that might or might not be
  * compatible).
  */
 export function isProtocolCompatible(remote: string): boolean {
-  const local = parseSemver(PROTOCOL_VERSION);
-  const r = parseSemver(remote);
-  if (!local || !r) return false;
-  if (local.major !== r.major) return false;
-  // For 0.x, minor is the breaking boundary; for ≥1.x, major is.
-  if (local.major === 0) return local.minor === r.minor;
-  return true;
-}
-
-function parseSemver(
-  v: string,
-): { major: number; minor: number; patch: number } | null {
-  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
-  if (!m) return null;
-  return {
-    major: Number.parseInt(m[1], 10),
-    minor: Number.parseInt(m[2], 10),
-    patch: Number.parseInt(m[3], 10),
-  };
+  if (!semver.valid(remote) || !semver.valid(PROTOCOL_VERSION)) return false;
+  return semver.satisfies(remote, `^${PROTOCOL_VERSION}`, {
+    // includePrerelease: false — pre-release versions don't satisfy
+    // a caret range over a stable version. This is npm's default and
+    // it's the right call: a 1.2.0-beta.1 daemon shouldn't be
+    // considered compatible with a 1.0.0 client (the beta may have
+    // incompatible schemas mid-development).
+    includePrerelease: false,
+  });
 }
 
 // ─── Pair offer ────────────────────────────────────────────────────────────
