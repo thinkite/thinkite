@@ -62,6 +62,14 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.cloudflare.com:3478" },
 ];
 
+/**
+ * Max time from `peer.joined` to `authenticated` (= DataChannel open).
+ * Normal path completes in well under 5s on a clean network; 30s gives
+ * generous headroom for TURN-relayed sessions over flaky links while
+ * still capping how long a stuck slot ties up memory.
+ */
+const SETUP_TIMEOUT_MS = 30_000;
+
 export interface WebRTCPeerServerOptions {
   /** Daemon's long-lived Ed25519 identity. Signs DTLS fingerprints +
    *  proves daemon-ownership of the room to the signaling worker. */
@@ -112,6 +120,10 @@ interface PeerSlot {
    *  is wire-compatible with ours. Application commands sent before
    *  this flips are rejected with `incompatible_protocol`. */
   versionVerified: boolean;
+  /** Cleared the moment `authenticated` flips true. Reaps slots whose
+   *  PC is stuck pre-auth (e.g. client died before sending answer, so
+   *  ICE never starts and `connectionstatechange` never fires). */
+  setupTimeoutId: ReturnType<typeof setTimeout> | null;
   disconnectCallbacks: Array<() => void>;
   scratch: Map<string, unknown>;
 }
@@ -238,11 +250,17 @@ export class WebRTCPeerServer {
       });
       return;
     }
-    if (msg.type === "peer.left" && isRecord(msg.peer)) {
-      const peer = this.peers.get(String(msg.peer.id ?? ""));
-      if (peer) this.closePeer(peer, "peer.left");
-      return;
-    }
+    // Intentionally no handler for `peer.left`. Signaling is a setup-
+    // time channel; once the DataChannel is up it has nothing left to
+    // say about transport health. iOS routinely closes its signaling
+    // socket right after `server_info` to free the worker connection,
+    // which would surface here as `peer.left` — acting on it would
+    // tear down a perfectly healthy DC. PC health is driven by
+    // `connectionstatechange` (failed/closed/disconnected). For the
+    // edge case where a client bails BEFORE we get an answer (PC
+    // stuck in `have-local-offer`, ICE never starts checking, so
+    // `connectionstatechange` never fires), the per-slot setup
+    // timeout below reaps the slot.
     if (msg.type === "answer" && typeof msg.from === "string") {
       await this.onAnswer(msg.from, msg);
       return;
@@ -307,10 +325,15 @@ export class WebRTCPeerServer {
       dc: null,
       authenticated: false,
       versionVerified: false,
+      setupTimeoutId: null,
       disconnectCallbacks: [],
       scratch: new Map(),
     };
     this.peers.set(peer.id, slot);
+    slot.setupTimeoutId = setTimeout(() => {
+      if (slot.authenticated) return;
+      this.closePeer(slot, "setup timeout");
+    }, SETUP_TIMEOUT_MS);
 
     pc.addEventListener("icecandidate", (event) => {
       const candidate = (
@@ -435,6 +458,10 @@ export class WebRTCPeerServer {
     // fpSig against clientPubkey — the channel is now bound to a peer
     // whose identity was pinned by Ed25519. No further handshake.
     slot.authenticated = true;
+    if (slot.setupTimeoutId) {
+      clearTimeout(slot.setupTimeoutId);
+      slot.setupTimeoutId = null;
+    }
     this.totalAuths += 1;
     this.log("peer.authenticated", {
       clientId: slot.clientId,
@@ -577,6 +604,10 @@ export class WebRTCPeerServer {
 
   private closePeer(slot: PeerSlot, reason: string): void {
     if (!this.peers.has(slot.clientId)) return;
+    if (slot.setupTimeoutId) {
+      clearTimeout(slot.setupTimeoutId);
+      slot.setupTimeoutId = null;
+    }
     for (const cb of slot.disconnectCallbacks) {
       try {
         cb();
