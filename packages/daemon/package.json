@@ -25,7 +25,6 @@
     "build": "tsc -b tsconfig.json && chmod +x ./dist/bin/sidecode.js",
     "typecheck": "tsc -b tsconfig.json",
     "start": "node ./dist/bin/sidecode.js",
-    "e2e:pair": "bash scripts/e2e-pair.sh",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
@@ -35,13 +34,11 @@
     "diff": "^9.0.0",
     "node-datachannel": "^0.32.3",
     "partysocket": "^1.1.19",
-    "qrcode": "^1.5.4",
-    "ws": "^8.20.0"
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@types/diff": "^8.0.0",
     "@types/node": "^24.12.2",
-    "@types/ws": "^8.18.1",
     "tsx": "^4.21.0"
   }
 }

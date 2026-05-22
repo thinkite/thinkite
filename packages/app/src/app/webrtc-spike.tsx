@@ -1,7 +1,8 @@
-import { Stack, router } from "expo-router";
+import { router, Stack } from "expo-router";
 import { useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { RTCPeerConnection } from "react-native-webrtc";
 
 /**
  * Temporary spike route to verify react-native-webrtc loads + instantiates
@@ -87,7 +88,9 @@ export default function WebrtcSpike() {
         </View>
 
         <Pressable
-          onPress={() => router.canGoBack() ? router.back() : router.replace("/")}
+          onPress={() =>
+            router.canGoBack() ? router.back() : router.replace("/")
+          }
           className="mt-6 self-start rounded-md bg-gray-200 px-4 py-2 dark:bg-gray-800"
         >
           <Text className="text-sm text-black dark:text-white">Back</Text>
@@ -99,16 +102,6 @@ export default function WebrtcSpike() {
 
 async function runSpike(): Promise<Result> {
   try {
-    // Dynamic import so a broken bundle still renders the error UI instead
-    // of crashing the route at module-load.
-    const rtc = await import("react-native-webrtc");
-    const RTCPeerConnection = rtc.RTCPeerConnection;
-    if (typeof RTCPeerConnection !== "function") {
-      return {
-        status: "error",
-        message: `RTCPeerConnection is ${typeof RTCPeerConnection}, expected function. Module exports: ${Object.keys(rtc).join(", ")}`,
-      };
-    }
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
     });
@@ -123,16 +116,19 @@ async function runSpike(): Promise<Result> {
       iceGatheringState: pc.iceGatheringState,
       signalingState: pc.signalingState,
       hasLocalDescription: pc.localDescription !== null,
-      sdpHasFingerprint: pc.localDescription?.sdp.includes("fingerprint") ?? false,
+      sdpHasFingerprint:
+        pc.localDescription?.sdp.includes("fingerprint") ?? false,
       dataChannelReadyState: dc.readyState,
-      moduleExports: Object.keys(rtc).slice(0, 12).join(", "),
     };
     pc.close();
     return { status: "ok", details };
   } catch (err) {
     return {
       status: "error",
-      message: err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ""}` : String(err),
+      message:
+        err instanceof Error
+          ? `${err.name}: ${err.message}\n${err.stack ?? ""}`
+          : String(err),
     };
   }
 }

@@ -214,7 +214,7 @@ export default function OnboardingRoute() {
           <TextInput
             value={pasteValue}
             onChangeText={setPasteValue}
-            placeholder="eyJ0eXBlIjoicGFpci5vZmZlciIsInYiOjEs…"
+            placeholder="paste pair code from sidecode pair"
             placeholderTextColor={scheme === "dark" ? "#52525b" : "#a1a1aa"}
             autoCapitalize="none"
             autoCorrect={false}

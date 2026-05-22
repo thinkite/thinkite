@@ -7,19 +7,20 @@ import { contextBridge, ipcRenderer } from "electron";
  * keeps the renderer sandboxed (`contextIsolation: true`).
  *
  * `getPairOffer()` asks main to mint a fresh pair offer via the daemon's
- * `createPairOffer()`. Stateless on the daemon side, so the renderer can
- * call it on mount and again on the rotation cadence (PairView ticks
- * every TTL/2) without coordination.
+ * `createPairOffer()`. Pure on the daemon side; calling it ALSO extends
+ * the auto-tracked "pair window open" admission window in the daemon, so
+ * the renderer's periodic refresh (PairView ticks every 2.5min) keeps
+ * unknown pubkeys admittable as long as the window is visible.
  */
 contextBridge.exposeInMainWorld("sidecode", {
-  getPairOffer: (): Promise<{ encoded: string; expiresAt: number }> =>
+  getPairOffer: (): Promise<{ encoded: string }> =>
     ipcRenderer.invoke("sidecode:getPairOffer"),
 });
 
 declare global {
   interface Window {
     sidecode: {
-      getPairOffer(): Promise<{ encoded: string; expiresAt: number }>;
+      getPairOffer(): Promise<{ encoded: string }>;
     };
   }
 }

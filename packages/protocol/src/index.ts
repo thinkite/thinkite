@@ -7,135 +7,61 @@ export {
   extractDtlsFingerprint,
 } from "./sdp-fingerprint.js";
 
-// ─── Handshake protocol ────────────────────────────────────────────────────
+// ─── Pair offer ────────────────────────────────────────────────────────────
 //
-// Inspired by Remodex's CodexSecureTransportModels.swift. See memory file
-// `project_handshake_design.md` for full design rationale, transcript layout,
-// and forward-compat plan for V1 frame encryption.
+// The QR carries just enough to wire up signaling + identity-verify the
+// daemon. Connection itself is WebRTC: client opens a SignalingClient to
+// the room named after `daemonIdentityPublicKey`, daemon's offer arrives
+// signed by the corresponding private key, client verifies fpSig against
+// the QR-known pubkey, DTLS binds the channel.
 //
-// Six-frame flow:
-//   pair.offer        out-of-band (encoded in QR), daemon → client
-//   client.hello      WS frame, client → daemon (first message after connect)
-//   server.hello      WS frame, daemon → client (with daemonSignature)
-//   client.auth       WS frame, client → daemon (with clientSignature)
-//   server.ready      WS frame, daemon → client (handshake complete)
-//   handshake.reject  WS frame, daemon → client (any failure)
+// Two fields:
+//   - `daemonIdentityPublicKey` — base64url ed25519 raw pubkey. Doubles as
+//     the signaling room name AND the verification key for the daemon's
+//     SDP fingerprint signature. The 16-hex daemon fingerprint is
+//     `sha256(pubkey).slice(0,16)` — derived, not transmitted.
+//   - `serviceName` — `os.hostname()` snapshot for the iOS confirm UI.
+//
+// The QR carries no expiry. Admission of an unknown pubkey is gated
+// daemon-side by "is the menubar Pair window open" — that flag, not the
+// QR, is the authority on "can a fresh client pair right now." A stale
+// screenshot is harmless once the window closes.
 
-/** Wire protocol version for handshake frames. Bump on incompat changes. */
-export const HANDSHAKE_VERSION = 1;
+export const PAIR_OFFER_VERSION = 2;
 
-/** Domain tag prepended to transcript bytes. Provides cross-protocol separation. */
-export const HANDSHAKE_DOMAIN_TAG = "sidecode-handshake-v1";
+// ─── Runtime wire-protocol version ────────────────────────────────────────
+//
+// Distinct from PAIR_OFFER_VERSION (which versions just the QR shape) and
+// from semantic daemonVersion / appVersion (which are UX-level semver
+// strings). This is the integer that names the *frame schemas* iOS and
+// daemon speak over the authenticated DataChannel.
+//
+// Bumped on any breaking change to a command / response / event schema
+// (field removed, type changed, enum value retired). Additive changes
+// (new optional field, new enum case) DO NOT require a bump — Zod's
+// default-passthrough lets older peers strip the field harmlessly.
+//
+// Each side advertises its own [MIN_SUPPORTED, current] range in the
+// hello / server_info exchange. The peer accepts only if the ranges
+// overlap. With a single supported version today the check is trivially
+// exact-match; once we ship v=2, daemon can advertise `{current:2,
+// min:1}` so v=1 clients continue to work in degraded mode.
+export const WIRE_PROTOCOL_VERSION = 1;
 
 /**
- * Suffix appended to transcript when client signs. Prevents an attacker from
- * replaying the daemon's signature as the client's.
+ * Lowest WIRE_PROTOCOL_VERSION this build still understands. Defaults to
+ * `WIRE_PROTOCOL_VERSION`; bumping this is the explicit "drop support for
+ * v=N" knob. Setting `min < current` requires keeping the v=N codepaths
+ * alive on the implementation side — don't lower this without doing that
+ * work.
  */
-export const CLIENT_AUTH_LABEL = "client-auth";
+export const MIN_SUPPORTED_WIRE_PROTOCOL_VERSION = 1;
 
-export const handshakeMode = z.enum(["qr_bootstrap", "trusted_reconnect"]);
-export type HandshakeMode = z.infer<typeof handshakeMode>;
-
-/**
- * QR offer payload. Stateless metadata — daemon does NOT track which offers
- * it has issued. Anyone with a non-expired offer + daemon's address can
- * attempt qr_bootstrap; per-handshake nonces and signatures provide all
- * security guarantees, not offer consumption.
- *
- * Within `expiresAt` window the same offer is valid for multiple pair
- * attempts (e.g. user paired phone, paired iPad off the same QR). Daemon's
- * "client_already_paired" rejection prevents double-pair of the same
- * client fingerprint.
- */
 export const pairOfferFrame = z.object({
   type: z.literal("pair.offer"),
   v: z.number().int(),
-  daemonFingerprint: z.string(), // 16 hex chars, SHA256(pubkey).slice(0,16)
   daemonIdentityPublicKey: z.string(), // base64url ed25519 raw pubkey
-  /**
-   * Ordered candidate ws URLs the client should try, first-match-wins.
-   * Daemon advertises multiple paths so the same offer works whether the
-   * phone is on the same Wi-Fi (LAN address), on a Tailscale tailnet
-   * (CGNAT address), or on a simulator that shares loopback. Client
-   * tries them sequentially with a short per-attempt timeout — see
-   * Paseo's HostConnection candidate set for the inspiration.
-   *
-   * `min(1)`: at least one address (typically loopback for simulator
-   * pairing). Empty array would mean "no way to connect" which is never
-   * useful.
-   */
-  daemonAddresses: z.array(z.string()).min(1),
   serviceName: z.string(),
-  expiresAt: z.number(), // epoch ms; daemon enforces now <= this on hello
-});
-
-export const clientHelloFrame = z.object({
-  type: z.literal("client.hello"),
-  v: z.number().int(),
-  /** Per-handshake correlation ID (client-generated UUID). Not a server-issued
-   *  token; daemon uses it only to thread hello → server.hello → auth → ready
-   *  through the same pendingTranscripts entry. */
-  sessionId: z.string(),
-  mode: handshakeMode,
-  clientFingerprint: z.string(),
-  clientIdentityPublicKey: z.string(),
-  clientNonce: z.string(), // base64url 32 bytes
-  /** qr_bootstrap mode only: echoed from the offer the client scanned.
-   *  Daemon uses these to validate (a) the offer was for this daemon and
-   *  (b) the offer hasn't expired. Omit (or ignore) for trusted_reconnect. */
-  offerExpiresAt: z.number().optional(),
-  offerDaemonFingerprint: z.string().optional(),
-});
-
-export const serverHelloFrame = z.object({
-  type: z.literal("server.hello"),
-  v: z.number().int(),
-  sessionId: z.string(),
-  mode: handshakeMode,
-  daemonFingerprint: z.string(),
-  daemonIdentityPublicKey: z.string(),
-  serverNonce: z.string(), // base64url 32 bytes
-  clientNonce: z.string(), // echo for client to verify
-  keyEpoch: z.number().int(), // V0 always 1; V1+ rotation marker
-  expiresAt: z.number(), // matches pair.offer.expiresAt for transcript
-  daemonSignature: z.string(), // base64url ed25519 signature over transcript
-});
-
-export const clientAuthFrame = z.object({
-  type: z.literal("client.auth"),
-  v: z.number().int(),
-  sessionId: z.string(),
-  clientFingerprint: z.string(),
-  keyEpoch: z.number().int(),
-  clientSignature: z.string(), // base64url ed25519 signature over (transcript || CLIENT_AUTH_LABEL)
-});
-
-export const serverReadyFrame = z.object({
-  type: z.literal("server.ready"),
-  v: z.number().int(),
-  sessionId: z.string(),
-  daemonFingerprint: z.string(),
-  keyEpoch: z.number().int(),
-});
-
-export const handshakeRejectCode = z.enum([
-  "invalid_signature",
-  "session_expired",
-  "session_unknown", // sessionId not in pending offers (qr_bootstrap)
-  "client_unknown", // clientFingerprint not in known_clients (trusted_reconnect)
-  "client_already_paired", // qr_bootstrap but client is already in known_clients
-  "version_mismatch",
-  "mode_mismatch", // server's mode doesn't match what client requested
-  "internal",
-]);
-export type HandshakeRejectCode = z.infer<typeof handshakeRejectCode>;
-
-export const handshakeRejectFrame = z.object({
-  type: z.literal("handshake.reject"),
-  v: z.number().int(),
-  sessionId: z.string().optional(),
-  code: handshakeRejectCode,
-  message: z.string(),
 });
 
 export type PairOfferFrame = z.infer<typeof pairOfferFrame>;
@@ -143,38 +69,18 @@ export type PairOfferFrame = z.infer<typeof pairOfferFrame>;
 /**
  * On-the-wire pair offer with one-character keys. The QR is the only
  * place this frame ever appears, and every character in the QR payload
- * costs us ~1 module in the rendered grid — long keys like
- * `daemonIdentityPublicKey` chew through ~30 chars per occurrence
- * before any value bytes. Compacting to single letters drops the QR
- * roughly two version steps (sparser, easier to scan).
- *
- * Daemon and iOS both speak the `PairOfferFrame` shape in code; the
- * mapping is contained to `toPairOfferWire` / `fromPairOfferWire`.
- *
- * Schema is deliberately permissive — only what we need to validate
- * before mapping to PairOfferFrame. The handshake's safety doesn't hang
- * on offer schema strictness (per-frame signatures + nonces do that
- * work), so we keep this validation light.
+ * costs us ~1 module in the rendered grid. Compacting to single letters
+ * keeps the QR a couple version steps smaller.
  */
 const pairOfferWire = z.object({
   v: z.number().int(),
-  f: z.string(), // daemonFingerprint
   k: z.string(), // daemonIdentityPublicKey
-  a: z.array(z.string()).min(1), // daemonAddresses
   s: z.string(), // serviceName
-  e: z.number(), // expiresAt
 });
 export type PairOfferWire = z.infer<typeof pairOfferWire>;
 
 export function toPairOfferWire(offer: PairOfferFrame): PairOfferWire {
-  return {
-    v: offer.v,
-    f: offer.daemonFingerprint,
-    k: offer.daemonIdentityPublicKey,
-    a: offer.daemonAddresses,
-    s: offer.serviceName,
-    e: offer.expiresAt,
-  };
+  return { v: offer.v, k: offer.daemonIdentityPublicKey, s: offer.serviceName };
 }
 
 export function fromPairOfferWire(wire: unknown): PairOfferFrame {
@@ -182,25 +88,12 @@ export function fromPairOfferWire(wire: unknown): PairOfferFrame {
   return {
     type: "pair.offer",
     v: parsed.v,
-    daemonFingerprint: parsed.f,
     daemonIdentityPublicKey: parsed.k,
-    daemonAddresses: parsed.a,
     serviceName: parsed.s,
-    expiresAt: parsed.e,
   };
 }
 
-/**
- * Encode a pair offer to its QR wire form: base64url of UTF-8 JSON.
- *
- * We picked base64url over base32 after measuring: base32's only edge
- * is the all-uppercase alphabet that QR's alphanumeric mode can pack at
- * 5.5 bits/char vs byte mode's 8 bits/char. But the URL prefix
- * `https://sidecode.app/pair?o=` is lowercase, so the engine encodes
- * the whole input in byte mode regardless — alphanumeric savings get
- * stranded. The actual difference at ecLevel M was V11 vs V12, i.e.
- * one version step (~4 modules per side). Not worth a custom codec.
- */
+/** Encode a pair offer to its QR wire form: base64url of UTF-8 JSON. */
 export function encodePairOffer(offer: PairOfferFrame): string {
   const json = JSON.stringify(toPairOfferWire(offer));
   return base64urlEncodeUtf8(json);
@@ -231,12 +124,6 @@ function base64urlDecodeUtf8(b64: string): string {
   for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
   return new TextDecoder().decode(bytes);
 }
-
-export type ClientHelloFrame = z.infer<typeof clientHelloFrame>;
-export type ServerHelloFrame = z.infer<typeof serverHelloFrame>;
-export type ClientAuthFrame = z.infer<typeof clientAuthFrame>;
-export type ServerReadyFrame = z.infer<typeof serverReadyFrame>;
-export type HandshakeRejectFrame = z.infer<typeof handshakeRejectFrame>;
 
 // ─── Events: daemon → client (server-pushed, no requestId) ─────────────────
 
@@ -734,9 +621,46 @@ export const errorFrame = z.object({
     "internal",
     "unsupported",
     "rate_limited",
+    "incompatible_protocol",
   ]),
   message: z.string(),
 });
+
+// ─── Hello / server_info (wire-version handshake on DataChannel open) ─────
+//
+// iOS sends `hello` immediately after DC.open. Daemon validates the
+// version range overlap and responds with `server_info` (or with an
+// `error` + DC close on mismatch). iOS treats `server_info` as the
+// "ready" signal — application commands may only be sent after it
+// arrives. Daemon refuses application commands before hello.
+//
+// `appVersion` / `daemonVersion` are semver strings (`"1.2.3"`,
+// `"0.5.0-beta.1"`). UI compares them with same-major-only semantics —
+// a patch difference (1.0.0 vs 1.0.1) does NOT warn, a major difference
+// (1.x vs 2.x) does. Per-side helpers live in the daemon + iOS code,
+// not in the protocol package, so we don't take a semver dependency
+// here.
+
+export const helloCommand = z.object({
+  type: z.literal("hello"),
+  /** Highest wire version this client speaks. Today: 1. */
+  protocolVersion: z.number().int(),
+  /** Lowest wire version this client still understands. Today: 1.
+   *  Daemon accepts if `[clientMin, clientCurrent]` overlaps
+   *  `[daemonMin, daemonCurrent]`. */
+  minSupportedProtocolVersion: z.number().int(),
+  appVersion: z.string(),
+});
+
+export const serverInfoEvent = z.object({
+  type: z.literal("server_info"),
+  protocolVersion: z.number().int(),
+  minSupportedProtocolVersion: z.number().int(),
+  daemonVersion: z.string(),
+});
+
+export type HelloCommand = z.infer<typeof helloCommand>;
+export type ServerInfoEvent = z.infer<typeof serverInfoEvent>;
 
 // ─── Top-level direction unions (parse the wire against these) ─────────────
 
@@ -768,10 +692,14 @@ export const response = z.discriminatedUnion("type", [
 
 export type Response = z.infer<typeof response>;
 
-/** All frames a client may send to the daemon over WS. */
+/** All frames a client may send to the daemon over the authenticated
+ *  DataChannel. Identity binding lives at the DTLS layer via SDP-
+ *  fingerprint signing — by the time anything arrives on the channel,
+ *  the peer is already cryptographically bound to a known pubkey.
+ *  `hello` is the only frame the daemon accepts before the wire-version
+ *  handshake completes (see helloCommand). */
 export const clientFrame = z.discriminatedUnion("type", [
-  clientHelloFrame,
-  clientAuthFrame,
+  helloCommand,
   pingFrame,
   subscribeCommand,
   unsubscribeCommand,
@@ -787,11 +715,11 @@ export const clientFrame = z.discriminatedUnion("type", [
 
 export type ClientFrame = z.infer<typeof clientFrame>;
 
-/** All frames the daemon may send to a client over WS. */
+/** All frames the daemon may send to a client over the authenticated
+ *  DataChannel. `server_info` is daemon's reply to `hello` and the
+ *  signal that the client may begin sending application commands. */
 export const daemonFrame = z.discriminatedUnion("type", [
-  serverHelloFrame,
-  serverReadyFrame,
-  handshakeRejectFrame,
+  serverInfoEvent,
   pongFrame,
   errorFrame,
   sessionUpdatedEvent,
@@ -810,91 +738,3 @@ export const daemonFrame = z.discriminatedUnion("type", [
 ]);
 
 export type DaemonFrame = z.infer<typeof daemonFrame>;
-
-// ─── Transcript builder (used by both daemon and client to compute the bytes
-//     that get signed during handshake) ────────────────────────────────────
-
-export interface TranscriptInput {
-  sessionId: string;
-  protocolVersion: number;
-  mode: HandshakeMode;
-  keyEpoch: number;
-  daemonFingerprint: string;
-  clientFingerprint: string;
-  daemonIdentityPublicKey: string; // base64url
-  clientIdentityPublicKey: string; // base64url
-  clientNonce: string; // base64url
-  serverNonce: string; // base64url
-  expiresAt: number;
-}
-
-/**
- * Build the transcript bytes for handshake signature. Length-prefixed concat
- * (u32 BE + payload) prevents field-boundary ambiguity. base64url-encoded
- * fields are decoded before being included so the same bytes are reachable
- * from any platform without depending on the chosen text encoding.
- *
- * Daemon signs `buildTranscript(...)` directly.
- * Client signs `buildTranscript(...) || CLIENT_AUTH_LABEL` (UTF-8 bytes).
- */
-export function buildTranscript(input: TranscriptInput): Uint8Array {
-  const parts: Uint8Array[] = [];
-  parts.push(prefix(textBytes(HANDSHAKE_DOMAIN_TAG)));
-  parts.push(prefix(textBytes(input.sessionId)));
-  parts.push(prefix(textBytes(String(input.protocolVersion))));
-  parts.push(prefix(textBytes(input.mode)));
-  parts.push(prefix(textBytes(String(input.keyEpoch))));
-  parts.push(prefix(textBytes(input.daemonFingerprint)));
-  parts.push(prefix(textBytes(input.clientFingerprint)));
-  parts.push(prefix(b64urlBytes(input.daemonIdentityPublicKey)));
-  parts.push(prefix(b64urlBytes(input.clientIdentityPublicKey)));
-  parts.push(prefix(b64urlBytes(input.clientNonce)));
-  parts.push(prefix(b64urlBytes(input.serverNonce)));
-  parts.push(prefix(textBytes(String(input.expiresAt))));
-  return concat(parts);
-}
-
-/** Bytes to sign on the client side. Daemon never signs this variant. */
-export function buildClientAuthTranscript(input: TranscriptInput): Uint8Array {
-  const base = buildTranscript(input);
-  const label = textBytes(CLIENT_AUTH_LABEL);
-  return concat([base, label]);
-}
-
-function textBytes(s: string): Uint8Array {
-  return new TextEncoder().encode(s);
-}
-
-function b64urlBytes(b64url: string): Uint8Array {
-  // base64url → standard base64, with padding restored.
-  const padded = b64url + "===".slice(0, (4 - (b64url.length % 4)) % 4);
-  const std = padded.replace(/-/g, "+").replace(/_/g, "/");
-  // `atob` is global in Node 18+ and all evergreen browsers.
-  const bin = atob(std);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function prefix(bytes: Uint8Array): Uint8Array {
-  const out = new Uint8Array(4 + bytes.length);
-  // big-endian u32 length
-  out[0] = (bytes.length >>> 24) & 0xff;
-  out[1] = (bytes.length >>> 16) & 0xff;
-  out[2] = (bytes.length >>> 8) & 0xff;
-  out[3] = bytes.length & 0xff;
-  out.set(bytes, 4);
-  return out;
-}
-
-function concat(parts: Uint8Array[]): Uint8Array {
-  let total = 0;
-  for (const p of parts) total += p.length;
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    out.set(p, offset);
-    offset += p.length;
-  }
-  return out;
-}

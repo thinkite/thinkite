@@ -428,12 +428,14 @@ interface UseDaemonClientResult {
    *  unpaired, after error, or while waiting for a reconnect retry. */
   client: DaemonClient | null;
   /**
-   * Persisted paired-daemon record (host name / addresses / fingerprint
-   *  / public key). Available throughout `ready` AND `offline` AND
-   *  reconnect-loop windows — only `null` when there's no record on disk
-   *  (initial unpaired, or after an explicit `unpair()` / first-boot
-   *  identity-rotation fallback). Settings UI relies on this to keep
-   *  showing host info when the WS is dropped.
+   * Persisted paired-daemon record (serviceName + daemon pubkey).
+   * Available throughout `ready` AND `offline` AND reconnect-loop
+   * windows — only `null` when there's no record on disk (initial
+   * unpaired, or after an explicit `unpair()` / first-boot identity-
+   * rotation fallback). Settings UI relies on this to keep showing host
+   * info while the transport is dropped. Note: `daemonVersion` (from
+   * the hello/server_info exchange) lives on `client` instead because
+   * it's only known while connected.
    */
   paired: PairedDaemon | null;
   /** True during any in-flight handshake (initial boot AND every reset/reconnect). */

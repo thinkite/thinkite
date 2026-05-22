@@ -13,7 +13,7 @@ async function main(): Promise<void> {
   switch (subcommand) {
     case "up":
     case "start": {
-      const daemon = await start(parsePortFlag(rest));
+      const daemon = await start();
       let shuttingDown = false;
       const shutdown = async (signal: string) => {
         if (shuttingDown) {
@@ -96,22 +96,11 @@ async function main(): Promise<void> {
   }
 }
 
-function parsePortFlag(args: readonly string[]): { port?: number } {
-  const i = args.indexOf("--port");
-  if (i === -1) return {};
-  const value = args[i + 1];
-  const port = value ? Number.parseInt(value, 10) : Number.NaN;
-  if (!Number.isFinite(port)) {
-    throw new Error(`invalid --port value: ${value}`);
-  }
-  return { port };
-}
-
 function printHelp(): void {
   console.log(`sidecode — remote-control Claude Code from your phone
 
 Usage:
-  sidecode <command> [options]
+  sidecode <command>
 
 Commands:
   up, start          Start the daemon in the foreground
@@ -121,13 +110,7 @@ Commands:
   logs               Tail daemon logs
   install-agent      Install launchd plist so daemon starts on login
   version            Print version
-  help               Show this help
-
-Options:
-  --port <n>         Override default port (used with up/start)
-  --host <ip>        Prepend an explicit host to the pair offer (used with pair;
-                     LAN auto-detection still runs)
-  --self-test        Run pair end-to-end in-process (used with pair)`);
+  help               Show this help`);
 }
 
 main().catch((err) => {

@@ -10,7 +10,7 @@ import type { DesktopSession } from "./desktop/sessions.js";
 import { createCommandHandler } from "./router.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import type { SidecodeSessionMetadata } from "./sidecode-sessions.js";
-import type { CommandContext } from "./ws-server.js";
+import type { CommandContext } from "./command.js";
 
 function makeCtx(): {
   ctx: CommandContext;

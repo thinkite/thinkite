@@ -2,20 +2,15 @@ import {
   getSessionInfo,
   getSessionMessages,
 } from "@anthropic-ai/claude-agent-sdk";
-import {
-  encodePairOffer,
-  type EventDelta,
-  PROTOCOL_VERSION,
-} from "@sidecodeapp/protocol";
+import { type EventDelta, PROTOCOL_VERSION } from "@sidecodeapp/protocol";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { listDesktopSessions } from "./desktop/sessions.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
-import { buildLanAddresses } from "./lan-addresses.js";
 import { normalize } from "./messages/normalize.js";
-import { PairingService } from "./pairing.js";
+import { createPairOffer } from "./pairing.js";
 import { createCommandHandler } from "./router.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import {
@@ -23,34 +18,37 @@ import {
   listSidecodeSessions,
   writeSidecodeSession,
 } from "./sidecode-sessions.js";
-import { DEFAULT_HOST, DEFAULT_PORT, WebSocketServer } from "./ws-server.js";
+import { DAEMON_VERSION } from "./version.js";
+import { WebRTCPeerServer } from "./webrtc-peer.js";
 
 export interface DaemonOptions {
-  port?: number;
-  host?: string;
   /** Override SIDECODE_HOME. */
   homeDir?: string;
+  /** Override signaling host (for `wrangler dev`). */
+  signalingHost?: string;
+  signalingScheme?: "ws" | "wss";
 }
 
 export interface Daemon {
   stop(): Promise<void>;
-  /** The host/port the WS server actually bound to. */
-  readonly address: { host: string; port: number };
   /** Identity fingerprint, for status / pair display. */
   readonly fingerprint: string;
   /** Number of paired clients in known_clients.json (snapshot). */
   pairedClientCount(): number;
-  /** Number of currently authenticated WS connections. */
-  authenticatedConnectionCount(): number;
+  /** Number of currently authenticated WebRTC peers. */
+  authenticatedPeerCount(): number;
   /**
-   * Mint a fresh pair offer pointing at this daemon. Stateless — calling
-   * twice produces two independent offers, both valid until their own
-   * `expiresAt`. The offer's `daemonAddresses` is rebuilt from
-   * `os.networkInterfaces()` at call time (RFC1918 first, then Tailscale
-   * CGNAT, then loopback) so a long-lived daemon picks up the user's
-   * current Wi-Fi without restarting.
+   * Mint a fresh pair offer pointing at this daemon. Pure over the
+   * daemon's identity + the given serviceName — no per-offer state, no
+   * nonces, no clock dependency.
+   *
+   * Side effect: extends the "pair window open" admission window. The
+   * menubar's PairView calls this on open and again every 2.5min while
+   * the window stays visible, which keeps unknown pubkeys admittable
+   * over the same window. Closing the pair window stops the refreshes;
+   * admission lapses after `PAIR_WINDOW_MS` (5min) of silence.
    */
-  createPairOffer(serviceName: string): { encoded: string; expiresAt: number };
+  createPairOffer(serviceName: string): { encoded: string };
   /**
    * Per-session runtime manager. Empty until slice G wires it into the
    * router; surfaced here so daemon.stop() can drain it on shutdown and
@@ -59,14 +57,24 @@ export interface Daemon {
   readonly runtimeManager: SessionRuntimeManager<EventDelta>;
 }
 
+/**
+ * How long after the most recent `createPairOffer()` call we still admit
+ * unknown client pubkeys via the signaling worker. Tied to the menubar
+ * PairView's 2.5min refresh cadence — one missed refresh keeps the window
+ * open, two consecutive misses (= window closed for ≥ 5min) closes it.
+ */
+const PAIR_WINDOW_MS = 5 * 60_000;
+
 export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   const home = options.homeDir ?? resolveSidecodeHome();
   const identity = loadOrCreateIdentity(home);
   const knownClients = KnownClients.load(home);
-  const port = options.port ?? DEFAULT_PORT;
-  const host = options.host ?? DEFAULT_HOST;
 
-  const pairing = new PairingService(identity, knownClients);
+  // Auto-tracked pair-window admission gate (see PAIR_WINDOW_MS comment).
+  // `0` = never opened; `createPairOffer` writes the current time on each
+  // call. `WebRTCPeerServer.isPairing` reads this on every `peer.joined`.
+  let lastPairOfferAt = 0;
+
   // Lazy-populated by slice G's router when it sees its first sendPrompt.
   // Drained on shutdown via daemon.stop() → runtimeManager.shutdown().
   const runtimeManager = new SessionRuntimeManager<EventDelta>();
@@ -106,26 +114,29 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     },
     isShuttingDown: () => shuttingDown,
   });
-  const ws = new WebSocketServer({
-    pairing,
+
+  const webrtc = new WebRTCPeerServer({
+    identity,
+    daemonVersion: DAEMON_VERSION,
+    knownClients,
     commandHandler,
-    port,
-    host,
+    isPairing: () => Date.now() - lastPairOfferAt < PAIR_WINDOW_MS,
+    signalingHost: options.signalingHost,
+    signalingScheme: options.signalingScheme,
     log: (event, data) =>
       console.log(
         `[sidecode] ${event}${data ? ` ${JSON.stringify(data)}` : ""}`,
       ),
   });
-  const bound = await ws.start();
+  webrtc.start();
 
-  // Advertise where we're listening so `sidecode pair` (and the future menu
-  // bar) can read it without us writing yet another IPC channel.
+  // Advertise that we're running so `sidecode pair` (and the menubar) can
+  // mint offers without spawning their own daemon. Address fields are
+  // gone — the menubar reaches the daemon via the in-process function
+  // call surface above, and the CLI does the same via the spawned-process
+  // model. The lock just records "a daemon owns this $SIDECODE_HOME".
   writeDaemonLock(home, {
     pid: process.pid,
-    // If the user passed 0.0.0.0 or 127.0.0.1, prefer 127.0.0.1 in the
-    // advertised host so locally-running CLI tools don't have to guess.
-    host: bound.host === "0.0.0.0" ? "127.0.0.1" : bound.host,
-    port: bound.port,
     startedAt: Date.now(),
   });
 
@@ -137,22 +148,19 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   process.on("exit", () => deleteDaemonLock(home));
 
   console.log(
-    `sidecode daemon (protocol ${PROTOCOL_VERSION}) listening on ws://${bound.host}:${bound.port}`,
+    `sidecode daemon (protocol ${PROTOCOL_VERSION}) connecting to signaling.sidecode.app`,
   );
   console.log(`fingerprint: ${identity.fingerprint}`);
   console.log(`paired clients: ${knownClients.list().length}`);
 
   return {
-    address: bound,
     fingerprint: identity.fingerprint,
     pairedClientCount: () => knownClients.list().length,
-    authenticatedConnectionCount: () => ws.authenticatedCount(),
+    authenticatedPeerCount: () => webrtc.authenticatedCount(),
     createPairOffer: (serviceName) => {
-      const offer = pairing.createOffer(
-        serviceName,
-        buildLanAddresses(bound.port),
-      );
-      return { encoded: encodePairOffer(offer), expiresAt: offer.expiresAt };
+      lastPairOfferAt = Date.now();
+      const { encoded } = createPairOffer(identity, serviceName);
+      return { encoded };
     },
     runtimeManager,
     async stop() {
@@ -161,14 +169,14 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       // we won't drain.
       shuttingDown = true;
       // Drain SDK queries first so each subprocess gets the chance to
-      // finish its current JSONL write before the ws server tears down
+      // finish its current JSONL write before the transport tears down
       // and the process exits. SDK's `close()` triggers an internal 5s
       // grace; per-runtime timeoutMs caps how long we wait per session.
       // bin/sidecode.ts's outer 10s forceExit guards against catastrophic
       // hangs from there.
       await runtimeManager.shutdown(5000);
       deleteDaemonLock(home);
-      await ws.stop();
+      await webrtc.stop();
       console.log("sidecode daemon stopped");
     },
   };

@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   approveCommand,
-  buildClientAuthTranscript,
-  buildTranscript,
-  CLIENT_AUTH_LABEL,
-  clientAuthFrame,
   clientFrame,
-  clientHelloFrame,
   command,
   continueOnDesktopCommand,
   continueOnDesktopResponse,
@@ -19,13 +14,13 @@ import {
   eventFrame,
   getMessagesCommand,
   getMessagesResponse,
-  HANDSHAKE_DOMAIN_TAG,
-  HANDSHAKE_VERSION,
-  handshakeRejectFrame,
+  helloCommand,
   interruptCommand,
   interruptResponse,
   listSessionsCommand,
   listSessionsResponse,
+  MIN_SUPPORTED_WIRE_PROTOCOL_VERSION,
+  PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
   decodePairOfferPayload,
   encodePairOffer,
@@ -34,15 +29,14 @@ import {
   pongFrame,
   sendPromptCommand,
   sendPromptResponse,
-  serverHelloFrame,
-  serverReadyFrame,
+  serverInfoEvent,
   sessionDivergedEvent,
   sessionInfo,
   subscribeCommand,
   subscribeResponse,
-  type TranscriptInput,
   unsubscribeCommand,
   unsubscribeResponse,
+  WIRE_PROTOCOL_VERSION,
 } from "./index.js";
 
 describe("protocol version", () => {
@@ -51,56 +45,35 @@ describe("protocol version", () => {
   });
 });
 
-describe("handshake constants", () => {
-  it("HANDSHAKE_VERSION starts at 1", () => {
-    expect(HANDSHAKE_VERSION).toBe(1);
+describe("pair offer", () => {
+  it("PAIR_OFFER_VERSION is 2", () => {
+    // Bumping forces an old iOS app to fail-decode an incompatible QR
+    // with a clear "update sidecode on your Mac" error, rather than
+    // silently mis-parsing.
+    expect(PAIR_OFFER_VERSION).toBe(2);
   });
 
-  it("HANDSHAKE_DOMAIN_TAG is the V0 protocol tag", () => {
-    expect(HANDSHAKE_DOMAIN_TAG).toBe("sidecode-handshake-v1");
-  });
-
-  it("CLIENT_AUTH_LABEL is 'client-auth'", () => {
-    expect(CLIENT_AUTH_LABEL).toBe("client-auth");
-  });
-});
-
-describe("pair.offer frame", () => {
   const valid = {
     type: "pair.offer" as const,
-    v: 1,
-    daemonFingerprint: "988d6cb2baa153ef",
+    v: PAIR_OFFER_VERSION,
     daemonIdentityPublicKey: "AAAA",
-    daemonAddresses: ["ws://192.168.1.10:41234", "ws://100.64.0.1:41234"],
     serviceName: "sidecode-mac",
-    expiresAt: 1700000000000,
   };
 
-  it("parses a stateless offer (no sessionId)", () => {
+  it("parses a minimal offer (pubkey + serviceName only)", () => {
     const parsed = pairOfferFrame.parse(valid);
-    expect(parsed.daemonFingerprint).toBe("988d6cb2baa153ef");
-    expect(parsed.v).toBe(1);
-    expect(parsed.daemonAddresses).toEqual([
-      "ws://192.168.1.10:41234",
-      "ws://100.64.0.1:41234",
-    ]);
-    // Confirm sessionId is NOT a field on the offer.
-    expect((parsed as Record<string, unknown>).sessionId).toBeUndefined();
-  });
-
-  it("rejects when daemonAddresses is missing", () => {
-    const { daemonAddresses: _, ...rest } = valid;
-    expect(pairOfferFrame.safeParse(rest).success).toBe(false);
-  });
-
-  it("rejects when daemonAddresses is empty (need at least one path)", () => {
-    expect(
-      pairOfferFrame.safeParse({ ...valid, daemonAddresses: [] }).success,
-    ).toBe(false);
+    expect(parsed.daemonIdentityPublicKey).toBe("AAAA");
+    expect(parsed.serviceName).toBe("sidecode-mac");
+    expect(parsed.v).toBe(PAIR_OFFER_VERSION);
   });
 
   it("rejects when daemonIdentityPublicKey is missing", () => {
     const { daemonIdentityPublicKey: _, ...rest } = valid;
+    expect(pairOfferFrame.safeParse(rest).success).toBe(false);
+  });
+
+  it("rejects when serviceName is missing", () => {
+    const { serviceName: _, ...rest } = valid;
     expect(pairOfferFrame.safeParse(rest).success).toBe(false);
   });
 
@@ -111,207 +84,21 @@ describe("pair.offer frame", () => {
     const decoded = decodePairOfferPayload(encoded);
     expect(decoded).toEqual(valid);
   });
-});
 
-describe("client.hello frame", () => {
-  const valid = {
-    type: "client.hello" as const,
-    v: 1,
-    sessionId: "abc",
-    mode: "qr_bootstrap" as const,
-    clientFingerprint: "4998b6ca7d7474b8",
-    clientIdentityPublicKey: "BBBB",
-    clientNonce: "CCCC",
-  };
-
-  it("parses qr_bootstrap mode (offer-echo fields optional at schema level)", () => {
-    expect(clientHelloFrame.parse(valid).mode).toBe("qr_bootstrap");
-  });
-
-  it("parses qr_bootstrap with offer-echo fields", () => {
-    const parsed = clientHelloFrame.parse({
-      ...valid,
-      offerExpiresAt: 1700000000000,
-      offerDaemonFingerprint: "988d6cb2baa153ef",
-    });
-    expect(parsed.offerExpiresAt).toBe(1700000000000);
-    expect(parsed.offerDaemonFingerprint).toBe("988d6cb2baa153ef");
-  });
-
-  it("parses trusted_reconnect mode", () => {
-    expect(
-      clientHelloFrame.parse({ ...valid, mode: "trusted_reconnect" }).mode,
-    ).toBe("trusted_reconnect");
-  });
-
-  it("rejects unknown mode", () => {
-    expect(clientHelloFrame.safeParse({ ...valid, mode: "wat" }).success).toBe(
-      false,
-    );
+  it("wire payload is small enough for QR ecLevel M without bumping versions", () => {
+    // Sanity: a realistic pubkey (43 base64url chars for 32 raw bytes)
+    // + typical hostname should encode in well under 140 chars total,
+    // keeping the rendered QR scannable from arm's length.
+    const realistic = {
+      type: "pair.offer" as const,
+      v: PAIR_OFFER_VERSION,
+      daemonIdentityPublicKey: "vqRrAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", // 43 chars
+      serviceName: "yueqians-macbook-pro.local",
+    };
+    const encoded = encodePairOffer(realistic);
+    expect(encoded.length).toBeLessThan(140);
   });
 });
-
-describe("server.hello frame", () => {
-  const valid = {
-    type: "server.hello" as const,
-    v: 1,
-    sessionId: "abc",
-    mode: "qr_bootstrap" as const,
-    daemonFingerprint: "988d6cb2baa153ef",
-    daemonIdentityPublicKey: "AAAA",
-    serverNonce: "DDDD",
-    clientNonce: "CCCC",
-    keyEpoch: 1,
-    expiresAt: 1700000000000,
-    daemonSignature: "EEEE",
-  };
-
-  it("parses with all required fields", () => {
-    const parsed = serverHelloFrame.parse(valid);
-    expect(parsed.daemonSignature).toBe("EEEE");
-    expect(parsed.keyEpoch).toBe(1);
-  });
-
-  it("rejects missing daemonSignature", () => {
-    const { daemonSignature: _, ...rest } = valid;
-    expect(serverHelloFrame.safeParse(rest).success).toBe(false);
-  });
-});
-
-describe("client.auth frame", () => {
-  it("parses with required fields", () => {
-    const parsed = clientAuthFrame.parse({
-      type: "client.auth",
-      v: 1,
-      sessionId: "abc",
-      clientFingerprint: "4998b6ca7d7474b8",
-      keyEpoch: 1,
-      clientSignature: "FFFF",
-    });
-    expect(parsed.clientSignature).toBe("FFFF");
-  });
-});
-
-describe("server.ready frame", () => {
-  it("parses with required fields", () => {
-    const parsed = serverReadyFrame.parse({
-      type: "server.ready",
-      v: 1,
-      sessionId: "abc",
-      daemonFingerprint: "988d6cb2baa153ef",
-      keyEpoch: 1,
-    });
-    expect(parsed.daemonFingerprint).toBe("988d6cb2baa153ef");
-  });
-});
-
-describe("handshake.reject frame", () => {
-  it("parses with all reject codes", () => {
-    const codes = [
-      "invalid_signature",
-      "session_expired",
-      "session_unknown",
-      "client_unknown",
-      "client_already_paired",
-      "version_mismatch",
-      "mode_mismatch",
-      "internal",
-    ] as const;
-    for (const code of codes) {
-      const parsed = handshakeRejectFrame.parse({
-        type: "handshake.reject",
-        v: 1,
-        code,
-        message: `something about ${code}`,
-      });
-      expect(parsed.code).toBe(code);
-    }
-  });
-
-  it("rejects unknown reject code", () => {
-    expect(
-      handshakeRejectFrame.safeParse({
-        type: "handshake.reject",
-        v: 1,
-        code: "made_up_code",
-        message: "x",
-      }).success,
-    ).toBe(false);
-  });
-
-  it("sessionId is optional (early-handshake rejects may not have one)", () => {
-    expect(
-      handshakeRejectFrame.parse({
-        type: "handshake.reject",
-        v: 1,
-        code: "version_mismatch",
-        message: "client v=99",
-      }).sessionId,
-    ).toBeUndefined();
-  });
-});
-
-describe("buildTranscript", () => {
-  const baseInput: TranscriptInput = {
-    sessionId: "abc-123",
-    protocolVersion: 1,
-    mode: "qr_bootstrap",
-    keyEpoch: 1,
-    daemonFingerprint: "988d6cb2baa153ef",
-    clientFingerprint: "4998b6ca7d7474b8",
-    daemonIdentityPublicKey: "AAAA",
-    clientIdentityPublicKey: "BBBB",
-    clientNonce: "CCCC",
-    serverNonce: "DDDD",
-    expiresAt: 1700000000000,
-  };
-
-  it("produces deterministic bytes for the same input", () => {
-    const a = buildTranscript(baseInput);
-    const b = buildTranscript(baseInput);
-    expect(a).toEqual(b);
-  });
-
-  it("changes if any field changes", () => {
-    const original = buildTranscript(baseInput);
-    const tampered = buildTranscript({ ...baseInput, sessionId: "abc-999" });
-    expect(original).not.toEqual(tampered);
-  });
-
-  it("starts with the length-prefixed domain tag", () => {
-    const t = buildTranscript(baseInput);
-    // first 4 bytes = u32 BE length of HANDSHAKE_DOMAIN_TAG
-    const tagLen = HANDSHAKE_DOMAIN_TAG.length;
-    expect(t[0]).toBe(0);
-    expect(t[1]).toBe(0);
-    expect(t[2]).toBe(0);
-    expect(t[3]).toBe(tagLen);
-    const decoded = new TextDecoder().decode(t.slice(4, 4 + tagLen));
-    expect(decoded).toBe(HANDSHAKE_DOMAIN_TAG);
-  });
-
-  it("client-auth variant ends with the label bytes", () => {
-    const baseBytes = buildTranscript(baseInput);
-    const authBytes = buildClientAuthTranscript(baseInput);
-    expect(authBytes.length).toBe(baseBytes.length + CLIENT_AUTH_LABEL.length);
-    const trailer = new TextDecoder().decode(authBytes.slice(baseBytes.length));
-    expect(trailer).toBe(CLIENT_AUTH_LABEL);
-  });
-
-  it("base variant differs from client-auth variant (domain separation)", () => {
-    expect(buildTranscript(baseInput)).not.toEqual(
-      buildClientAuthTranscript(baseInput),
-    );
-  });
-
-  it("mode change produces different transcript", () => {
-    const a = buildTranscript({ ...baseInput, mode: "qr_bootstrap" });
-    const b = buildTranscript({ ...baseInput, mode: "trusted_reconnect" });
-    expect(a).not.toEqual(b);
-  });
-});
-
-// ─── Existing sections (unchanged content) ────────────────────────────────
 
 describe("event union", () => {
   it("accepts session.updated", () => {
@@ -744,6 +531,68 @@ describe("request/response correlation", () => {
   });
 });
 
+describe("hello / server_info wire-version handshake", () => {
+  it("WIRE_PROTOCOL_VERSION starts at 1", () => {
+    expect(WIRE_PROTOCOL_VERSION).toBe(1);
+  });
+
+  it("MIN_SUPPORTED defaults to current (no degraded paths yet)", () => {
+    // When we ship v=2, this can lower to 1 alongside the v=1 codepath
+    // surviving on the daemon side. Until then, exact-match only.
+    expect(MIN_SUPPORTED_WIRE_PROTOCOL_VERSION).toBe(WIRE_PROTOCOL_VERSION);
+  });
+
+  it("helloCommand parses with all required fields", () => {
+    const p = helloCommand.parse({
+      type: "hello",
+      protocolVersion: 1,
+      minSupportedProtocolVersion: 1,
+      appVersion: "1.0.0",
+    });
+    expect(p.protocolVersion).toBe(1);
+    expect(p.appVersion).toBe("1.0.0");
+  });
+
+  it("helloCommand rejects missing minSupportedProtocolVersion", () => {
+    expect(
+      helloCommand.safeParse({
+        type: "hello",
+        protocolVersion: 1,
+        appVersion: "1.0.0",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("serverInfoEvent parses with all required fields", () => {
+    const p = serverInfoEvent.parse({
+      type: "server_info",
+      protocolVersion: 1,
+      minSupportedProtocolVersion: 1,
+      daemonVersion: "0.0.0",
+    });
+    expect(p.daemonVersion).toBe("0.0.0");
+  });
+
+  it("helloCommand is included in clientFrame, serverInfoEvent in daemonFrame", () => {
+    expect(
+      clientFrame.parse({
+        type: "hello",
+        protocolVersion: 1,
+        minSupportedProtocolVersion: 1,
+        appVersion: "1.0.0",
+      }).type,
+    ).toBe("hello");
+    expect(
+      daemonFrame.parse({
+        type: "server_info",
+        protocolVersion: 1,
+        minSupportedProtocolVersion: 1,
+        daemonVersion: "0.0.0",
+      }).type,
+    ).toBe("server_info");
+  });
+});
+
 describe("health frames", () => {
   it("ping/pong roundtrip", () => {
     const t = Date.now();
@@ -772,36 +621,19 @@ describe("error frame", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("accepts incompatible_protocol (sent on hello version mismatch)", () => {
+    expect(
+      errorFrame.parse({
+        type: "error",
+        code: "incompatible_protocol",
+        message: "client v=2 outside daemon range [1, 1]",
+      }).code,
+    ).toBe("incompatible_protocol");
+  });
 });
 
-describe("clientFrame union (handshake + commands)", () => {
-  it("accepts client.hello", () => {
-    expect(
-      clientFrame.parse({
-        type: "client.hello",
-        v: 1,
-        sessionId: "x",
-        mode: "qr_bootstrap",
-        clientFingerprint: "f",
-        clientIdentityPublicKey: "k",
-        clientNonce: "n",
-      }).type,
-    ).toBe("client.hello");
-  });
-
-  it("accepts client.auth", () => {
-    expect(
-      clientFrame.parse({
-        type: "client.auth",
-        v: 1,
-        sessionId: "x",
-        clientFingerprint: "f",
-        keyEpoch: 1,
-        clientSignature: "s",
-      }).type,
-    ).toBe("client.auth");
-  });
-
+describe("clientFrame union (commands only — no application-layer handshake)", () => {
   it("accepts ping and commands", () => {
     expect(clientFrame.parse({ type: "ping", t: 0 }).type).toBe("ping");
     expect(
@@ -830,46 +662,22 @@ describe("clientFrame union (handshake + commands)", () => {
   it("rejects daemon-only frames sent by a client", () => {
     expect(
       clientFrame.safeParse({
-        type: "server.hello",
-        v: 1,
+        type: "session.updated",
         sessionId: "x",
-        mode: "qr_bootstrap",
-        daemonFingerprint: "d",
-        daemonIdentityPublicKey: "k",
-        serverNonce: "n",
-        clientNonce: "n",
-        keyEpoch: 1,
-        expiresAt: 0,
-        daemonSignature: "s",
+        lastModified: 0,
       }).success,
     ).toBe(false);
     expect(
       clientFrame.safeParse({
-        type: "session.updated",
-        sessionId: "x",
-        lastModified: 0,
+        type: "sendPrompt.response",
+        requestId: "r",
       }).success,
     ).toBe(false);
   });
 });
 
 describe("daemonFrame union", () => {
-  it("accepts handshake frames + events + responses", () => {
-    expect(
-      daemonFrame.parse({
-        type: "server.hello",
-        v: 1,
-        sessionId: "x",
-        mode: "qr_bootstrap",
-        daemonFingerprint: "d",
-        daemonIdentityPublicKey: "k",
-        serverNonce: "n",
-        clientNonce: "n",
-        keyEpoch: 1,
-        expiresAt: 0,
-        daemonSignature: "s",
-      }).type,
-    ).toBe("server.hello");
+  it("accepts events + responses", () => {
     expect(
       daemonFrame.parse({
         type: "session.updated",
@@ -877,17 +685,6 @@ describe("daemonFrame union", () => {
         lastModified: 0,
       }).type,
     ).toBe("session.updated");
-    expect(
-      daemonFrame.parse({
-        type: "handshake.reject",
-        v: 1,
-        code: "invalid_signature",
-        message: "no",
-      }).type,
-    ).toBe("handshake.reject");
-  });
-
-  it("includes streaming-session response + event frames", () => {
     expect(
       daemonFrame.parse({
         type: "subscribe.response",
@@ -914,17 +711,6 @@ describe("daemonFrame union", () => {
   });
 
   it("rejects client-only frames sent by daemon", () => {
-    expect(
-      daemonFrame.safeParse({
-        type: "client.hello",
-        v: 1,
-        sessionId: "x",
-        mode: "qr_bootstrap",
-        clientFingerprint: "f",
-        clientIdentityPublicKey: "k",
-        clientNonce: "n",
-      }).success,
-    ).toBe(false);
     expect(
       daemonFrame.safeParse({
         type: "sendPrompt",

@@ -8,18 +8,19 @@ import {
 import { join } from "node:path";
 
 /**
- * `$SIDECODE_HOME/daemon.lock` records where the running daemon is bound,
- * so that other one-shot CLI commands (notably `sidecode pair`) can read it
- * to know what address to embed in offers / where to point clients.
+ * `$SIDECODE_HOME/daemon.lock` records that a daemon owns this home, so
+ * that one-shot CLI commands (notably `sidecode pair`) can detect it and
+ * refuse to spawn a competing one.
+ *
+ * Post-WebRTC pivot, host/port are gone — the daemon doesn't bind a
+ * local port; all transport goes through signaling.sidecode.app + WebRTC.
+ * The lock is now just a liveness record (PID + startedAt).
  *
  * The lock is best-effort: written on start, deleted on graceful stop.
- * A stale file (PID dead) is treated the same as a missing file. We never
- * use this for mutual exclusion — `ws.start()`'s `EADDRINUSE` covers that.
+ * A stale file (PID dead) is treated the same as a missing file.
  */
 export interface DaemonLock {
   pid: number;
-  host: string;
-  port: number;
   startedAt: number;
 }
 

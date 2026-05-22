@@ -10,11 +10,14 @@ import {
 import { font } from "@expo/ui/swift-ui/modifiers";
 import { Stack } from "expo-router";
 import { Alert } from "react-native";
+import { APP_VERSION } from "@/lib/app-version";
+import { fingerprintFromPubkey } from "@/lib/daemon-client";
 import {
   statusColor,
   statusLabel,
   useDaemonClient,
 } from "@/lib/daemon-client-context";
+import { isSameMajor } from "@/lib/version-check";
 
 /**
  * Single-host detail page, iOS-only. See settings/index.ios.tsx for why
@@ -33,7 +36,16 @@ import {
  * and source the record by id; the section structure carries over.
  */
 export default function SettingsHostScreen() {
-  const { paired, unpair, connectionStatus } = useDaemonClient();
+  const { paired, client, unpair, connectionStatus } = useDaemonClient();
+  // daemonVersion only known while connected — null during offline / boot
+  // means we just hide the version row + banner until the next handshake.
+  const daemonVersion = client?.daemonVersion ?? null;
+  // Soft mismatch surface: warn only on different major. Patch / minor
+  // differences are by convention non-breaking and shouldn't nag the
+  // user. Hidden entirely when daemonVersion is unknown (still
+  // reconnecting) so we don't flash a stale-state warning.
+  const versionMismatch =
+    daemonVersion !== null && !isSameMajor(APP_VERSION, daemonVersion);
 
   const onForget = () => {
     Alert.alert(
@@ -52,7 +64,13 @@ export default function SettingsHostScreen() {
     );
   };
 
-  const addresses = paired?.addresses.join("\n") ?? "—";
+  // 16-hex-char fingerprint is derived from the daemon pubkey — same
+  // formula as the daemon's identity.ts. Persisting the derived value
+  // would just be redundant state. Pre-pair (paired === null) we show
+  // a placeholder; the rest of this screen is gated on `paired` too.
+  const fingerprint = paired
+    ? fingerprintFromPubkey(paired.daemonIdentityPublicKey)
+    : "—";
 
   return (
     <>
@@ -74,14 +92,23 @@ export default function SettingsHostScreen() {
           </Section>
           <Section title="Fingerprint">
             <Text modifiers={[font({ design: "monospaced" })]}>
-              {paired?.fingerprint ?? "—"}
+              {fingerprint}
             </Text>
           </Section>
-          <Section title="Addresses">
-            <Text modifiers={[font({ design: "monospaced" })]}>
-              {addresses}
-            </Text>
-          </Section>
+          {daemonVersion !== null && (
+            <Section title="Version">
+              <Text modifiers={[font({ design: "monospaced" })]}>
+                {`app ${APP_VERSION} · daemon ${daemonVersion}`}
+              </Text>
+            </Section>
+          )}
+          {versionMismatch && (
+            <Section title="Version mismatch">
+              <Text>
+                {`App and daemon majors don't match (app ${APP_VERSION}, daemon ${daemonVersion}). Update both for the best experience.`}
+              </Text>
+            </Section>
+          )}
           <Section>
             {/* biome-ignore lint/a11y/useValidAriaRole: SwiftUI ButtonRole
                 ('default' | 'cancel' | 'destructive'), not an HTML/ARIA

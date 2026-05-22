@@ -1,7 +1,7 @@
 import { Button, Column, Host, Icon, Spacer, Text } from "@expo/ui";
 import { controlSize, frame } from "@expo/ui/swift-ui/modifiers";
 import { router, Stack, useLocalSearchParams } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { decodePairOffer, type PairOffer } from "@/lib/daemon-client";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 
@@ -61,15 +61,6 @@ export default function PairModal() {
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
-
-  // Countdown tick — only when a valid offer is mounted, so the
-  // invalid / missing branches don't leak timers.
-  useEffect(() => {
-    if (decoded.status !== "ok") return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [decoded.status]);
 
   // Cold-launch UL lands on /pair with an empty back stack — `router.back()`
   // fails with "The action 'GO_BACK' was not handled". canGoBack() lets us
@@ -125,20 +116,15 @@ export default function PairModal() {
       "This QR isn't a valid sidecode pair code, or it's expired. Get a fresh one from your Mac.";
     primaryAction = { label: "Close", onPress: handleCancel, disabled: false };
   } else {
-    const { offer } = decoded;
-    const remainingMs = offer.expiresAt - now;
-    const isExpired = remainingMs <= 0;
-    const lanIp = firstLanIp(offer.daemonAddresses);
     title = "Pair with this Mac?";
-    body = isExpired
-      ? "Pair code expired"
-      : lanIp
-        ? `${lanIp} · expires in ${formatCountdown(remainingMs)}`
-        : `expires in ${formatCountdown(remainingMs)}`;
+    // No countdown: the daemon's pair-window-open gate (not the QR) is
+    // the authority on whether this pair can succeed right now. If it
+    // can't, we surface that via the connect-timeout error message.
+    body = "Make sure the Pair window is open on your Mac.";
     primaryAction = {
       label: busy ? "Pairing…" : "Pair this Mac",
       onPress: handleConfirm,
-      disabled: busy || isExpired,
+      disabled: busy,
     };
     secondary = { label: "Cancel", onPress: handleCancel };
   }
@@ -236,29 +222,4 @@ function decode(o: string | undefined): DecodeResult {
   } catch {
     return { status: "invalid" };
   }
-}
-
-/**
- * Extract the first non-loopback host from the daemon's address list.
- * Order in the offer is LAN → Tailscale → loopback, so the first match
- * is the most identifiable for the user ("192.168.1.42" means "same
- * wifi as me", "100.x.x.x" means "Tailscale"). Loopback (`127.0.0.1`)
- * is omitted — only the simulator ever sees it as "their network."
- */
-function firstLanIp(addresses: readonly string[]): string | null {
-  for (const addr of addresses) {
-    const match = addr.match(/^wss?:\/\/([^:/]+)/);
-    if (!match) continue;
-    const host = match[1];
-    if (host === "127.0.0.1" || host === "localhost") continue;
-    return host;
-  }
-  return null;
-}
-
-function formatCountdown(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
 }

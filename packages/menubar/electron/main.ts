@@ -268,9 +268,9 @@ app.whenReady().then(async () => {
   );
 
   console.log("[main] starting daemon...");
-  daemon = await startDaemon({ port: 0 });
+  daemon = await startDaemon();
   console.log(
-    `[main] daemon ready at ${daemon.address.host}:${daemon.address.port}`,
+    `[main] daemon ready (fingerprint ${daemon.fingerprint}, ${daemon.pairedClientCount()} paired clients)`,
   );
 
   // Pair window IPC. Offers are stateless, so a fresh one per call is

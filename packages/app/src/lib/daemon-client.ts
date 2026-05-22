@@ -1,54 +1,63 @@
 import * as ed25519 from "@noble/ed25519";
+import { sha256 } from "@noble/hashes/sha2.js";
 import {
   decodePairOfferPayload,
   type EventDelta,
+  MIN_SUPPORTED_WIRE_PROTOCOL_VERSION,
+  PAIR_OFFER_VERSION,
   type TimelineItem,
+  WIRE_PROTOCOL_VERSION,
 } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
-import { base64UrlToBytes, bytesToBase64Url } from "./base64";
-import {
-  buildClientAuthTranscript,
-  buildTranscript,
-  HANDSHAKE_VERSION,
-  type HandshakeMode,
-  type TranscriptInput,
-} from "./handshake";
+import { APP_VERSION } from "./app-version";
+import { base64UrlToBytes } from "./base64";
 import type { ClientIdentity } from "./identity";
+import {
+  SignalingClient,
+  type SignalingPeer,
+} from "./signaling-client";
+import { WebRTCPeer } from "./webrtc-peer";
 
 // SecureStore restricts keys to [A-Za-z0-9._-] — no slashes / colons. Bump
 // the trailing version when the persisted shape changes — older entries
 // with a different shape become unreadable, the consumer falls into the
-// `unpaired` state, and the user re-pairs cleanly. v2 = `addresses` array
-// (was `address` string in v1).
-const PAIRED_STORE_KEY = "sidecode_paired_daemon_v2";
+// `unpaired` state, and the user re-pairs cleanly.
+//
+// v2 → v3: WebRTC pivot. `addresses[]` is gone (signaling worker handles
+// discovery), `fingerprint` is now derived from pubkey on read instead of
+// persisted. PairedDaemon shrank to `{ daemonIdentityPublicKey, serviceName }`.
+const PAIRED_STORE_KEY = "sidecode_paired_daemon_v3";
 
 /**
  * What we save after a successful first pair so subsequent launches can
- * trusted_reconnect without re-scanning a QR.
+ * reconnect without re-scanning a QR.
  *
- * `addresses` is the same ordered candidate list the offer carried — we
- * persist all of them so reconnect can fall back across network shapes
- * (LAN today, Tailscale-on-cellular tomorrow). On reconnect we try them
- * sequentially with a per-attempt timeout; first success wins.
+ * Post-WebRTC pivot, this is just the daemon's pubkey (= signaling room +
+ * fpSig verify key) plus the display label. `fingerprint` is derived from
+ * pubkey via `sha256(...).slice(0, 16)` whenever the UI needs it.
  */
 export interface PairedDaemon {
-  addresses: string[]; // ordered ws://host:port candidates
-  fingerprint: string; // 16 hex chars
-  identityPublicKey: string; // base64url
-  // Daemon host's `os.hostname()` at pair time. Snapshot — not refreshed on
-  // reconnect, so a daemon-side `hostnamectl set-hostname` only takes
-  // effect after the next QR pair. Display label only, no semantic use.
+  daemonIdentityPublicKey: string; // base64url
   serviceName: string;
 }
 
 export interface PairOffer {
   v: number;
-  daemonFingerprint: string;
   daemonIdentityPublicKey: string;
-  daemonAddresses: string[];
   serviceName: string;
-  expiresAt: number;
+}
+
+/** Derive the 16-hex-char daemon fingerprint from its base64url pubkey.
+ *  Matches the daemon-side derivation in identity.ts. */
+export function fingerprintFromPubkey(daemonIdentityPublicKey: string): string {
+  const raw = base64UrlToBytes(daemonIdentityPublicKey);
+  const hash = sha256(raw);
+  let hex = "";
+  for (let i = 0; i < hash.length; i += 1) {
+    hex += hash[i].toString(16).padStart(2, "0");
+  }
+  return hex.slice(0, 16);
 }
 
 /**
@@ -60,14 +69,9 @@ export interface PairOffer {
  */
 export function decodePairOffer(payload: string): PairOffer {
   const offer = decodePairOfferPayload(payload);
-  if (offer.v !== HANDSHAKE_VERSION) {
+  if (offer.v !== PAIR_OFFER_VERSION) {
     throw new Error(
-      `offer v=${offer.v} != HANDSHAKE_VERSION=${HANDSHAKE_VERSION}`,
-    );
-  }
-  if (Date.now() > offer.expiresAt) {
-    throw new Error(
-      `offer expired at ${new Date(offer.expiresAt).toISOString()}`,
+      `Pair code is from a different sidecode version (got v=${offer.v}, expected v=${PAIR_OFFER_VERSION}). Update sidecode on your Mac.`,
     );
   }
   return offer;
@@ -79,10 +83,7 @@ export async function getPairedDaemon(): Promise<PairedDaemon | null> {
   try {
     const parsed = JSON.parse(raw) as Partial<PairedDaemon>;
     if (
-      !Array.isArray(parsed.addresses) ||
-      parsed.addresses.length === 0 ||
-      typeof parsed.fingerprint !== "string" ||
-      typeof parsed.identityPublicKey !== "string" ||
+      typeof parsed.daemonIdentityPublicKey !== "string" ||
       typeof parsed.serviceName !== "string"
     ) {
       return null;
@@ -113,42 +114,57 @@ interface PendingRequest {
  */
 type EventCallback = (delta: EventDelta) => void;
 
-/** Minimal connected/authenticated daemon WS client. One per session. */
+/**
+ * Max time we wait from "start connecting" to "DataChannel open". Covers:
+ * signaling open + roster + (daemon mints offer) + ICE gather + DTLS.
+ * On a healthy LAN the whole flow completes in <200ms; the slack is for
+ * Cloudflare TURN fallback paths and for daemon-side delays admitting an
+ * unknown pubkey (pair-window open vs not).
+ *
+ * If this trips, the UX message blames the most likely cause: the user
+ * forgot to open the menubar Pair window on their Mac.
+ */
+const CONNECT_TIMEOUT_MS = 15_000;
+
+/** Minimal authenticated daemon DataChannel client. One per app launch. */
 export class DaemonClient {
   /**
    * Per-session live event callbacks. Set on `subscribe`, cleared on
    * `unsubscribe` (only if the stored cb is still the same identity), and
-   * cleared en masse on ws close.
+   * cleared en masse on transport close.
    */
   private readonly eventCallbacks = new Map<string, EventCallback>();
 
   /**
    * `true` once `close()` has been called by the consumer — distinguishes
    * "user / context tore down the connection" from "transport dropped on
-   * its own". Wired into the `ws.onclose` handler installed by `install()`:
-   * on close, if the flag is `false` AND `onUnexpectedClose` is set, the
-   * callback fires so the context can schedule a reconnect.
+   * its own". Drives whether onUnexpectedClose fires.
    */
   private intentionallyClosed = false;
 
   /**
-   * Optional callback invoked when the WS closes WITHOUT a prior `close()`
-   * call. Set by the context provider after a successful pair / reconnect
-   * to wire up auto-reconnect. Reset to `null` is a no-op (the client is
-   * dead either way once `ws.onclose` fired).
+   * Optional callback invoked when the transport closes WITHOUT a prior
+   * `close()` call. Set by the context provider after a successful pair /
+   * reconnect to wire up auto-reconnect.
    */
   private onUnexpectedClose: (() => void) | null = null;
 
   private constructor(
-    private readonly ws: WebSocket,
+    private readonly signaling: SignalingClient,
+    private readonly peer: WebRTCPeer,
+    private readonly dc: RTCDataChannel,
     private readonly pending: Map<string, PendingRequest>,
+    /** Daemon's semver string from `server_info`. Compare to APP_VERSION
+     *  for the soft mismatch UI banner. */
+    readonly daemonVersion: string,
   ) {}
 
   /**
-   * Register a one-shot handler invoked when the underlying WS drops
-   * without an explicit `close()` from the consumer (network blip, daemon
-   * crash, NAT timeout, etc.). Call before any await yields after pair /
-   * reconnect resolves so the handler is wired before any close can fire.
+   * Register a one-shot handler invoked when the underlying transport
+   * drops without an explicit `close()` from the consumer (network blip,
+   * daemon crash, ICE timeout, etc.). Call before any await yields after
+   * pair / reconnect resolves so the handler is wired before any close
+   * can fire.
    */
   setOnUnexpectedClose(cb: (() => void) | null): void {
     this.onUnexpectedClose = cb;
@@ -156,92 +172,261 @@ export class DaemonClient {
 
   /**
    * First-time pair via a QR offer. Persists `PairedDaemon` for next
-   * launch with the address that won promoted to position 0, so the next
-   * reconnect tries it first.
-   *
-   * Tries each candidate address in `offer.daemonAddresses` sequentially
-   * with a per-attempt timeout, returning the first that completes the
-   * handshake. The same handshake state machine runs against whichever
-   * address answers first — daemon's pendingTranscripts are scoped to a
-   * sessionId, and we mint a fresh sessionId per attempt, so failed
-   * attempts don't leak state across addresses.
+   * launch on success.
    */
   static async pair(
     identity: ClientIdentity,
     offer: PairOffer,
   ): Promise<DaemonClient> {
-    const { client, address } = await connectFirstAvailable({
-      addresses: offer.daemonAddresses,
+    const client = await DaemonClient.connect(
       identity,
-      expectDaemon: {
-        fingerprint: offer.daemonFingerprint,
-        identityPublicKey: offer.daemonIdentityPublicKey,
-      },
-      buildHello: () => ({
-        type: "client.hello" as const,
-        v: HANDSHAKE_VERSION,
-        sessionId: Crypto.randomUUID(),
-        mode: "qr_bootstrap" as HandshakeMode,
-        clientFingerprint: identity.fingerprint,
-        clientIdentityPublicKey: identity.publicKeyB64,
-        clientNonce: randomBase64UrlBytes(32),
-        offerExpiresAt: offer.expiresAt,
-        offerDaemonFingerprint: offer.daemonFingerprint,
-      }),
-    });
+      offer.daemonIdentityPublicKey,
+    );
     await setPairedDaemon({
-      addresses: promoteAddress(offer.daemonAddresses, address),
-      fingerprint: offer.daemonFingerprint,
-      identityPublicKey: offer.daemonIdentityPublicKey,
+      daemonIdentityPublicKey: offer.daemonIdentityPublicKey,
       serviceName: offer.serviceName,
     });
     return client;
   }
 
-  /**
-   * Reconnect using a previously-paired daemon. Tries `daemon.addresses`
-   * in stored order — the last-known-good address sits at position 0, so
-   * a stable network reconnects in one attempt with no timeout tax. On
-   * fallback (network shape changed since last connect), promotes the
-   * new winner to head; next reconnect again hits position 0 first.
-   *
-   * Single SecureStore write only when the winner differs from the
-   * stored head — `promoteAddress` is identity-mapped in the steady-state
-   * case, and `setPairedDaemon` is skipped when the addresses array is
-   * unchanged.
-   */
+  /** Reconnect using a previously-paired daemon. */
   static async reconnect(
     identity: ClientIdentity,
     daemon: PairedDaemon,
   ): Promise<DaemonClient> {
-    const { client, address } = await connectFirstAvailable({
-      addresses: daemon.addresses,
-      identity,
-      expectDaemon: {
-        fingerprint: daemon.fingerprint,
-        identityPublicKey: daemon.identityPublicKey,
-      },
-      buildHello: () => ({
-        type: "client.hello" as const,
-        v: HANDSHAKE_VERSION,
-        sessionId: Crypto.randomUUID(),
-        mode: "trusted_reconnect" as HandshakeMode,
-        clientFingerprint: identity.fingerprint,
-        clientIdentityPublicKey: identity.publicKeyB64,
-        clientNonce: randomBase64UrlBytes(32),
-      }),
+    return DaemonClient.connect(identity, daemon.daemonIdentityPublicKey);
+  }
+
+  /**
+   * The single transport-establishment entry point. Wires SignalingClient
+   * + WebRTCPeer together, drives the SDP-fp-pinned WebRTC handshake,
+   * AND performs the wire-version handshake (`hello` → `server_info`)
+   * over the DataChannel before resolving. Identical for pair AND
+   * reconnect — from iOS's POV the two cases differ only in (a) what
+   * pubkey we connect to and (b) whether the daemon already knows our
+   * pubkey (it admits us anyway when its pair-window-open gate is
+   * active).
+   *
+   * The single timeout (`CONNECT_TIMEOUT_MS`) covers the whole flow:
+   * signaling open → offer → ICE/DTLS → DC.open → hello → server_info.
+   * On wire-version mismatch the daemon sends an `error` frame with
+   * code `incompatible_protocol` then closes; we surface that text to
+   * the user via the connect error.
+   */
+  private static connect(
+    identity: ClientIdentity,
+    daemonPubkey: string,
+  ): Promise<DaemonClient> {
+    return new Promise((resolve, reject) => {
+      // daemon-side connection ID we learn from `peers` / `peer.joined`,
+      // used to address candidate / answer frames back to the daemon.
+      let daemonPeerId: string | null = null;
+      let settled = false;
+      const pending = new Map<string, PendingRequest>();
+
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        try {
+          peer.close();
+        } catch {
+          // ignore
+        }
+        try {
+          signaling.close();
+        } catch {
+          // ignore
+        }
+      };
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      };
+
+      const timeoutId = setTimeout(() => {
+        fail(
+          new Error(
+            "Couldn't reach Mac. Make sure the Pair window is open on your Mac, then tap Retry.",
+          ),
+        );
+      }, CONNECT_TIMEOUT_MS);
+
+      const peer = new WebRTCPeer({
+        signFingerprint: (transcript) => identity.sign(transcript),
+        verifyFingerprint: async (transcript, sigB64) => {
+          try {
+            return await ed25519.verifyAsync(
+              base64UrlToBytes(sigB64),
+              transcript,
+              base64UrlToBytes(daemonPubkey),
+            );
+          } catch {
+            return false;
+          }
+        },
+        onLocalCandidate: (candidate) => {
+          if (!daemonPeerId) return;
+          signaling.send(daemonPeerId, "candidate", { candidate });
+        },
+        onDataChannelOpen: (dc) => {
+          // DTLS is up — but we haven't done the wire-version handshake
+          // yet. Send `hello` and wire a one-shot listener for the daemon
+          // reply (`server_info` ok, `error` with code
+          // `incompatible_protocol` bad). The promise only resolves when
+          // server_info arrives; the outer timeout still covers this leg.
+          // The hello listener removes itself on success/fail so it
+          // doesn't double-fire alongside `installMessageHandlers`'s
+          // listener for subsequent application traffic.
+          const dcEv = dc as unknown as {
+            addEventListener: (
+              event: string,
+              handler: (e: unknown) => void,
+            ) => void;
+            removeEventListener: (
+              event: string,
+              handler: (e: unknown) => void,
+            ) => void;
+            send: (s: string) => void;
+          };
+          const onHelloReply = (event: unknown) => {
+            const data = (event as { data: unknown }).data;
+            if (typeof data !== "string") return;
+            let frame: {
+              type?: string;
+              code?: string;
+              message?: string;
+              daemonVersion?: string;
+            };
+            try {
+              frame = JSON.parse(data);
+            } catch {
+              return;
+            }
+            if (
+              frame.type === "error" &&
+              frame.code === "incompatible_protocol"
+            ) {
+              dcEv.removeEventListener("message", onHelloReply);
+              // Keep the daemon's diagnostic text out of the user-facing
+              // string — it's technical (range-overlap arithmetic) and
+              // not actionable from the phone. Log it for debugging.
+              if (frame.message) {
+                // biome-ignore lint/suspicious/noConsole: dev surface
+                console.warn(`daemon reported incompatible_protocol: ${frame.message}`);
+              }
+              fail(
+                new Error(
+                  "Sidecode on your Mac is a different version. Update both the app and the Mac app, then try again.",
+                ),
+              );
+              return;
+            }
+            if (
+              frame.type === "server_info" &&
+              typeof frame.daemonVersion === "string"
+            ) {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timeoutId);
+              dcEv.removeEventListener("message", onHelloReply);
+              // Signaling has done its job — close to free the worker
+              // connection. Trickle ICE candidates after this point are
+              // unlikely to arrive (and we don't have a path to relay
+              // them anyway); the established DataChannel doesn't depend
+              // on it.
+              try {
+                signaling.close();
+              } catch {
+                // ignore
+              }
+              const client = new DaemonClient(
+                signaling,
+                peer,
+                dc,
+                pending,
+                frame.daemonVersion,
+              );
+              client.installMessageHandlers();
+              resolve(client);
+            }
+            // Anything else pre-resolve is unexpected — we wait for the
+            // timeout rather than guess at it.
+          };
+          dcEv.addEventListener("message", onHelloReply);
+          try {
+            dcEv.send(
+              JSON.stringify({
+                type: "hello",
+                protocolVersion: WIRE_PROTOCOL_VERSION,
+                minSupportedProtocolVersion:
+                  MIN_SUPPORTED_WIRE_PROTOCOL_VERSION,
+                appVersion: APP_VERSION,
+              }),
+            );
+          } catch (err) {
+            dcEv.removeEventListener("message", onHelloReply);
+            fail(err instanceof Error ? err : new Error(String(err)));
+          }
+        },
+        onState: (s) => {
+          if (s === "failed") {
+            fail(
+              new Error(
+                "WebRTC connection failed (ICE or DTLS). Network or NAT may be blocking peer-to-peer; try again.",
+              ),
+            );
+          }
+        },
+      });
+
+      const onDaemonAvailable = (daemon: SignalingPeer) => {
+        daemonPeerId = daemon.id;
+        // Daemon sees `peer.joined` from its side and is responsible for
+        // initiating the offer; iOS sits and waits. No-op here.
+      };
+
+      const signaling = new SignalingClient({
+        daemonPubkey,
+        clientPubkey: identity.publicKeyB64,
+        onPeers: (peers) => {
+          const daemon = peers.find((p) => p.role === "daemon");
+          if (daemon) onDaemonAvailable(daemon);
+        },
+        onPeerJoined: (peer) => {
+          if (peer.role === "daemon") onDaemonAvailable(peer);
+        },
+        onOffer: (from, sdp, fpSig) => {
+          daemonPeerId = from;
+          void peer
+            .handleOffer(sdp, fpSig)
+            .then(({ answerSdp, fpSig: ourSig }) => {
+              signaling.send(from, "answer", { sdp: answerSdp, fpSig: ourSig });
+            })
+            .catch((err) => {
+              fail(err instanceof Error ? err : new Error(String(err)));
+            });
+        },
+        onCandidate: (_from, candidate) => {
+          void peer.addRemoteCandidate(candidate as RTCIceCandidateInit);
+        },
+        onProtocolError: (reason) => {
+          // Worker-level errors (peer_not_found / missing_to / etc.) are
+          // logged but don't fail the connect — they're typically benign
+          // (e.g. daemon transiently offline so our candidate frame got
+          // rejected). The timeout will catch the actual stuck cases.
+          // biome-ignore lint/suspicious/noConsole: dev surface
+          console.warn(`signaling protocol error: ${reason}`);
+        },
+      });
+      signaling.connect();
     });
-    const promoted = promoteAddress(daemon.addresses, address);
-    if (promoted !== daemon.addresses) {
-      await setPairedDaemon({ ...daemon, addresses: promoted });
-    }
-    return client;
   }
 
   /**
    * Send `listSessions` and await the matching response (or `error` frame).
    * Pass `dir` to filter to one project; omit for all projects (iOS groups
-   * client-side). V0 surface — extend with sendPrompt / approve / etc. in W3.
+   * client-side).
    */
   async listSessions(dir?: string): Promise<unknown[]> {
     const requestId = Crypto.randomUUID();
@@ -366,7 +551,7 @@ export class DaemonClient {
    * `subs` map maps sessionId → unsubscribe handle for the NEW fanout,
    * so the daemon would tear down the live one. Skipping the RPC when
    * we no longer own the slot defers cleanup to whoever does — they'll
-   * either send their own unsubscribe later, or the ws.onclose hook will
+   * either send their own unsubscribe later, or the channel close will
    * release everything at once.
    */
   private async unsubscribeOwned(
@@ -386,7 +571,12 @@ export class DaemonClient {
   close(): void {
     this.intentionallyClosed = true;
     try {
-      this.ws.close();
+      this.peer.close();
+    } catch {
+      // already closed
+    }
+    try {
+      this.signaling.close();
     } catch {
       // already closed
     }
@@ -398,7 +588,11 @@ export class DaemonClient {
     return new Promise((resolve, reject) => {
       this.pending.set(frame.requestId, { resolve, reject });
       try {
-        this.ws.send(JSON.stringify(frame));
+        // react-native-webrtc's RTCDataChannel.send() takes string |
+        // ArrayBuffer | ArrayBufferView; we use string here.
+        (this.dc as unknown as { send: (s: string) => void }).send(
+          JSON.stringify(frame),
+        );
       } catch (err) {
         this.pending.delete(frame.requestId);
         reject(err instanceof Error ? err : new Error(String(err)));
@@ -406,13 +600,29 @@ export class DaemonClient {
     });
   }
 
-  /** Internal: install message routing once handshake completes. */
-  static install(
-    ws: WebSocket,
-    pending: Map<string, PendingRequest>,
-  ): DaemonClient {
-    const client = new DaemonClient(ws, pending);
-    ws.onmessage = (ev) => {
+  /** Wire DataChannel.onmessage / onclose handlers. Called by `connect`
+   *  exactly once, right after the DC opens. */
+  private installMessageHandlers(): void {
+    const dcEv = this.dc as unknown as {
+      addEventListener: (
+        event: string,
+        handler: (e: unknown) => void,
+      ) => void;
+    };
+    dcEv.addEventListener("message", (event) => {
+      const data = (event as { data: unknown }).data;
+      let text: string;
+      if (typeof data === "string") {
+        text = data;
+      } else {
+        // BufferSource — shouldn't happen with our JSON wire, but be
+        // permissive in case daemon ever ships binary frames.
+        try {
+          text = new TextDecoder().decode(data as ArrayBuffer);
+        } catch {
+          return;
+        }
+      }
       let frame: {
         type?: string;
         requestId?: string;
@@ -421,10 +631,7 @@ export class DaemonClient {
         delta?: EventDelta;
       };
       try {
-        frame =
-          typeof ev.data === "string"
-            ? JSON.parse(ev.data)
-            : JSON.parse(String(ev.data));
+        frame = JSON.parse(text);
       } catch {
         return; // ignore non-JSON
       }
@@ -436,317 +643,35 @@ export class DaemonClient {
         typeof frame.sessionId === "string" &&
         frame.delta !== undefined
       ) {
-        const cb = client.eventCallbacks.get(frame.sessionId);
+        const cb = this.eventCallbacks.get(frame.sessionId);
         if (cb) cb(frame.delta);
         return;
       }
       if (!frame.requestId) return;
-      const slot = pending.get(frame.requestId);
+      const slot = this.pending.get(frame.requestId);
       if (!slot) return;
-      pending.delete(frame.requestId);
+      this.pending.delete(frame.requestId);
       if (frame.type === "error") {
         slot.reject(new Error(frame.message ?? "daemon error"));
       } else {
         slot.resolve(frame);
       }
-    };
-    ws.onclose = () => {
-      const err = new Error("daemon connection closed");
-      for (const [, slot] of pending) slot.reject(err);
-      pending.clear();
-      client.eventCallbacks.clear();
-      // If the consumer didn't call close(), this is a network-side drop —
-      // notify so the context can schedule a reconnect. The handler is
-      // one-shot per client instance (this client is dead either way once
-      // we get here; the context replaces it on the retry).
-      if (!client.intentionallyClosed) {
-        const cb = client.onUnexpectedClose;
-        client.onUnexpectedClose = null;
-        cb?.();
-      }
-    };
-    return client;
+    });
+
+    dcEv.addEventListener("close", () => this.onTransportClosed());
   }
-}
 
-// ─── handshake plumbing ───────────────────────────────────────────────────
-
-interface HelloFrame {
-  type: "client.hello";
-  v: number;
-  sessionId: string;
-  mode: HandshakeMode;
-  clientFingerprint: string;
-  clientIdentityPublicKey: string;
-  clientNonce: string;
-  offerExpiresAt?: number;
-  offerDaemonFingerprint?: string;
-}
-
-interface ServerHelloFrame {
-  type: "server.hello";
-  v: number;
-  sessionId: string;
-  mode: HandshakeMode;
-  daemonFingerprint: string;
-  daemonIdentityPublicKey: string;
-  serverNonce: string;
-  clientNonce: string;
-  keyEpoch: number;
-  expiresAt: number;
-  daemonSignature: string;
-}
-
-/**
- * Per-attempt timeout for the full handshake (open → server.hello →
- * client.auth → server.ready). Tuned for "user just clicked Connect" UX:
- * each candidate gets ~2.5s before we move on. With 2-3 candidates the
- * worst-case wait is bounded under 10s before all addresses fail.
- */
-const HANDSHAKE_TIMEOUT_MS = 2500;
-
-async function runHandshake(
-  url: string,
-  identity: ClientIdentity,
-  hello: HelloFrame,
-  expectDaemon: { fingerprint: string; identityPublicKey: string },
-): Promise<DaemonClient> {
-  const ws = new WebSocket(url);
-  // Close-on-throw: any error escaping below leaves a half-open ws on the
-  // daemon side, which sits there until the daemon's 10s auth-timer fires
-  // (`auth timeout` in daemon log). Catch + close + rethrow keeps the wire
-  // tidy; the catch is shape-only, the throw still surfaces to the caller.
-  // The race-against-timeout puts the same hygiene on slow / unreachable
-  // candidates — without it, a phone trying a stale LAN IP would wait
-  // ~30+ seconds for the OS-level connect timeout.
-  try {
-    return await raceWithTimeout(
-      runHandshakeInner(ws, identity, hello, expectDaemon),
-      HANDSHAKE_TIMEOUT_MS,
-      `handshake to ${url} timed out after ${HANDSHAKE_TIMEOUT_MS}ms`,
-    );
-  } catch (err) {
-    try {
-      ws.close();
-    } catch {
-      // Already-closed sockets throw — ignore, the caller just wants the
-      // original handshake error.
-    }
-    throw err;
-  }
-}
-
-function raceWithTimeout<T>(
-  inner: Promise<T>,
-  timeoutMs: number,
-  message: string,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const timeoutP = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-  });
-  return Promise.race([inner, timeoutP]).finally(() => {
-    if (timer !== null) clearTimeout(timer);
-  });
-}
-
-/**
- * Try each address in sequence; first to complete the handshake wins.
- * Returns BOTH the connected client and the address that worked, so the
- * caller can promote that address to the front of the persisted list —
- * next reconnect skips the timeout cost on stale entries.
- *
- * Each attempt mints a fresh `sessionId` + `clientNonce` (via
- * `buildHello`) because the daemon's `pendingTranscripts` map is keyed by
- * sessionId — a stale sessionId from a failed attempt would conflict
- * with retries.
- *
- * On all-fail we throw a single error that pins which address failed
- * why, so DaemonClientProvider's catch can surface it.
- */
-async function connectFirstAvailable(opts: {
-  addresses: string[];
-  identity: ClientIdentity;
-  buildHello: () => HelloFrame;
-  expectDaemon: { fingerprint: string; identityPublicKey: string };
-}): Promise<{ client: DaemonClient; address: string }> {
-  const errors: string[] = [];
-  for (const address of opts.addresses) {
-    try {
-      const client = await runHandshake(
-        address,
-        opts.identity,
-        opts.buildHello(),
-        opts.expectDaemon,
-      );
-      return { client, address };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      errors.push(`${address}: ${message}`);
+  private onTransportClosed(): void {
+    const err = new Error("daemon connection closed");
+    for (const [, slot] of this.pending) slot.reject(err);
+    this.pending.clear();
+    this.eventCallbacks.clear();
+    if (!this.intentionallyClosed) {
+      const cb = this.onUnexpectedClose;
+      this.onUnexpectedClose = null;
+      cb?.();
     }
   }
-  throw new Error(
-    `all daemon addresses failed (${opts.addresses.length} tried) — ${errors.join("; ")}`,
-  );
-}
-
-/**
- * Move `winner` to the front of `addresses` (no-op if already there).
- * Pure function — caller passes the result back to `setPairedDaemon`.
- *
- * The "queue with last-good at head" pattern: every reconnect tries
- * addresses[0] first, the winner gets promoted on success, so steady
- * state on a stable network = zero wasted timeouts. Network changes
- * pay one timeout to find the new working path, then settle.
- */
-function promoteAddress(addresses: string[], winner: string): string[] {
-  if (addresses[0] === winner) return addresses;
-  return [winner, ...addresses.filter((a) => a !== winner)];
-}
-
-async function runHandshakeInner(
-  ws: WebSocket,
-  identity: ClientIdentity,
-  hello: HelloFrame,
-  expectDaemon: { fingerprint: string; identityPublicKey: string },
-): Promise<DaemonClient> {
-  await waitOpen(ws);
-
-  // Awaiting first message before we install onmessage; ws-server's first
-  // emission after our hello is server.hello.
-  const serverHelloP = waitFrame<ServerHelloFrame>(ws);
-  ws.send(JSON.stringify(hello));
-  const serverHello = await serverHelloP;
-
-  if (serverHello.type !== "server.hello") {
-    throw new Error(`expected server.hello, got ${serverHello.type}`);
-  }
-  if (serverHello.clientNonce !== hello.clientNonce) {
-    throw new Error(
-      "server.hello did not echo our clientNonce — possible MITM",
-    );
-  }
-
-  // Pin daemon identity. Two checks against the trusted source (the QR
-  // offer for qr_bootstrap, the persisted PairedDaemon for trusted_-
-  // reconnect): if either drifts we refuse the handshake. Without these
-  // we'd be the equivalent of `ssh -o StrictHostKeyChecking=no` — anyone
-  // who can answer the WS address could claim to be the daemon by
-  // sending a self-signed transcript.
-  if (serverHello.daemonFingerprint !== expectDaemon.fingerprint) {
-    throw new Error(
-      `daemon fingerprint mismatch: expected ${expectDaemon.fingerprint}, got ${serverHello.daemonFingerprint}`,
-    );
-  }
-  if (serverHello.daemonIdentityPublicKey !== expectDaemon.identityPublicKey) {
-    throw new Error(
-      "daemon identity public key mismatch — daemon identity rotated or MITM",
-    );
-  }
-
-  const transcriptInput: TranscriptInput = {
-    sessionId: hello.sessionId,
-    protocolVersion: HANDSHAKE_VERSION,
-    mode: hello.mode,
-    keyEpoch: serverHello.keyEpoch,
-    daemonFingerprint: serverHello.daemonFingerprint,
-    clientFingerprint: hello.clientFingerprint,
-    daemonIdentityPublicKey: serverHello.daemonIdentityPublicKey,
-    clientIdentityPublicKey: hello.clientIdentityPublicKey,
-    clientNonce: hello.clientNonce,
-    serverNonce: serverHello.serverNonce,
-    expiresAt: serverHello.expiresAt,
-  };
-
-  // Verify daemon's transcript signature against the trusted pubkey. This
-  // closes the loop on the identity check above: the fingerprint match
-  // proves "the server claims to be the same daemon", and this signature
-  // proves "the server actually holds the matching private key". Without
-  // it, the daemonFingerprint check is just a string compare an attacker
-  // could trivially pass.
-  //
-  // Use noble's SYNC `verify` (not `verifyAsync`). Hermes (RN's JS engine)
-  // has a regression where the resolved value of `async (...) =>
-  // hashFinishA(...)` (concise-body async arrow returning a chained
-  // `.then` promise) comes through as `undefined` regardless of the inner
-  // promise's actual resolved value — exactly the shape noble v3's
-  // `verifyAsync` uses, so it always reads as a verify-fail in RN.
-  // `identity.ts` injects the sha512 sync hook at module load (its value
-  // import in daemon-client-context.tsx runs before any handshake), so
-  // the sync code path is fully wired.
-  const sigValid = ed25519.verify(
-    base64UrlToBytes(serverHello.daemonSignature),
-    buildTranscript(transcriptInput),
-    base64UrlToBytes(serverHello.daemonIdentityPublicKey),
-  );
-  if (!sigValid) {
-    throw new Error(
-      "daemon signature on server.hello did not verify — possible MITM",
-    );
-  }
-
-  const signature = await identity.sign(
-    buildClientAuthTranscript(transcriptInput),
-  );
-  const readyP = waitFrame<{ type: string }>(ws);
-  ws.send(
-    JSON.stringify({
-      type: "client.auth",
-      v: HANDSHAKE_VERSION,
-      sessionId: hello.sessionId,
-      clientFingerprint: identity.fingerprint,
-      keyEpoch: serverHello.keyEpoch,
-      clientSignature: signature,
-    }),
-  );
-  const ready = await readyP;
-  if (ready.type !== "server.ready") {
-    throw new Error(`handshake failed; received ${JSON.stringify(ready)}`);
-  }
-
-  const pending = new Map<string, PendingRequest>();
-  return DaemonClient.install(ws, pending);
-}
-
-function waitOpen(ws: WebSocket): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      resolve();
-      return;
-    }
-    ws.onopen = () => resolve();
-    ws.onerror = (ev) => reject(new Error(`ws error: ${describeEvent(ev)}`));
-  });
-}
-
-function waitFrame<T>(ws: WebSocket): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const onMsg = (ev: { data: unknown }) => {
-      ws.onmessage = null;
-      try {
-        const text = typeof ev.data === "string" ? ev.data : String(ev.data);
-        resolve(JSON.parse(text) as T);
-      } catch (err) {
-        reject(err instanceof Error ? err : new Error(String(err)));
-      }
-    };
-    ws.onmessage = onMsg as unknown as (ev: MessageEvent) => void;
-    ws.onclose = () => reject(new Error("closed before frame"));
-    ws.onerror = (ev) => reject(new Error(`ws error: ${describeEvent(ev)}`));
-  });
-}
-
-function describeEvent(ev: unknown): string {
-  if (ev && typeof ev === "object" && "message" in ev) {
-    return String((ev as { message: unknown }).message);
-  }
-  return "unknown";
-}
-
-// ─── small utils ──────────────────────────────────────────────────────────
-
-function randomBase64UrlBytes(n: number): string {
-  return bytesToBase64Url(Crypto.getRandomBytes(n));
 }
 
 // Shared-connection orchestration lives in `daemon-client-context.tsx` —

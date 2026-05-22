@@ -10,6 +10,8 @@ import {
   type DaemonFrame,
   dtlsFingerprintTranscript,
   extractDtlsFingerprint,
+  MIN_SUPPORTED_WIRE_PROTOCOL_VERSION,
+  WIRE_PROTOCOL_VERSION,
 } from "@sidecodeapp/protocol";
 import {
   RTCIceCandidate,
@@ -20,48 +22,39 @@ import PartySocket from "partysocket";
 import type { Identity } from "./identity.js";
 import type { KnownClients } from "./known-clients.js";
 import { publicKeyFromB64 } from "./identity.js";
-import type { CommandContext, CommandHandler } from "./ws-server.js";
+import type { CommandContext, CommandHandler } from "./command.js";
 
 /**
- * P2.7c: WebRTC-DataChannel transport with **DTLS-fingerprint-pinned identity**.
+ * WebRTC-DataChannel transport with **DTLS-fingerprint-pinned identity**.
  *
- * Replaces both `WebSocketServer`'s transport AND its 4-frame
- * application-layer handshake (client.hello / server.hello /
- * client.auth / server.ready). The previous design ran a full
- * transcript-signing handshake inside the DataChannel — necessary when
- * the transport itself had no E2EE-bound identity (LAN WebSocket). With
- * WebRTC the cleaner place to bind identity is at the DTLS layer:
+ * Identity binding lives at the DTLS layer instead of in an application-
+ * layer handshake:
  *
  *   1. Daemon creates offer; SDP contains an ephemeral DTLS cert
  *      fingerprint.
- *   2. Daemon signs that fingerprint under a domain tag with its
- *      long-lived Ed25519 key and forwards { sdp, fpSig } via signaling.
+ *   2. Daemon signs that fingerprint under a domain tag with its long-
+ *      lived Ed25519 key and forwards { sdp, fpSig } via signaling.
  *   3. Client (knowing daemon's pubkey from the QR) verifies fpSig
- *      against the fingerprint it sees in the received SDP. If a
- *      malicious signaling worker had swapped the fingerprint, the
- *      verification fails — even before DTLS handshake starts.
+ *      against the fingerprint in the received SDP. A malicious signaling
+ *      worker swapping the fingerprint is caught here, BEFORE DTLS even
+ *      starts.
  *   4. Client mirrors the same fp-sign step in its answer.
  *   5. Daemon verifies the answer signature against the client's known
  *      pubkey (looked up in `known_clients.json` via the pubkey the
  *      client self-declared on the signaling side).
- *   6. DTLS handshake completes — both peers now have a session bound
- *      to identities verified out-of-band (QR for daemon → client,
- *      pair flow for client → daemon).
- *   7. DataChannel opens. Any frame received on it is implicitly from
- *      the authenticated peer; we hand them straight to the
- *      commandHandler. No further handshake steps.
+ *   6. DTLS handshake completes — the session is now bound to identities
+ *      verified out-of-band (QR for daemon → client, pair flow for
+ *      client → daemon).
+ *   7. DataChannel opens. Frames received from this point are implicitly
+ *      from the authenticated peer.
+ *   8. Wire-version handshake: client sends `hello`, daemon validates
+ *      protocol-version overlap and responds with `server_info`, then
+ *      application commands are dispatched to `commandHandler`.
  *
- * Net result: 0 application-layer handshake frames vs the old 4-frame
- * dance. ~300 LOC of pairing.ts becomes vestigial (only `createOffer`
- * for QR generation stays load-bearing).
- *
- * Pair flow (admitting a new client pubkey to known_clients) is
- * deliberately NOT handled here. The signaling layer sees the client's
- * pubkey on `peer.joined`, but accepting that into known_clients is a
- * privileged decision the menubar UI mediates (a runtime "pairing mode"
- * flag, à la Bluetooth / AirDrop). For V0 we pass `isPairing` as an
- * option: when true, unknown pubkeys are admitted; when false, they're
- * silently rejected. Tests default to permissive.
+ * Pair-window admission (admitting a new client pubkey to known_clients)
+ * is gated by `isPairing` — when true, unknown pubkeys are admitted; when
+ * false, they're silently rejected. The menubar UI controls this gate
+ * via its `createPairOffer` cadence; tests pre-pair via `knownClients.add()`.
  */
 
 const DEFAULT_SIGNALING_HOST = "signaling.sidecode.app";
@@ -73,13 +66,16 @@ export interface WebRTCPeerServerOptions {
   /** Daemon's long-lived Ed25519 identity. Signs DTLS fingerprints +
    *  proves daemon-ownership of the room to the signaling worker. */
   identity: Identity;
+  /** Daemon's semver string (read from package.json at startup). Reported
+   *  to iOS in the `server_info` frame so the UI can warn on mismatch. */
+  daemonVersion: string;
   /** Source of truth for "which iOS pubkeys is this daemon paired with."
    *  Looked up on every `peer.joined`. */
   knownClients: KnownClients;
-  /** Same dispatcher shape WebSocketServer accepts. Invoked once the
-   *  DataChannel opens; the connection at that point is fully
-   *  authenticated (DTLS fingerprint signature has been verified +
-   *  pubkey is in known_clients). */
+  /** Invoked for each application command after the per-peer wire-version
+   *  handshake (hello / server_info) completes. The DataChannel is
+   *  DTLS-bound to a known pubkey by the time we get here, AND the peer
+   *  has proven it speaks a compatible wire-protocol version. */
   commandHandler?: CommandHandler;
   /**
    * Runtime gate for admitting new iOS pubkeys via the pair-window UI.
@@ -97,11 +93,9 @@ export interface WebRTCPeerServerOptions {
 }
 
 /**
- * Per-peer slot. Vastly simpler than the old `Connection` from
- * ws-server.ts — no auth state machine, no auth timer, no pending
- * sessionId. The "authenticated" boolean flips true once DataChannel
- * opens (which only succeeds after DTLS verifies the signed
- * fingerprint).
+ * Per-peer slot. No application-layer auth state machine — the
+ * "authenticated" boolean flips true once DataChannel opens (which only
+ * succeeds after DTLS verifies the signed fingerprint).
  */
 interface PeerSlot {
   /** Signaling-assigned connection id (server-stamped, opaque). */
@@ -117,6 +111,13 @@ interface PeerSlot {
   /** True once DTLS+DataChannel is up (= peer has been cryptographically
    *  bound to clientPubkey). */
   authenticated: boolean;
+  /** True once the client's `hello` has arrived AND the wire-version
+   *  ranges overlap. Application commands sent before this flips are
+   *  rejected with `incompatible_protocol`. */
+  versionVerified: boolean;
+  /** Semver string the client self-declared in `hello`. Reserved for
+   *  future capability gating (MIN_VERSION_X checks); not used today. */
+  appVersion?: string;
   disconnectCallbacks: Array<() => void>;
   scratch: Map<string, unknown>;
 }
@@ -126,6 +127,7 @@ export class WebRTCPeerServer {
   private readonly peers = new Map<string, PeerSlot>();
   private readonly log: NonNullable<WebRTCPeerServerOptions["log"]>;
   private readonly identity: Identity;
+  private readonly daemonVersion: string;
   private readonly knownClients: KnownClients;
   private readonly commandHandler?: CommandHandler;
   private readonly isPairing: () => boolean;
@@ -136,6 +138,7 @@ export class WebRTCPeerServer {
 
   constructor(options: WebRTCPeerServerOptions) {
     this.identity = options.identity;
+    this.daemonVersion = options.daemonVersion;
     this.knownClients = options.knownClients;
     this.commandHandler = options.commandHandler;
     this.isPairing = options.isPairing ?? (() => false);
@@ -145,7 +148,7 @@ export class WebRTCPeerServer {
     this.log = options.log ?? (() => undefined);
   }
 
-  async start(): Promise<void> {
+  start(): void {
     if (this.signaling) throw new Error("WebRTCPeerServer already started");
 
     this.signaling = new PartySocket({
@@ -184,27 +187,13 @@ export class WebRTCPeerServer {
       });
     });
 
-    // Block until the worker sends us the initial `peers` frame — that's
-    // our confirmation it accepted the Ed25519 signature in the URL.
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error("signaling open timeout")),
-        10_000,
-      );
-      const onMessage = (e: MessageEvent) => {
-        const text =
-          typeof e.data === "string"
-            ? e.data
-            : new TextDecoder().decode(e.data as ArrayBuffer);
-        const msg = JSON.parse(text) as { type: string };
-        if (msg.type === "peers") {
-          clearTimeout(timeout);
-          this.signaling?.removeEventListener("message", onMessage);
-          resolve();
-        }
-      };
-      this.signaling?.addEventListener("message", onMessage);
-    });
+    // Fire-and-forget. Daemon shouldn't refuse to start just because
+    // signaling.sidecode.app is momentarily unreachable — PartySocket's
+    // infinite retry will eventually connect when the network heals, and
+    // until then pair attempts time out client-side. The previous
+    // synchronous await-for-peers was a debugging-era affordance; in
+    // production a daemon that boots cleanly and surfaces "signaling.open"
+    // in its log is the right model.
   }
 
   async stop(): Promise<void> {
@@ -325,6 +314,7 @@ export class WebRTCPeerServer {
       pc,
       dc: null,
       authenticated: false,
+      versionVerified: false,
       disconnectCallbacks: [],
       scratch: new Map(),
     };
@@ -477,9 +467,71 @@ export class WebRTCPeerServer {
       });
       // We don't kill the channel on bad frame — the protocol doesn't
       // require it, and a malformed message from an authenticated peer
-      // is more likely a bug than an attack. Match ws-server's old
-      // behavior was to close; here we just drop. Reconsider if abuse
+      // is more likely a bug than an attack. Reconsider if abuse
       // patterns appear.
+      return;
+    }
+
+    // ─── Wire-version handshake gate ─────────────────────────────────
+    // `hello` from iOS is the only frame valid before versionVerified
+    // flips. We validate range overlap, stash the client's appVersion
+    // for future capability gating, and respond with `server_info`.
+    // Mismatch → send `incompatible_protocol` error + close the peer.
+    if (frame.type === "hello") {
+      if (slot.versionVerified) {
+        // Re-hello shouldn't happen; ignore silently to keep state
+        // machine simple.
+        return;
+      }
+      const overlap =
+        frame.protocolVersion >= MIN_SUPPORTED_WIRE_PROTOCOL_VERSION &&
+        frame.minSupportedProtocolVersion <= WIRE_PROTOCOL_VERSION;
+      if (!overlap) {
+        const msg = `client wire-protocol range [${frame.minSupportedProtocolVersion}, ${frame.protocolVersion}] does not overlap daemon range [${MIN_SUPPORTED_WIRE_PROTOCOL_VERSION}, ${WIRE_PROTOCOL_VERSION}]`;
+        this.log("peer.version_mismatch", {
+          clientId: slot.clientId,
+          clientProtocolVersion: frame.protocolVersion,
+          clientMinSupported: frame.minSupportedProtocolVersion,
+          clientAppVersion: frame.appVersion,
+        });
+        this.send(slot, {
+          type: "error",
+          code: "incompatible_protocol",
+          message: msg,
+        });
+        this.closePeer(slot, "incompatible wire protocol");
+        return;
+      }
+      slot.versionVerified = true;
+      slot.appVersion = frame.appVersion;
+      this.send(slot, {
+        type: "server_info",
+        protocolVersion: WIRE_PROTOCOL_VERSION,
+        minSupportedProtocolVersion: MIN_SUPPORTED_WIRE_PROTOCOL_VERSION,
+        daemonVersion: this.daemonVersion,
+      });
+      this.log("peer.version_ok", {
+        clientId: slot.clientId,
+        clientAppVersion: frame.appVersion,
+      });
+      return;
+    }
+
+    if (!slot.versionVerified) {
+      // Any non-hello frame before the handshake completes is a protocol
+      // error. We reply with `incompatible_protocol` and close — a well-
+      // behaved client would never get here, so this is mostly diagnostic
+      // for a buggy/malicious peer.
+      this.log("peer.pre_hello_frame", {
+        clientId: slot.clientId,
+        frameType: frame.type,
+      });
+      this.send(slot, {
+        type: "error",
+        code: "incompatible_protocol",
+        message: "hello required before any other frame",
+      });
+      this.closePeer(slot, "frame before hello");
       return;
     }
 

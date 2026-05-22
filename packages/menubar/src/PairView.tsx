@@ -12,10 +12,13 @@ import sidecodeLogo from "@/assets/sidecode-logo.svg";
  * pointing the iPhone's built-in Camera app at the QR opens the iOS
  * sidecode app directly at the `/pair` modal route.
  *
- * Auto-refresh: offers carry a 5-minute TTL on the daemon side, and we
- * rotate every 2.5 minutes so the displayed QR always has at least
- * half its lifetime left. No countdown shown — the rotation is silent;
- * the user just sees a QR that "always works" without UX pressure.
+ * Auto-refresh: the daemon's admission gate ("can an unknown pubkey
+ * pair right now?") auto-tracks via the most-recent createPairOffer()
+ * call; the gate stays open for 5 min after each mint. PairView calls
+ * getPairOffer on a 2.5-min cadence so a one-missed-refresh doesn't
+ * close the gate, but closing the window stops the refreshes and the
+ * admission window lapses on its own. No countdown shown — rotation is
+ * silent and the QR "always works" while the window is open.
  *
  * Visual: plain square modules + small center logo. ecLevel M (15%
  * recovery) leaves ~10% of area for safely-occluded codewords; a 48px
@@ -27,10 +30,7 @@ const UNIVERSAL_LINK_BASE = "https://sidecode.app/pair";
 const REFRESH_INTERVAL_MS = 150_000; // 2.5min, half of the daemon's 5min TTL
 
 export default function PairView() {
-  const [offer, setOffer] = useState<{
-    encoded: string;
-    expiresAt: number;
-  } | null>(null);
+  const [offer, setOffer] = useState<{ encoded: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {

@@ -12,7 +12,7 @@ import {
 } from "./runtime/run-query.js";
 import type { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import type { SidecodeSessionMetadata } from "./sidecode-sessions.js";
-import type { CommandHandler } from "./ws-server.js";
+import type { CommandHandler } from "./command.js";
 
 export interface RouterDeps {
   continueOnDesktop: (target: ContinueOnDesktopTarget) => Promise<void>;
