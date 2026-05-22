@@ -4,6 +4,7 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: true
   msw: true
+  node-datachannel: true
   sharp: true
   workerd: true
 nodeLinker: hoisted
