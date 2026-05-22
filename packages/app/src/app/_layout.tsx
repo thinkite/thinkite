@@ -108,6 +108,14 @@ function RootStack() {
           sheetAllowedDetents: [0.5],
           sheetGrabberVisible: true,
           title: "",
+          // Static `true` so the Stack.Toolbar X-button inside pair.tsx
+          // adds an item to an already-visible header instead of
+          // flipping headerShown from false→true after mount. Without
+          // this, react-native-screens warns "Dynamically changing
+          // header's visibility in modals will result in remounting the
+          // screen" (validated inside NativeStackView.tsx whenever
+          // stackPresentation !== 'push').
+          headerShown: true,
         }}
       />
     </Stack>

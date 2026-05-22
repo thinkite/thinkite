@@ -137,8 +137,9 @@ export default function PairModal() {
       {/* Block swipe-down while pair() is in flight so an accidental
           dismiss doesn't leave the daemon side mid-handshake. */}
       <Stack.Screen options={{ gestureEnabled: !busy }} />
-      {/* Header X (top-right). placement="right" auto-enables the native
-          header — no separate headerShown:true needed. */}
+      {/* Header X (top-right). `headerShown: true` is set statically in
+          the parent _layout.tsx — toggling it from here would remount
+          the modal screen (react-native-screens warning). */}
       <Stack.Toolbar placement="right">
         <Stack.Toolbar.Button
           icon="xmark"
