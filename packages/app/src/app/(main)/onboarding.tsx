@@ -1,9 +1,8 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { Stack } from "expo-router";
+import { router, Stack } from "expo-router";
 import { SymbolView } from "expo-symbols";
 import { useCallback, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -14,7 +13,6 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useDaemonClient } from "@/lib/daemon-client-context";
 
 /**
  * `/onboarding` — first-launch / re-pair gate (only reachable while
@@ -32,21 +30,18 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  *      path (no real camera) and the fallback if the user can't get
  *      VisionKit to focus.
  *
- * Both paths feed the same `pair()` from the daemon-client context;
- * success flips `isUnpaired` to false, the root layout's
- * `Stack.Protected` guard inverts, and expo-router auto-redirects to the
- * first accessible sibling — i.e. the `(drawer)` group's index, `/`.
+ * Both paths route the extracted payload to the `/pair` modal via
+ * `router.push("/pair?o=...")` — the modal is the single owner of the
+ * `pair()` call (busy state, error surface, "Pair with this Mac?"
+ * confirmation). UL deep-links land on the same modal, so all entry
+ * paths converge on one piece of code.
  *
- * UX notes:
- *  - Scan and paste are visible side-by-side; we don't gate the scan
- *    button on `Device.isDevice` because (a) the simulator behavior of
- *    launchScanner is to reject (caught below and surfaced as a hint)
- *    rather than crash, and (b) hiding native UI when a paste path is
- *    present would just confuse anyone running on a simulator. The bias
- *    is "if it doesn't work, the paste field is right below it."
- *  - We keep a single in-flight pair attempt at a time. The "Connect"
- *    button + scanner stay disabled while pairing is running so we
- *    don't double-fire `DaemonClient.pair`.
+ * UX note: scan and paste are visible side-by-side; we don't gate the
+ * scan button on `Device.isDevice` because (a) the simulator behavior
+ * of `launchScanner` is to reject (caught below and surfaced as a
+ * hint) rather than crash, and (b) hiding native UI when a paste path
+ * is present would just confuse anyone running on a simulator. The
+ * bias is "if it doesn't work, the paste field is right below it."
  */
 /**
  * The menu bar app encodes the pair offer as a Universal Link URL
@@ -76,43 +71,30 @@ function extractOfferPayload(raw: string): string {
 export default function OnboardingRoute() {
   const insets = useSafeAreaInsets();
   const scheme = useColorScheme() ?? "light";
-  const { pair } = useDaemonClient();
   // Tuple shape from useCameraPermissions: [status, request, get]. We only
   // need the request action — there's no UI dependency on `status`, the
   // user always taps "Scan QR" first which fires the request.
   const [, requestCameraPermission] = useCameraPermissions();
 
   const [pasteValue, setPasteValue] = useState("");
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Guards against a stale onModernBarcodeScanned callback firing after
-  // we've already started a pair attempt (the scanner can deliver
+  // we've already kicked off the pair modal (the scanner can deliver
   // multiple results in quick succession before dismiss completes).
   const handlingScanRef = useRef(false);
 
-  const submit = useCallback(
-    async (raw: string) => {
-      const payload = extractOfferPayload(raw);
-      if (!payload) {
-        setError("Empty payload");
-        return;
-      }
-      setBusy(true);
-      setError(null);
-      try {
-        await pair(payload);
-        // On success, the context flips to `ready` and the protected-route
-        // guard auto-redirects us off /onboarding. No further state to clean up.
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-        setBusy(false);
-      }
-    },
-    [pair],
-  );
+  const openPairModal = useCallback((raw: string) => {
+    const payload = extractOfferPayload(raw);
+    if (!payload) {
+      setError("Empty payload");
+      return;
+    }
+    setError(null);
+    // The modal owns busy/error/confirmation UI from here on.
+    router.push({ pathname: "/pair", params: { o: payload } });
+  }, []);
 
   const handleScan = useCallback(async () => {
-    if (busy) return;
     setError(null);
     try {
       const perm = await requestCameraPermission();
@@ -126,7 +108,7 @@ export default function OnboardingRoute() {
         handlingScanRef.current = true;
         sub.remove();
         void CameraView.dismissScanner();
-        void submit(event.data);
+        openPairModal(event.data);
       });
       try {
         await CameraView.launchScanner({ barcodeTypes: ["qr"] });
@@ -144,11 +126,11 @@ export default function OnboardingRoute() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [busy, requestCameraPermission, submit]);
+  }, [requestCameraPermission, openPairModal]);
 
   const handlePaste = useCallback(() => {
-    void submit(pasteValue);
-  }, [pasteValue, submit]);
+    openPairModal(pasteValue);
+  }, [pasteValue, openPairModal]);
 
   return (
     <>
@@ -184,9 +166,7 @@ export default function OnboardingRoute() {
           {/* Scan CTA */}
           <Pressable
             onPress={handleScan}
-            disabled={busy}
             className="mb-3 flex-row items-center justify-center gap-3 rounded-2xl bg-black px-5 py-4 dark:bg-white"
-            style={busy ? { opacity: 0.5 } : undefined}
           >
             <SymbolView
               name="qrcode.viewfinder"
@@ -221,22 +201,17 @@ export default function OnboardingRoute() {
             autoComplete="off"
             spellCheck={false}
             multiline
-            editable={!busy}
             className="min-h-24 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 font-mono text-xs text-black dark:border-gray-800 dark:bg-gray-950 dark:text-white"
           />
           <Pressable
             onPress={handlePaste}
-            disabled={busy || !pasteValue.trim()}
+            disabled={!pasteValue.trim()}
             className="mt-3 flex-row items-center justify-center gap-2 rounded-2xl border border-gray-300 bg-white px-5 py-4 dark:border-gray-700 dark:bg-gray-950"
-            style={busy || !pasteValue.trim() ? { opacity: 0.5 } : undefined}
+            style={!pasteValue.trim() ? { opacity: 0.5 } : undefined}
           >
-            {busy ? (
-              <ActivityIndicator />
-            ) : (
-              <Text className="text-base font-medium text-black dark:text-white">
-                Connect
-              </Text>
-            )}
+            <Text className="text-base font-medium text-black dark:text-white">
+              Connect
+            </Text>
           </Pressable>
 
           {/* Error / status */}

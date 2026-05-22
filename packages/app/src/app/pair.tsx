@@ -6,30 +6,29 @@ import { decodePairOffer, type PairOffer } from "@/lib/daemon-client";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 
 /**
- * `/pair` — modal route, the **Universal Link landing** for
- * `https://sidecode.app/pair?o=<base64url(pair.offer)>`.
+ * `/pair` — modal route. **Single entry point for pair flows**, regardless
+ * of where the offer payload came from:
  *
- * Unlike `/onboarding` (the fullscreen card a freshly-installed user
- * sees on cold start), this route is presented as an iOS form sheet at
- * a half-screen detent so the underlying screen stays visible. Two
- * scenarios:
+ *   1. **Universal Link** — Camera app scans
+ *      `https://sidecode.app/pair?o=<base64url>` and cold-launches us
+ *      straight here. `Stack.Protected` shows `/onboarding` underneath
+ *      for an unpaired user, or the drawer screen for a paired user
+ *      adding another Mac (V0.5+).
+ *   2. **In-app scanner** (`/onboarding` "Scan QR code") — VisionKit
+ *      modal returns the QR string; the onboarding screen extracts the
+ *      payload and `router.push("/pair?o=...")`s here.
+ *   3. **In-app paste** (`/onboarding` "Paste payload") — same
+ *      extraction + push as #2.
  *
- *   1. **Unpaired user taps a UL** — `Stack.Protected` shows
- *      `/onboarding` underneath; this modal expands over it asking
- *      the user to confirm the Mac that issued the QR.
- *   2. **Paired user adds another Mac (V0.5+)** — sheet appears over
- *      whichever drawer screen they were on.
+ * Routing all paths through one modal gives us a single confirmation
+ * step ("Pair with this Mac? <serviceName>") and a single place that
+ * calls `pair()` — busy state, error surface, gesture-disable-during-
+ * pairing all live in one component.
  *
- * The confirmation step defends against drive-by pair URLs (a
- * malicious link in iMessage / Mail / a web page). Decoded
- * `serviceName` + first LAN IP + countdown give the user enough
- * surface to recognize a legitimate offer from one of their own Macs.
- *
- * UX nuance — explicit (in-app scanner / paste on /onboarding) and
- * implicit (UL) pair entries diverge here:
- *   - in-app scan / paste → no confirmation modal, the user just
- *     showed clear intent.
- *   - UL → this modal, always.
+ * The confirmation defends against drive-by UL payloads (a malicious
+ * link in iMessage / Mail / a web page). Decoded `serviceName` is the
+ * only user-facing recognition signal — pubkey + WebRTC fingerprint
+ * pinning handle the cryptographic side under the hood.
  *
  * Visual language mirrors the iOS system sign-in / passkey sheet:
  *   - Native iOS sheet header with X close button (top-right)
