@@ -273,13 +273,9 @@ app.whenReady().then(async () => {
     `[main] daemon ready (fingerprint ${daemon.fingerprint}, ${daemon.pairedClientCount()} paired clients)`,
   );
 
-  // Pair window IPC. Offers are stateless, so a fresh one per call is
-  // fine — PairView mints on mount and rotates on a fixed cadence below
-  // the 5-min TTL. The daemon rebuilds the address list per call from
-  // `os.networkInterfaces()`, so the QR picks up Wi-Fi changes without
-  // us having to restart anything. `hostname()` is the Mac's
-  // `os.hostname()` which iOS surfaces as `serviceName` in the confirm
-  // modal.
+  // PairView refreshes on a 2.5min cadence to keep the daemon's 5-min
+  // admission gate open while the window is visible. `hostname()` is
+  // surfaced as `serviceName` in iOS's confirm modal.
   ipcMain.handle("sidecode:getPairOffer", () => {
     if (!daemon) throw new Error("daemon not ready");
     return daemon.createPairOffer(hostname());
