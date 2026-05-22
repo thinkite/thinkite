@@ -2,6 +2,11 @@ import { z } from "zod";
 
 export const PROTOCOL_VERSION = "0.0.1";
 
+export {
+  dtlsFingerprintTranscript,
+  extractDtlsFingerprint,
+} from "./sdp-fingerprint.js";
+
 // ─── Handshake protocol ────────────────────────────────────────────────────
 //
 // Inspired by Remodex's CodexSecureTransportModels.swift. See memory file
