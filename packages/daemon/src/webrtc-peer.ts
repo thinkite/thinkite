@@ -10,8 +10,8 @@ import {
   type DaemonFrame,
   dtlsFingerprintTranscript,
   extractDtlsFingerprint,
-  MIN_SUPPORTED_WIRE_PROTOCOL_VERSION,
-  WIRE_PROTOCOL_VERSION,
+  isProtocolCompatible,
+  PROTOCOL_VERSION,
 } from "@sidecodeapp/protocol";
 import {
   RTCIceCandidate,
@@ -66,9 +66,6 @@ export interface WebRTCPeerServerOptions {
   /** Daemon's long-lived Ed25519 identity. Signs DTLS fingerprints +
    *  proves daemon-ownership of the room to the signaling worker. */
   identity: Identity;
-  /** Daemon's semver string (read from package.json at startup). Reported
-   *  to iOS in the `server_info` frame so the UI can warn on mismatch. */
-  daemonVersion: string;
   /** Source of truth for "which iOS pubkeys is this daemon paired with."
    *  Looked up on every `peer.joined`. */
   knownClients: KnownClients;
@@ -111,13 +108,10 @@ interface PeerSlot {
   /** True once DTLS+DataChannel is up (= peer has been cryptographically
    *  bound to clientPubkey). */
   authenticated: boolean;
-  /** True once the client's `hello` has arrived AND the wire-version
-   *  ranges overlap. Application commands sent before this flips are
-   *  rejected with `incompatible_protocol`. */
+  /** True once the client's `hello` has arrived AND its protocolVersion
+   *  is wire-compatible with ours. Application commands sent before
+   *  this flips are rejected with `incompatible_protocol`. */
   versionVerified: boolean;
-  /** Semver string the client self-declared in `hello`. Reserved for
-   *  future capability gating (MIN_VERSION_X checks); not used today. */
-  appVersion?: string;
   disconnectCallbacks: Array<() => void>;
   scratch: Map<string, unknown>;
 }
@@ -127,7 +121,6 @@ export class WebRTCPeerServer {
   private readonly peers = new Map<string, PeerSlot>();
   private readonly log: NonNullable<WebRTCPeerServerOptions["log"]>;
   private readonly identity: Identity;
-  private readonly daemonVersion: string;
   private readonly knownClients: KnownClients;
   private readonly commandHandler?: CommandHandler;
   private readonly isPairing: () => boolean;
@@ -138,7 +131,6 @@ export class WebRTCPeerServer {
 
   constructor(options: WebRTCPeerServerOptions) {
     this.identity = options.identity;
-    this.daemonVersion = options.daemonVersion;
     this.knownClients = options.knownClients;
     this.commandHandler = options.commandHandler;
     this.isPairing = options.isPairing ?? (() => false);
@@ -474,45 +466,37 @@ export class WebRTCPeerServer {
 
     // ─── Wire-version handshake gate ─────────────────────────────────
     // `hello` from iOS is the only frame valid before versionVerified
-    // flips. We validate range overlap, stash the client's appVersion
-    // for future capability gating, and respond with `server_info`.
-    // Mismatch → send `incompatible_protocol` error + close the peer.
+    // flips. The protocol package's `isProtocolCompatible` owns the rule
+    // (same minor for 0.x, same major for ≥1.x). Mismatch → send
+    // `incompatible_protocol` error + close the peer.
     if (frame.type === "hello") {
       if (slot.versionVerified) {
         // Re-hello shouldn't happen; ignore silently to keep state
         // machine simple.
         return;
       }
-      const overlap =
-        frame.protocolVersion >= MIN_SUPPORTED_WIRE_PROTOCOL_VERSION &&
-        frame.minSupportedProtocolVersion <= WIRE_PROTOCOL_VERSION;
-      if (!overlap) {
-        const msg = `client wire-protocol range [${frame.minSupportedProtocolVersion}, ${frame.protocolVersion}] does not overlap daemon range [${MIN_SUPPORTED_WIRE_PROTOCOL_VERSION}, ${WIRE_PROTOCOL_VERSION}]`;
+      if (!isProtocolCompatible(frame.protocolVersion)) {
         this.log("peer.version_mismatch", {
           clientId: slot.clientId,
           clientProtocolVersion: frame.protocolVersion,
-          clientMinSupported: frame.minSupportedProtocolVersion,
-          clientAppVersion: frame.appVersion,
+          daemonProtocolVersion: PROTOCOL_VERSION,
         });
         this.send(slot, {
           type: "error",
           code: "incompatible_protocol",
-          message: msg,
+          message: `client protocol ${frame.protocolVersion} is not compatible with daemon ${PROTOCOL_VERSION}`,
         });
         this.closePeer(slot, "incompatible wire protocol");
         return;
       }
       slot.versionVerified = true;
-      slot.appVersion = frame.appVersion;
       this.send(slot, {
         type: "server_info",
-        protocolVersion: WIRE_PROTOCOL_VERSION,
-        minSupportedProtocolVersion: MIN_SUPPORTED_WIRE_PROTOCOL_VERSION,
-        daemonVersion: this.daemonVersion,
+        protocolVersion: PROTOCOL_VERSION,
       });
       this.log("peer.version_ok", {
         clientId: slot.clientId,
-        clientAppVersion: frame.appVersion,
+        protocolVersion: frame.protocolVersion,
       });
       return;
     }

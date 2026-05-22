@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   approveCommand,
@@ -17,9 +20,9 @@ import {
   helloCommand,
   interruptCommand,
   interruptResponse,
+  isProtocolCompatible,
   listSessionsCommand,
   listSessionsResponse,
-  MIN_SUPPORTED_WIRE_PROTOCOL_VERSION,
   PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
   decodePairOfferPayload,
@@ -36,12 +39,48 @@ import {
   subscribeResponse,
   unsubscribeCommand,
   unsubscribeResponse,
-  WIRE_PROTOCOL_VERSION,
 } from "./index.js";
 
-describe("protocol version", () => {
-  it("is exported as a non-empty string", () => {
+describe("PROTOCOL_VERSION", () => {
+  it("is a valid semver string", () => {
     expect(PROTOCOL_VERSION).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it("matches package.json `version` (hand-maintained sync)", () => {
+    // The constant is hand-maintained (Metro JSON-import bundling is
+    // fragile across RN versions, so we can't safely read package.json
+    // at runtime on the iOS side). This test fails loudly if the two
+    // drift — bump them together.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(
+      readFileSync(join(here, "..", "package.json"), "utf8"),
+    ) as { version: string };
+    expect(PROTOCOL_VERSION).toBe(pkg.version);
+  });
+});
+
+describe("isProtocolCompatible", () => {
+  it("accepts the local version verbatim", () => {
+    expect(isProtocolCompatible(PROTOCOL_VERSION)).toBe(true);
+  });
+
+  it("0.x rule: same minor compatible, different minor incompatible", () => {
+    // The local version is 0.0.x, so the rule for the current build is
+    // "match major + minor exactly; patch is free." We synthesize the
+    // remote against the LOCAL parsed major/minor so this stays valid
+    // as PROTOCOL_VERSION bumps within the 0.x range.
+    const [major, minor] = PROTOCOL_VERSION.split(".").map(Number);
+    if (major === 0) {
+      expect(isProtocolCompatible(`${major}.${minor}.99`)).toBe(true);
+      expect(isProtocolCompatible(`${major}.${minor + 1}.0`)).toBe(false);
+      expect(isProtocolCompatible(`${major + 1}.0.0`)).toBe(false);
+    }
+  });
+
+  it("rejects garbage / non-semver input (defensive)", () => {
+    expect(isProtocolCompatible("not-a-version")).toBe(false);
+    expect(isProtocolCompatible("")).toBe(false);
+    expect(isProtocolCompatible("1")).toBe(false);
   });
 });
 
@@ -532,63 +571,35 @@ describe("request/response correlation", () => {
 });
 
 describe("hello / server_info wire-version handshake", () => {
-  it("WIRE_PROTOCOL_VERSION starts at 1", () => {
-    expect(WIRE_PROTOCOL_VERSION).toBe(1);
-  });
-
-  it("MIN_SUPPORTED defaults to current (no degraded paths yet)", () => {
-    // When we ship v=2, this can lower to 1 alongside the v=1 codepath
-    // surviving on the daemon side. Until then, exact-match only.
-    expect(MIN_SUPPORTED_WIRE_PROTOCOL_VERSION).toBe(WIRE_PROTOCOL_VERSION);
-  });
-
-  it("helloCommand parses with all required fields", () => {
+  it("helloCommand parses with protocolVersion semver string", () => {
     const p = helloCommand.parse({
       type: "hello",
-      protocolVersion: 1,
-      minSupportedProtocolVersion: 1,
-      appVersion: "1.0.0",
+      protocolVersion: "0.0.1",
     });
-    expect(p.protocolVersion).toBe(1);
-    expect(p.appVersion).toBe("1.0.0");
+    expect(p.protocolVersion).toBe("0.0.1");
   });
 
-  it("helloCommand rejects missing minSupportedProtocolVersion", () => {
+  it("helloCommand rejects missing protocolVersion", () => {
     expect(
-      helloCommand.safeParse({
-        type: "hello",
-        protocolVersion: 1,
-        appVersion: "1.0.0",
-      }).success,
+      helloCommand.safeParse({ type: "hello" }).success,
     ).toBe(false);
   });
 
-  it("serverInfoEvent parses with all required fields", () => {
+  it("serverInfoEvent parses with protocolVersion semver string", () => {
     const p = serverInfoEvent.parse({
       type: "server_info",
-      protocolVersion: 1,
-      minSupportedProtocolVersion: 1,
-      daemonVersion: "0.0.0",
+      protocolVersion: "0.0.1",
     });
-    expect(p.daemonVersion).toBe("0.0.0");
+    expect(p.protocolVersion).toBe("0.0.1");
   });
 
   it("helloCommand is included in clientFrame, serverInfoEvent in daemonFrame", () => {
     expect(
-      clientFrame.parse({
-        type: "hello",
-        protocolVersion: 1,
-        minSupportedProtocolVersion: 1,
-        appVersion: "1.0.0",
-      }).type,
+      clientFrame.parse({ type: "hello", protocolVersion: "0.0.1" }).type,
     ).toBe("hello");
     expect(
-      daemonFrame.parse({
-        type: "server_info",
-        protocolVersion: 1,
-        minSupportedProtocolVersion: 1,
-        daemonVersion: "0.0.0",
-      }).type,
+      daemonFrame.parse({ type: "server_info", protocolVersion: "0.0.1" })
+        .type,
     ).toBe("server_info");
   });
 });

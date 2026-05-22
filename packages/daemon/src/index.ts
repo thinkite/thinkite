@@ -18,7 +18,6 @@ import {
   listSidecodeSessions,
   writeSidecodeSession,
 } from "./sidecode-sessions.js";
-import { DAEMON_VERSION } from "./version.js";
 import { WebRTCPeerServer } from "./webrtc-peer.js";
 
 export interface DaemonOptions {
@@ -117,7 +116,6 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
 
   const webrtc = new WebRTCPeerServer({
     identity,
-    daemonVersion: DAEMON_VERSION,
     knownClients,
     commandHandler,
     isPairing: () => Date.now() - lastPairOfferAt < PAIR_WINDOW_MS,

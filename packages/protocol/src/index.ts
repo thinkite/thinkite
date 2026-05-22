@@ -1,11 +1,68 @@
 import { z } from "zod";
 
-export const PROTOCOL_VERSION = "0.0.1";
-
 export {
   dtlsFingerprintTranscript,
   extractDtlsFingerprint,
 } from "./sdp-fingerprint.js";
+
+// ─── Protocol version ──────────────────────────────────────────────────────
+//
+// Single source of truth for "what wire schemas does this side speak."
+// The protocol package IS the wire contract, so its semver IS the wire
+// version — daemon and iOS both import the same constant. Compatibility
+// check (`isProtocolCompatible`) also lives here so the rule lives next
+// to the schemas it's protecting; transports just call the helper.
+//
+// Bump policy:
+//   - **patch** (0.0.1 → 0.0.2 / 1.2.3 → 1.2.4): additive only — new
+//     optional field, new enum case, new whole frame type that older
+//     peers harmlessly ignore. Stays compatible.
+//   - **minor** (0.0.x → 0.1.0): breaking schema change during 0.x
+//     phase (field removed / type changed / required field added /
+//     enum case retired). Incompatible.
+//   - **major** (1.x → 2.0.0): breaking schema change post-1.0. Same
+//     semantics as minor-during-0.x but on the post-stable side.
+//
+// `isProtocolCompatible` enforces "same minor for 0.x, same major for
+// ≥1.x" — the npm-style caret semantics adjusted for 0.x convention.
+// Patches are always compatible. Mismatch → DC closes with `error{code:
+// "incompatible_protocol"}` and iOS surfaces "update needed."
+//
+// Hand-maintained constant rather than reading package.json at runtime,
+// because Metro JSON-import bundling on the iOS side is fragile across
+// RN versions. Keep this value in lockstep with packages/protocol/
+// package.json `version`; a vitest assertion below verifies they match.
+export const PROTOCOL_VERSION = "0.0.0";
+
+/**
+ * True iff a remote peer reporting `remote` speaks a wire-compatible
+ * schema set. See PROTOCOL_VERSION's bump policy for the rules.
+ *
+ * Returns `false` on unparseable input (defensive — we'd rather refuse
+ * than blunder on with an unknown version that might or might not be
+ * compatible).
+ */
+export function isProtocolCompatible(remote: string): boolean {
+  const local = parseSemver(PROTOCOL_VERSION);
+  const r = parseSemver(remote);
+  if (!local || !r) return false;
+  if (local.major !== r.major) return false;
+  // For 0.x, minor is the breaking boundary; for ≥1.x, major is.
+  if (local.major === 0) return local.minor === r.minor;
+  return true;
+}
+
+function parseSemver(
+  v: string,
+): { major: number; minor: number; patch: number } | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
+  if (!m) return null;
+  return {
+    major: Number.parseInt(m[1], 10),
+    minor: Number.parseInt(m[2], 10),
+    patch: Number.parseInt(m[3], 10),
+  };
+}
 
 // ─── Pair offer ────────────────────────────────────────────────────────────
 //
@@ -28,34 +85,6 @@ export {
 // screenshot is harmless once the window closes.
 
 export const PAIR_OFFER_VERSION = 2;
-
-// ─── Runtime wire-protocol version ────────────────────────────────────────
-//
-// Distinct from PAIR_OFFER_VERSION (which versions just the QR shape) and
-// from semantic daemonVersion / appVersion (which are UX-level semver
-// strings). This is the integer that names the *frame schemas* iOS and
-// daemon speak over the authenticated DataChannel.
-//
-// Bumped on any breaking change to a command / response / event schema
-// (field removed, type changed, enum value retired). Additive changes
-// (new optional field, new enum case) DO NOT require a bump — Zod's
-// default-passthrough lets older peers strip the field harmlessly.
-//
-// Each side advertises its own [MIN_SUPPORTED, current] range in the
-// hello / server_info exchange. The peer accepts only if the ranges
-// overlap. With a single supported version today the check is trivially
-// exact-match; once we ship v=2, daemon can advertise `{current:2,
-// min:1}` so v=1 clients continue to work in degraded mode.
-export const WIRE_PROTOCOL_VERSION = 1;
-
-/**
- * Lowest WIRE_PROTOCOL_VERSION this build still understands. Defaults to
- * `WIRE_PROTOCOL_VERSION`; bumping this is the explicit "drop support for
- * v=N" knob. Setting `min < current` requires keeping the v=N codepaths
- * alive on the implementation side — don't lower this without doing that
- * work.
- */
-export const MIN_SUPPORTED_WIRE_PROTOCOL_VERSION = 1;
 
 export const pairOfferFrame = z.object({
   type: z.literal("pair.offer"),
@@ -628,35 +657,24 @@ export const errorFrame = z.object({
 
 // ─── Hello / server_info (wire-version handshake on DataChannel open) ─────
 //
-// iOS sends `hello` immediately after DC.open. Daemon validates the
-// version range overlap and responds with `server_info` (or with an
-// `error` + DC close on mismatch). iOS treats `server_info` as the
-// "ready" signal — application commands may only be sent after it
-// arrives. Daemon refuses application commands before hello.
+// iOS sends `hello` immediately after DC.open carrying its PROTOCOL_VERSION.
+// Daemon checks compatibility via `isProtocolCompatible` and responds with
+// its own `server_info` (or with `error{code:"incompatible_protocol"}` +
+// DC close on mismatch). iOS treats `server_info` as the "ready" signal —
+// application commands may only flow after it arrives.
 //
-// `appVersion` / `daemonVersion` are semver strings (`"1.2.3"`,
-// `"0.5.0-beta.1"`). UI compares them with same-major-only semantics —
-// a patch difference (1.0.0 vs 1.0.1) does NOT warn, a major difference
-// (1.x vs 2.x) does. Per-side helpers live in the daemon + iOS code,
-// not in the protocol package, so we don't take a semver dependency
-// here.
+// Single field exchanged each way. There's no separate "app release
+// version" / "daemon release version" — the protocol package owns the
+// only version that matters for whether the two ends can talk.
 
 export const helloCommand = z.object({
   type: z.literal("hello"),
-  /** Highest wire version this client speaks. Today: 1. */
-  protocolVersion: z.number().int(),
-  /** Lowest wire version this client still understands. Today: 1.
-   *  Daemon accepts if `[clientMin, clientCurrent]` overlaps
-   *  `[daemonMin, daemonCurrent]`. */
-  minSupportedProtocolVersion: z.number().int(),
-  appVersion: z.string(),
+  protocolVersion: z.string(),
 });
 
 export const serverInfoEvent = z.object({
   type: z.literal("server_info"),
-  protocolVersion: z.number().int(),
-  minSupportedProtocolVersion: z.number().int(),
-  daemonVersion: z.string(),
+  protocolVersion: z.string(),
 });
 
 export type HelloCommand = z.infer<typeof helloCommand>;

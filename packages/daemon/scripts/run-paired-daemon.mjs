@@ -18,7 +18,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadOrCreateIdentity } from "../dist/identity.js";
 import { KnownClients } from "../dist/known-clients.js";
-import { DAEMON_VERSION } from "../dist/version.js";
 import { WebRTCPeerServer } from "../dist/webrtc-peer.js";
 import { createHash } from "node:crypto";
 
@@ -57,7 +56,6 @@ console.log("");
 
 const server = new WebRTCPeerServer({
   identity,
-  daemonVersion: DAEMON_VERSION,
   knownClients: known,
   log: (event, data) => {
     if (event === "signaling.peers") return; // noisy

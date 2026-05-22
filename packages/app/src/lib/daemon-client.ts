@@ -3,14 +3,13 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import {
   decodePairOfferPayload,
   type EventDelta,
-  MIN_SUPPORTED_WIRE_PROTOCOL_VERSION,
+  isProtocolCompatible,
   PAIR_OFFER_VERSION,
+  PROTOCOL_VERSION,
   type TimelineItem,
-  WIRE_PROTOCOL_VERSION,
 } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
-import { APP_VERSION } from "./app-version";
 import { base64UrlToBytes } from "./base64";
 import type { ClientIdentity } from "./identity";
 import {
@@ -154,9 +153,6 @@ export class DaemonClient {
     private readonly peer: WebRTCPeer,
     private readonly dc: RTCDataChannel,
     private readonly pending: Map<string, PendingRequest>,
-    /** Daemon's semver string from `server_info`. Compare to APP_VERSION
-     *  for the soft mismatch UI banner. */
-    readonly daemonVersion: string,
   ) {}
 
   /**
@@ -296,7 +292,7 @@ export class DaemonClient {
               type?: string;
               code?: string;
               message?: string;
-              daemonVersion?: string;
+              protocolVersion?: string;
             };
             try {
               frame = JSON.parse(data);
@@ -308,25 +304,39 @@ export class DaemonClient {
               frame.code === "incompatible_protocol"
             ) {
               dcEv.removeEventListener("message", onHelloReply);
-              // Keep the daemon's diagnostic text out of the user-facing
-              // string — it's technical (range-overlap arithmetic) and
-              // not actionable from the phone. Log it for debugging.
+              // Keep the daemon's diagnostic text (which version it
+              // wanted, which we sent) in a console.warn for debugging;
+              // user-facing string is generic + actionable.
               if (frame.message) {
                 // biome-ignore lint/suspicious/noConsole: dev surface
                 console.warn(`daemon reported incompatible_protocol: ${frame.message}`);
               }
               fail(
                 new Error(
-                  "Sidecode on your Mac is a different version. Update both the app and the Mac app, then try again.",
+                  "Sidecode on your Mac speaks a different protocol version. Update both the app and the Mac app, then try again.",
                 ),
               );
               return;
             }
             if (
               frame.type === "server_info" &&
-              typeof frame.daemonVersion === "string"
+              typeof frame.protocolVersion === "string"
             ) {
               if (settled) return;
+              // Defense in depth: daemon should never advertise an
+              // incompatible version in server_info (the protocol pkg's
+              // `isProtocolCompatible` is symmetric), but if the rules
+              // ever drift asymmetrically we'd rather fail cleanly here
+              // than continue and watch frames break in opaque ways.
+              if (!isProtocolCompatible(frame.protocolVersion)) {
+                dcEv.removeEventListener("message", onHelloReply);
+                fail(
+                  new Error(
+                    "Sidecode on your Mac speaks a different protocol version. Update both the app and the Mac app, then try again.",
+                  ),
+                );
+                return;
+              }
               settled = true;
               clearTimeout(timeoutId);
               dcEv.removeEventListener("message", onHelloReply);
@@ -340,13 +350,7 @@ export class DaemonClient {
               } catch {
                 // ignore
               }
-              const client = new DaemonClient(
-                signaling,
-                peer,
-                dc,
-                pending,
-                frame.daemonVersion,
-              );
+              const client = new DaemonClient(signaling, peer, dc, pending);
               client.installMessageHandlers();
               resolve(client);
             }
@@ -358,10 +362,7 @@ export class DaemonClient {
             dcEv.send(
               JSON.stringify({
                 type: "hello",
-                protocolVersion: WIRE_PROTOCOL_VERSION,
-                minSupportedProtocolVersion:
-                  MIN_SUPPORTED_WIRE_PROTOCOL_VERSION,
-                appVersion: APP_VERSION,
+                protocolVersion: PROTOCOL_VERSION,
               }),
             );
           } catch (err) {

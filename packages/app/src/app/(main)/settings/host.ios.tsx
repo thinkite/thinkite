@@ -9,15 +9,14 @@ import {
 } from "@expo/ui/swift-ui";
 import { font } from "@expo/ui/swift-ui/modifiers";
 import { Stack } from "expo-router";
+import { PROTOCOL_VERSION } from "@sidecodeapp/protocol";
 import { Alert } from "react-native";
-import { APP_VERSION } from "@/lib/app-version";
 import { fingerprintFromPubkey } from "@/lib/daemon-client";
 import {
   statusColor,
   statusLabel,
   useDaemonClient,
 } from "@/lib/daemon-client-context";
-import { isSameMajor } from "@/lib/version-check";
 
 /**
  * Single-host detail page, iOS-only. See settings/index.ios.tsx for why
@@ -36,16 +35,7 @@ import { isSameMajor } from "@/lib/version-check";
  * and source the record by id; the section structure carries over.
  */
 export default function SettingsHostScreen() {
-  const { paired, client, unpair, connectionStatus } = useDaemonClient();
-  // daemonVersion only known while connected — null during offline / boot
-  // means we just hide the version row + banner until the next handshake.
-  const daemonVersion = client?.daemonVersion ?? null;
-  // Soft mismatch surface: warn only on different major. Patch / minor
-  // differences are by convention non-breaking and shouldn't nag the
-  // user. Hidden entirely when daemonVersion is unknown (still
-  // reconnecting) so we don't flash a stale-state warning.
-  const versionMismatch =
-    daemonVersion !== null && !isSameMajor(APP_VERSION, daemonVersion);
+  const { paired, unpair, connectionStatus } = useDaemonClient();
 
   const onForget = () => {
     Alert.alert(
@@ -95,20 +85,11 @@ export default function SettingsHostScreen() {
               {fingerprint}
             </Text>
           </Section>
-          {daemonVersion !== null && (
-            <Section title="Version">
-              <Text modifiers={[font({ design: "monospaced" })]}>
-                {`app ${APP_VERSION} · daemon ${daemonVersion}`}
-              </Text>
-            </Section>
-          )}
-          {versionMismatch && (
-            <Section title="Version mismatch">
-              <Text>
-                {`App and daemon majors don't match (app ${APP_VERSION}, daemon ${daemonVersion}). Update both for the best experience.`}
-              </Text>
-            </Section>
-          )}
+          <Section title="Protocol">
+            <Text modifiers={[font({ design: "monospaced" })]}>
+              {PROTOCOL_VERSION}
+            </Text>
+          </Section>
           <Section>
             {/* biome-ignore lint/a11y/useValidAriaRole: SwiftUI ButtonRole
                 ('default' | 'cancel' | 'destructive'), not an HTML/ARIA
