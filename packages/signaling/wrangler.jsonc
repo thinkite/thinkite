@@ -1,0 +1,39 @@
+{
+  // Cloudflare Workers + Durable Object signaling server for sidecode peers.
+  //
+  // Each daemon Ed25519 pubkey gets its own Signaling DO instance (via
+  // `idFromName(pubkey)`). Mac daemon and paired iOS clients both connect
+  // here; the DO shuffles WebRTC SDP offers/answers + ICE candidates
+  // between them, then hibernates until the next signaling event.
+  //
+  // Hibernation: enabled via `static options = { hibernate: true }` in the
+  // Signaling class. DO sleeps when no message is flowing; CF edge keeps
+  // WebSockets alive on its behalf. Required for the free-tier cost model
+  // to stay near $0.
+  //
+  // Free-tier requires SQLite-backed DO (`new_sqlite_classes` below);
+  // KV-backed DO would require a paid Workers plan.
+  "name": "sidecode-signaling",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-21",
+  // Set route after first deploy. Skipped here so `wrangler dev` works
+  // out of the box without a custom-domain binding.
+  // "routes": [{ "pattern": "signaling.sidecode.app", "custom_domain": true }],
+  "observability": {
+    "enabled": true
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "Signaling",
+        "class_name": "Signaling"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Signaling"]
+    }
+  ]
+}

@@ -15,3 +15,10 @@ coverage
 
 # Local Claude Code per-repo state (settings, agent worktrees)
 .claude/
+
+# `wrangler types` generated env + workerd runtime types (re-derive via cf-typegen)
+# 13k+ lines of workerd type definitions — regenerable, not worth diffing.
+worker-configuration.d.ts
+
+# wrangler local dev state (.dev.vars, .wrangler/state caches)
+.wrangler
