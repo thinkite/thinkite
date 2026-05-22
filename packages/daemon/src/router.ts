@@ -320,9 +320,10 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           // followed by DC.close is fine.
           ctx.onDisconnect(unsubscribe);
 
-          // Initial snapshot — primes the iOS bar without a follow-up
-          // event roundtrip. Cache + inFlight dedup handle the case where
-          // refresh() races the listener's own initial push.
+          // Initial snapshot in the response primes the iOS bar without
+          // a follow-up event roundtrip. `GitWatcher.subscribe` is pure
+          // registration — listener fires only on subsequent changes —
+          // so this `refresh()` is the one and only initial delivery.
           const status = await watcher.refresh();
           ctx.send({
             type: "subscribeGitStatus.response",

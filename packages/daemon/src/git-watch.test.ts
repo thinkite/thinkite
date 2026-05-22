@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GitWatcher } from "./git-watch.js";
+import { type GitStatus, GitWatcher } from "./git-watch.js";
 
 /**
  * Real-git integration tests. `simple-git` is itself just a `git` CLI
@@ -83,23 +83,23 @@ describe("GitWatcher", () => {
     w.dispose();
   });
 
-  it("delivers the initial snapshot to a subscriber", async () => {
+  it("subscribe is pure registration — no initial snapshot fires", async () => {
     initRepo(dir);
     writeFileSync(path.join(dir, "a.txt"), "x\n");
     execFileSync("git", ["add", "a.txt"], { cwd: dir });
     execFileSync("git", ["commit", "-q", "-m", "first"], { cwd: dir });
 
     const w = new GitWatcher(dir);
-    const got: Array<{ branch: string | null; isDirty: boolean }> = [];
-    const unsubscribe = w.subscribe((s) =>
-      got.push({ branch: s.branch, isDirty: s.isDirty }),
-    );
-    // subscribe pushes async — give the in-flight refresh a tick.
-    await w.refresh();
-    // One small extra tick to drain the resolve-after-cache microtask.
+    const got: GitStatus[] = [];
+    const unsubscribe = w.subscribe((s) => got.push(s));
+    // refresh() is the read API. The listener only sees subsequent
+    // change-triggered pushes (debounced + invalidated cache).
+    const snapshot = await w.refresh();
+    // Drain any stray microtasks that might have queued a push.
     await new Promise((r) => setImmediate(r));
-    expect(got.length).toBeGreaterThanOrEqual(1);
-    expect(got[0]).toEqual({ branch: "main", isDirty: false });
+    expect(snapshot.branch).toBe("main");
+    expect(snapshot.isDirty).toBe(false);
+    expect(got).toEqual([]);
     unsubscribe();
     w.dispose();
   });

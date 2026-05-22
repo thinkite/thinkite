@@ -105,21 +105,16 @@ export class GitWatcher {
     });
   }
 
-  /** Add a listener. First subscriber spins up watchers + an initial
-   *  refresh. Returns an unsubscribe function. The initial snapshot is
-   *  delivered async (after the first git invocation completes). */
+  /** Add a listener. First subscriber spins up watchers. **Listener
+   *  fires only on subsequent changes** — call `refresh()` separately
+   *  if you need the current state. Splitting "register for changes"
+   *  from "fetch now" lets callers (e.g. the router, which embeds the
+   *  initial snapshot in its subscribe response) avoid receiving the
+   *  same snapshot twice. Returns an unsubscribe function. */
   subscribe(listener: GitStatusListener): () => void {
     if (this.disposed) throw new Error("GitWatcher is disposed");
     this.listeners.add(listener);
     if (this.listeners.size === 1) this.startWatching();
-    void this.refresh()
-      .then((s) => {
-        // Re-check the listener is still subscribed before pushing —
-        // it might have unsubscribed between subscribe() returning and
-        // the first git call resolving.
-        if (this.listeners.has(listener)) listener(s);
-      })
-      .catch(() => undefined);
     return () => this.unsubscribe(listener);
   }
 
