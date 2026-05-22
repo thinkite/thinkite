@@ -15,9 +15,17 @@ import { simpleGit, type SimpleGit } from "simple-git";
  *     the `+N -M` diff numbers — see self-heal below).
  *   - **500ms debounce** on watch events absorbs the storm of writes
  *     that hit `.git/index` during a `git add` / staging operation.
- *   - **15s status cache** dedups concurrent `git status` calls
- *     triggered by multiple subscribers (or a hot watch event arriving
- *     while the previous refresh is in-flight).
+ *     This is the only knob that throttles outgoing pushes; everything
+ *     below is read-side dedup, not push-side throttling.
+ *   - **15s `cachedStatus` TTL** is a read-side optimization: when
+ *     multiple subscribers or external callers hit `refresh()` and
+ *     nothing has invalidated the cache, return the last snapshot
+ *     instead of re-shelling out. Watch events + self-heal both
+ *     **invalidate** the cache before re-running git, so this never
+ *     delays a real change from being pushed.
+ *   - **`inFlight` promise** dedups simultaneous refresh() calls —
+ *     if two subscribers arrive in the same tick, only one git
+ *     invocation runs and both await the same promise.
  *   - **60s self-heal poll** force-refreshes regardless of watch state
  *     so working-tree edits (which don't touch `.git/`) still surface
  *     within a minute. Also reconciles a watcher that died (rare on
