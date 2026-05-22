@@ -603,8 +603,18 @@ export class DaemonClient {
   }
 
   /** Wire DataChannel.onmessage / onclose handlers. Called by `connect`
-   *  exactly once, right after the DC opens. */
+   *  exactly once, right after the DC opens. Also swaps the peer's
+   *  state listener from connect-time (rejects the connect Promise) to
+   *  runtime — once the channel is up, ICE/DTLS keepalive failures
+   *  (Mac WiFi off, daemon crash, peer network change) surface as
+   *  `failed` or `closed` on the PC. DataChannel.onclose alone is not
+   *  enough: many WebRTC stacks only fire it on explicit pc.close(),
+   *  so a half-dead PC can sit silent for minutes — settings UI would
+   *  keep showing "online" while the connection is dead. */
   private installMessageHandlers(): void {
+    this.peer.setOnState((s) => {
+      if (s === "failed" || s === "closed") this.onTransportClosed();
+    });
     const dcEv = this.dc as unknown as {
       addEventListener: (
         event: string,

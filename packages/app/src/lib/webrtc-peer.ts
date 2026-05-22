@@ -88,9 +88,15 @@ export class WebRTCPeer {
   private state: WebRTCPeerState = "idle";
   private closed = false;
   private readonly opts: WebRTCPeerOptions;
+  // Separately mutable so callers (DaemonClient) can swap the listener
+  // when the meaning of "failed/closed" changes between connect-time
+  // (= reject the connect Promise) and runtime (= surface as
+  // transport-lost to trigger reconnect).
+  private onStateCb?: (state: WebRTCPeerState) => void;
 
   constructor(opts: WebRTCPeerOptions) {
     this.opts = opts;
+    this.onStateCb = opts.onState;
     this.pc = new RTCPeerConnection({
       iceServers: opts.iceServers ?? DEFAULT_ICE_SERVERS,
     });
@@ -211,9 +217,16 @@ export class WebRTCPeer {
     return this.state;
   }
 
+  /** Replace the state-change listener. Used by DaemonClient to switch
+   *  from a connect-time failure handler (rejects the connect Promise)
+   *  to a runtime handler (treats failed/closed as transport lost). */
+  setOnState(cb: ((state: WebRTCPeerState) => void) | null): void {
+    this.onStateCb = cb ?? undefined;
+  }
+
   private setState(state: WebRTCPeerState): void {
     if (this.state === state) return;
     this.state = state;
-    this.opts.onState?.(state);
+    this.onStateCb?.(state);
   }
 }
