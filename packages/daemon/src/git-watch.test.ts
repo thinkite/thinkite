@@ -66,7 +66,7 @@ describe("GitWatcher", () => {
     w.dispose();
   });
 
-  it("counts insertions vs HEAD when working tree is dirty", async () => {
+  it("counts insertions vs HEAD when working tree is dirty (no upstream)", async () => {
     initRepo(dir);
     writeFileSync(path.join(dir, "a.txt"), "line1\n");
     execFileSync("git", ["add", "a.txt"], { cwd: dir });
@@ -78,8 +78,64 @@ describe("GitWatcher", () => {
     const status = await w.refresh();
     expect(status.isRepo).toBe(true);
     expect(status.isDirty).toBe(true);
+    // No upstream → comparison ref falls back to HEAD, so this
+    // measures uncommitted working-tree changes only.
     expect(status.insertions).toBe(2);
     expect(status.deletions).toBe(0);
+    w.dispose();
+  });
+
+  it("counts untracked file lines on top of tracked diff", async () => {
+    initRepo(dir);
+    writeFileSync(path.join(dir, "tracked.txt"), "x\n");
+    execFileSync("git", ["add", "tracked.txt"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "first"], { cwd: dir });
+
+    // Modify tracked file → 1 insertion via `git diff`.
+    writeFileSync(path.join(dir, "tracked.txt"), "x\ny\n");
+    // Untracked file with 5 lines → 5 additions, summed in separately.
+    writeFileSync(path.join(dir, "new.txt"), "a\nb\nc\nd\ne\n");
+
+    const w = new GitWatcher(dir);
+    const status = await w.refresh();
+    expect(status.isRepo).toBe(true);
+    expect(status.isDirty).toBe(true);
+    expect(status.insertions).toBe(1 + 5);
+    expect(status.deletions).toBe(0);
+    w.dispose();
+  });
+
+  it("skips binary files when counting untracked additions", async () => {
+    initRepo(dir);
+    writeFileSync(path.join(dir, "marker.txt"), "x\n");
+    execFileSync("git", ["add", "marker.txt"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "first"], { cwd: dir });
+
+    // Untracked text file (3 lines) — should be counted.
+    writeFileSync(path.join(dir, "added.txt"), "a\nb\nc\n");
+    // Untracked binary-ish file (contains a null byte in first 512
+    // bytes) — should be skipped by the sniff.
+    writeFileSync(path.join(dir, "binary.bin"), Buffer.from([1, 0, 2, 3]));
+
+    const w = new GitWatcher(dir);
+    const status = await w.refresh();
+    expect(status.insertions).toBe(3);
+    w.dispose();
+  });
+
+  it("flips isDirty true when only untracked files exist", async () => {
+    initRepo(dir);
+    writeFileSync(path.join(dir, "tracked.txt"), "x\n");
+    execFileSync("git", ["add", "tracked.txt"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "first"], { cwd: dir });
+
+    // No working-tree edit on a tracked file — only an untracked add.
+    writeFileSync(path.join(dir, "new.txt"), "a\nb\n");
+
+    const w = new GitWatcher(dir);
+    const status = await w.refresh();
+    expect(status.isDirty).toBe(true);
+    expect(status.insertions).toBe(2);
     w.dispose();
   });
 

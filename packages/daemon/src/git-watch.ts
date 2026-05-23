@@ -1,7 +1,8 @@
 import { existsSync, type FSWatcher, watch as fsWatch } from "node:fs";
+import { open as openFile, readFile, stat as statFile } from "node:fs/promises";
 import path from "node:path";
 import pLimit from "p-limit";
-import { simpleGit, type SimpleGit } from "simple-git";
+import { type SimpleGit, simpleGit } from "simple-git";
 
 /**
  * Per-`cwd` git status watcher with push-based updates.
@@ -44,6 +45,13 @@ const STATUS_CACHE_TTL_MS = 15_000;
 const DEBOUNCE_MS = 500;
 const SELF_HEAL_INTERVAL_MS = 60_000;
 
+/** Caps on untracked-additions counting — Paseo's heuristic. Skip
+ *  giant or binary files entirely; a 1 GB log file shouldn't make the
+ *  status bar count millions of "additions". */
+const UNTRACKED_MAX_FILES = 500;
+const UNTRACKED_MAX_FILE_BYTES = 256 * 1024;
+const UNTRACKED_BINARY_SNIFF_BYTES = 512;
+
 const gitLimit = pLimit(GIT_CONCURRENCY);
 
 export interface GitStatus {
@@ -60,10 +68,15 @@ export interface GitStatus {
   /** Local commits ahead/behind upstream. Zero when no upstream is set. */
   ahead: number;
   behind: number;
-  /** Unstaged + staged changes vs HEAD — `git diff HEAD --shortstat`. */
+  /** Lines changed since the comparison ref (typically `origin/<branch>`,
+   *  falls back to HEAD with no upstream). Includes unpushed commits +
+   *  staged + working-tree edits. **`insertions` also includes every
+   *  line of every untracked, non-binary file** so the count matches
+   *  what tools like Claude Desktop show (`git diff` alone never sees
+   *  untracked files). */
   insertions: number;
   deletions: number;
-  /** Any tracked-file modification, staged or not. */
+  /** True when any tracked file is modified OR any untracked file exists. */
   isDirty: boolean;
 }
 
@@ -127,10 +140,7 @@ export class GitWatcher {
    *  callers can prime the cache or force a re-read after a known
    *  mutation (e.g. a commit Claude just ran). */
   async refresh(): Promise<GitStatus> {
-    if (
-      this.cachedStatus &&
-      Date.now() - this.cacheAt < STATUS_CACHE_TTL_MS
-    ) {
+    if (this.cachedStatus && Date.now() - this.cacheAt < STATUS_CACHE_TTL_MS) {
       return this.cachedStatus;
     }
     if (this.inFlight) return this.inFlight;
@@ -170,10 +180,8 @@ export class GitWatcher {
       const refsDir = path.join(gitDir, "refs", "heads");
       if (existsSync(refsDir)) {
         try {
-          this.refsWatcher = fsWatch(
-            refsDir,
-            { recursive: true },
-            () => this.onWatchEvent(),
+          this.refsWatcher = fsWatch(refsDir, { recursive: true }, () =>
+            this.onWatchEvent(),
           );
         } catch {
           // ignore
@@ -242,12 +250,23 @@ export class GitWatcher {
     }
     if (!isRepo) return NON_REPO_STATUS(this.project);
 
-    // Run status + diff summary in parallel. Each is independent and
-    // we want both numbers (branch/ahead/behind + insertions/deletions)
-    // in every snapshot.
-    const [statusResult, diffResult] = await Promise.all([
-      this.git.status().catch(() => null),
-      this.git.diffSummary(["HEAD"]).catch(() => null),
+    // Resolve a comparison ref so `+N -M` matches user intuition
+    // ("what have I done since I last synced") rather than just
+    // working-tree dirt. When the branch has an upstream (typical
+    // for main / pushed feature branches), diff against it — that
+    // covers unpushed local commits + staged + working-tree changes
+    // in one shot. With no upstream, fall back to HEAD (= just
+    // uncommitted). Either way, untracked files get summed in
+    // separately because `git diff` never sees them.
+    const statusResult = await this.git.status().catch(() => null);
+    const comparisonRef =
+      statusResult?.tracking && statusResult.tracking.trim().length > 0
+        ? statusResult.tracking
+        : "HEAD";
+
+    const [diffResult, untrackedAdditions] = await Promise.all([
+      this.git.diffSummary([comparisonRef]).catch(() => null),
+      this.countUntrackedAdditions(),
     ]);
 
     return {
@@ -256,10 +275,70 @@ export class GitWatcher {
       branch: statusResult?.current ?? null,
       ahead: statusResult?.ahead ?? 0,
       behind: statusResult?.behind ?? 0,
-      insertions: diffResult?.insertions ?? 0,
+      insertions: (diffResult?.insertions ?? 0) + untrackedAdditions,
       deletions: diffResult?.deletions ?? 0,
-      isDirty: (statusResult?.files.length ?? 0) > 0,
+      isDirty: (statusResult?.files.length ?? 0) > 0 || untrackedAdditions > 0,
     };
+  }
+
+  /**
+   * Sum line counts of untracked, non-binary, non-huge files. `git
+   * diff` doesn't include them, but tools like Claude Desktop and
+   * Paseo do — every line of a new file is a user-authored addition,
+   * and ignoring them under-counts the `+N` number dramatically.
+   *
+   * Caps mirror Paseo's heuristic: max 500 files, max 256 KiB per
+   * file, skip files with a null byte in their first 512 bytes
+   * (rough binary detection). Anything past those caps is silently
+   * skipped — the resulting count is "useful" rather than "exact".
+   */
+  private async countUntrackedAdditions(): Promise<number> {
+    try {
+      const out = await this.git.raw([
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+      ]);
+      const files = out
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+
+      let additions = 0;
+      for (const rel of files.slice(0, UNTRACKED_MAX_FILES)) {
+        const abs = path.resolve(this.cwd, rel);
+        try {
+          const stat = await statFile(abs);
+          if (!stat.isFile()) continue;
+          if (stat.size === 0) continue;
+          if (stat.size > UNTRACKED_MAX_FILE_BYTES) continue;
+          if (await isLikelyBinary(abs, stat.size)) continue;
+          const content = await readFile(abs, "utf-8");
+          const normalized = content.replace(/\r\n/g, "\n");
+          const lines = normalized.split("\n").length;
+          additions += normalized.endsWith("\n") ? lines - 1 : lines;
+        } catch {
+          // Permission denied, symlink-to-nowhere, etc. — skip.
+        }
+      }
+      return additions;
+    } catch {
+      return 0;
+    }
+  }
+}
+
+/** Sniff the first 512 bytes for a null byte. Cheap heuristic that
+ *  excludes most real binaries (images, video, archives) without
+ *  parsing extensions; matches Paseo's approach. */
+async function isLikelyBinary(absPath: string, size: number): Promise<boolean> {
+  const fd = await openFile(absPath, "r");
+  try {
+    const buf = Buffer.alloc(Math.min(UNTRACKED_BINARY_SNIFF_BYTES, size));
+    await fd.read(buf, 0, buf.length, 0);
+    return buf.includes(0);
+  } finally {
+    await fd.close();
   }
 }
 
