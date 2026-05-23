@@ -3,6 +3,12 @@ import { z } from "zod";
 import pkg from "../package.json" with { type: "json" };
 
 export {
+  type ChunkEnvelope,
+  ChunkReassembler,
+  chunkMessage,
+  isChunkEnvelope,
+} from "./chunking.js";
+export {
   dtlsFingerprintTranscript,
   extractDtlsFingerprint,
 } from "./sdp-fingerprint.js";
@@ -139,10 +145,7 @@ function base64urlEncodeUtf8(s: string): string {
   for (let i = 0; i < bytes.length; i += 1) {
     bin += String.fromCharCode(bytes[i]);
   }
-  return btoa(bin)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function base64urlDecodeUtf8(b64: string): string {

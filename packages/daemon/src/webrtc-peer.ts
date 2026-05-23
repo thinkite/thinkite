@@ -4,12 +4,16 @@ import {
   verify as cryptoVerify,
 } from "node:crypto";
 import {
+  type ChunkEnvelope,
+  ChunkReassembler,
   type ClientFrame,
-  clientFrame,
   type Command,
+  chunkMessage,
+  clientFrame,
   type DaemonFrame,
   dtlsFingerprintTranscript,
   extractDtlsFingerprint,
+  isChunkEnvelope,
   isProtocolCompatible,
   PROTOCOL_VERSION,
 } from "@sidecodeapp/protocol";
@@ -19,10 +23,10 @@ import {
   RTCSessionDescription,
 } from "node-datachannel/polyfill";
 import PartySocket from "partysocket";
-import type { Identity } from "./identity.js";
-import type { KnownClients } from "./known-clients.js";
-import { publicKeyFromB64 } from "./identity.js";
 import type { CommandContext, CommandHandler } from "./command.js";
+import type { Identity } from "./identity.js";
+import { publicKeyFromB64 } from "./identity.js";
+import type { KnownClients } from "./known-clients.js";
 
 /**
  * WebRTC-DataChannel transport with **DTLS-fingerprint-pinned identity**.
@@ -124,6 +128,10 @@ interface PeerSlot {
    *  PC is stuck pre-auth (e.g. client died before sending answer, so
    *  ICE never starts and `connectionstatechange` never fires). */
   setupTimeoutId: ReturnType<typeof setTimeout> | null;
+  /** Per-peer buffer for inbound chunk envelopes. Each PeerSlot has
+   *  its own — chunk ids are scoped to the sender, and a stale buffer
+   *  from a dropped peer mustn't bleed into a fresh one. */
+  reassembler: ChunkReassembler;
   disconnectCallbacks: Array<() => void>;
   scratch: Map<string, unknown>;
 }
@@ -315,6 +323,7 @@ export class WebRTCPeerServer {
       authenticated: false,
       versionVerified: false,
       setupTimeoutId: null,
+      reassembler: new ChunkReassembler(),
       disconnectCallbacks: [],
       scratch: new Map(),
     };
@@ -330,7 +339,9 @@ export class WebRTCPeerServer {
       ).candidate;
       if (candidate && this.signaling) {
         const cand =
-          typeof candidate.toJSON === "function" ? candidate.toJSON() : candidate;
+          typeof candidate.toJSON === "function"
+            ? candidate.toJSON()
+            : candidate;
         this.signaling.send(
           JSON.stringify({ to: peer.id, type: "candidate", candidate: cand }),
         );
@@ -466,7 +477,18 @@ export class WebRTCPeerServer {
         typeof data === "string"
           ? data
           : new TextDecoder().decode(data as ArrayBuffer);
-      frame = clientFrame.parse(JSON.parse(text));
+      let parsed: unknown = JSON.parse(text);
+      // Chunked-message reassembly. Chunk envelopes are the transport
+      // wrapper around oversized JSON payloads (sender side splits in
+      // `send()` below). Intermediate chunks return `null`; only when
+      // the last slice arrives do we have a full JSON string to feed
+      // into the schema parser.
+      if (isChunkEnvelope(parsed)) {
+        const assembled = slot.reassembler.push(parsed as ChunkEnvelope);
+        if (assembled === null) return;
+        parsed = JSON.parse(assembled);
+      }
+      frame = clientFrame.parse(parsed);
     } catch (err) {
       this.log("peer.bad_frame", {
         clientId: slot.clientId,
@@ -581,7 +603,15 @@ export class WebRTCPeerServer {
   private send(slot: PeerSlot, frame: DaemonFrame): void {
     if (!slot.dc || slot.dc.readyState !== "open") return;
     try {
-      slot.dc.send(JSON.stringify(frame));
+      // `chunkMessage` yields the original JSON unchanged when it
+      // fits the wire limit; only oversized frames get split into
+      // envelopes (see chunking.ts). Sending each piece sequentially
+      // is safe — DataChannel is `ordered: true` so the receiver
+      // sees them in order without us tracking indices.
+      const json = JSON.stringify(frame);
+      for (const piece of chunkMessage(json)) {
+        slot.dc.send(piece);
+      }
     } catch (err) {
       this.log("peer.send.error", {
         clientId: slot.clientId,
