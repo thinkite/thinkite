@@ -230,6 +230,15 @@ export function ChatPanel({
         // *and* LegendList virtualization via the imperative
         // reportContentInset call.
         contentInsetEndAdjustment={contentInsetEndAdjustment}
+        // Workaround for facebook/react-native#54123 — on iOS + RN
+        // ≥0.81, the `contentInset` area created by extraContentPadding
+        // doesn't respond to touch/scroll. This swizzles UIScrollView's
+        // hit-test container at runtime; KCSV docs warn it's fragile,
+        // accepted as the price of having a tappable composer band
+        // until the upstream fix ships. RN issue closed 2026-05-12,
+        // should land in 0.86/0.87 — DELETE this prop after upgrading
+        // and verifying scroll/tap in the inset zone.
+        applyWorkaroundForContentInsetHitTestBug
         // Mirrors `KeyboardStickyView.offset.opened: -8`. KCSV's
         // `offset` is "distance from ScrollView bottom to screen
         // bottom" and, on keyboard-open, "by how much to reduce the
