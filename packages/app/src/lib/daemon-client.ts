@@ -1,8 +1,13 @@
 import * as ed25519 from "@noble/ed25519";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
+  type ChunkEnvelope,
+  ChunkReassembler,
+  chunkMessage,
   decodePairOfferPayload,
   type EventDelta,
+  type GitStatus,
+  isChunkEnvelope,
   isProtocolCompatible,
   PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
@@ -12,10 +17,7 @@ import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { base64UrlToBytes } from "./base64";
 import type { ClientIdentity } from "./identity";
-import {
-  SignalingClient,
-  type SignalingPeer,
-} from "./signaling-client";
+import { SignalingClient, type SignalingPeer } from "./signaling-client";
 import { WebRTCPeer } from "./webrtc-peer";
 
 // SecureStore restricts keys to [A-Za-z0-9._-] — no slashes / colons. Bump
@@ -112,6 +114,7 @@ interface PendingRequest {
  * unsubscribes after a re-subscribe won't clobber the new owner.
  */
 type EventCallback = (delta: EventDelta) => void;
+type GitStatusCallback = (status: GitStatus) => void;
 
 /**
  * Max time we wait from "start connecting" to "DataChannel open". Covers:
@@ -134,6 +137,20 @@ export class DaemonClient {
    * cleared en masse on transport close.
    */
   private readonly eventCallbacks = new Map<string, EventCallback>();
+  /**
+   * Per-cwd git status callbacks. Same identity-checked lifecycle as
+   * `eventCallbacks` but keyed by `cwd` instead of `sessionId` — git
+   * watcher state is per-workspace on the daemon, not per-session.
+   */
+  private readonly gitStatusCallbacks = new Map<string, GitStatusCallback>();
+  /**
+   * Inbound chunk reassembly buffer. Large daemon frames (e.g. a
+   * `subscribe.response` for a long-running session whose settled
+   * transcript exceeds the SCTP wire limit) arrive as multiple chunk
+   * envelopes; this stitches them back into the original JSON before
+   * the regular frame router runs. See `packages/protocol/src/chunking.ts`.
+   */
+  private readonly reassembler = new ChunkReassembler();
 
   /**
    * `true` once `close()` has been called by the consumer — distinguishes
@@ -309,8 +326,9 @@ export class DaemonClient {
               // wanted, which we sent) in a console.warn for debugging;
               // user-facing string is generic + actionable.
               if (frame.message) {
-                // biome-ignore lint/suspicious/noConsole: dev surface
-                console.warn(`daemon reported incompatible_protocol: ${frame.message}`);
+                console.warn(
+                  `daemon reported incompatible_protocol: ${frame.message}`,
+                );
               }
               fail(
                 new Error(
@@ -417,7 +435,6 @@ export class DaemonClient {
           // logged but don't fail the connect — they're typically benign
           // (e.g. daemon transiently offline so our candidate frame got
           // rejected). The timeout will catch the actual stuck cases.
-          // biome-ignore lint/suspicious/noConsole: dev surface
           console.warn(`signaling protocol error: ${reason}`);
         },
       });
@@ -570,6 +587,54 @@ export class DaemonClient {
     });
   }
 
+  /**
+   * Subscribe to live git status for a `cwd`. Returns the initial
+   * snapshot together with an `unsubscribe` thunk; subsequent state
+   * changes arrive through `onUpdate`. Mirrors the `subscribe` lifecycle
+   * exactly — identity-checked cleanup, transport-close clears the map.
+   */
+  async subscribeGitStatus(
+    cwd: string,
+    onUpdate: GitStatusCallback,
+  ): Promise<{
+    status: GitStatus;
+    unsubscribe: () => Promise<void>;
+  }> {
+    this.gitStatusCallbacks.set(cwd, onUpdate);
+    let res: { status: GitStatus; cwd: string };
+    try {
+      const requestId = Crypto.randomUUID();
+      res = (await this.request({
+        type: "subscribeGitStatus",
+        requestId,
+        cwd,
+      })) as { status: GitStatus; cwd: string };
+    } catch (err) {
+      if (this.gitStatusCallbacks.get(cwd) === onUpdate) {
+        this.gitStatusCallbacks.delete(cwd);
+      }
+      throw err;
+    }
+    return {
+      status: res.status,
+      unsubscribe: () => this.unsubscribeGitStatusOwned(cwd, onUpdate),
+    };
+  }
+
+  private async unsubscribeGitStatusOwned(
+    cwd: string,
+    owner: GitStatusCallback,
+  ): Promise<void> {
+    if (this.gitStatusCallbacks.get(cwd) !== owner) return;
+    this.gitStatusCallbacks.delete(cwd);
+    const requestId = Crypto.randomUUID();
+    await this.request({
+      type: "unsubscribeGitStatus",
+      requestId,
+      cwd,
+    });
+  }
+
   close(): void {
     this.intentionallyClosed = true;
     try {
@@ -592,9 +657,15 @@ export class DaemonClient {
       try {
         // react-native-webrtc's RTCDataChannel.send() takes string |
         // ArrayBuffer | ArrayBufferView; we use string here.
-        (this.dc as unknown as { send: (s: string) => void }).send(
-          JSON.stringify(frame),
-        );
+        // `chunkMessage` yields the original JSON for normal-sized
+        // commands; only an oversized request (e.g. someone pasting
+        // megabytes into a prompt) gets split into envelopes.
+        const dcSend = (this.dc as unknown as { send: (s: string) => void })
+          .send;
+        const json = JSON.stringify(frame);
+        for (const piece of chunkMessage(json)) {
+          dcSend.call(this.dc, piece);
+        }
       } catch (err) {
         this.pending.delete(frame.requestId);
         reject(err instanceof Error ? err : new Error(String(err)));
@@ -616,10 +687,7 @@ export class DaemonClient {
       if (s === "failed" || s === "closed") this.onTransportClosed();
     });
     const dcEv = this.dc as unknown as {
-      addEventListener: (
-        event: string,
-        handler: (e: unknown) => void,
-      ) => void;
+      addEventListener: (event: string, handler: (e: unknown) => void) => void;
     };
     dcEv.addEventListener("message", (event) => {
       const data = (event as { data: unknown }).data;
@@ -635,18 +703,34 @@ export class DaemonClient {
           return;
         }
       }
-      let frame: {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return; // ignore non-JSON
+      }
+      // Chunk reassembly. Daemon's `webrtc-peer.send()` splits oversized
+      // frames into envelopes (see `packages/protocol/src/chunking.ts`);
+      // intermediate pieces return `null` and we wait, the last piece
+      // returns the full JSON which we re-parse + route as a normal frame.
+      if (isChunkEnvelope(parsed)) {
+        const assembled = this.reassembler.push(parsed as ChunkEnvelope);
+        if (assembled === null) return;
+        try {
+          parsed = JSON.parse(assembled);
+        } catch {
+          return;
+        }
+      }
+      const frame = parsed as {
         type?: string;
         requestId?: string;
         message?: string;
         sessionId?: string;
         delta?: EventDelta;
+        cwd?: string;
+        status?: GitStatus;
       };
-      try {
-        frame = JSON.parse(text);
-      } catch {
-        return; // ignore non-JSON
-      }
       // Server-initiated event frame (no requestId). Routed by sessionId
       // to the subscribed callback. Unknown sessionId → silently drop
       // (probably a frame for a session we just unsubscribed).
@@ -657,6 +741,17 @@ export class DaemonClient {
       ) {
         const cb = this.eventCallbacks.get(frame.sessionId);
         if (cb) cb(frame.delta);
+        return;
+      }
+      // Server-initiated git status update. Routed by `cwd` — multiple
+      // subscriptions on different workspaces share one connection.
+      if (
+        frame.type === "gitStatus" &&
+        typeof frame.cwd === "string" &&
+        frame.status !== undefined
+      ) {
+        const cb = this.gitStatusCallbacks.get(frame.cwd);
+        if (cb) cb(frame.status);
         return;
       }
       if (!frame.requestId) return;
@@ -678,6 +773,7 @@ export class DaemonClient {
     for (const [, slot] of this.pending) slot.reject(err);
     this.pending.clear();
     this.eventCallbacks.clear();
+    this.gitStatusCallbacks.clear();
     if (!this.intentionallyClosed) {
       const cb = this.onUnexpectedClose;
       this.onUnexpectedClose = null;

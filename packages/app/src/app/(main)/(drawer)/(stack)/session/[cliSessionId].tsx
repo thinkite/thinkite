@@ -1,10 +1,11 @@
 import { KeyboardChatLegendList } from "@legendapp/list/keyboard-chat";
 import { Stack, useLocalSearchParams, useNavigation } from "expo-router";
-import { DrawerActions, useHeaderHeight } from "expo-router/react-navigation";
+import { DrawerActions } from "expo-router/react-navigation";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
 import { TextBlock } from "@/components/transcript/text-block";
 import { ToolBlock } from "@/components/transcript/tool-block";
@@ -113,10 +114,10 @@ export default function SessionDetailScreen() {
               `height.value + offset(progress)` where height is 0 when
               closed and -keyboardHeight when open. We want to shift UP by
               insets.bottom when closed (so the bar clears the home
-              indicator) → closed: -insets.bottom. opened: -12 lifts a bit
+              indicator) → closed: -insets.bottom. opened: -8 lifts a bit
               extra above the keyboard top. */}
           <KeyboardStickyView
-            offset={{ closed: -insets.bottom, opened: -12 }}
+            offset={{ closed: -insets.bottom, opened: -8 }}
             style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
           >
             {session.lastError ? (
@@ -132,6 +133,7 @@ export default function SessionDetailScreen() {
                 </Text>
               </View>
             ) : null}
+            <GitStatusBar cwd={cwd} />
             <InputBar
               onSend={handleSend}
               onInterrupt={handleInterrupt}

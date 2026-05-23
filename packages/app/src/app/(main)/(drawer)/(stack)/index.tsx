@@ -75,7 +75,7 @@ export default function NewSessionScreen() {
         {/* InputBar — same component used inside session detail. The
             pinned-to-bottom keyboard handling matches the detail screen. */}
         <KeyboardStickyView
-          offset={{ closed: -insets.bottom, opened: -12 }}
+          offset={{ closed: -insets.bottom, opened: -8 }}
           style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
         >
           <InputBar onSend={handleSend} isRunning={false} />
