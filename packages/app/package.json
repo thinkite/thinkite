@@ -13,7 +13,7 @@
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^14.0.0",
     "@expo/ui": "~56.0.12",
-    "@legendapp/list": "3.0.0-beta.53",
+    "@legendapp/list": "3.0.0-beta.56",
     "@noble/ed25519": "^3.1.0",
     "@noble/hashes": "^2.2.0",
     "@sidecodeapp/protocol": "workspace:*",
@@ -52,8 +52,8 @@
     "react-native-svg": "^15.15.4",
     "react-native-webrtc": "^124.0.7",
     "react-native-worklets": "0.8.3",
-    "tailwindcss": "^4.2.4",
-    "uniwind": "^1.6.3"
+    "tailwindcss": "^4.3.0",
+    "uniwind": "^1.7.0"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
