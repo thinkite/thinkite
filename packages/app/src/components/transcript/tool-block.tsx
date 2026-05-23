@@ -36,7 +36,7 @@ export function ToolBlock({ block }: { block: ToolRenderBlock }) {
       {isBash ? (
         <Text
           numberOfLines={1}
-          className="flex-1 text-base leading-5.5 text-gray-700 dark:text-gray-300"
+          className="flex-1 text-base text-gray-700 dark:text-gray-300"
         >
           <Text
             className={
@@ -55,7 +55,7 @@ export function ToolBlock({ block }: { block: ToolRenderBlock }) {
           {block.summary ? (
             <Text
               numberOfLines={1}
-              className="flex-1 text-base leading-5.5 text-gray-700 dark:text-gray-300"
+              className="flex-1 text-base text-gray-700 dark:text-gray-300"
             >
               {block.summary}
             </Text>

@@ -75,7 +75,7 @@ export function InputBar({
             style={{
               color: colorScheme === "dark" ? "#fafafa" : "#0a0a0a",
             }}
-            className="text-base leading-5.5 py-0.75"
+            className="text-base"
           />
           <View className="mt-2 flex-row items-center justify-between">
             <Pressable className="p-1.75">

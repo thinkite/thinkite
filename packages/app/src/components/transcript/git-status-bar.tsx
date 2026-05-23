@@ -46,7 +46,7 @@ export function GitStatusBar({ cwd }: { cwd: string | undefined }) {
               : "rgba(255,255,255,0.55)",
         }}
       >
-        <View className="flex-row items-center gap-2.5 px-4 py-2.5">
+        <View className="flex-row items-center gap-2.5 px-4 h-11">
           <Text className="text-sm text-zinc-500 dark:text-zinc-400">
             {status.project}
           </Text>

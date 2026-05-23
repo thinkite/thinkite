@@ -23,7 +23,7 @@ export function TextBlock({ block }: { block: TextRenderBlock }) {
     return (
       <View className="px-4 py-2.5">
         <View className="max-w-[85%] self-end rounded-xl bg-[#EDF5FD] px-3 py-2">
-          <Text selectable className="text-base leading-5.5 text-[#0066CC]">
+          <Text selectable className="text-base text-[#0066CC]">
             {block.text}
           </Text>
         </View>
