@@ -1,5 +1,6 @@
 import { KeyboardChatLegendList } from "@legendapp/list/keyboard-chat";
 import type { LegendListRef } from "@legendapp/list/react-native";
+import type { ImageAttachment } from "@sidecodeapp/protocol";
 import { useHeaderHeight } from "expo-router/react-navigation";
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { type LayoutChangeEvent, View } from "react-native";
@@ -144,13 +145,13 @@ export function ChatPanel({
   );
 
   const onSend = useCallback(
-    (text: string) => {
+    (text: string, images?: ImageAttachment[]) => {
       if (!client) return;
       // cwd is required for the SDK's project-key resolution on
       // `--resume`. For sessions opened from the list, cwd is plumbed
       // through route params; deeplink / direct nav (V0.5+) will need
       // a fallback fetch.
-      void client.sendPrompt(cliSessionId, text, cwd).catch((err) => {
+      void client.sendPrompt(cliSessionId, text, cwd, images).catch((err) => {
         console.error("sendPrompt failed", err);
       });
     },
@@ -190,7 +191,7 @@ export function ChatPanel({
     if (!pending) return;
     sentInitialRef.current = true;
     void client
-      .sendPrompt(cliSessionId, pending.text, pending.cwd)
+      .sendPrompt(cliSessionId, pending.text, pending.cwd, pending.images)
       .catch((err) => {
         console.error("initial sendPrompt failed", err);
       });

@@ -1,4 +1,8 @@
-import type { TimelineItem, ToolCallDetail } from "@sidecodeapp/protocol";
+import type {
+  ImageAttachment,
+  TimelineItem,
+  ToolCallDetail,
+} from "@sidecodeapp/protocol";
 
 /**
  * Annotate `TimelineItem[]` with render hints the FlatList rows need:
@@ -20,6 +24,13 @@ export interface TextRenderBlock {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** Raw `ImageAttachment[]` (base64 + mediaType) for user-message
+   *  attachments, in the order the user picked them. Assistant messages
+   *  never carry images (model output is text + tool_use only), so this
+   *  is only populated for `role === "user"`. Render layer is responsible
+   *  for materializing these to `file://` URIs via `image-cache.ts` —
+   *  Galeria's native iOS viewer can't decode `data:` URIs directly. */
+  images?: ImageAttachment[];
 }
 
 export interface ToolRenderBlock {
@@ -47,6 +58,8 @@ export function flattenToBlocks(items: readonly TimelineItem[]): RenderBlock[] {
           id: `${item.uuid}:${idx}`,
           role: "user",
           text: item.text,
+          images:
+            item.images && item.images.length > 0 ? item.images : undefined,
         };
       case "assistant_message":
         return {

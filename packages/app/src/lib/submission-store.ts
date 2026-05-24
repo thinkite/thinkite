@@ -28,9 +28,14 @@
  *   - keeping the reader local to the detail screen's effect avoids
  *     React state-vs-effect ordering puzzles
  */
+import type { ImageAttachment } from "@sidecodeapp/protocol";
+
 type PendingPrompt = {
   text: string;
   cwd: string;
+  /** Compressed base64 attachments to forward as the first sendPrompt's
+   *  `images` payload. Undefined / empty for text-only first prompts. */
+  images?: ImageAttachment[];
 };
 
 const pending = new Map<string, PendingPrompt>();

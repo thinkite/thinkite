@@ -48,6 +48,13 @@
         }
       ],
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow sidecode to attach photos from your library to messages.",
+          "cameraPermission": "Allow sidecode to take photos to attach to messages."
+        }
+      ],
+      [
         "expo-build-properties",
         {
           "ios": {

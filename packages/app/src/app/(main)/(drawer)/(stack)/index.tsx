@@ -1,3 +1,4 @@
+import type { ImageAttachment } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import { router, Stack, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
@@ -38,9 +39,9 @@ export default function NewSessionScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
 
-  const handleSend = useCallback((text: string) => {
+  const handleSend = useCallback((text: string, images?: ImageAttachment[]) => {
     const newId = Crypto.randomUUID();
-    setPendingPrompt(newId, { text, cwd: DEV_CWD });
+    setPendingPrompt(newId, { text, cwd: DEV_CWD, images });
     router.replace({
       pathname: "/session/[cliSessionId]",
       params: { cliSessionId: newId, cwd: DEV_CWD },

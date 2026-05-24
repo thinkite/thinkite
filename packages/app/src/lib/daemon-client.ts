@@ -7,6 +7,7 @@ import {
   decodePairOfferPayload,
   type EventDelta,
   type GitStatus,
+  type ImageAttachment,
   isChunkEnvelope,
   isProtocolCompatible,
   PAIR_OFFER_VERSION,
@@ -525,11 +526,17 @@ export class DaemonClient {
    * sendPrompt for an iOS-created session (no JSONL yet); ignored for
    * resume. Daemon validates and may reply with
    * `{ type: "error", code: "invalid_message" }` for missing-cwd.
+   *
+   * `images` carry compressed base64 JPEG/PNG attachments — protocol
+   * schema is `{ data, mediaType }`. Daemon wraps these into Anthropic
+   * `ImageBlockParam`s ahead of the text block when calling the SDK.
+   * Empty / missing array sends a text-only prompt.
    */
   async sendPrompt(
     sessionId: string,
     text: string,
     cwd?: string,
+    images?: ImageAttachment[],
   ): Promise<void> {
     const requestId = Crypto.randomUUID();
     const frame: { type: string; requestId: string } & Record<string, unknown> =
@@ -540,6 +547,7 @@ export class DaemonClient {
         text,
       };
     if (cwd !== undefined) frame.cwd = cwd;
+    if (images !== undefined && images.length > 0) frame.images = images;
     await this.request(frame);
   }
 
