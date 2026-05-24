@@ -6,8 +6,10 @@ import {
   continueOnDesktopCommand,
   continueOnDesktopResponse,
   daemonFrame,
+  decodePairOfferPayload,
   deleteSessionCommand,
   deleteSessionResponse,
+  encodePairOffer,
   errorFrame,
   event,
   eventDelta,
@@ -22,8 +24,6 @@ import {
   listSessionsResponse,
   PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
-  decodePairOfferPayload,
-  encodePairOffer,
   pairOfferFrame,
   pingFrame,
   pongFrame,
@@ -589,9 +589,7 @@ describe("hello / server_info wire-version handshake", () => {
   });
 
   it("helloCommand rejects missing protocolVersion", () => {
-    expect(
-      helloCommand.safeParse({ type: "hello" }).success,
-    ).toBe(false);
+    expect(helloCommand.safeParse({ type: "hello" }).success).toBe(false);
   });
 
   it("serverInfoEvent parses with protocolVersion semver string", () => {
@@ -607,8 +605,7 @@ describe("hello / server_info wire-version handshake", () => {
       clientFrame.parse({ type: "hello", protocolVersion: "0.0.1" }).type,
     ).toBe("hello");
     expect(
-      daemonFrame.parse({ type: "server_info", protocolVersion: "0.0.1" })
-        .type,
+      daemonFrame.parse({ type: "server_info", protocolVersion: "0.0.1" }).type,
     ).toBe("server_info");
   });
 });
@@ -738,5 +735,319 @@ describe("daemonFrame union", () => {
         text: "x",
       }).success,
     ).toBe(false);
+  });
+});
+
+// ─── V0 image-attachment / extended-metadata schema additions ─────────────
+//
+// These tests exist mostly as a written contract — they pin down the
+// schema shape so a careless rename / field-typo in index.ts is caught
+// at test time rather than at iOS runtime. They do NOT exercise the
+// daemon emitter (Phase 2) or mobile renderer (Phase 3+) for these
+// fields; those are integration concerns.
+
+describe("imageAttachment schema", () => {
+  it("accepts JPEG with base64 data", () => {
+    expect(() =>
+      sendPromptCommand.parse({
+        type: "sendPrompt",
+        requestId: "r",
+        sessionId: "s",
+        text: "see screenshot",
+        images: [{ data: "/9j/4AAQSkZ...", mediaType: "image/jpeg" }],
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepts PNG too", () => {
+    expect(() =>
+      sendPromptCommand.parse({
+        type: "sendPrompt",
+        requestId: "r",
+        sessionId: "s",
+        text: "",
+        images: [{ data: "iVBORw0KGgo...", mediaType: "image/png" }],
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects unsupported media types (heic/webp/gif)", () => {
+    expect(
+      sendPromptCommand.safeParse({
+        type: "sendPrompt",
+        requestId: "r",
+        sessionId: "s",
+        text: "x",
+        images: [{ data: "...", mediaType: "image/heic" }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("sendPrompt without images still parses (back-compat)", () => {
+    const parsed = sendPromptCommand.parse({
+      type: "sendPrompt",
+      requestId: "r",
+      sessionId: "s",
+      text: "plain text",
+    });
+    expect(parsed.images).toBeUndefined();
+  });
+});
+
+describe("user_message with images", () => {
+  it("carries images inline in timeline", () => {
+    const res = getMessagesResponse.parse({
+      type: "getMessages.response",
+      requestId: "g",
+      items: [
+        {
+          type: "user_message",
+          uuid: "m-img",
+          text: "see attached",
+          images: [{ data: "/9j/...", mediaType: "image/jpeg" }],
+        },
+      ],
+    });
+    const first = res.items[0];
+    if (first?.type !== "user_message")
+      throw new Error("expected user_message");
+    expect(first.images).toHaveLength(1);
+    expect(first.images?.[0]?.mediaType).toBe("image/jpeg");
+  });
+
+  it("user_message without images still parses (back-compat)", () => {
+    const res = getMessagesResponse.parse({
+      type: "getMessages.response",
+      requestId: "g",
+      items: [{ type: "user_message", uuid: "m", text: "no images here" }],
+    });
+    expect(res.items).toHaveLength(1);
+  });
+});
+
+describe("assistant_message stopReason", () => {
+  it("null stopReason is significant — encodes user-interrupted", () => {
+    const res = getMessagesResponse.parse({
+      type: "getMessages.response",
+      requestId: "g",
+      items: [
+        {
+          type: "assistant_message",
+          uuid: "m",
+          text: "(interrupted mid-stream)",
+          stopReason: null,
+        },
+      ],
+    });
+    const first = res.items[0];
+    if (first?.type !== "assistant_message")
+      throw new Error("expected assistant_message");
+    // null is preserved (vs being normalized away to undefined)
+    expect(first.stopReason).toBeNull();
+  });
+
+  it("accepts every documented stop_reason enum value", () => {
+    const values = [
+      "end_turn",
+      "tool_use",
+      "max_tokens",
+      "stop_sequence",
+      "pause_turn",
+      "refusal",
+      "model_context_window_exceeded",
+    ] as const;
+    for (const v of values) {
+      expect(() =>
+        getMessagesResponse.parse({
+          type: "getMessages.response",
+          requestId: "g",
+          items: [
+            { type: "assistant_message", uuid: "m", text: "x", stopReason: v },
+          ],
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it("rejects unknown stop_reason values", () => {
+    expect(
+      getMessagesResponse.safeParse({
+        type: "getMessages.response",
+        requestId: "g",
+        items: [
+          {
+            type: "assistant_message",
+            uuid: "m",
+            text: "x",
+            stopReason: "completed_normally",
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("toolCallDetail — new V0 variants", () => {
+  function makeToolCall<T>(detail: T) {
+    return {
+      type: "tool_call" as const,
+      callId: "tu",
+      name: "X",
+      summary: "x",
+      status: "completed" as const,
+      error: null,
+      detail,
+    };
+  }
+  function parseOne(detail: unknown) {
+    return getMessagesResponse.parse({
+      type: "getMessages.response",
+      requestId: "g",
+      items: [makeToolCall(detail)],
+    });
+  }
+
+  it("bash variant carries runInBackground + taskId", () => {
+    const res = parseOne({
+      type: "bash",
+      command: "pnpm dev",
+      description: "Start menubar dev server",
+      output: "",
+      runInBackground: true,
+      taskId: "b3v2ethee",
+    });
+    const item = res.items[0];
+    if (item?.type !== "tool_call" || item.detail.type !== "bash")
+      throw new Error("expected bash detail");
+    expect(item.detail.runInBackground).toBe(true);
+    expect(item.detail.taskId).toBe("b3v2ethee");
+  });
+
+  it("bash without background fields still parses (back-compat)", () => {
+    expect(() =>
+      parseOne({ type: "bash", command: "ls", output: "" }),
+    ).not.toThrow();
+  });
+
+  it("agent variant", () => {
+    expect(() =>
+      parseOne({
+        type: "agent",
+        subagentType: "Explore",
+        description: "Verify SDK image persistence",
+        prompt: "Read x and report y...",
+        output: "Found that...",
+      }),
+    ).not.toThrow();
+  });
+
+  it("web_fetch variant", () => {
+    expect(() =>
+      parseOne({
+        type: "web_fetch",
+        url: "https://example.com/api",
+        prompt: "extract X",
+        output: "the extracted X",
+      }),
+    ).not.toThrow();
+  });
+
+  it("web_search variant", () => {
+    expect(() =>
+      parseOne({
+        type: "web_search",
+        query: "react native keyboard controller",
+        output: "1. Title - URL\n2. Title - URL",
+      }),
+    ).not.toThrow();
+  });
+
+  it("task_create + task_update + task_stop carry taskId", () => {
+    expect(() =>
+      parseOne({
+        type: "task_create",
+        taskId: "1",
+        subject: "Install foo",
+        activeForm: "Installing foo",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      parseOne({
+        type: "task_update",
+        taskId: "1",
+        status: "in_progress",
+      }),
+    ).not.toThrow();
+    expect(() => parseOne({ type: "task_stop", taskId: "1" })).not.toThrow();
+  });
+
+  it("task_update status enum is closed", () => {
+    expect(
+      getMessagesResponse.safeParse({
+        type: "getMessages.response",
+        requestId: "g",
+        items: [
+          makeToolCall({
+            type: "task_update",
+            taskId: "1",
+            status: "in-progress", // hyphen instead of underscore
+          }),
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("ask_user variant carries questions + optional answers", () => {
+    expect(() =>
+      parseOne({
+        type: "ask_user",
+        questions: [
+          {
+            question: "Which font?",
+            header: "Font choice",
+            multiSelect: false,
+            options: [
+              { label: "Inter", description: "Modern sans-serif" },
+              { label: "Mono", description: "Monospace for code" },
+            ],
+          },
+        ],
+        answers: ["Inter"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("schedule_wakeup variant", () => {
+    expect(() =>
+      parseOne({
+        type: "schedule_wakeup",
+        delaySeconds: 90,
+        reason: "check dev server boot",
+        prompt: "Read /tmp/.../tasks/X.output and report",
+      }),
+    ).not.toThrow();
+  });
+
+  it("monitor variant", () => {
+    expect(() =>
+      parseOne({
+        type: "monitor",
+        command: "gh pr checks 123 --watch",
+        description: "Watch PR CI status",
+        taskId: "m9k2ab",
+        output: "Started watching...",
+      }),
+    ).not.toThrow();
+  });
+
+  it("unknown variant remains the fallback for unrecognized SDK tools", () => {
+    expect(() =>
+      parseOne({
+        type: "unknown",
+        toolName: "mcp__sentry__list_errors",
+        input: { project_id: "abc" },
+        output: "no errors",
+      }),
+    ).not.toThrow();
   });
 });

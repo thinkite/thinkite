@@ -252,11 +252,25 @@ export function attachOutputToDetail(
     case "grep":
     case "glob":
     case "unknown":
+    // New variants whose `output` slot mirrors the SDK tool_result text.
+    case "agent":
+    case "web_fetch":
+    case "web_search":
+    case "monitor":
       detail.output = output;
       return;
     // edit/write don't surface tool_result text — input is sufficient.
     case "edit":
     case "write":
+    // Task family + ask_user + schedule_wakeup: tool_result text is just a
+    // confirmation / id-bearing string that the detect-time parser already
+    // lifted into structured fields (taskId, answers, etc.). Nothing
+    // left to attach as raw output. Daemon emitters are added in Phase 2.
+    case "task_create":
+    case "task_update":
+    case "task_stop":
+    case "ask_user":
+    case "schedule_wakeup":
       return;
   }
 }
@@ -277,6 +291,36 @@ export function summaryFor(detail: ToolCallDetail, name: string): string {
         : `"${detail.pattern}"`;
     case "glob":
       return detail.pattern;
+    case "agent":
+      return `${detail.subagentType}: ${truncate(detail.description, 50)}`;
+    case "web_fetch": {
+      // Host only — full URL clutters the chip. Falls back to raw if
+      // URL.parse fails (shouldn't happen for SDK-issued URLs).
+      try {
+        return new URL(detail.url).host;
+      } catch {
+        return truncate(detail.url, 50);
+      }
+    }
+    case "web_search":
+      return `"${truncate(detail.query, 50)}"`;
+    case "task_create":
+      return detail.subject;
+    case "task_update":
+      return detail.activeForm
+        ? `#${detail.taskId} ${truncate(detail.activeForm, 40)}`
+        : `#${detail.taskId}${detail.status ? `: ${detail.status}` : ""}`;
+    case "task_stop":
+      return `#${detail.taskId} stopped`;
+    case "ask_user": {
+      const first = detail.questions[0];
+      if (!first) return "Ask user";
+      return first.header || truncate(first.question, 50);
+    }
+    case "schedule_wakeup":
+      return `+${detail.delaySeconds}s · ${truncate(detail.reason, 40)}`;
+    case "monitor":
+      return detail.description || truncate(detail.command, 60);
     case "unknown":
       return name;
   }

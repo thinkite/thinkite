@@ -246,10 +246,48 @@ export type SessionInfo = z.infer<typeof sessionInfo>;
 // shapes (`file_path` → `filePath`, `old_string` → `oldString`). Output shapes
 // in SDK are already camelCase (`structuredPatch`, `numLines`).
 
-// NOTE: TodoWrite removed in prep for Agent SDK 0.3.142+, which replaces
-// TodoWrite with TaskCreate / TaskUpdate / TaskGet / TaskList (per-id
-// increments, not snapshot writes). Re-add a `task` detail variant + daemon
-// accumulator when we wire those tools back in.
+// ─── Shared content schemas (referenced by both timelineItem + sendPromptCommand) ──
+
+/**
+ * Image attachment. V0 accepts only base64 — daemon forwards as-is into
+ * Anthropic SDK's `{type:'image', source:{type:'base64', media_type, data}}`
+ * content block. Format limited to JPEG/PNG: mobile picker pipeline always
+ * compresses to JPEG (Opus 4.7 long edge 2576px), PNG slot exists for
+ * future pasted-screenshot path that wants to preserve transparency.
+ *
+ * Wire size: a single 2576x1448 JPEG q0.85 ≈ 600KB-1MB base64. Chunking
+ * protocol (chunking.ts) splits at 60K chars, so a typical image flows
+ * as ~10-15 chunks over the DataChannel.
+ */
+export const imageAttachment = z.object({
+  data: z.string(),
+  mediaType: z.enum(["image/jpeg", "image/png"]),
+});
+export type ImageAttachment = z.infer<typeof imageAttachment>;
+
+/**
+ * Anthropic API stop_reason — verbatim enum from the SDK.
+ * `null` is significant: it indicates the message was interrupted —
+ * either the user called `interrupt()` mid-stream, or the SDK shut
+ * down before the turn completed. iOS shows a "[stopped]" badge.
+ *
+ * (`pause_turn` shows up when the model voluntarily yields; `refusal`
+ * when it declines to answer. We carry both so UI can theme them
+ * differently in V0.5+, though V0 treats anything-non-null as "normal
+ * completion" visually.)
+ */
+export const assistantStopReason = z
+  .enum([
+    "end_turn",
+    "tool_use",
+    "max_tokens",
+    "stop_sequence",
+    "pause_turn",
+    "refusal",
+    "model_context_window_exceeded",
+  ])
+  .nullable();
+export type AssistantStopReason = z.infer<typeof assistantStopReason>;
 
 export const grepMode = z.enum(["content", "files_with_matches", "count"]);
 export type GrepMode = z.infer<typeof grepMode>;
@@ -277,8 +315,19 @@ export const toolCallDetail = z.discriminatedUnion("type", [
     command: z.string(),
     /** Claude-generated active-voice short summary (BashInput.description). */
     description: z.string().optional(),
-    /** Combined text output the model saw (stdout+stderr+errors as one blob). */
+    /** Combined text output the model saw (stdout+stderr+errors as one blob).
+     *  Empty / preview-only when `runInBackground: true` — the real output
+     *  lives in `/tasks/{taskId}.output` and is owned by the SDK's
+     *  background task subsystem (see V0.5+ background-tasks panel). */
     output: z.string(),
+    /** Mirrors SDK input `run_in_background`. Tells the iOS transcript this
+     *  bash spawn was fire-and-forget — the row should link to the
+     *  Background Tasks panel rather than show its output inline. */
+    runInBackground: z.boolean().optional(),
+    /** Background task ID (`b3v2ethee`-style 8-char). Parsed out of
+     *  tool_result by daemon when `runInBackground:true`. Lets the
+     *  transcript row deep-link to the Background Tasks panel entry. */
+    taskId: z.string().optional(),
   }),
   z.object({
     type: z.literal("read"),
@@ -325,6 +374,105 @@ export const toolCallDetail = z.discriminatedUnion("type", [
     output: z.string(),
   }),
   z.object({
+    type: z.literal("agent"),
+    /** SDK `Agent.input.subagent_type` — registered subagent name (e.g.
+     *  "Explore", "Plan", "general-purpose"). */
+    subagentType: z.string(),
+    description: z.string(),
+    /** Original prompt handed to the subagent. May be long. */
+    prompt: z.string(),
+    /** Final text the subagent returned to the parent conversation.
+     *  Subagent's intermediate tool calls and chain-of-thought are NOT
+     *  here — they live in the subagent JSONL and surface via the
+     *  Background Tasks panel ("View transcript" link) in V0.5+. */
+    output: z.string(),
+  }),
+  z.object({
+    type: z.literal("web_fetch"),
+    url: z.string(),
+    /** Extraction prompt — describes what to pull from the page. */
+    prompt: z.string(),
+    /** Lossy-by-design summary the fetch-side small model produced.
+     *  Not raw page HTML; see Claude Code docs for WebFetch behavior. */
+    output: z.string(),
+  }),
+  z.object({
+    type: z.literal("web_search"),
+    query: z.string(),
+    /** Returned result titles + URLs as the model saw them. */
+    output: z.string(),
+  }),
+  z.object({
+    type: z.literal("task_create"),
+    /** SDK does NOT pass taskId in input — daemon parses it out of the
+     *  tool_result text ("Created task #N: …"). Required field because
+     *  every subsequent TaskUpdate/TaskStop refers to it. */
+    taskId: z.string(),
+    /** Short label shown in todo lists. */
+    subject: z.string(),
+    description: z.string().optional(),
+    /** Present-progressive form for "in-progress" rendering
+     *  ("Installing foo" vs "Install foo"). */
+    activeForm: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("task_update"),
+    /** SDK uses `taskId` here (camelCase) — kept verbatim. */
+    taskId: z.string(),
+    status: z
+      .enum(["pending", "in_progress", "completed", "cancelled"])
+      .optional(),
+    activeForm: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("task_stop"),
+    /** SDK input field is `task_id` (snake_case, inconsistent with
+     *  TaskUpdate's camelCase). Daemon normalizes to camelCase here. */
+    taskId: z.string(),
+  }),
+  z.object({
+    type: z.literal("ask_user"),
+    /** The questions Claude posed. Each may be single- or multi-select. */
+    questions: z.array(
+      z.object({
+        question: z.string(),
+        header: z.string(),
+        multiSelect: z.boolean(),
+        options: z.array(
+          z.object({
+            label: z.string(),
+            description: z.string(),
+          }),
+        ),
+      }),
+    ),
+    /** User's selected option labels — daemon parses out of tool_result.
+     *  Same array order as `questions`; each element is the chosen label
+     *  (or comma-joined labels if multiSelect). Undefined while pending. */
+    answers: z.array(z.string()).optional(),
+  }),
+  z.object({
+    type: z.literal("schedule_wakeup"),
+    /** Seconds from now until Claude re-fires; SDK clamps to [60, 3600]. */
+    delaySeconds: z.number(),
+    /** Short user-facing reason, shown in transcript + telemetry. */
+    reason: z.string(),
+    /** Prompt to fire on wake-up — typically a re-invocation of /loop. */
+    prompt: z.string(),
+  }),
+  z.object({
+    type: z.literal("monitor"),
+    /** Watch command (typically `tail -f X`, `gh pr checks --watch`, etc.). */
+    command: z.string(),
+    description: z.string().optional(),
+    /** Background task ID — same role as bash.taskId. Monitor always
+     *  spawns a background task (that's its whole purpose). */
+    taskId: z.string().optional(),
+    /** Initial output preview / handshake message. The live stream of
+     *  output lines flows through the Background Tasks panel, not here. */
+    output: z.string(),
+  }),
+  z.object({
     type: z.literal("unknown"),
     /** Raw SDK tool name so iOS can show "WebFetch" / "Agent" / etc. on the chip. */
     toolName: z.string(),
@@ -363,12 +511,24 @@ export const timelineItem = z.discriminatedUnion("type", [
     type: z.literal("user_message"),
     /** SDK SessionMessage uuid for the surrounding message envelope. */
     uuid: z.string(),
+    /** Concatenated text from all text content blocks in the message.
+     *  May be empty when the user sent only image(s) with no caption. */
     text: z.string(),
+    /** Images attached to this user message, in the order they appear
+     *  in the SDK content block array. Daemon decodes from
+     *  `{type:'image', source:{type:'base64', media_type, data}}` blocks. */
+    images: z.array(imageAttachment).optional(),
   }),
   z.object({
     type: z.literal("assistant_message"),
     uuid: z.string(),
     text: z.string(),
+    /** Anthropic stop_reason. `null` (vs undefined) is significant —
+     *  it indicates the assistant message was interrupted before the
+     *  model wrote its own stop_reason. UI shows a "[stopped]" badge
+     *  in that case. `undefined` means the daemon didn't have the
+     *  field yet (live streaming partial), not the same thing. */
+    stopReason: assistantStopReason.optional(),
   }),
   toolCallItem,
 ]);
@@ -496,6 +656,12 @@ export const unsubscribeResponse = z.object({
  * SDK's `getSessionInfo(sessionId)`; missing-cwd-for-new-session → daemon
  * replies with `{ type: "error", code: "invalid_message" }`. For resume
  * (session already exists), `cwd` is ignored — SDK uses the persisted cwd.
+ *
+ * `images` carries base64-encoded image attachments — daemon wraps these
+ * into SDK content blocks (`{type:'image', source:{type:'base64', ...}}`)
+ * and prepends them to the text block. Empty `text` is allowed when only
+ * images are sent. The chunking layer (chunking.ts) splits large image
+ * payloads across DataChannel frames; protocol consumers don't see chunks.
  */
 export const sendPromptCommand = z.object({
   type: z.literal("sendPrompt"),
@@ -503,6 +669,7 @@ export const sendPromptCommand = z.object({
   sessionId: z.string(),
   text: z.string(),
   cwd: z.string().optional(),
+  images: z.array(imageAttachment).optional(),
 });
 
 export const sendPromptResponse = z.object({
