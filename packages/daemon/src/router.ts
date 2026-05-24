@@ -3,6 +3,7 @@ import type {
   SessionInfo,
   TimelineItem,
 } from "@sidecodeapp/protocol";
+import type { CommandHandler } from "./command.js";
 import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
 import type { DesktopSession } from "./desktop/sessions.js";
 import type { GitWatcherRegistry } from "./git-watch.js";
@@ -13,7 +14,6 @@ import {
 } from "./runtime/run-query.js";
 import type { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import type { SidecodeSessionMetadata } from "./sidecode-sessions.js";
-import type { CommandHandler } from "./command.js";
 
 export interface RouterDeps {
   continueOnDesktop: (target: ContinueOnDesktopTarget) => Promise<void>;
@@ -30,9 +30,7 @@ export interface RouterDeps {
    * trivial fs.readdir + JSON.parse over a small (~tens) directory;
    * Promise.all in the handler tolerates plain array returns.
    */
-  listSidecodeSessions: (opts: {
-    cwd?: string;
-  }) => SidecodeSessionMetadata[];
+  listSidecodeSessions: (opts: { cwd?: string }) => SidecodeSessionMetadata[];
   /**
    * Read the full message transcript for a CLI session, normalized into a
    * flat TimelineItem[]. Backed by the SDK's `getSessionMessages` which parses
@@ -411,7 +409,7 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           });
           // pushPrompt emits turn_started synchronously before the SDK
           // even sees the message — iOS flips the spinner immediately.
-          pushPrompt(runtime, cmd.text);
+          pushPrompt(runtime, cmd.text, cmd.images);
 
           ctx.send({
             type: "sendPrompt.response",

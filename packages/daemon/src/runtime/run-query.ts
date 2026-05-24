@@ -56,7 +56,11 @@ import {
   type SDKPartialAssistantMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { EventDelta, ToolCallDetail } from "@sidecodeapp/protocol";
+import type {
+  EventDelta,
+  ImageAttachment,
+  ToolCallDetail,
+} from "@sidecodeapp/protocol";
 import {
   attachOutputToDetail,
   buildDetailFromInput,
@@ -222,6 +226,7 @@ export function ensureSessionLoop(
 export function pushPrompt(
   runtime: SessionRuntime<EventDelta>,
   text: string,
+  images?: readonly ImageAttachment[],
 ): void {
   const channel = runtime.inputChannel;
   if (channel === null) {
@@ -232,22 +237,51 @@ export function pushPrompt(
   const userMsgUuid = randomUUID();
   runtime.addEvent({
     kind: "append",
-    item: { type: "user_message", uuid: userMsgUuid, text },
+    item: {
+      type: "user_message",
+      uuid: userMsgUuid,
+      text,
+      images: images && images.length > 0 ? [...images] : undefined,
+    },
   });
   runtime.addEvent({ kind: "turn_started" });
-  channel.push(buildUserMessage(runtime.sessionId, text, userMsgUuid));
+  channel.push(buildUserMessage(runtime.sessionId, text, userMsgUuid, images));
 }
 
 function buildUserMessage(
   sessionId: string,
   text: string,
   uuid: string,
+  images?: readonly ImageAttachment[],
 ): SDKUserMessage {
+  // SDK content blocks: image(s) prepended before text — matches Claude
+  // Code's own paste flow ordering (`array<image,text>` per probe), so
+  // the model sees the visual first then the question. Empty text is
+  // allowed when only images were sent (skip text block in that case
+  // so we don't feed the model an empty string).
+  const content: Array<
+    | { type: "text"; text: string }
+    | {
+        type: "image";
+        source: { type: "base64"; media_type: string; data: string };
+      }
+  > = [];
+  if (images && images.length > 0) {
+    for (const img of images) {
+      content.push({
+        type: "image",
+        source: { type: "base64", media_type: img.mediaType, data: img.data },
+      });
+    }
+  }
+  if (text.length > 0) {
+    content.push({ type: "text", text });
+  }
   return {
     type: "user",
     message: {
       role: "user",
-      content: [{ type: "text", text }],
+      content,
     },
     parent_tool_use_id: null,
     uuid,

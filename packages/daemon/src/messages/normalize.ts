@@ -1,5 +1,11 @@
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { TimelineItem, ToolCallItem } from "@sidecodeapp/protocol";
+import type {
+  AssistantStopReason,
+  ImageAttachment,
+  TimelineItem,
+  ToolCallItem,
+} from "@sidecodeapp/protocol";
+import { assistantStopReason } from "@sidecodeapp/protocol";
 import {
   assistantContentBlock,
   attachOutputToDetail,
@@ -51,18 +57,42 @@ export function normalize(messages: readonly SessionMessage[]): TimelineItem[] {
         continue;
       }
       if (!Array.isArray(content)) continue;
+      // ContentBlock[] form. Two distinct shapes flow through this branch:
+      //   (a) tool_result envelopes (Claude's tool feedback) — one per
+      //       paired tool_use, never mixed with user-typed content
+      //   (b) user-typed messages — text + optional images, possibly multiple
+      //       text blocks though usually just one
+      // We collect (b) into ONE user_message item per SDK envelope (text
+      // joined, images concatenated) and dispatch (a) directly into the
+      // pendingByCallId map. Sample probe confirmed messages don't mix the
+      // two shapes, so a single pass with two accumulators is sufficient.
+      const texts: string[] = [];
+      const images: ImageAttachment[] = [];
       for (const block of content) {
         const parsedBlock = userContentBlock.safeParse(block);
         if (!parsedBlock.success) continue;
         const b = parsedBlock.data;
         if (b.type === "text") {
-          if (b.text.length > 0) {
-            out.push({
-              type: "user_message",
-              uuid: sdkMsg.uuid,
-              text: b.text,
-            });
+          if (b.text.length > 0) texts.push(b.text);
+        } else if (b.type === "image") {
+          // V0 only carries inline base64 images (mobile uploads always
+          // come as base64; URL form is for Anthropic API users who
+          // host their own image bucket). Skip URL form silently.
+          if (b.source.type !== "base64") continue;
+          // Protocol's imageAttachment.mediaType enum only accepts
+          // jpeg/png. Resume of a Desktop session with paste-image that
+          // landed as gif/webp/heic would otherwise crash zod parse —
+          // safer to drop the image than tank the whole getMessages.
+          if (
+            b.source.media_type !== "image/jpeg" &&
+            b.source.media_type !== "image/png"
+          ) {
+            continue;
           }
+          images.push({
+            data: b.source.data,
+            mediaType: b.source.media_type,
+          });
         } else {
           // tool_result
           const target = pendingByCallId.get(b.tool_use_id);
@@ -77,11 +107,32 @@ export function normalize(messages: readonly SessionMessage[]): TimelineItem[] {
           attachOutputToDetail(target.detail, outputText);
         }
       }
+      if (texts.length > 0 || images.length > 0) {
+        out.push({
+          type: "user_message",
+          uuid: sdkMsg.uuid,
+          // Multiple text blocks in one envelope are rare but happen with
+          // CLI-synth messages. Join with paragraph spacing to stay
+          // visually distinct in markdown rendering.
+          text: texts.join("\n\n"),
+          images: images.length > 0 ? images : undefined,
+        });
+      }
       continue;
     }
 
     // sdkMsg.type === "assistant"
     if (!Array.isArray(content)) continue;
+    // Pull stop_reason once per envelope — settled JSONL always has it
+    // (the model wrote it before disk-flush) except for the interrupted
+    // case where SDK leaves it null. We pass the same value into every
+    // assistant_message item from this envelope; UI typically only
+    // checks the last one before a tool_call / next user message.
+    const rawStopReason = (env as { stop_reason?: unknown }).stop_reason;
+    const parsedStopReason = assistantStopReason.safeParse(rawStopReason);
+    const stopReason: AssistantStopReason | undefined = parsedStopReason.success
+      ? parsedStopReason.data
+      : undefined;
     for (const block of content) {
       const parsedBlock = assistantContentBlock.safeParse(block);
       if (!parsedBlock.success) continue; // includes "thinking" etc — ignored
@@ -92,6 +143,7 @@ export function normalize(messages: readonly SessionMessage[]): TimelineItem[] {
             type: "assistant_message",
             uuid: sdkMsg.uuid,
             text: b.text,
+            stopReason,
           });
         }
       } else {

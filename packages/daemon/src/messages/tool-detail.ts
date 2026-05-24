@@ -45,6 +45,33 @@ export const toolResultBlock = z.object({
   is_error: z.boolean().optional().default(false),
 });
 
+/**
+ * Anthropic ImageBlockParam. `source.type` covers both inline base64 and
+ * URL forms; V0 only emits the base64 branch (mobile uploads images as
+ * inline data). URL/file branches are accepted at parse time so a third-
+ * party CLI's session JSONL doesn't crash normalize — we just skip those
+ * images downstream rather than fail the whole user message.
+ *
+ * `media_type` is left wide here (z.string()) so unsupported formats like
+ * image/gif / image/webp don't blow up the discriminated union; the
+ * downstream filter rejects anything other than image/jpeg | image/png
+ * to match the protocol's imageAttachment.mediaType enum.
+ */
+export const imageBlock = z.object({
+  type: z.literal("image"),
+  source: z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("base64"),
+      media_type: z.string(),
+      data: z.string(),
+    }),
+    z.object({
+      type: z.literal("url"),
+      url: z.string(),
+    }),
+  ]),
+});
+
 export const assistantContentBlock = z.discriminatedUnion("type", [
   textBlock,
   toolUseBlock,
@@ -53,6 +80,7 @@ export const assistantContentBlock = z.discriminatedUnion("type", [
 export const userContentBlock = z.discriminatedUnion("type", [
   textBlock,
   toolResultBlock,
+  imageBlock,
 ]);
 
 // ─── Per-tool input schemas ─────────────────────────────────────────────
@@ -64,6 +92,7 @@ export const userContentBlock = z.discriminatedUnion("type", [
 const bashInputSchema = z.object({
   command: z.string(),
   description: z.string().optional(),
+  run_in_background: z.boolean().optional(),
 });
 
 const readInputSchema = z.object({
@@ -96,6 +125,73 @@ const globInputSchema = z.object({
   path: z.string().optional(),
 });
 
+// ─── Per-tool input schemas (extended V0 set) ─────────────────────────
+// Order matches the toolCallDetail discriminated union in protocol/index.ts.
+// Field names mirror SDK input (snake_case where SDK uses snake_case);
+// the detail builders below normalize to camelCase per the timeline
+// schema convention.
+
+const agentInputSchema = z.object({
+  subagent_type: z.string(),
+  description: z.string(),
+  prompt: z.string(),
+});
+
+const webFetchInputSchema = z.object({
+  url: z.string(),
+  prompt: z.string(),
+});
+
+const webSearchInputSchema = z.object({
+  query: z.string(),
+});
+
+const taskCreateInputSchema = z.object({
+  subject: z.string(),
+  description: z.string().optional(),
+  activeForm: z.string().optional(),
+});
+
+const taskUpdateInputSchema = z.object({
+  taskId: z.string(),
+  status: z
+    .enum(["pending", "in_progress", "completed", "cancelled"])
+    .optional(),
+  activeForm: z.string().optional(),
+});
+
+const taskStopInputSchema = z.object({
+  // SDK input uses snake_case here (verified via probe on real sessions).
+  task_id: z.string(),
+});
+
+const askUserInputSchema = z.object({
+  questions: z.array(
+    z.object({
+      question: z.string(),
+      header: z.string(),
+      multiSelect: z.boolean(),
+      options: z.array(
+        z.object({
+          label: z.string(),
+          description: z.string(),
+        }),
+      ),
+    }),
+  ),
+});
+
+const scheduleWakeupInputSchema = z.object({
+  delaySeconds: z.number(),
+  reason: z.string(),
+  prompt: z.string(),
+});
+
+const monitorInputSchema = z.object({
+  command: z.string(),
+  description: z.string().optional(),
+});
+
 // ─── Detail builder ─────────────────────────────────────────────────────
 
 export function buildDetailFromInput(
@@ -106,12 +202,16 @@ export function buildDetailFromInput(
     case "Bash": {
       const parsed = bashInputSchema.safeParse(rawInput);
       if (!parsed.success) return unknownDetail(name, rawInput);
-      const { command, description } = parsed.data;
+      const { command, description, run_in_background } = parsed.data;
       return {
         type: "bash",
         command,
         description,
         output: "", // populated by tool_result attachment
+        // Carry the background flag (default `false` collapses to undefined
+        // for cleaner wire output). taskId is populated later by the
+        // tool_result parser when the SDK reports back the task id.
+        runInBackground: run_in_background ? true : undefined,
       };
     }
 
@@ -189,6 +289,118 @@ export function buildDetailFromInput(
       };
     }
 
+    case "Agent": {
+      const parsed = agentInputSchema.safeParse(rawInput);
+      if (!parsed.success) return unknownDetail(name, rawInput);
+      const { subagent_type, description, prompt } = parsed.data;
+      return {
+        type: "agent",
+        subagentType: subagent_type,
+        description,
+        prompt,
+        output: "", // subagent's final text, populated by tool_result attachment
+      };
+    }
+
+    case "WebFetch": {
+      const parsed = webFetchInputSchema.safeParse(rawInput);
+      if (!parsed.success) return unknownDetail(name, rawInput);
+      const { url, prompt } = parsed.data;
+      return {
+        type: "web_fetch",
+        url,
+        prompt,
+        output: "", // populated by tool_result attachment
+      };
+    }
+
+    case "WebSearch": {
+      const parsed = webSearchInputSchema.safeParse(rawInput);
+      if (!parsed.success) return unknownDetail(name, rawInput);
+      const { query } = parsed.data;
+      return {
+        type: "web_search",
+        query,
+        output: "", // populated by tool_result attachment
+      };
+    }
+
+    case "TaskCreate": {
+      const parsed = taskCreateInputSchema.safeParse(rawInput);
+      if (!parsed.success) return unknownDetail(name, rawInput);
+      const { subject, description, activeForm } = parsed.data;
+      // taskId not in input — SDK generates it and returns via tool_result.
+      // attachOutputToDetail (task_create case) parses it out and patches
+      // the detail in place. Placeholder empty string keeps the discriminated
+      // shape valid in the meantime (live: between tool_use and tool_result).
+      return {
+        type: "task_create",
+        taskId: "",
+        subject,
+        description,
+        activeForm,
+      };
+    }
+
+    case "TaskUpdate": {
+      const parsed = taskUpdateInputSchema.safeParse(rawInput);
+      if (!parsed.success) return unknownDetail(name, rawInput);
+      const { taskId, status, activeForm } = parsed.data;
+      return {
+        type: "task_update",
+        taskId,
+        status,
+        activeForm,
+      };
+    }
+
+    case "TaskStop": {
+      const parsed = taskStopInputSchema.safeParse(rawInput);
+      if (!parsed.success) return unknownDetail(name, rawInput);
+      // SDK uses snake_case (task_id) — normalize to camelCase taskId.
+      return {
+        type: "task_stop",
+        taskId: parsed.data.task_id,
+      };
+    }
+
+    case "AskUserQuestion": {
+      const parsed = askUserInputSchema.safeParse(rawInput);
+      if (!parsed.success) return unknownDetail(name, rawInput);
+      return {
+        type: "ask_user",
+        questions: parsed.data.questions,
+        // answers populated post-hoc by attachOutputToDetail when the
+        // tool_result lands (user picked an option). Undefined while pending.
+      };
+    }
+
+    case "ScheduleWakeup": {
+      const parsed = scheduleWakeupInputSchema.safeParse(rawInput);
+      if (!parsed.success) return unknownDetail(name, rawInput);
+      const { delaySeconds, reason, prompt } = parsed.data;
+      return {
+        type: "schedule_wakeup",
+        delaySeconds,
+        reason,
+        prompt,
+      };
+    }
+
+    case "Monitor": {
+      const parsed = monitorInputSchema.safeParse(rawInput);
+      if (!parsed.success) return unknownDetail(name, rawInput);
+      const { command, description } = parsed.data;
+      return {
+        type: "monitor",
+        command,
+        description,
+        // taskId comes from tool_result; Monitor always spawns a background
+        // task so the result line carries it analogously to Bash background.
+        output: "", // populated by tool_result attachment
+      };
+    }
+
     default:
       return unknownDetail(name, rawInput);
   }
@@ -245,6 +457,19 @@ export function attachOutputToDetail(
   switch (detail.type) {
     case "bash":
       detail.output = output;
+      // For background spawn, the SDK confirms with a one-line message:
+      //   "Command running in background with ID: bxxxxxx. Output is being
+      //    written to: /…/tasks/bxxxxxx.output. You will be notified …"
+      // Parse the task id (path-based regex covers Monitor too) so the
+      // transcript row can deep-link into the Background Tasks panel.
+      if (detail.runInBackground) {
+        detail.taskId = parseBackgroundTaskId(output);
+      }
+      return;
+    case "monitor":
+      detail.output = output;
+      // Monitor always spawns a background task.
+      detail.taskId = parseBackgroundTaskId(output);
       return;
     case "read":
       detail.content = stripLineNumberPrefix(output);
@@ -256,22 +481,36 @@ export function attachOutputToDetail(
     case "agent":
     case "web_fetch":
     case "web_search":
-    case "monitor":
       detail.output = output;
       return;
     // edit/write don't surface tool_result text — input is sufficient.
     case "edit":
     case "write":
-    // Task family + ask_user + schedule_wakeup: tool_result text is just a
-    // confirmation / id-bearing string that the detect-time parser already
-    // lifted into structured fields (taskId, answers, etc.). Nothing
-    // left to attach as raw output. Daemon emitters are added in Phase 2.
-    case "task_create":
+    // TaskUpdate / TaskStop / ScheduleWakeup: tool_result is just a
+    // confirmation string ("Updated task #1 status" / "Next wakeup
+    // scheduled for …"). No useful structured fields to extract — UI
+    // shows the chip summary from the input alone.
     case "task_update":
     case "task_stop":
-    case "ask_user":
     case "schedule_wakeup":
       return;
+    case "task_create": {
+      // Input lacks taskId — SDK generates it and returns inline in the
+      // confirmation message. Patch the placeholder "" in detail.taskId
+      // (set by buildDetailFromInput) with the real id so subsequent
+      // TaskUpdate/TaskStop chips can reference it.
+      const id = parseTaskCreatedId(output);
+      if (id !== undefined) detail.taskId = id;
+      return;
+    }
+    case "ask_user": {
+      // tool_result encodes the user's choice per question. Daemon
+      // populates detail.answers so the UI can render "selected: <label>"
+      // alongside the original questions.
+      const answers = parseAskUserAnswers(output);
+      if (answers !== undefined) detail.answers = answers;
+      return;
+    }
   }
 }
 
@@ -368,4 +607,49 @@ function basenameOf(p: string): string {
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max - 1)}…`;
+}
+
+/**
+ * Extract the SDK-generated task id from a TaskCreate tool_result like:
+ *   "Task #1 created successfully: Install react-qrcode-logo in menubar"
+ * Returns the numeric id as a string (matching the schema's `taskId: string`
+ * field; TaskUpdate/TaskStop's input field is also string). Undefined on
+ * shape mismatch — caller leaves the placeholder "" in detail.taskId.
+ */
+function parseTaskCreatedId(output: string): string | undefined {
+  return /^Task #(\d+) created/.exec(output)?.[1];
+}
+
+/**
+ * Extract the user's selected option labels from an AskUserQuestion
+ * tool_result like:
+ *   'User has answered your questions: "Q1"="A1", "Q2"="A2". You can now …'
+ * Each answer is the right-hand side of a `="…"` pair. The order matches
+ * the order Claude posed the questions, so the array maps 1:1 onto
+ * detail.questions[]. Multi-select answers come as `"[Opt A, Opt B]"`;
+ * unanswered ones as `"[No preference]"`. We forward the raw bracket
+ * form for the UI to format.
+ */
+function parseAskUserAnswers(output: string): string[] | undefined {
+  if (!output.startsWith("User has answered")) return undefined;
+  const answers: string[] = [];
+  for (const match of output.matchAll(/="([^"]+)"/g)) {
+    answers.push(match[1] as string);
+  }
+  return answers.length > 0 ? answers : undefined;
+}
+
+/**
+ * Extract the SDK-generated background task ID from a tool_result message
+ * like:
+ *   "Command running in background with ID: b2yeeqzmy. Output is being
+ *    written to: /…/tasks/b2yeeqzmy.output. You will be notified when …"
+ *
+ * Matches against the file path rather than the "ID: …" prefix so the
+ * same regex works for both Bash background spawns and Monitor (whose
+ * SDK response uses similar wording but may diverge in the prefix).
+ * Returns undefined if no match — caller leaves detail.taskId as-is.
+ */
+function parseBackgroundTaskId(output: string): string | undefined {
+  return /\/tasks\/([a-z0-9]+)\.output/i.exec(output)?.[1];
 }
