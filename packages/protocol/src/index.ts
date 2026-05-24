@@ -857,6 +857,96 @@ export const gitStatusEvent = z.object({
   status: gitStatus,
 });
 
+// ─── Filesystem browser (cwd picker + V0.5+ file picker) ───────────────────
+//
+// One workhorse RPC + one bootstrap RPC. The workhorse `listDirectory`
+// reads a single directory level (Finder-style hierarchical browser);
+// the bootstrap `getFilesystemRoots` returns the home/desktop/documents
+// paths iOS needs as starting points + a recents list aggregated from
+// session history (since iOS doesn't know the daemon machine's HOME).
+//
+// File-picker readiness: `includeFiles` defaults to false for V0's
+// folder-only picker; flipping it surfaces files too. `directoryEntry`
+// carries optional size + modifiedAt so a future file picker can show
+// metadata without a schema bump. To skip the per-file stat cost in
+// the V0 folder-only path, the daemon's handler ONLY stats entries
+// when `includeFiles === true`.
+
+export const directoryEntry = z.object({
+  /** Last path segment, e.g. "src" or "package.json". */
+  name: z.string(),
+  /** Absolute path. */
+  path: z.string(),
+  kind: z.enum(["directory", "file"]),
+  /** Size in bytes. Populated only when the response includes files
+   *  AND the daemon could stat the entry. Absent otherwise. */
+  size: z.number().optional(),
+  /** ISO 8601 mtime. Populated alongside `size` only. */
+  modifiedAt: z.string().optional(),
+});
+export type DirectoryEntry = z.infer<typeof directoryEntry>;
+
+export const listDirectoryCommand = z.object({
+  type: z.literal("listDirectory"),
+  requestId: z.string(),
+  /** Absolute path, or "~" / "~/..." (server expands to HOME). Anything
+   *  else (relative paths, "~user") is treated as-is and likely errors. */
+  path: z.string(),
+  /** Include files in the response. Default false — V0 folder picker
+   *  needs directories only, skipping files lets the daemon skip the
+   *  per-entry stat loop entirely. */
+  includeFiles: z.boolean().optional(),
+  /** Include dotfile / dot-directory entries (.git, .config, etc.).
+   *  Default false. */
+  includeHidden: z.boolean().optional(),
+});
+
+export const listDirectoryResponse = z.object({
+  type: z.literal("listDirectory.response"),
+  requestId: z.string(),
+  /** Echoed canonical absolute path of the listed dir (post-"~"-expansion). */
+  path: z.string(),
+  /** Parent absolute path for breadcrumb / up-nav. Null when at the
+   *  filesystem root ("/"). */
+  parent: z.string().nullable(),
+  /** Sorted by daemon: directories first, then files; alphabetical
+   *  within each group (case-insensitive). iOS can render straight
+   *  through without re-sorting. */
+  entries: z.array(directoryEntry),
+});
+
+/** Recent cwd entry — union of Desktop session cwds and sidecode session
+ *  cwds, filtered to only paths that still exist on disk (stale cwds
+ *  from deleted/moved projects are dropped). */
+export const recentCwd = z.object({
+  path: z.string(),
+  /** ISO 8601 timestamp of the most recent session activity at this cwd. */
+  lastUsedAt: z.string(),
+});
+
+export const getFilesystemRootsCommand = z.object({
+  type: z.literal("getFilesystemRoots"),
+  requestId: z.string(),
+});
+
+export const getFilesystemRootsResponse = z.object({
+  type: z.literal("getFilesystemRoots.response"),
+  requestId: z.string(),
+  /** Daemon machine's HOME directory absolute path (e.g.
+   *  "/Users/yangyueqian"). Always populated — every OS has $HOME. */
+  home: z.string(),
+  /** `${home}/Desktop` if it exists on disk. Optional because Desktop
+   *  is not universal (Linux headless servers / non-standard XDG
+   *  locales lack it); macOS always has it. */
+  desktop: z.string().optional(),
+  /** `${home}/Documents` if it exists on disk. Same optionality
+   *  reasoning as `desktop`. */
+  documents: z.string().optional(),
+  /** Recent project cwds, sorted by lastUsedAt desc, deduped and
+   *  filtered to existing paths. Max 10. */
+  recentCwds: z.array(recentCwd),
+});
+
 // ─── Health + error ────────────────────────────────────────────────────────
 
 export const pingFrame = z.object({
@@ -881,6 +971,10 @@ export const errorFrame = z.object({
     "unsupported",
     "rate_limited",
     "incompatible_protocol",
+    // Filesystem browser errors (listDirectory / getFilesystemRoots).
+    "not_found",
+    "permission_denied",
+    "not_a_directory",
   ]),
   message: z.string(),
 });
@@ -925,6 +1019,8 @@ export const command = z.discriminatedUnion("type", [
   getMessagesCommand,
   subscribeGitStatusCommand,
   unsubscribeGitStatusCommand,
+  listDirectoryCommand,
+  getFilesystemRootsCommand,
 ]);
 
 export type Command = z.infer<typeof command>;
@@ -940,6 +1036,8 @@ export const response = z.discriminatedUnion("type", [
   getMessagesResponse,
   subscribeGitStatusResponse,
   unsubscribeGitStatusResponse,
+  listDirectoryResponse,
+  getFilesystemRootsResponse,
 ]);
 
 export type Response = z.infer<typeof response>;
@@ -965,6 +1063,8 @@ export const clientFrame = z.discriminatedUnion("type", [
   getMessagesCommand,
   subscribeGitStatusCommand,
   unsubscribeGitStatusCommand,
+  listDirectoryCommand,
+  getFilesystemRootsCommand,
 ]);
 
 export type ClientFrame = z.infer<typeof clientFrame>;
@@ -992,6 +1092,8 @@ export const daemonFrame = z.discriminatedUnion("type", [
   subscribeGitStatusResponse,
   unsubscribeGitStatusResponse,
   gitStatusEvent,
+  listDirectoryResponse,
+  getFilesystemRootsResponse,
 ]);
 
 export type DaemonFrame = z.infer<typeof daemonFrame>;

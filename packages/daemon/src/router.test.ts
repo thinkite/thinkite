@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import type {
   Command,
@@ -9,12 +9,12 @@ import type {
   TimelineItem,
 } from "@sidecodeapp/protocol";
 import { describe, expect, it, vi } from "vitest";
+import type { CommandContext } from "./command.js";
 import type { DesktopSession } from "./desktop/sessions.js";
 import { GitWatcherRegistry } from "./git-watch.js";
 import { createCommandHandler } from "./router.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import type { SidecodeSessionMetadata } from "./sidecode-sessions.js";
-import type { CommandContext } from "./command.js";
 
 function makeCtx(): {
   ctx: CommandContext;
@@ -976,9 +976,7 @@ describe("createCommandHandler — subscribeGitStatus / unsubscribeGitStatus", (
       ctx,
     );
     expect(sent.length).toBeGreaterThanOrEqual(1);
-    const response = sent.find(
-      (f) => f.type === "subscribeGitStatus.response",
-    );
+    const response = sent.find((f) => f.type === "subscribeGitStatus.response");
     expect(response).toBeDefined();
     expect(response).toMatchObject({
       type: "subscribeGitStatus.response",
@@ -1045,5 +1043,322 @@ describe("createCommandHandler — subscribeGitStatus / unsubscribeGitStatus", (
     // one listener attached, not two.
     expect(watcher.listenerCount()).toBe(1);
     cleanup();
+  });
+});
+
+// ─── Filesystem browser (listDirectory + getFilesystemRoots) ─────────────────
+
+/**
+ * Build a fixture directory tree at a fresh tmpdir for browser tests:
+ *
+ *   <root>/
+ *     alpha/                  ← subdirectory (alpha sort tester)
+ *     beta/
+ *     zebra/                  ← directory; lowercase sort vs Alpha
+ *     .hidden/                ← hidden directory
+ *     README.md               ← file
+ *     .env                    ← hidden file
+ *     image.png               ← file (predictable size)
+ *
+ * Returned helpers let each test populate exactly what it needs.
+ */
+function makeBrowserFixture(): { root: string; cleanup: () => void } {
+  const root = mkdtempSync(path.join(tmpdir(), "router-browser-"));
+  for (const dir of ["alpha", "beta", "zebra", ".hidden"]) {
+    mkdirSync(path.join(root, dir));
+  }
+  writeFileSync(path.join(root, "README.md"), "hello\n");
+  writeFileSync(path.join(root, ".env"), "SECRET=x\n");
+  writeFileSync(path.join(root, "image.png"), "fake-png-bytes");
+  return {
+    root,
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+describe("createCommandHandler — listDirectory", () => {
+  it("returns only directories by default, sorted alpha case-insensitive", async () => {
+    const { root, cleanup } = makeBrowserFixture();
+    try {
+      const handler = createCommandHandler(makeDeps());
+      const { ctx, sent } = makeCtx();
+      await handler(
+        {
+          type: "listDirectory",
+          requestId: "ld1",
+          path: root,
+        } satisfies Command,
+        ctx,
+      );
+      expect(sent).toHaveLength(1);
+      const res = sent[0];
+      expect(res.type).toBe("listDirectory.response");
+      if (res.type !== "listDirectory.response") throw new Error("type guard");
+      expect(res.path).toBe(root);
+      expect(res.parent).toBe(path.dirname(root));
+      // No files (default includeFiles=false), no hidden (default
+      // includeHidden=false); alpha case-insensitive within kind:
+      // alpha → beta → zebra.
+      expect(res.entries.map((e) => e.name)).toEqual([
+        "alpha",
+        "beta",
+        "zebra",
+      ]);
+      expect(res.entries.every((e) => e.kind === "directory")).toBe(true);
+      // No stats on dir-only entries.
+      expect(res.entries.every((e) => e.size === undefined)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("includes hidden entries when includeHidden=true (still no files by default)", async () => {
+    const { root, cleanup } = makeBrowserFixture();
+    try {
+      const handler = createCommandHandler(makeDeps());
+      const { ctx, sent } = makeCtx();
+      await handler(
+        {
+          type: "listDirectory",
+          requestId: "ld2",
+          path: root,
+          includeHidden: true,
+        } satisfies Command,
+        ctx,
+      );
+      if (sent[0]?.type !== "listDirectory.response")
+        throw new Error("expected response");
+      // .hidden directory now shown; .env file still filtered by !includeFiles.
+      expect(sent[0].entries.map((e) => e.name)).toEqual([
+        ".hidden",
+        "alpha",
+        "beta",
+        "zebra",
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("surfaces files (kind only, no size/modifiedAt in V0) when includeFiles=true", async () => {
+    const { root, cleanup } = makeBrowserFixture();
+    try {
+      const handler = createCommandHandler(makeDeps());
+      const { ctx, sent } = makeCtx();
+      await handler(
+        {
+          type: "listDirectory",
+          requestId: "ld3",
+          path: root,
+          includeFiles: true,
+        } satisfies Command,
+        ctx,
+      );
+      if (sent[0]?.type !== "listDirectory.response")
+        throw new Error("expected response");
+      // Dirs first (alpha, beta, zebra), then files (image.png, README.md).
+      // .env / .hidden still filtered (no includeHidden).
+      expect(sent[0].entries.map((e) => e.name)).toEqual([
+        "alpha",
+        "beta",
+        "zebra",
+        "image.png",
+        "README.md",
+      ]);
+      const readme = sent[0].entries.find((e) => e.name === "README.md");
+      expect(readme?.kind).toBe("file");
+      // V0 deliberately leaves size + modifiedAt undefined; the per-
+      // entry stat path is deferred until we know whether we want
+      // per-call stat, lazy-on-visible-row, or native bulk-stat.
+      expect(readme?.size).toBeUndefined();
+      expect(readme?.modifiedAt).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("expands ~ to HOME", async () => {
+    const handler = createCommandHandler(makeDeps());
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "listDirectory", requestId: "ld4", path: "~" } satisfies Command,
+      ctx,
+    );
+    if (sent[0]?.type !== "listDirectory.response")
+      throw new Error("expected response");
+    // Daemon should have resolved "~" to homedir; echoed path matches.
+    expect(sent[0].path).toBe(homedir());
+  });
+
+  it("returns not_found error for ENOENT path", async () => {
+    const handler = createCommandHandler(makeDeps());
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "listDirectory",
+        requestId: "ld5",
+        path: "/nonexistent-path-for-test-abc123",
+      } satisfies Command,
+      ctx,
+    );
+    if (sent[0]?.type !== "error") throw new Error("expected error frame");
+    expect(sent[0].code).toBe("not_found");
+    expect(sent[0].requestId).toBe("ld5");
+  });
+
+  it("returns not_a_directory error when path is a file", async () => {
+    const { root, cleanup } = makeBrowserFixture();
+    try {
+      const handler = createCommandHandler(makeDeps());
+      const { ctx, sent } = makeCtx();
+      await handler(
+        {
+          type: "listDirectory",
+          requestId: "ld6",
+          path: path.join(root, "README.md"),
+        } satisfies Command,
+        ctx,
+      );
+      if (sent[0]?.type !== "error") throw new Error("expected error frame");
+      expect(sent[0].code).toBe("not_a_directory");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reports parent=null at the filesystem root", async () => {
+    const handler = createCommandHandler(makeDeps());
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "listDirectory", requestId: "ld7", path: "/" } satisfies Command,
+      ctx,
+    );
+    if (sent[0]?.type !== "listDirectory.response")
+      throw new Error("expected response");
+    expect(sent[0].path).toBe("/");
+    expect(sent[0].parent).toBeNull();
+  });
+});
+
+describe("createCommandHandler — getFilesystemRoots", () => {
+  function makeSidecodeMeta(
+    over: Partial<SidecodeSessionMetadata> = {},
+  ): SidecodeSessionMetadata {
+    return {
+      sessionId: "local_test",
+      cliSessionId: "cli-test",
+      cwd: "/Users/x/proj",
+      originCwd: "/Users/x/proj",
+      createdAt: 1700000000000,
+      lastActivityAt: 1700000000000,
+      isArchived: false,
+      title: "t",
+      titleSource: "auto",
+      completedTurns: 0,
+      permissionMode: "bypassPermissions",
+      ...over,
+    };
+  }
+
+  it("returns home/desktop/documents derived from os.homedir", async () => {
+    const handler = createCommandHandler(makeDeps());
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "getFilesystemRoots", requestId: "fr1" } satisfies Command,
+      ctx,
+    );
+    if (sent[0]?.type !== "getFilesystemRoots.response")
+      throw new Error("expected response");
+    const home = homedir();
+    expect(sent[0].home).toBe(home);
+    expect(sent[0].desktop).toBe(path.join(home, "Desktop"));
+    expect(sent[0].documents).toBe(path.join(home, "Documents"));
+    expect(sent[0].recentCwds).toEqual([]); // no sessions = no recents
+  });
+
+  it("aggregates recent cwds from desktop + sidecode sources, deduped, existence-filtered, sorted desc", async () => {
+    // Use tmpdir for existing cwds so the existence check actually
+    // resolves on the real filesystem.
+    const existingA = mkdtempSync(path.join(tmpdir(), "fr-cwdA-"));
+    const existingB = mkdtempSync(path.join(tmpdir(), "fr-cwdB-"));
+    const staleC = "/Users/nope/this-was-deleted-test-xyz";
+    try {
+      const handler = createCommandHandler(
+        makeDeps({
+          listSessions: vi.fn().mockResolvedValue([
+            // Same cwd as sidecode below — should dedupe with the
+            // LATEST lastActivityAt of the two ending up in the result.
+            makeDesktopSession({
+              cwd: existingA,
+              lastActivityAt: 1700000000100,
+            }),
+            // Stale path; should be dropped by existence filter.
+            makeDesktopSession({ cwd: staleC, lastActivityAt: 1700000001000 }),
+          ]),
+          listSidecodeSessions: vi.fn().mockReturnValue([
+            makeSidecodeMeta({
+              cwd: existingA,
+              lastActivityAt: 1700000000900,
+            }),
+            makeSidecodeMeta({
+              cwd: existingB,
+              lastActivityAt: 1700000000500,
+            }),
+          ]),
+        }),
+      );
+      const { ctx, sent } = makeCtx();
+      await handler(
+        { type: "getFilesystemRoots", requestId: "fr2" } satisfies Command,
+        ctx,
+      );
+      if (sent[0]?.type !== "getFilesystemRoots.response")
+        throw new Error("expected response");
+      // existingA wins existingB on lastActivityAt (900 > 500); staleC dropped.
+      expect(sent[0].recentCwds.map((r) => r.path)).toEqual([
+        existingA,
+        existingB,
+      ]);
+      // Dedup keeps the LATER lastActivityAt (sidecode 900 > desktop 100).
+      expect(sent[0].recentCwds[0].lastUsedAt).toBe(
+        new Date(1700000000900).toISOString(),
+      );
+    } finally {
+      rmSync(existingA, { recursive: true, force: true });
+      rmSync(existingB, { recursive: true, force: true });
+    }
+  });
+
+  it("caps recentCwds at 10 even when more exist", async () => {
+    const cwds: string[] = [];
+    for (let i = 0; i < 15; i++) {
+      cwds.push(mkdtempSync(path.join(tmpdir(), `fr-cap-${i}-`)));
+    }
+    try {
+      const handler = createCommandHandler(
+        makeDeps({
+          listSessions: vi.fn().mockResolvedValue(
+            cwds.map((cwd, i) =>
+              makeDesktopSession({
+                cwd,
+                lastActivityAt: 1700000000000 + i,
+              }),
+            ),
+          ),
+        }),
+      );
+      const { ctx, sent } = makeCtx();
+      await handler(
+        { type: "getFilesystemRoots", requestId: "fr3" } satisfies Command,
+        ctx,
+      );
+      if (sent[0]?.type !== "getFilesystemRoots.response")
+        throw new Error("expected response");
+      expect(sent[0].recentCwds).toHaveLength(10);
+      // Sorted desc means the LAST 10 we inserted come first.
+      expect(sent[0].recentCwds[0].path).toBe(cwds[14]);
+    } finally {
+      for (const c of cwds) rmSync(c, { recursive: true, force: true });
+    }
   });
 });

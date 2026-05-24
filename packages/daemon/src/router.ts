@@ -1,4 +1,8 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import type {
+  DirectoryEntry,
   EventDelta,
   SessionInfo,
   TimelineItem,
@@ -425,6 +429,117 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         }
         return;
       }
+      case "listDirectory": {
+        // Hierarchical browser for the iOS cwd / file picker. Workhorse
+        // RPC: caller passes the path it wants to list (or "~" / "~/..."
+        // for HOME-relative), daemon returns one level of entries.
+        //
+        // V0 scope: folder picker. `includeFiles=true` already surfaces
+        // file entries through the filter below, but `size` /
+        // `modifiedAt` stay undefined — per-entry stat is deferred to
+        // V0.5+ when we decide between per-call stat, lazy-on-visible-
+        // row, or native bulk-stat (see "高效拿 stats" design thread).
+        const resolved = expandHomePath(cmd.path);
+        try {
+          const stat = await fs.stat(resolved);
+          if (!stat.isDirectory()) {
+            ctx.send({
+              type: "error",
+              requestId: cmd.requestId,
+              code: "not_a_directory",
+              message: `${resolved} is not a directory`,
+            });
+            return;
+          }
+          const dirents = await fs.readdir(resolved, { withFileTypes: true });
+          // Cheap filter — only name + d_type from readdir, no extra
+          // syscall. Order matters: dot-filter before file-filter so
+          // an `includeHidden: true, includeFiles: false` request
+          // still drops hidden FILES implicitly via the kind filter.
+          const entries: DirectoryEntry[] = dirents
+            .filter((d) => cmd.includeHidden || !d.name.startsWith("."))
+            .filter((d) => cmd.includeFiles || d.isDirectory())
+            .map((d) => ({
+              name: d.name,
+              path: path.join(resolved, d.name),
+              kind: d.isDirectory()
+                ? ("directory" as const)
+                : ("file" as const),
+            }));
+          entries.sort((a, b) => {
+            if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
+            return a.name.localeCompare(b.name, undefined, {
+              sensitivity: "base",
+            });
+          });
+          // path.dirname("/") === "/" — that's our "at root" signal.
+          const parentPath = path.dirname(resolved);
+          ctx.send({
+            type: "listDirectory.response",
+            requestId: cmd.requestId,
+            path: resolved,
+            parent: parentPath === resolved ? null : parentPath,
+            entries,
+          });
+        } catch (err) {
+          const { code, message } = classifyFsError(err, resolved);
+          ctx.send({ type: "error", requestId: cmd.requestId, code, message });
+        }
+        return;
+      }
+      case "getFilesystemRoots": {
+        // Bootstrap RPC iOS calls once per session-create flow. Tells iOS
+        // the daemon machine's HOME (so "~" expansion is server-side) +
+        // gives a recents list aggregated from session history so the
+        // picker has a useful starting point even on first launch.
+        //
+        // desktop/documents are stat-checked: macOS always has both,
+        // but Linux headless / non-standard XDG locales may not — we
+        // omit the field rather than send a path that 404s when iOS
+        // tries to listDirectory on it.
+        const home = os.homedir();
+        try {
+          const desktopPath = path.join(home, "Desktop");
+          const documentsPath = path.join(home, "Documents");
+          const [
+            desktopSessions,
+            sidecodeSessions,
+            desktopExists,
+            documentsExists,
+          ] = await Promise.all([
+            deps.listSessions({}),
+            Promise.resolve(deps.listSidecodeSessions({})),
+            fs
+              .stat(desktopPath)
+              .then((s) => s.isDirectory())
+              .catch(() => false),
+            fs
+              .stat(documentsPath)
+              .then((s) => s.isDirectory())
+              .catch(() => false),
+          ]);
+          const recentCwds = await collectRecentCwds(
+            desktopSessions,
+            sidecodeSessions,
+          );
+          ctx.send({
+            type: "getFilesystemRoots.response",
+            requestId: cmd.requestId,
+            home,
+            ...(desktopExists ? { desktop: desktopPath } : {}),
+            ...(documentsExists ? { documents: documentsPath } : {}),
+            recentCwds,
+          });
+        } catch (err) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
       case "interrupt": {
         const runtime = deps.runtimeManager.get(cmd.sessionId);
         // Interrupt is best-effort: no active runtime / no in-flight query
@@ -521,4 +636,86 @@ function prettyModel(raw: string): string {
   if (!match) return raw;
   const family = match[1].charAt(0).toUpperCase() + match[1].slice(1);
   return `${family} ${match[2]}.${match[3]}`;
+}
+
+/**
+ * Expand "~" / "~/..." to the daemon machine's HOME, then normalize via
+ * `path.resolve` (collapses `..` / `.` segments, ensures absolute).
+ * Other shapes (relative paths, "~user") pass through `resolve` as-is,
+ * which is enough for iOS — it always sends absolute paths or the
+ * literal "~" returned via `getFilesystemRoots`.
+ */
+function expandHomePath(input: string): string {
+  if (input === "~") return os.homedir();
+  if (input.startsWith("~/")) return path.join(os.homedir(), input.slice(2));
+  return path.resolve(input);
+}
+
+/** Map Node `fs` errors to protocol error codes. */
+function classifyFsError(
+  err: unknown,
+  attemptedPath: string,
+): { code: "not_found" | "permission_denied" | "internal"; message: string } {
+  if (err && typeof err === "object" && "code" in err) {
+    const code = (err as { code: string }).code;
+    if (code === "ENOENT")
+      return { code: "not_found", message: `path not found: ${attemptedPath}` };
+    if (code === "EACCES" || code === "EPERM")
+      return {
+        code: "permission_denied",
+        message: `permission denied: ${attemptedPath}`,
+      };
+  }
+  return {
+    code: "internal",
+    message: err instanceof Error ? err.message : String(err),
+  };
+}
+
+/**
+ * Aggregate "recent cwds" for the picker sidebar. Union of Desktop
+ * session cwds and sidecode session cwds, deduped (keep the most
+ * recent lastActivityAt per cwd), filtered to paths that still exist
+ * on disk (stale entries from deleted projects drop), sorted desc by
+ * lastActivityAt, capped at 10.
+ */
+async function collectRecentCwds(
+  desktopSessions: DesktopSession[],
+  sidecodeSessions: SidecodeSessionMetadata[],
+): Promise<{ path: string; lastUsedAt: string }[]> {
+  // Dedup by cwd. Per-key value is the LATEST lastActivityAt across
+  // both source sets — a cwd appearing in both contributes whichever
+  // session was touched most recently.
+  const latest = new Map<string, number>();
+  const consume = (s: { cwd: string; lastActivityAt: number }) => {
+    const prev = latest.get(s.cwd);
+    if (prev === undefined || s.lastActivityAt > prev) {
+      latest.set(s.cwd, s.lastActivityAt);
+    }
+  };
+  for (const s of desktopSessions) consume(s);
+  for (const s of sidecodeSessions) consume(s);
+
+  // Check existence in parallel; drop entries whose path no longer
+  // resolves to a directory on disk.
+  const existenceChecks = await Promise.all(
+    Array.from(latest.entries()).map(async ([cwd, lastActivityAt]) => {
+      try {
+        const stat = await fs.stat(cwd);
+        return stat.isDirectory()
+          ? { cwd, lastActivityAt, exists: true }
+          : { cwd, lastActivityAt, exists: false };
+      } catch {
+        return { cwd, lastActivityAt, exists: false };
+      }
+    }),
+  );
+  return existenceChecks
+    .filter((e) => e.exists)
+    .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
+    .slice(0, 10)
+    .map((e) => ({
+      path: e.cwd,
+      lastUsedAt: new Date(e.lastActivityAt).toISOString(),
+    }));
 }
