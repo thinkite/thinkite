@@ -37,10 +37,7 @@ export default function MainLayout() {
             (`settings/_layout.tsx`) hosting an inner native Stack so
             list → host detail pushes inside the sheet (with native
             back arrow), instead of stacking a second sheet on top. */}
-        <Stack.Screen
-          name="settings"
-          options={{ presentation: "pageSheet" }}
-        />
+        <Stack.Screen name="settings" options={{ presentation: "pageSheet" }} />
         {/* Dev probe page — keep as a standard push, no modal. */}
         <Stack.Screen name="dev/diffs" />
       </Stack.Protected>
