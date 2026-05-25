@@ -189,7 +189,18 @@ export function SessionListSidebar({
             className="px-4 py-2"
           >
             <Text className="text-xs text-blue-600 dark:text-blue-400">
-              Menu test (@expo/ui) →
+              Menu test (@expo/ui swift-ui) →
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              navigation.closeDrawer();
+              router.push("/dev/menu-universal");
+            }}
+            className="px-4 py-2"
+          >
+            <Text className="text-xs text-blue-600 dark:text-blue-400">
+              Menu test (@expo/ui Universal) →
             </Text>
           </Pressable>
           <Pressable
