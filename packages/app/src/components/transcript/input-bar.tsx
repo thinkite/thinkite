@@ -1,17 +1,19 @@
-import { MenuView } from "@react-native-menu/menu";
-import type { ImageAttachment } from "@sidecodeapp/protocol";
+import { type MenuAction, MenuView } from "@react-native-menu/menu";
+import type { EffortLevel, ImageAttachment } from "@sidecodeapp/protocol";
 import { GlassView } from "expo-glass-effect";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { SymbolView } from "expo-symbols";
-import { useRef, useState } from "react";
+import { type SFSymbol, SymbolView } from "expo-symbols";
+import { useEffect, useRef, useState } from "react";
 import {
   Pressable,
   ScrollView,
+  Text,
   TextInput,
   useColorScheme,
   View,
 } from "react-native";
+import { useModels } from "@/hooks/use-models";
 import { Image } from "@/lib/styled";
 
 /**
@@ -34,6 +36,41 @@ const JPEG_QUALITY = 0.85;
  *  matches PHPicker's single-pick max so users hit the cap in one
  *  Photos tap, not by re-tapping `+` repeatedly. Tune in one spot. */
 const MAX_TOTAL_IMAGES = 8;
+
+/** SF Symbol name for the gauge variant that represents a given effort
+ *  level. The five percent variants iOS 17+ ships (`0/33/50/67/100`)
+ *  map cleanly onto the five SDK effort levels in monotonic order, so
+ *  the gauge needle visually conveys "more effort" without text. */
+const EFFORT_GAUGE_SYMBOL: Record<EffortLevel, SFSymbol> = {
+  low: "gauge.with.dots.needle.0percent",
+  medium: "gauge.with.dots.needle.33percent",
+  high: "gauge.with.dots.needle.50percent",
+  xhigh: "gauge.with.dots.needle.67percent",
+  max: "gauge.with.dots.needle.100percent",
+};
+
+/** Submenu row label for a given effort level. `xhigh` expands to "Extra
+ *  High" since the canonical SDK string is opaque to end users; the
+ *  others are straight title-case. */
+const EFFORT_LABEL: Record<EffortLevel, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+};
+
+/** Pick a sensible starting effort when the user switches to a model
+ *  whose previously-selected effort isn't supported (or when bootstrapping
+ *  from no selection). Prefers `high` when supported, otherwise the
+ *  middle of the supported list. */
+function pickDefaultEffort(
+  supported: readonly EffortLevel[] | undefined,
+): EffortLevel | undefined {
+  if (!supported || supported.length === 0) return undefined;
+  if (supported.includes("high")) return "high";
+  return supported[Math.floor(supported.length / 2)];
+}
 
 async function compressToAttachment(
   uri: string,
@@ -105,6 +142,26 @@ export function InputBar({
   const draftIdRef = useRef(0);
   const colorScheme = useColorScheme() ?? "light";
   const hasText = text.length > 0;
+
+  // Model + effort picker state. Local to the input bar for now — when
+  // sendPrompt grows `model?` / `effort?` params (V0.5+), lift to a
+  // parent / store and pass in as controlled props.
+  const { data: models } = useModels();
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [selectedEffort, setSelectedEffort] = useState<EffortLevel | undefined>(
+    undefined,
+  );
+  // Bootstrap to the daemon-declared default on first models payload.
+  // Re-runs only when models flips from undefined → array; selectedModel
+  // is sticky after that (re-fetches don't reset the user's pick).
+  useEffect(() => {
+    if (!models || selectedModel !== null) return;
+    const def = models.find((m) => m.isDefault) ?? models[0];
+    if (!def) return;
+    setSelectedModel(def.model);
+    setSelectedEffort(pickDefaultEffort(def.supportedEffortLevels));
+  }, [models, selectedModel]);
+  const currentModel = models?.find((m) => m.model === selectedModel);
   // Cap is enforced in three places: PHPicker's selectionLimit
   // (per-pick), Camera early-return guard, and MenuView action
   // `disabled`. We DON'T dim the `+` button itself — the menu will
@@ -250,56 +307,132 @@ export function InputBar({
             value={text}
             onChangeText={setText}
             placeholder="Reply to Claude"
+            // placeholderTextColor is a native prop with no className
+            // equivalent — keep the colorScheme ternary for this one.
             placeholderTextColor={
               colorScheme === "dark" ? "#71717a" : "#a1a1aa"
             }
-            style={{
-              color: colorScheme === "dark" ? "#fafafa" : "#0a0a0a",
-            }}
-            className="text-base px-3"
+            className="text-base px-3 py-[2.5px] text-zinc-950 dark:text-zinc-50"
           />
           <View className="px-3 flex-row items-center justify-between">
-            {/* `+` button → native attachment menu via @react-native-menu/menu
-                (UIKit UIMenu on iOS, PopupMenu on Android). MenuView wraps
-                the trigger Pressable directly; tapping fires `onPressAction`
-                with the action's id. Note: `imageColor` MUST be set on each
-                action — see comment at the prop. */}
-            <MenuView
-              actions={[
-                {
-                  id: "library",
-                  title: "Photos",
-                  image: "photo.on.rectangle",
-                  // SDK 55+ New Arch workaround: native side forwards a
-                  // default `0` tint when imageColor is unset, rendering
-                  // the SF Symbol as opaque-zero (invisible). Explicit
-                  // color is required.
-                  // https://github.com/react-native-menu/menu/issues/1198
-                  imageColor: colorScheme === "dark" ? "#e4e4e7" : "#3f3f46",
-                  attributes: { disabled: !canAdd },
-                },
-                {
-                  id: "camera",
-                  title: "Camera",
-                  image: "camera",
-                  imageColor: colorScheme === "dark" ? "#e4e4e7" : "#3f3f46",
-                  attributes: { disabled: !canAdd },
-                },
-              ]}
-              onPressAction={({ nativeEvent: { event } }) => {
-                if (event === "camera") pickFromCamera();
-                else if (event === "library") pickFromLibrary();
-              }}
-            >
-              <Pressable className="p-1.75 rounded-full">
-                <SymbolView
-                  name="plus"
-                  size={22}
-                  weight="regular"
-                  tintColor={colorScheme === "dark" ? "#e4e4e7" : "#3f3f46"}
-                />
-              </Pressable>
-            </MenuView>
+            <View className="flex-row items-center gap-2">
+              {/* `+` button → native attachment menu via @react-native-menu/menu
+                  (UIKit UIMenu on iOS, PopupMenu on Android). MenuView wraps
+                  the trigger Pressable directly; tapping fires `onPressAction`
+                  with the action's id. Note: `imageColor` MUST be set on each
+                  action — see comment at the prop. */}
+              <MenuView
+                actions={[
+                  {
+                    id: "library",
+                    title: "Photos",
+                    image: "photo.on.rectangle",
+                    // SDK 55+ New Arch workaround: native side forwards a
+                    // default `0` tint when imageColor is unset, rendering
+                    // the SF Symbol as opaque-zero (invisible). Explicit
+                    // color is required.
+                    // https://github.com/react-native-menu/menu/issues/1198
+                    imageColor: colorScheme === "dark" ? "#e4e4e7" : "#3f3f46",
+                    attributes: { disabled: !canAdd },
+                  },
+                  {
+                    id: "camera",
+                    title: "Camera",
+                    image: "camera",
+                    imageColor: colorScheme === "dark" ? "#e4e4e7" : "#3f3f46",
+                    attributes: { disabled: !canAdd },
+                  },
+                ]}
+                onPressAction={({ nativeEvent: { event } }) => {
+                  if (event === "camera") pickFromCamera();
+                  else if (event === "library") pickFromLibrary();
+                }}
+              >
+                <Pressable className="p-1.75 rounded-full bg-black/5 dark:bg-white/10">
+                  <SymbolView
+                    name="plus"
+                    size={22}
+                    weight="regular"
+                    tintColor={colorScheme === "dark" ? "#e4e4e7" : "#3f3f46"}
+                  />
+                </Pressable>
+              </MenuView>
+              {/* Model picker chip — two-level native menu (UIMenu on iOS,
+                  PopupMenu on Android). Each model entry is either a leaf
+                  action (Haiku-tier, no effort) or a submenu of its
+                  supported effort levels. Selection is reflected via:
+                    1. `state: "on"` on the active leaf (native checkmark)
+                    2. The chip's own label + gauge symbol
+                  Action ID format:
+                    - `model:<key>`             leaf model (no effort)
+                    - `effort:<key>|<effort>`   effort leaf inside submenu */}
+              <MenuView
+                actions={(models ?? []).map<MenuAction>((m) => {
+                  if (m.supportedEffortLevels === undefined) {
+                    return {
+                      id: `model:${m.model}`,
+                      title: m.displayName,
+                      state: m.model === selectedModel ? "on" : "off",
+                    };
+                  }
+                  // No selection indicator on submenu parent rows: UIKit
+                  // doesn't honor `state` on `UIMenu` instances (only on
+                  // `UIAction`), and the leading-image workaround renders
+                  // slightly differently from the native ✓ that leaf rows
+                  // (e.g. Haiku) get — inconsistent enough to be worse
+                  // than nothing. Current model is conveyed by the chip
+                  // label itself; opening the submenu shows the effort
+                  // checkmark which doubles as confirmation.
+                  return {
+                    title: m.displayName,
+                    subactions: m.supportedEffortLevels.map((eff) => ({
+                      id: `effort:${m.model}|${eff}`,
+                      title: EFFORT_LABEL[eff],
+                      image: EFFORT_GAUGE_SYMBOL[eff],
+                      imageColor:
+                        colorScheme === "dark" ? "#e4e4e7" : "#3f3f46",
+                      state:
+                        m.model === selectedModel && eff === selectedEffort
+                          ? "on"
+                          : "off",
+                    })),
+                  };
+                })}
+                onPressAction={({ nativeEvent: { event } }) => {
+                  if (event.startsWith("model:")) {
+                    const key = event.slice("model:".length);
+                    setSelectedModel(key);
+                    setSelectedEffort(undefined);
+                  } else if (event.startsWith("effort:")) {
+                    const rest = event.slice("effort:".length);
+                    const [modelKey, eff] = rest.split("|");
+                    if (modelKey && eff) {
+                      setSelectedModel(modelKey);
+                      setSelectedEffort(eff as EffortLevel);
+                    }
+                  }
+                }}
+              >
+                <Pressable className="flex-row items-center gap-1 px-3 py-2 rounded-full bg-black/5 dark:bg-white/10">
+                  <Text className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+                    {currentModel?.displayName ?? "Model"}
+                  </Text>
+                  {/* Hide the gauge entirely for effort-less models (Haiku) —
+                      no concept to convey. */}
+                  {selectedEffort !== undefined && (
+                    <SymbolView
+                      name={EFFORT_GAUGE_SYMBOL[selectedEffort]}
+                      size={16}
+                      weight="regular"
+                      // Match the chip's text color (zinc-700 / zinc-200) so
+                      // the gauge reads as part of the label, not tertiary
+                      // metadata.
+                      tintColor={colorScheme === "dark" ? "#e4e4e7" : "#3f3f46"}
+                    />
+                  )}
+                </Pressable>
+              </MenuView>
+            </View>
             <View className="flex-row items-center gap-3">
               <Pressable className="p-1.75">
                 <SymbolView
@@ -311,9 +444,7 @@ export function InputBar({
               </Pressable>
               <Pressable
                 onPress={handlePress}
-                className={`p-1.75 items-center justify-center rounded-full ${
-                  colorScheme === "dark" ? "bg-zinc-100" : "bg-zinc-900"
-                }`}
+                className="p-1.75 items-center justify-center rounded-full bg-zinc-900 dark:bg-zinc-100"
               >
                 <SymbolView
                   name={sendIconName}

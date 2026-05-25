@@ -16,6 +16,8 @@ import {
   eventFrame,
   getMessagesCommand,
   getMessagesResponse,
+  getModelsCommand,
+  getModelsResponse,
   helloCommand,
   interruptCommand,
   interruptResponse,
@@ -737,6 +739,83 @@ describe("daemonFrame union", () => {
         text: "x",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("getModels schemas", () => {
+  it("command is a bare request with no params", () => {
+    expect(getModelsCommand.parse({ type: "getModels", requestId: "r1" }).type)
+      .toBe("getModels");
+  });
+
+  it("response accepts a minimal entry (only required fields)", () => {
+    const r = getModelsResponse.parse({
+      type: "getModels.response",
+      requestId: "r1",
+      models: [
+        {
+          model: "claude-haiku-4-5-20251001",
+          displayName: "Haiku 4.5",
+          isDefault: false,
+        },
+      ],
+    });
+    expect(r.models[0].supportedEffortLevels).toBeUndefined();
+  });
+
+  it("response accepts an entry with all optional fields populated", () => {
+    const r = getModelsResponse.parse({
+      type: "getModels.response",
+      requestId: "r1",
+      models: [
+        {
+          model: "claude-opus-4-7[1m]",
+          displayName: "Opus 4.7 1M",
+          isDefault: true,
+          description: "Best at agentic coding",
+          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+          contextWindow: 1_000_000,
+        },
+      ],
+    });
+    expect(r.models[0].supportedEffortLevels).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    expect(r.models[0].contextWindow).toBe(1_000_000);
+  });
+
+  it("rejects an invalid effort level", () => {
+    expect(
+      getModelsResponse.safeParse({
+        type: "getModels.response",
+        requestId: "r1",
+        models: [
+          {
+            model: "x",
+            displayName: "X",
+            isDefault: false,
+            supportedEffortLevels: ["ultra"],
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("plumbs through both top-level unions", () => {
+    expect(
+      clientFrame.parse({ type: "getModels", requestId: "r1" }).type,
+    ).toBe("getModels");
+    expect(
+      daemonFrame.parse({
+        type: "getModels.response",
+        requestId: "r1",
+        models: [],
+      }).type,
+    ).toBe("getModels.response");
   });
 });
 

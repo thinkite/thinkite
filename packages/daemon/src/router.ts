@@ -11,7 +11,7 @@ import type { CommandHandler } from "./command.js";
 import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
 import type { DesktopSession } from "./desktop/sessions.js";
 import type { GitWatcherRegistry } from "./git-watch.js";
-import { prettyModel } from "./models-metadata.js";
+import { MODEL_METADATA, prettyModel } from "./models-metadata.js";
 import {
   ensureSessionLoop,
   pushPrompt,
@@ -539,6 +539,39 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             message: err instanceof Error ? err.message : String(err),
           });
         }
+        return;
+      }
+      case "getModels": {
+        // Bootstrap RPC iOS calls once when the picker opens. Daemon owns
+        // the source of truth (`MODEL_METADATA`) so iOS doesn't ship its
+        // own copy; new models land via daemon release. Deprecated entries
+        // are filtered here — historical Desktop sessions still need them
+        // for `prettyModel` label rendering, but the picker should never
+        // surface them as new-session choices.
+        //
+        // Order = source-declaration order in MODEL_METADATA (current
+        // models first). Synchronous, no I/O — just a table walk.
+        const models = Object.entries(MODEL_METADATA)
+          .filter(([, meta]) => !meta.deprecated)
+          .map(([key, meta]) => ({
+            model: key,
+            displayName: meta.displayName,
+            isDefault: meta.isDefault === true,
+            ...(meta.description !== undefined
+              ? { description: meta.description }
+              : {}),
+            ...(meta.supportedEffortLevels !== undefined
+              ? { supportedEffortLevels: meta.supportedEffortLevels }
+              : {}),
+            ...(meta.contextWindow !== undefined
+              ? { contextWindow: meta.contextWindow }
+              : {}),
+          }));
+        ctx.send({
+          type: "getModels.response",
+          requestId: cmd.requestId,
+          models,
+        });
         return;
       }
       case "interrupt": {

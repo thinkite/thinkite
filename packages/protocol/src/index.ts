@@ -962,6 +962,55 @@ export const getFilesystemRootsResponse = z.object({
   recentCwds: z.array(recentCwd),
 });
 
+// ─── Model picker — list available Claude models for the iOS picker ──────
+//
+// One bootstrap RPC iOS calls when opening the model picker. Daemon serializes
+// its MODEL_METADATA table (skipping `deprecated` entries) so iOS doesn't
+// have to ship its own copy — daemon owns the source of truth and ships new
+// models as part of each sidecode release. iOS does equality on `model`
+// strings against SessionInfo.model and (V0.5+) sendPromptCommand.model.
+
+export const effortLevel = z.enum(["low", "medium", "high", "xhigh", "max"]);
+export type EffortLevel = z.infer<typeof effortLevel>;
+
+export const modelEntry = z.object({
+  /** Raw key as it appears in Desktop session metadata + CLI `--model` flag,
+   *  e.g. `"claude-opus-4-7[1m]"`. Mirrors SessionInfo.model so iOS can
+   *  equality-check picker selection against session state. */
+  model: z.string(),
+  /** Human-readable label, e.g. `"Opus 4.7 1M"`. Same value daemon writes
+   *  into SessionInfo.modelLabel. */
+  displayName: z.string(),
+  /** Exactly one entry in a getModels response has this `true`. iOS
+   *  bootstraps the picker selection to this when SessionInfo.model is
+   *  missing (sidecode-created sessions today). */
+  isDefault: z.boolean(),
+  /** Optional picker subtitle. */
+  description: z.string().optional(),
+  /** Effort levels this model supports, in picker display order. `undefined`
+   *  means the model has no effort concept (Haiku-tier) — picker hides the
+   *  effort sub-menu entirely. */
+  supportedEffortLevels: z.array(effortLevel).optional(),
+  /** Context window in tokens. Optional — iOS picker may derive 1M vs 200K
+   *  from the `[1m]` suffix when this is absent. */
+  contextWindow: z.number().optional(),
+});
+export type ModelEntry = z.infer<typeof modelEntry>;
+
+export const getModelsCommand = z.object({
+  type: z.literal("getModels"),
+  requestId: z.string(),
+});
+
+export const getModelsResponse = z.object({
+  type: z.literal("getModels.response"),
+  requestId: z.string(),
+  /** Non-deprecated entries from daemon's MODEL_METADATA table, in source
+   *  order (current models first). Always non-empty — the daemon's
+   *  module-load self-check guarantees at least one isDefault entry. */
+  models: z.array(modelEntry),
+});
+
 // ─── Health + error ────────────────────────────────────────────────────────
 
 export const pingFrame = z.object({
@@ -1036,6 +1085,7 @@ export const command = z.discriminatedUnion("type", [
   unsubscribeGitStatusCommand,
   listDirectoryCommand,
   getFilesystemRootsCommand,
+  getModelsCommand,
 ]);
 
 export type Command = z.infer<typeof command>;
@@ -1053,6 +1103,7 @@ export const response = z.discriminatedUnion("type", [
   unsubscribeGitStatusResponse,
   listDirectoryResponse,
   getFilesystemRootsResponse,
+  getModelsResponse,
 ]);
 
 export type Response = z.infer<typeof response>;
@@ -1080,6 +1131,7 @@ export const clientFrame = z.discriminatedUnion("type", [
   unsubscribeGitStatusCommand,
   listDirectoryCommand,
   getFilesystemRootsCommand,
+  getModelsCommand,
 ]);
 
 export type ClientFrame = z.infer<typeof clientFrame>;
@@ -1109,6 +1161,7 @@ export const daemonFrame = z.discriminatedUnion("type", [
   gitStatusEvent,
   listDirectoryResponse,
   getFilesystemRootsResponse,
+  getModelsResponse,
 ]);
 
 export type DaemonFrame = z.infer<typeof daemonFrame>;

@@ -11,6 +11,7 @@ import {
   type ImageAttachment,
   isChunkEnvelope,
   isProtocolCompatible,
+  type ModelEntry,
   PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
   type TimelineItem,
@@ -513,6 +514,22 @@ export class DaemonClient {
       documents?: string;
       recentCwds: { path: string; lastUsedAt: string }[];
     };
+  }
+
+  /**
+   * Bootstrap RPC for the model picker — one call returns daemon's
+   * curated (non-deprecated) model list with display labels, default
+   * marker, and supported effort levels. Cache lifetime is the daemon
+   * lifetime (table is hardcoded), so callers should set a long
+   * staleTime in react-query.
+   */
+  async getModels(): Promise<ModelEntry[]> {
+    const requestId = Crypto.randomUUID();
+    const res = (await this.request({
+      type: "getModels",
+      requestId,
+    })) as { models: ModelEntry[] };
+    return res.models;
   }
 
   /**

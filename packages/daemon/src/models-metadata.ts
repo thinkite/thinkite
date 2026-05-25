@@ -22,10 +22,12 @@
  *      (DON'T delete — historical sessions still reference it on disk)
  */
 
-/** SDK `EffortLevel` mirror — kept here so models-metadata is the single
- *  source of truth for what values are valid. When sendPrompt grows an
- *  `effort` param (V0.5+), promote this to `@sidecodeapp/protocol`. */
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+import type { EffortLevel } from "@sidecodeapp/protocol";
+
+/** Re-exported for ergonomics — this file is the canonical place to look
+ *  for "which effort levels exist + which models support them". The wire
+ *  enum lives in `@sidecodeapp/protocol` (the `effortLevel` schema). */
+export type { EffortLevel };
 
 /** Per-model metadata. All fields except `displayName` are optional —
  *  consumers that need richer info (picker UI, usage meter) add fields

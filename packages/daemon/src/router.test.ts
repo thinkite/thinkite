@@ -1363,3 +1363,44 @@ describe("createCommandHandler — getFilesystemRoots", () => {
     }
   });
 });
+
+describe("createCommandHandler — getModels", () => {
+  it("returns non-deprecated MODEL_METADATA entries with the wire shape", async () => {
+    const handler = createCommandHandler(makeDeps());
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "getModels", requestId: "gm1" } satisfies Command,
+      ctx,
+    );
+    if (sent[0]?.type !== "getModels.response")
+      throw new Error("expected getModels.response");
+    // Daemon owns MODEL_METADATA; we don't pin the exact list here (it
+    // grows every model launch) but we DO pin invariants the iOS picker
+    // depends on: non-empty, exactly one default, no deprecated entries.
+    expect(sent[0].models.length).toBeGreaterThan(0);
+    const defaults = sent[0].models.filter((m) => m.isDefault);
+    expect(defaults).toHaveLength(1);
+    for (const m of sent[0].models) {
+      expect(typeof m.model).toBe("string");
+      expect(typeof m.displayName).toBe("string");
+      expect(typeof m.isDefault).toBe("boolean");
+    }
+  });
+
+  it("includes supportedEffortLevels for models that declare them", async () => {
+    // Spot-check: at least one current model carries effort levels.
+    // Verifies the optional-field spread in the handler isn't dropping them.
+    const handler = createCommandHandler(makeDeps());
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "getModels", requestId: "gm2" } satisfies Command,
+      ctx,
+    );
+    if (sent[0]?.type !== "getModels.response")
+      throw new Error("expected getModels.response");
+    const withEffort = sent[0].models.filter(
+      (m) => m.supportedEffortLevels !== undefined,
+    );
+    expect(withEffort.length).toBeGreaterThan(0);
+  });
+});
