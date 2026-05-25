@@ -28,6 +28,20 @@
 export interface RuntimeQueryHandle {
   interrupt(): Promise<void>;
   close(): void;
+  /** Mid-session model swap. Optional in the interface because router
+   *  tests inject a stub query that may not need it; production SDK
+   *  `Query` always has it (sdk.d.ts:2138). Router's sendPrompt handler
+   *  calls this when the iOS picker model differs from the SDK default. */
+  setModel?(model?: string): Promise<void>;
+  /** Mid-session effort swap via the flag-settings layer. Optional for
+   *  the same test-stub reason as `setModel`. Router uses this to apply
+   *  effort changes from the iOS picker without restarting the query.
+   *
+   *  NOTE: `Settings.effortLevel` enum excludes `'max'` (sdk.d.ts:5179) —
+   *  router MUST gate the call on `effort !== 'max'`. Sessions whose
+   *  initial query was spawned with `effort: 'max'` keep that level
+   *  silently; the picker doesn't offer max in V0. */
+  applyFlagSettings?(settings: { effortLevel?: string | null }): Promise<void>;
 }
 
 /**

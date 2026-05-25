@@ -15,6 +15,7 @@ import {
   listSidecodeSessions,
   readSidecodeSession,
   sidecodeSessionPath,
+  updateSidecodeSessionSelection,
   updateSidecodeSessionTitle,
   writeSidecodeSession,
 } from "./sidecode-sessions.js";
@@ -340,6 +341,108 @@ describe("updateSidecodeSessionTitle", () => {
   it("returns '' and writes nothing when metadata doesn't exist", () => {
     const result = updateSidecodeSessionTitle(home, "ghost", "ignored");
     expect(result).toBe("");
+    expect(existsSync(sidecodeSessionPath(home, "ghost"))).toBe(false);
+  });
+});
+
+describe("buildNewSidecodeSession — model + effort", () => {
+  it("persists model and effort when provided", () => {
+    const meta = buildNewSidecodeSession({
+      cliSessionId: "x",
+      cwd: "/p",
+      firstPrompt: "hi",
+      model: "claude-opus-4-7[1m]",
+      effort: "xhigh",
+    });
+    expect(meta.model).toBe("claude-opus-4-7[1m]");
+    expect(meta.effort).toBe("xhigh");
+  });
+
+  it("omits both fields when neither is provided (Haiku / pre-picker case)", () => {
+    const meta = buildNewSidecodeSession({
+      cliSessionId: "x",
+      cwd: "/p",
+      firstPrompt: "hi",
+    });
+    expect(meta).not.toHaveProperty("model");
+    expect(meta).not.toHaveProperty("effort");
+  });
+
+  it("can carry model alone (Haiku-tier model, no effort)", () => {
+    const meta = buildNewSidecodeSession({
+      cliSessionId: "x",
+      cwd: "/p",
+      firstPrompt: "hi",
+      model: "claude-haiku-4-5-20251001",
+    });
+    expect(meta.model).toBe("claude-haiku-4-5-20251001");
+    expect(meta.effort).toBeUndefined();
+  });
+});
+
+describe("updateSidecodeSessionSelection", () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "sidecode-sessions-sel-"));
+  });
+  afterEach(() => {
+    if (existsSync(home)) rmSync(home, { recursive: true, force: true });
+  });
+
+  it("writes model + effort into existing metadata", () => {
+    const initial = buildNewSidecodeSession({
+      cliSessionId: "x",
+      cwd: "/p",
+      firstPrompt: "init",
+    });
+    writeSidecodeSession(home, initial);
+    const result = updateSidecodeSessionSelection(home, "x", {
+      model: "claude-opus-4-7[1m]",
+      effort: "xhigh",
+    });
+    expect(result?.model).toBe("claude-opus-4-7[1m]");
+    expect(result?.effort).toBe("xhigh");
+    const onDisk = readSidecodeSession(home, "x");
+    expect(onDisk?.model).toBe("claude-opus-4-7[1m]");
+    expect(onDisk?.effort).toBe("xhigh");
+  });
+
+  it("preserves other fields (title / cwd / createdAt) unchanged", () => {
+    const initial = buildNewSidecodeSession({
+      cliSessionId: "x",
+      cwd: "/p",
+      firstPrompt: "Important task",
+      now: 1_700_000_000_000,
+    });
+    writeSidecodeSession(home, initial);
+    updateSidecodeSessionSelection(home, "x", { model: "m", effort: "high" });
+    const after = readSidecodeSession(home, "x");
+    expect(after?.title).toBe("Important task");
+    expect(after?.cwd).toBe("/p");
+    expect(after?.createdAt).toBe(1_700_000_000_000);
+  });
+
+  it("partial update: model only leaves effort alone", () => {
+    const initial = buildNewSidecodeSession({
+      cliSessionId: "x",
+      cwd: "/p",
+      firstPrompt: "init",
+      model: "old-model",
+      effort: "high",
+    });
+    writeSidecodeSession(home, initial);
+    updateSidecodeSessionSelection(home, "x", { model: "new-model" });
+    const after = readSidecodeSession(home, "x");
+    expect(after?.model).toBe("new-model");
+    expect(after?.effort).toBe("high");
+  });
+
+  it("returns undefined and writes nothing when metadata doesn't exist", () => {
+    const result = updateSidecodeSessionSelection(home, "ghost", {
+      model: "m",
+      effort: "high",
+    });
+    expect(result).toBeUndefined();
     expect(existsSync(sidecodeSessionPath(home, "ghost"))).toBe(false);
   });
 });

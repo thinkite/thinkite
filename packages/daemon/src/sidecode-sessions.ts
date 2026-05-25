@@ -23,6 +23,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import type { EffortLevel } from "@sidecodeapp/protocol";
 
 /**
  * Persisted shape for a sidecode-created session. Field names are an
@@ -65,6 +66,17 @@ export interface SidecodeSessionMetadata {
    */
   titleSource: "auto" | "user";
   permissionMode: "bypassPermissions" | "default";
+  /** Last model the user picked for this session, raw SDK key (e.g.
+   *  `claude-opus-4-7[1m]`). Schema-aligned with Desktop's `local_*.json`
+   *  `model` field. Optional because pre-V0.5 sidecode session files on
+   *  disk won't have it; daemon should treat absent as "unknown, use
+   *  SDK default on next sendPrompt". */
+  model?: string;
+  /** Last effort the user picked. Schema-aligned with Desktop's
+   *  `local_*.json` `effort` field. Stored as the SDK's canonical
+   *  5-value enum (`'max'` included) so resuming a Desktop-promoted
+   *  session that previously ran with effort=max preserves it. */
+  effort?: EffortLevel;
 }
 
 /**
@@ -257,6 +269,13 @@ export function buildNewSidecodeSession(input: {
   cliSessionId: string;
   cwd: string;
   firstPrompt: string;
+  /** Picker selection committed alongside this prompt. Persisted as the
+   *  session's `model` / `effort` (Desktop-schema-aligned). Either may
+   *  be undefined when the iOS picker hasn't bootstrapped yet — daemon
+   *  records what it gets, and resume-time will fill the gap on next
+   *  sendPrompt via `updateSidecodeSessionSelection`. */
+  model?: string;
+  effort?: EffortLevel;
   now?: number;
 }): SidecodeSessionMetadata {
   const now = input.now ?? Date.now();
@@ -275,5 +294,35 @@ export function buildNewSidecodeSession(input: {
     // project_session_replay_model memory: permission_requested /
     // permission_resolved frames deferred to V0.5+).
     permissionMode: "bypassPermissions",
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.effort !== undefined ? { effort: input.effort } : {}),
   };
+}
+
+/**
+ * Atomically merge a new model and/or effort into a sidecode session's
+ * on-disk metadata. No-op when the metadata file is missing (Desktop-
+ * mirror sessions live in Desktop's own dir — caller is responsible for
+ * checking with `readSidecodeSession` first before invoking this; we
+ * don't fabricate metadata for sessions sidecode didn't create).
+ *
+ * Pattern mirrors `updateSidecodeSessionTitle` — read-merge-write under
+ * the same atomic tmp+rename. Either field may be undefined to leave it
+ * unchanged. Returns the merged metadata that ended up on disk, or
+ * `undefined` if the file wasn't there.
+ */
+export function updateSidecodeSessionSelection(
+  home: string,
+  cliSessionId: string,
+  selection: { model?: string; effort?: EffortLevel },
+): SidecodeSessionMetadata | undefined {
+  const existing = readSidecodeSession(home, cliSessionId);
+  if (!existing) return undefined;
+  const merged: SidecodeSessionMetadata = {
+    ...existing,
+    ...(selection.model !== undefined ? { model: selection.model } : {}),
+    ...(selection.effort !== undefined ? { effort: selection.effort } : {}),
+  };
+  writeSidecodeSession(home, merged);
+  return merged;
 }

@@ -8,7 +8,10 @@ import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSharedValue } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GitStatusBar } from "@/components/transcript/git-status-bar";
-import { InputBar } from "@/components/transcript/input-bar";
+import {
+  InputBar,
+  type ModelSelection,
+} from "@/components/transcript/input-bar";
 import { TextBlock } from "@/components/transcript/text-block";
 import { ToolBlock } from "@/components/transcript/tool-block";
 import { useDaemonClient } from "@/lib/daemon-client-context";
@@ -22,6 +25,12 @@ type ChatPanelProps = {
   cwd: string | undefined;
   blocks: RenderBlock[];
   isRunning: boolean;
+  /** Initial picker state for the InputBar — built by the parent screen
+   *  from the resumed `SessionInfo.model + .effort` so the picker
+   *  bootstraps to the session's prior selection. Undefined for the
+   *  new-session screen's pre-creation flow, where InputBar falls back
+   *  to the daemon-declared default model + that model's defaultEffort. */
+  initialSelection?: ModelSelection;
 };
 
 /**
@@ -83,6 +92,7 @@ export function ChatPanel({
   cwd,
   blocks,
   isRunning,
+  initialSelection,
 }: ChatPanelProps) {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
@@ -145,15 +155,28 @@ export function ChatPanel({
   );
 
   const onSend = useCallback(
-    (text: string, images?: ImageAttachment[]) => {
+    (
+      text: string,
+      images?: ImageAttachment[],
+      selection?: ModelSelection,
+    ) => {
       if (!client) return;
       // cwd is required for the SDK's project-key resolution on
       // `--resume`. For sessions opened from the list, cwd is plumbed
       // through route params; deeplink / direct nav (V0.5+) will need
       // a fallback fetch.
-      void client.sendPrompt(cliSessionId, text, cwd, images).catch((err) => {
-        console.error("sendPrompt failed", err);
-      });
+      void client
+        .sendPrompt({
+          sessionId: cliSessionId,
+          text,
+          cwd,
+          images,
+          model: selection?.model,
+          effort: selection?.effort,
+        })
+        .catch((err) => {
+          console.error("sendPrompt failed", err);
+        });
     },
     [client, cliSessionId, cwd],
   );
@@ -191,7 +214,14 @@ export function ChatPanel({
     if (!pending) return;
     sentInitialRef.current = true;
     void client
-      .sendPrompt(cliSessionId, pending.text, pending.cwd, pending.images)
+      .sendPrompt({
+        sessionId: cliSessionId,
+        text: pending.text,
+        cwd: pending.cwd,
+        images: pending.images,
+        model: pending.model,
+        effort: pending.effort,
+      })
       .catch((err) => {
         console.error("initial sendPrompt failed", err);
       });
@@ -297,6 +327,7 @@ export function ChatPanel({
             onSend={onSend}
             onInterrupt={onInterrupt}
             isRunning={isRunning}
+            initialSelection={initialSelection}
           />
         </View>
       </KeyboardStickyView>

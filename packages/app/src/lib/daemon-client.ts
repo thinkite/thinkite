@@ -6,6 +6,7 @@ import {
   chunkMessage,
   type DirectoryEntry,
   decodePairOfferPayload,
+  type EffortLevel,
   type EventDelta,
   type GitStatus,
   type ImageAttachment,
@@ -606,23 +607,38 @@ export class DaemonClient {
    * schema is `{ data, mediaType }`. Daemon wraps these into Anthropic
    * `ImageBlockParam`s ahead of the text block when calling the SDK.
    * Empty / missing array sends a text-only prompt.
+   *
+   * `model` and `effort` carry the input-bar picker's current selection.
+   * Daemon forwards them to SDK `query()` options. Per-prompt model
+   * switches use `query.setModel`; effort can only be set at query
+   * creation (SDK has no setEffort) so changes mid-session take effect
+   * after the next runtime restart.
+   *
+   * Argument shape is an options object — cwd/images/model/effort grew
+   * past the comfortable positional-parameter threshold.
    */
-  async sendPrompt(
-    sessionId: string,
-    text: string,
-    cwd?: string,
-    images?: ImageAttachment[],
-  ): Promise<void> {
+  async sendPrompt(opts: {
+    sessionId: string;
+    text: string;
+    cwd?: string;
+    images?: ImageAttachment[];
+    model?: string;
+    effort?: EffortLevel;
+  }): Promise<void> {
     const requestId = Crypto.randomUUID();
     const frame: { type: string; requestId: string } & Record<string, unknown> =
       {
         type: "sendPrompt",
         requestId,
-        sessionId,
-        text,
+        sessionId: opts.sessionId,
+        text: opts.text,
       };
-    if (cwd !== undefined) frame.cwd = cwd;
-    if (images !== undefined && images.length > 0) frame.images = images;
+    if (opts.cwd !== undefined) frame.cwd = opts.cwd;
+    if (opts.images !== undefined && opts.images.length > 0) {
+      frame.images = opts.images;
+    }
+    if (opts.model !== undefined) frame.model = opts.model;
+    if (opts.effort !== undefined) frame.effort = opts.effort;
     await this.request(frame);
   }
 

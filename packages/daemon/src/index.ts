@@ -17,6 +17,7 @@ import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import {
   buildNewSidecodeSession,
   listSidecodeSessions,
+  updateSidecodeSessionSelection,
   writeSidecodeSession,
 } from "./sidecode-sessions.js";
 import { WebRTCPeerServer } from "./webrtc-peer.js";
@@ -109,11 +110,20 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       return info !== undefined;
     },
     listSidecodeSessions: (opts) => listSidecodeSessions(home, opts),
-    writeSidecodeSession: ({ cliSessionId, cwd, firstPrompt }) => {
+    writeSidecodeSession: ({ cliSessionId, cwd, firstPrompt, model, effort }) => {
       writeSidecodeSession(
         home,
-        buildNewSidecodeSession({ cliSessionId, cwd, firstPrompt }),
+        buildNewSidecodeSession({
+          cliSessionId,
+          cwd,
+          firstPrompt,
+          model,
+          effort,
+        }),
       );
+    },
+    updateSidecodeSessionSelection: ({ cliSessionId, model, effort }) => {
+      updateSidecodeSessionSelection(home, cliSessionId, { model, effort });
     },
     isShuttingDown: () => shuttingDown,
     gitWatchers,

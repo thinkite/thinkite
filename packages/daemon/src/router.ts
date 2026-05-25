@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type {
   DirectoryEntry,
+  EffortLevel,
   EventDelta,
   SessionInfo,
   TimelineItem,
@@ -83,6 +84,29 @@ export interface RouterDeps {
     cliSessionId: string;
     cwd: string;
     firstPrompt: string;
+    /** Picker selection at create time. Persisted into the new local_*.json
+     *  so resume-time bootstrap (iOS picker) sees the original choice
+     *  even before the first follow-up sendPrompt. Either may be
+     *  undefined when the iOS picker hadn't bootstrapped yet — daemon
+     *  records what it gets. */
+    model?: string;
+    effort?: EffortLevel;
+  }) => void;
+  /**
+   * Merge an updated picker selection into a sidecode-created session's
+   * on-disk metadata. Called on every RESUME-path sendPrompt to keep
+   * the `model` / `effort` fields aligned with the user's current iOS
+   * picker state. Returns synchronously after the atomic tmp+rename.
+   *
+   * No-op when the metadata file is missing — Desktop-mirror sessions
+   * live in Desktop's own `claude-code-sessions/` dir and sidecode
+   * never writes there. Router calls this unconditionally on resume;
+   * the dep handles the existence check.
+   */
+  updateSidecodeSessionSelection: (input: {
+    cliSessionId: string;
+    model?: string;
+    effort?: EffortLevel;
   }) => void;
   /**
    * Whether the daemon is mid-shutdown. Router gates sendPrompt and
@@ -391,27 +415,70 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           const runtime = deps.runtimeManager.getOrCreate(cmd.sessionId);
           const mode: "create" | "resume" = exists ? "resume" : "create";
 
-          // Persist sidecode metadata FIRST, before spawning the SDK
-          // query — that way if iOS reconnects mid-create, listSessions
-          // already shows the entry. Resume path skips this (Desktop /
-          // CLI already wrote their own metadata). The user's first
-          // prompt becomes the auto-title; iOS sees the row labeled
-          // immediately on the next listSessions call.
+          // Persist sidecode metadata.
+          //
+          // create path: write the new file (with the picker's
+          //   model + effort snapshotted). If iOS reconnects mid-create,
+          //   listSessions already shows the entry. The user's first
+          //   prompt becomes the auto-title.
+          // resume path: best-effort UPDATE of model + effort on disk
+          //   so the next time the user opens this session, the iOS
+          //   picker can bootstrap to their latest pick. Dep silently
+          //   no-ops when the metadata file isn't sidecode's (i.e.,
+          //   Desktop-mirror sessions live under Desktop's
+          //   claude-code-sessions/ and we never write there).
           if (mode === "create") {
             deps.writeSidecodeSession({
               cliSessionId: cmd.sessionId,
               cwd: cmd.cwd as string,
               firstPrompt: cmd.text,
+              model: cmd.model,
+              effort: cmd.effort,
+            });
+          } else {
+            deps.updateSidecodeSessionSelection({
+              cliSessionId: cmd.sessionId,
+              model: cmd.model,
+              effort: cmd.effort,
             });
           }
 
           // Idempotent — second sendPrompt for same session reuses the
-          // existing loop. Mode is only consulted on first call.
+          // existing loop. Mode + model + effort are only consulted on
+          // the FIRST call (when ensureSessionLoop actually spawns the
+          // SDK query); subsequent calls return the existing promise
+          // and ignore the options.
           ensureSessionLoop(runtime, {
             mode,
             cwd: cmd.cwd,
+            model: cmd.model,
+            effort: cmd.effort,
             queryFactory: deps.queryFactory,
           });
+          // Mid-session model + effort apply. `runtime.query` exists
+          // synchronously after ensureSessionLoop. setModel /
+          // applyFlagSettings are optional on the interface (test seam
+          // doesn't implement them); production SDK Query always has
+          // them.
+          //
+          // Effort: skip when `'max'` — `Settings.effortLevel` enum
+          // doesn't include max (sdk.d.ts:5179), so applyFlagSettings
+          // can't carry it. Sessions on max stay there: either the
+          // SDK query was spawned with `options.effort: 'max'` on first
+          // ensureSessionLoop call (which DOES accept max), or the
+          // picker downgrades user back to a non-max level on next
+          // selection. Iff user newly picks max → impossible (picker
+          // doesn't offer it).
+          if (cmd.model !== undefined && runtime.query?.setModel) {
+            await runtime.query.setModel(cmd.model);
+          }
+          if (
+            cmd.effort !== undefined &&
+            cmd.effort !== "max" &&
+            runtime.query?.applyFlagSettings
+          ) {
+            await runtime.query.applyFlagSettings({ effortLevel: cmd.effort });
+          }
           // pushPrompt emits turn_started synchronously before the SDK
           // even sees the message — iOS flips the spinner immediately.
           pushPrompt(runtime, cmd.text, cmd.images);
@@ -562,6 +629,9 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
               : {}),
             ...(meta.supportedEffortLevels !== undefined
               ? { supportedEffortLevels: meta.supportedEffortLevels }
+              : {}),
+            ...(meta.defaultEffort !== undefined
+              ? { defaultEffort: meta.defaultEffort }
               : {}),
             ...(meta.contextWindow !== undefined
               ? { contextWindow: meta.contextWindow }

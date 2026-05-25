@@ -207,6 +207,43 @@ describe("command union", () => {
     ).toBe(false);
   });
 
+  it("accepts a sendPrompt with model + effort (picker selection)", () => {
+    const r = sendPromptCommand.parse({
+      type: "sendPrompt",
+      requestId: "r3",
+      sessionId: "x",
+      text: "hi",
+      model: "claude-opus-4-7[1m]",
+      effort: "high",
+    });
+    expect(r.model).toBe("claude-opus-4-7[1m]");
+    expect(r.effort).toBe("high");
+  });
+
+  it("accepts sendPrompt with model but no effort (Haiku-tier)", () => {
+    const r = sendPromptCommand.parse({
+      type: "sendPrompt",
+      requestId: "r4",
+      sessionId: "x",
+      text: "hi",
+      model: "claude-haiku-4-5-20251001",
+    });
+    expect(r.model).toBe("claude-haiku-4-5-20251001");
+    expect(r.effort).toBeUndefined();
+  });
+
+  it("rejects sendPrompt with an invalid effort value", () => {
+    expect(
+      sendPromptCommand.safeParse({
+        type: "sendPrompt",
+        requestId: "r5",
+        sessionId: "x",
+        text: "hi",
+        effort: "ultra",
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects approve with bad decision", () => {
     expect(
       approveCommand.safeParse({
@@ -774,6 +811,7 @@ describe("getModels schemas", () => {
           isDefault: true,
           description: "Best at agentic coding",
           supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+          defaultEffort: "xhigh",
           contextWindow: 1_000_000,
         },
       ],
@@ -785,7 +823,27 @@ describe("getModels schemas", () => {
       "xhigh",
       "max",
     ]);
+    expect(r.models[0].defaultEffort).toBe("xhigh");
     expect(r.models[0].contextWindow).toBe(1_000_000);
+  });
+
+  it("response accepts defaultEffort independently (max remains a valid wire value)", () => {
+    // Wire schema deliberately retains 'max' so historical sessions
+    // with effort=max parse cleanly even though picker won't offer it.
+    const r = getModelsResponse.parse({
+      type: "getModels.response",
+      requestId: "r1",
+      models: [
+        {
+          model: "x",
+          displayName: "X",
+          isDefault: true,
+          supportedEffortLevels: ["high", "max"],
+          defaultEffort: "max",
+        },
+      ],
+    });
+    expect(r.models[0].defaultEffort).toBe("max");
   });
 
   it("rejects an invalid effort level", () => {

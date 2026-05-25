@@ -1,4 +1,4 @@
-import type { ImageAttachment } from "@sidecodeapp/protocol";
+import type { EffortLevel, ImageAttachment } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import { router, Stack, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
@@ -60,7 +60,11 @@ export default function NewSessionScreen() {
   const setLastUsedCwd = useSetLastUsedCwd();
 
   const handleSend = useCallback(
-    (text: string, images?: ImageAttachment[]) => {
+    (
+      text: string,
+      images?: ImageAttachment[],
+      selection?: { model: string; effort?: EffortLevel },
+    ) => {
       if (cwd === undefined) {
         // Placeholder state — user hasn't picked and there's no
         // recent history to fall back on. InputBar.canSend already
@@ -72,7 +76,13 @@ export default function NewSessionScreen() {
       // to this same cwd even before the daemon records the activity.
       setLastUsedCwd.mutate(cwd);
       const newId = Crypto.randomUUID();
-      setPendingPrompt(newId, { text, cwd, images });
+      setPendingPrompt(newId, {
+        text,
+        cwd,
+        images,
+        model: selection?.model,
+        effort: selection?.effort,
+      });
       router.replace({
         pathname: "/session/[cliSessionId]",
         params: { cliSessionId: newId, cwd },

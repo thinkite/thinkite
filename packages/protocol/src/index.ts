@@ -663,6 +663,67 @@ export const unsubscribeResponse = z.object({
   requestId: z.string(),
 });
 
+// ─── Model picker — list available Claude models for the iOS picker ──────
+//
+// `effortLevel` + `modelEntry` are defined here (above sendPrompt) because
+// sendPromptCommand carries an optional `effort` field — JS module
+// evaluation is top-down so the enum must be in scope first. `getModels`
+// command/response live alongside since they share the same schema axes.
+//
+// Daemon serializes its MODEL_METADATA table (skipping `deprecated`
+// entries) so iOS doesn't have to ship its own copy — daemon owns the
+// source of truth and ships new models as part of each sidecode release.
+// iOS does equality on `model` strings against SessionInfo.model and
+// sendPromptCommand.model.
+
+export const effortLevel = z.enum(["low", "medium", "high", "xhigh", "max"]);
+export type EffortLevel = z.infer<typeof effortLevel>;
+
+export const modelEntry = z.object({
+  /** Raw key as it appears in Desktop session metadata + CLI `--model` flag,
+   *  e.g. `"claude-opus-4-7[1m]"`. Mirrors SessionInfo.model so iOS can
+   *  equality-check picker selection against session state. */
+  model: z.string(),
+  /** Human-readable label, e.g. `"Opus 4.7 1M"`. Same value daemon writes
+   *  into SessionInfo.modelLabel. */
+  displayName: z.string(),
+  /** Exactly one entry in a getModels response has this `true`. iOS
+   *  bootstraps the picker selection to this when SessionInfo.model is
+   *  missing (sidecode-created sessions today). */
+  isDefault: z.boolean(),
+  /** Optional picker subtitle. */
+  description: z.string().optional(),
+  /** Effort levels this model supports, in picker display order. `undefined`
+   *  means the model has no effort concept (Haiku-tier) — picker hides the
+   *  effort sub-menu entirely. Daemon V0 deliberately omits `'max'` even
+   *  for models that technically support it (no Settings.effortLevel
+   *  mid-session switch path); see daemon's models-metadata.ts. */
+  supportedEffortLevels: z.array(effortLevel).optional(),
+  /** Default effort to commit when the user picks this model fresh (no
+   *  prior session selection to inherit). Present iff
+   *  `supportedEffortLevels` is, and always one of its values (enforced
+   *  by daemon's module-load self-check). */
+  defaultEffort: effortLevel.optional(),
+  /** Context window in tokens. Optional — iOS picker may derive 1M vs 200K
+   *  from the `[1m]` suffix when this is absent. */
+  contextWindow: z.number().optional(),
+});
+export type ModelEntry = z.infer<typeof modelEntry>;
+
+export const getModelsCommand = z.object({
+  type: z.literal("getModels"),
+  requestId: z.string(),
+});
+
+export const getModelsResponse = z.object({
+  type: z.literal("getModels.response"),
+  requestId: z.string(),
+  /** Non-deprecated entries from daemon's MODEL_METADATA table, in source
+   *  order (current models first). Always non-empty — the daemon's
+   *  module-load self-check guarantees at least one isDefault entry. */
+  models: z.array(modelEntry),
+});
+
 /**
  * Send a user prompt into a session.
  *
@@ -677,6 +738,13 @@ export const unsubscribeResponse = z.object({
  * and prepends them to the text block. Empty `text` is allowed when only
  * images are sent. The chunking layer (chunking.ts) splits large image
  * payloads across DataChannel frames; protocol consumers don't see chunks.
+ *
+ * `model` and `effort` carry the input-bar picker's current selection,
+ * forwarded to the SDK `query()` options on every send (NOT pinned per
+ * session — user can switch mid-conversation). Both omitted = use the
+ * SDK's default. `effort` omitted while `model` is set = model with no
+ * effort concept (Haiku-tier); daemon should pass model to SDK but skip
+ * the effort option entirely (don't pass `effort: undefined` explicitly).
  */
 export const sendPromptCommand = z.object({
   type: z.literal("sendPrompt"),
@@ -685,6 +753,8 @@ export const sendPromptCommand = z.object({
   text: z.string(),
   cwd: z.string().optional(),
   images: z.array(imageAttachment).optional(),
+  model: z.string().optional(),
+  effort: effortLevel.optional(),
 });
 
 export const sendPromptResponse = z.object({
@@ -960,55 +1030,6 @@ export const getFilesystemRootsResponse = z.object({
   /** Recent project cwds, sorted by lastUsedAt desc, deduped and
    *  filtered to existing paths. Max 10. */
   recentCwds: z.array(recentCwd),
-});
-
-// ─── Model picker — list available Claude models for the iOS picker ──────
-//
-// One bootstrap RPC iOS calls when opening the model picker. Daemon serializes
-// its MODEL_METADATA table (skipping `deprecated` entries) so iOS doesn't
-// have to ship its own copy — daemon owns the source of truth and ships new
-// models as part of each sidecode release. iOS does equality on `model`
-// strings against SessionInfo.model and (V0.5+) sendPromptCommand.model.
-
-export const effortLevel = z.enum(["low", "medium", "high", "xhigh", "max"]);
-export type EffortLevel = z.infer<typeof effortLevel>;
-
-export const modelEntry = z.object({
-  /** Raw key as it appears in Desktop session metadata + CLI `--model` flag,
-   *  e.g. `"claude-opus-4-7[1m]"`. Mirrors SessionInfo.model so iOS can
-   *  equality-check picker selection against session state. */
-  model: z.string(),
-  /** Human-readable label, e.g. `"Opus 4.7 1M"`. Same value daemon writes
-   *  into SessionInfo.modelLabel. */
-  displayName: z.string(),
-  /** Exactly one entry in a getModels response has this `true`. iOS
-   *  bootstraps the picker selection to this when SessionInfo.model is
-   *  missing (sidecode-created sessions today). */
-  isDefault: z.boolean(),
-  /** Optional picker subtitle. */
-  description: z.string().optional(),
-  /** Effort levels this model supports, in picker display order. `undefined`
-   *  means the model has no effort concept (Haiku-tier) — picker hides the
-   *  effort sub-menu entirely. */
-  supportedEffortLevels: z.array(effortLevel).optional(),
-  /** Context window in tokens. Optional — iOS picker may derive 1M vs 200K
-   *  from the `[1m]` suffix when this is absent. */
-  contextWindow: z.number().optional(),
-});
-export type ModelEntry = z.infer<typeof modelEntry>;
-
-export const getModelsCommand = z.object({
-  type: z.literal("getModels"),
-  requestId: z.string(),
-});
-
-export const getModelsResponse = z.object({
-  type: z.literal("getModels.response"),
-  requestId: z.string(),
-  /** Non-deprecated entries from daemon's MODEL_METADATA table, in source
-   *  order (current models first). Always non-empty — the daemon's
-   *  module-load self-check guarantees at least one isDefault entry. */
-  models: z.array(modelEntry),
 });
 
 // ─── Health + error ────────────────────────────────────────────────────────

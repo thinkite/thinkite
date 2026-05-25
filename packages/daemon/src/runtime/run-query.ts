@@ -57,6 +57,7 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
+  EffortLevel,
   EventDelta,
   ImageAttachment,
   ToolCallDetail,
@@ -116,6 +117,20 @@ export interface SessionLoopOptions {
    * SDK uses the persisted cwd from the existing session.
    */
   cwd?: string;
+  /** Model + effort picker selection from the iOS input bar.
+   *
+   *  Only applied when this call ACTUALLY spawns the SDK query — i.e.
+   *  the first ensureSessionLoop for a runtime. Subsequent calls are
+   *  idempotent no-ops and ignore these options. To change the model
+   *  on an already-running query, callers use `runtime.query.setModel(...)`
+   *  directly (see router's sendPrompt handler).
+   *
+   *  No equivalent mid-session knob exists for effort — SDK exposes
+   *  `setModel` but no `setEffort` (sdk.d.ts:2138 + 1512 confirmed). V0
+   *  accepts the limitation: effort changes take effect at the next
+   *  daemon restart of the runtime. */
+  model?: string;
+  effort?: EffortLevel;
   /** Test seam: override the SDK's `query()` factory. */
   queryFactory?: typeof query;
 }
@@ -157,16 +172,27 @@ export function ensureSessionLoop(
   // (sdk.d.ts:1538-1540 — "Cannot be used with continue or resume unless
   // forkSession is also set"). We use sessionId for new sessions (so the
   // SDK adopts our client-supplied UUID) and resume for existing ones.
+  //
+  // `model` / `effort` are spread in only when set — omitting the keys
+  // lets the SDK fall through to its own defaults (which honor whatever
+  // the user's account / Desktop settings prefer). Per Anthropic SDK
+  // contract, `effort` is fixed at query() creation and has no mid-
+  // session setter; `model` can also change via `query.setModel` later.
+  const modelEffortOptions: { model?: string; effort?: EffortLevel } = {};
+  if (options.model !== undefined) modelEffortOptions.model = options.model;
+  if (options.effort !== undefined) modelEffortOptions.effort = options.effort;
   const sdkOptions =
     options.mode === "create"
       ? {
           ...bypassFlags,
+          ...modelEffortOptions,
           sessionId: runtime.sessionId,
           includePartialMessages: true as const,
           cwd: options.cwd,
         }
       : {
           ...bypassFlags,
+          ...modelEffortOptions,
           resume: runtime.sessionId,
           includePartialMessages: true as const,
           cwd: options.cwd,

@@ -60,17 +60,20 @@ const EFFORT_LABEL: Record<EffortLevel, string> = {
   max: "Max",
 };
 
-/** Pick a sensible starting effort when the user switches to a model
- *  whose previously-selected effort isn't supported (or when bootstrapping
- *  from no selection). Prefers `high` when supported, otherwise the
- *  middle of the supported list. */
-function pickDefaultEffort(
-  supported: readonly EffortLevel[] | undefined,
-): EffortLevel | undefined {
-  if (!supported || supported.length === 0) return undefined;
-  if (supported.includes("high")) return "high";
-  return supported[Math.floor(supported.length / 2)];
-}
+/** Single source-of-truth for what the picker has committed to. Model and
+ *  effort are always set/cleared together — switching model resets effort
+ *  to that model's `defaultEffort` (or undefined for Haiku-tier), picking
+ *  an effort in a submenu also pins the model. Bundled as one object so
+ *  the two fields can never disagree in an intermediate render.
+ *
+ *  Exported so parent screens can build it from `SessionInfo` and pass
+ *  it as `initialSelection` — the bootstrap path preserves whatever
+ *  effort the session was last on (including legacy values like `'max'`
+ *  that aren't user-pickable in the V0 menu). */
+export type ModelSelection = {
+  model: string;
+  effort?: EffortLevel;
+};
 
 async function compressToAttachment(
   uri: string,
@@ -127,15 +130,34 @@ export function InputBar({
   onSend,
   onInterrupt,
   isRunning,
+  initialSelection,
 }: {
   /** Fired on tap-to-send. `images` carries the compressed base64
    *  payloads ready for daemon's sendPrompt; the local DraftAttachment
    *  ids are stripped (parent doesn't need them). Send is gated by
    *  hasText OR images.length > 0 so an images-only message is also
-   *  valid (Claude vision accepts an image-only user turn). */
-  onSend?: (text: string, images?: ImageAttachment[]) => void;
+   *  valid (Claude vision accepts an image-only user turn).
+   *
+   *  `selection` is the current model/effort committed at send time —
+   *  forwarded verbatim into `client.sendPrompt` so the daemon can pin
+   *  the SDK options for THIS turn. Undefined while models are still
+   *  loading (extremely brief window); parent should gate sendPrompt
+   *  on selection presence if it cares about the SDK default vs an
+   *  explicit pick. */
+  onSend?: (
+    text: string,
+    images?: ImageAttachment[],
+    selection?: ModelSelection,
+  ) => void;
   onInterrupt?: () => void;
   isRunning?: boolean;
+  /** Caller-provided initial picker state — typically built from a
+   *  resumed `SessionInfo.model + .effort`. When supplied AND the model
+   *  still exists in `MODEL_METADATA`, bootstrap uses it verbatim
+   *  (preserves legacy values like `'max'` that aren't user-pickable).
+   *  When omitted (new-session screen), bootstrap falls back to the
+   *  daemon-declared default model + that model's `defaultEffort`. */
+  initialSelection?: ModelSelection;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<DraftAttachment[]>([]);
@@ -143,25 +165,35 @@ export function InputBar({
   const colorScheme = useColorScheme() ?? "light";
   const hasText = text.length > 0;
 
-  // Model + effort picker state. Local to the input bar for now — when
-  // sendPrompt grows `model?` / `effort?` params (V0.5+), lift to a
-  // parent / store and pass in as controlled props.
+  // Model + effort picker state. Local to the input bar — committed at
+  // send time and passed up via onSend so the daemon's `query()` call
+  // gets the freshest pick. Bundled together in one state so updates
+  // are atomic (see ModelSelection type at top of file).
   const { data: models } = useModels();
-  const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  const [selectedEffort, setSelectedEffort] = useState<EffortLevel | undefined>(
-    undefined,
-  );
-  // Bootstrap to the daemon-declared default on first models payload.
-  // Re-runs only when models flips from undefined → array; selectedModel
-  // is sticky after that (re-fetches don't reset the user's pick).
+  const [selection, setSelection] = useState<ModelSelection | null>(null);
+  // Bootstrap: prefer caller-provided `initialSelection` (resume case —
+  // preserves session's prior model/effort, including legacy values like
+  // `'max'` that aren't in current MODEL_METADATA's supportedEffortLevels)
+  // when the model still exists in the daemon's curated list. Otherwise
+  // fall back to the daemon-declared default model + that model's
+  // `defaultEffort` (new-session case).
+  //
+  // Re-runs only when models flips from undefined → array; selection is
+  // sticky after that (re-fetches don't reset the user's pick).
   useEffect(() => {
-    if (!models || selectedModel !== null) return;
+    if (!models || selection !== null) return;
+    if (
+      initialSelection &&
+      models.some((m) => m.model === initialSelection.model)
+    ) {
+      setSelection(initialSelection);
+      return;
+    }
     const def = models.find((m) => m.isDefault) ?? models[0];
     if (!def) return;
-    setSelectedModel(def.model);
-    setSelectedEffort(pickDefaultEffort(def.supportedEffortLevels));
-  }, [models, selectedModel]);
-  const currentModel = models?.find((m) => m.model === selectedModel);
+    setSelection({ model: def.model, effort: def.defaultEffort });
+  }, [models, selection, initialSelection]);
+  const currentModel = models?.find((m) => m.model === selection?.model);
   // Cap is enforced in three places: PHPicker's selectionLimit
   // (per-pick), Camera early-return guard, and MenuView action
   // `disabled`. We DON'T dim the `+` button itself — the menu will
@@ -237,7 +269,7 @@ export function InputBar({
       images.length > 0
         ? images.map(({ data, mediaType }) => ({ data, mediaType }))
         : undefined;
-    onSend?.(text, payload);
+    onSend?.(text, payload, selection ?? undefined);
     setText("");
     setImages([]);
   };
@@ -372,7 +404,7 @@ export function InputBar({
                     return {
                       id: `model:${m.model}`,
                       title: m.displayName,
-                      state: m.model === selectedModel ? "on" : "off",
+                      state: m.model === selection?.model ? "on" : "off",
                     };
                   }
                   // No selection indicator on submenu parent rows: UIKit
@@ -392,7 +424,8 @@ export function InputBar({
                       imageColor:
                         colorScheme === "dark" ? "#e4e4e7" : "#3f3f46",
                       state:
-                        m.model === selectedModel && eff === selectedEffort
+                        m.model === selection?.model &&
+                        eff === selection?.effort
                           ? "on"
                           : "off",
                     })),
@@ -401,14 +434,19 @@ export function InputBar({
                 onPressAction={({ nativeEvent: { event } }) => {
                   if (event.startsWith("model:")) {
                     const key = event.slice("model:".length);
-                    setSelectedModel(key);
-                    setSelectedEffort(undefined);
+                    // Use the picked model's defaultEffort (undefined for
+                    // Haiku-tier, which is the only model currently
+                    // exposed via the `model:` leaf path).
+                    const target = models?.find((m) => m.model === key);
+                    setSelection({ model: key, effort: target?.defaultEffort });
                   } else if (event.startsWith("effort:")) {
                     const rest = event.slice("effort:".length);
                     const [modelKey, eff] = rest.split("|");
                     if (modelKey && eff) {
-                      setSelectedModel(modelKey);
-                      setSelectedEffort(eff as EffortLevel);
+                      setSelection({
+                        model: modelKey,
+                        effort: eff as EffortLevel,
+                      });
                     }
                   }
                 }}
@@ -419,9 +457,9 @@ export function InputBar({
                   </Text>
                   {/* Hide the gauge entirely for effort-less models (Haiku) —
                       no concept to convey. */}
-                  {selectedEffort !== undefined && (
+                  {selection?.effort !== undefined && (
                     <SymbolView
-                      name={EFFORT_GAUGE_SYMBOL[selectedEffort]}
+                      name={EFFORT_GAUGE_SYMBOL[selection.effort]}
                       size={16}
                       weight="regular"
                       // Match the chip's text color (zinc-700 / zinc-200) so

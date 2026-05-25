@@ -1,3 +1,4 @@
+import type { EffortLevel } from "@sidecodeapp/protocol";
 import { Stack, useLocalSearchParams, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
 import { useCallback, useEffect, useMemo } from "react";
@@ -5,6 +6,7 @@ import { ActivityIndicator, Text, View } from "react-native";
 import { ChatPanel } from "@/components/transcript/chat-panel";
 import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 import { useLiveSession } from "@/hooks/use-live-session";
+import { useSessions } from "@/hooks/use-sessions";
 import { flattenToBlocks } from "@/lib/transcript-blocks";
 
 /**
@@ -60,6 +62,21 @@ export default function SessionDetailScreen() {
 
   const blocks = useMemo(() => flattenToBlocks(session.items), [session.items]);
 
+  // Look up the SessionInfo for this cliSessionId to bootstrap the
+  // InputBar's model+effort picker. react-query dedupes with the sidebar
+  // listing, so this isn't an extra round-trip. `initialSelection` stays
+  // undefined until both lookups land (sessions list + the entry); the
+  // InputBar bootstrap only runs once anyway, after `useModels` resolves.
+  // No selection mutation on this screen — the InputBar owns committed
+  // state once bootstrapped.
+  const { data: sessions } = useSessions();
+  const initialSelection = useMemo(() => {
+    if (!sessions) return undefined;
+    const entry = sessions.find((s) => s.cliSessionId === cliSessionId);
+    if (!entry?.model) return undefined;
+    return { model: entry.model, effort: entry.effort as EffortLevel | undefined };
+  }, [sessions, cliSessionId]);
+
   return (
     <>
       {/* Title via Stack.Screen options. Header chrome (transparent +
@@ -93,6 +110,7 @@ export default function SessionDetailScreen() {
               cwd={cwd}
               blocks={blocks}
               isRunning={session.isRunning}
+              initialSelection={initialSelection}
             />
           )}
         </View>

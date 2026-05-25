@@ -28,7 +28,7 @@
  *   - keeping the reader local to the detail screen's effect avoids
  *     React state-vs-effect ordering puzzles
  */
-import type { ImageAttachment } from "@sidecodeapp/protocol";
+import type { EffortLevel, ImageAttachment } from "@sidecodeapp/protocol";
 
 type PendingPrompt = {
   text: string;
@@ -36,6 +36,12 @@ type PendingPrompt = {
   /** Compressed base64 attachments to forward as the first sendPrompt's
    *  `images` payload. Undefined / empty for text-only first prompts. */
   images?: ImageAttachment[];
+  /** Picker selection snapshotted at submission time on the new-session
+   *  screen. Forwarded into the first sendPrompt of the spawned session
+   *  so the daemon's ensureSessionLoop creates the SDK query with the
+   *  right model/effort up front. Undefined = use SDK defaults. */
+  model?: string;
+  effort?: EffortLevel;
 };
 
 const pending = new Map<string, PendingPrompt>();
