@@ -22,6 +22,11 @@
  *      (DON'T delete — historical sessions still reference it on disk)
  */
 
+/** SDK `EffortLevel` mirror — kept here so models-metadata is the single
+ *  source of truth for what values are valid. When sendPrompt grows an
+ *  `effort` param (V0.5+), promote this to `@sidecodeapp/protocol`. */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
 /** Per-model metadata. All fields except `displayName` are optional —
  *  consumers that need richer info (picker UI, usage meter) add fields
  *  as use cases land. */
@@ -50,6 +55,15 @@ export type ModelMetadata = {
    *  meter can derive 1M vs 200K from the `[1m]` suffix of the key when
    *  this is absent. Set explicitly when needed. */
   contextWindow?: number;
+
+  /** Which effort levels this model supports, in the order the picker
+   *  should display them. `undefined` (the typical case for Haiku-tier
+   *  models) means the model has no effort concept — picker should hide
+   *  the effort sub-menu entirely. Ground truth captured from
+   *  `query.supportedModels()` (see `scripts/dump-models.ts`). Only
+   *  meaningful on non-deprecated entries since deprecated ones are
+   *  filtered out of the picker. */
+  supportedEffortLevels?: EffortLevel[];
 };
 
 /**
@@ -65,18 +79,24 @@ export const MODEL_METADATA: Record<string, ModelMetadata> = {
   "claude-opus-4-7[1m]": {
     displayName: "Opus 4.7 1M",
     isDefault: true,
+    supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
   },
   "claude-opus-4-7": {
     displayName: "Opus 4.7",
+    supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
   },
   "claude-sonnet-4-6[1m]": {
     displayName: "Sonnet 4.6 1M",
+    supportedEffortLevels: ["low", "medium", "high", "max"],
   },
   "claude-sonnet-4-6": {
     displayName: "Sonnet 4.6",
+    supportedEffortLevels: ["low", "medium", "high", "max"],
   },
   "claude-haiku-4-5-20251001": {
     displayName: "Haiku 4.5",
+    // Haiku has no effort concept — omit supportedEffortLevels so the
+    // picker hides the effort sub-menu when this model is selected.
   },
 
   // ─── Deprecated (still present in historical Desktop session files) ─
