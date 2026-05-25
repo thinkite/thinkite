@@ -39,7 +39,11 @@ export default function SettingsIndexScreen() {
   return (
     <>
       <Stack.Screen options={{ title: "Settings" }} />
-      <Stack.Toolbar placement="right">
+      {/* Top-left Cancel — iOS HIG: dismiss/back actions on the leading
+          edge. Settings was historically on the right; aligned with
+          cwd-picker + pair for a single consistent sheet-dismiss
+          location across the app. */}
+      <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button
           icon="xmark"
           accessibilityLabel="Close"

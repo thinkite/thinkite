@@ -70,7 +70,7 @@ export function GitStatusBar({
       >
         <Pressable
           onPress={onPress}
-          className="flex-row items-center gap-2.5 px-4 h-10"
+          className="flex-row items-center gap-2 px-4 h-10"
         >
           {isPlaceholder ? (
             <Text className="flex-1 text-sm text-zinc-500 dark:text-zinc-400">

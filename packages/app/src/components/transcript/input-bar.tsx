@@ -1,4 +1,4 @@
-import { MenuView } from "@expo/ui/community/menu";
+import { MenuView } from "@react-native-menu/menu";
 import type { ImageAttachment } from "@sidecodeapp/protocol";
 import { GlassView } from "expo-glass-effect";
 import * as ImageManipulator from "expo-image-manipulator";
@@ -73,10 +73,14 @@ async function compressToAttachment(
  *   - `stop.fill` (running): turn is in flight, tap → onInterrupt
  *
  * Attachment flow: `+` button opens a native attachment menu (Camera
- * / Photos via `@expo/ui/community/menu`); picked assets are
- * compressed (long edge 2576 / JPEG q0.85) and shown as a horizontal
- * pill row above the TextInput until the user sends or removes them.
- * Cap: 8 images per message (Opus 4.7 vision token budget).
+ * / Photos via `@react-native-menu/menu` — NOT @expo/ui/community/menu,
+ * which wraps SwiftUI Menu in a UIHostingController and conflicts with
+ * iOS 14+ auto keyboard avoidance, causing the trigger to drift above
+ * sibling Pressables on first keyboard show under system IME); picked
+ * assets are compressed (long edge 2576 / JPEG q0.85) and shown as a
+ * horizontal pill row above the TextInput until the user sends or
+ * removes them. Cap: 8 images per message (Opus 4.7 vision token
+ * budget).
  *
  * Liquid Glass requires iOS 26+. On older iOS / Android the GlassView
  * silently falls back to a plain View; the inline `backgroundColor`
@@ -255,22 +259,30 @@ export function InputBar({
             className="text-base px-3"
           />
           <View className="px-3 flex-row items-center justify-between">
-            {/* `+` button → native attachment menu (SwiftUI Menu on iOS,
-                Compose DropdownMenu on Android). MenuView wraps the
-                trigger Pressable directly; tapping fires
-                `onPressAction` with the action's id. */}
+            {/* `+` button → native attachment menu via @react-native-menu/menu
+                (UIKit UIMenu on iOS, PopupMenu on Android). MenuView wraps
+                the trigger Pressable directly; tapping fires `onPressAction`
+                with the action's id. Note: `imageColor` MUST be set on each
+                action — see comment at the prop. */}
             <MenuView
               actions={[
                 {
                   id: "library",
                   title: "Photos",
                   image: "photo.on.rectangle",
+                  // SDK 55+ New Arch workaround: native side forwards a
+                  // default `0` tint when imageColor is unset, rendering
+                  // the SF Symbol as opaque-zero (invisible). Explicit
+                  // color is required.
+                  // https://github.com/react-native-menu/menu/issues/1198
+                  imageColor: colorScheme === "dark" ? "#e4e4e7" : "#3f3f46",
                   attributes: { disabled: !canAdd },
                 },
                 {
                   id: "camera",
                   title: "Camera",
                   image: "camera",
+                  imageColor: colorScheme === "dark" ? "#e4e4e7" : "#3f3f46",
                   attributes: { disabled: !canAdd },
                 },
               ]}

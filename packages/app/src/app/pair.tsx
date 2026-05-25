@@ -136,10 +136,11 @@ export default function PairModal() {
       {/* Block swipe-down while pair() is in flight so an accidental
           dismiss doesn't leave the daemon side mid-handshake. */}
       <Stack.Screen options={{ gestureEnabled: !busy }} />
-      {/* Header X (top-right). `headerShown: true` is set statically in
-          the parent _layout.tsx — toggling it from here would remount
-          the modal screen (react-native-screens warning). */}
-      <Stack.Toolbar placement="right">
+      {/* Header X (top-left, per iOS HIG: Cancel/Close goes on the
+          leading edge). `headerShown: true` is set statically in the
+          parent _layout.tsx — toggling it from here would remount the
+          modal screen (react-native-screens warning). */}
+      <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button
           icon="xmark"
           onPress={handleCancel}

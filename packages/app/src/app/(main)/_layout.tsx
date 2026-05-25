@@ -38,6 +38,15 @@ export default function MainLayout() {
             list → host detail pushes inside the sheet (with native
             back arrow), instead of stacking a second sheet on top. */}
         <Stack.Screen name="settings" options={{ presentation: "pageSheet" }} />
+        {/* cwd picker — pageSheet hosting an inner Stack so each folder
+            tap pushes a new in-sheet route with native edge-swipe back.
+            Tapping ✓ confirms via `setLastUsedCwd.mutate(path)` +
+            `router.dismissTo("/")`, which bubbles POP_TO past the inner
+            stack and pops the cwd-picker screen from (main). */}
+        <Stack.Screen
+          name="cwd-picker"
+          options={{ presentation: "formSheet", sheetGrabberVisible: true }}
+        />
         {/* Dev probe page — keep as a standard push, no modal. */}
         <Stack.Screen name="dev/diffs" />
       </Stack.Protected>

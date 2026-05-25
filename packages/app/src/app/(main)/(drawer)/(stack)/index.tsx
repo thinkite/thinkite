@@ -85,15 +85,16 @@ export default function NewSessionScreen() {
   }, [navigation]);
 
   const openCwdPicker = useCallback(() => {
-    // TODO: open <CwdPickerSheet /> here. The sheet calls back with
-    // the picked path → `setLastUsedCwd.mutate(picked)` → next render
-    // sees the new `cwd` via lastUsedCwd preference.
-    console.log("[NewSessionScreen] cwd picker not wired yet");
+    // Push the cwd-picker modal route. The sheet runs `setLastUsedCwd`
+    // itself on confirm and pops via `router.dismissTo("/")` — this
+    // screen just needs to open it. No callback wiring needed; the
+    // `useLastUsedCwd()` query above re-fires on mutation invalidate.
+    router.push("/cwd-picker");
   }, []);
 
   return (
     <>
-      <Stack.Screen options={{ title: "New session" }} />
+      <Stack.Screen options={{ title: "" }} />
       <Stack.Header transparent />
       <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button icon="line.3.horizontal" onPress={openDrawer} />
@@ -103,25 +104,28 @@ export default function NewSessionScreen() {
           <Text className="text-2xl font-semibold text-black dark:text-white">
             New session
           </Text>
-          <Text
-            selectable
-            className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400"
-            numberOfLines={1}
-          >
-            cwd: {cwd ?? "—"}
-          </Text>
         </View>
 
         {/* Composer chrome — GitStatusBar (cwd picker trigger) sits
             above InputBar inside the same KeyboardStickyView so they
-            translate as one unit when the keyboard moves. */}
+            translate as one unit when the keyboard moves. Picker mode:
+            cwd display + tap target only, `+N -M` hidden since the user
+            is choosing a project, not reviewing its diff state.
+            `offset.closed: -insets.bottom` lifts the composer above the
+            home indicator (KSV is absolutely-positioned at bottom: 0,
+            which is below the safe area); `offset.opened: -8` leaves an
+            8pt visual gap above the keyboard.
+            NOTE: tried collapsing to a single KeyboardAvoidingView so
+            heading + composer move together — turned out to interact
+            badly with iOS IME candidate-bar frame updates and SwiftUI
+            Menu's Host async measurement, leaving the InputBar's `+`
+            button misaligned on first keyboard show until the user
+            switched IMEs. Reverting to the KSV pattern matches the
+            detail page (chat-panel.tsx) and avoids the regression. */}
         <KeyboardStickyView
           offset={{ closed: -insets.bottom, opened: -8 }}
           style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
         >
-          {/* Picker mode: cwd display + tap target only. `+N -M`
-              hidden — user is choosing a project, not reviewing its
-              diff state. */}
           <GitStatusBar cwd={cwd} onPress={openCwdPicker} showChanges={false} />
           <InputBar onSend={handleSend} isRunning={false} />
         </KeyboardStickyView>
