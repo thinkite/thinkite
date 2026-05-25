@@ -182,6 +182,28 @@ export function SessionListSidebar({
             </Text>
           </Pressable>
           <Pressable
+            onPress={() => {
+              navigation.closeDrawer();
+              router.push("/dev/menu-expo");
+            }}
+            className="px-4 py-2"
+          >
+            <Text className="text-xs text-blue-600 dark:text-blue-400">
+              Menu test (@expo/ui) →
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              navigation.closeDrawer();
+              router.push("/dev/menu-rnm");
+            }}
+            className="px-4 py-2"
+          >
+            <Text className="text-xs text-blue-600 dark:text-blue-400">
+              Menu test (@react-native-menu) →
+            </Text>
+          </Pressable>
+          <Pressable
             onPress={async () => {
               await clearLastUsedCwd();
               // Invalidate so subscribers re-read null without needing

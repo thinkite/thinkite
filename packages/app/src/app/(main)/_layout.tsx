@@ -47,8 +47,10 @@ export default function MainLayout() {
           name="cwd-picker"
           options={{ presentation: "formSheet", sheetGrabberVisible: true }}
         />
-        {/* Dev probe page — keep as a standard push, no modal. */}
+        {/* Dev probe pages — keep as standard pushes, no modal. */}
         <Stack.Screen name="dev/diffs" />
+        <Stack.Screen name="dev/menu-expo" />
+        <Stack.Screen name="dev/menu-rnm" />
       </Stack.Protected>
     </Stack>
   );
