@@ -3,9 +3,11 @@ import * as Crypto from "expo-crypto";
 import { router, Stack, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
 import { useCallback } from "react";
-import { Text, View } from "react-native";
-import { KeyboardStickyView } from "react-native-keyboard-controller";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Pressable, Text, View } from "react-native";
+import {
+  KeyboardAvoidingView,
+  KeyboardController,
+} from "react-native-keyboard-controller";
 import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
@@ -47,7 +49,6 @@ import { setPendingPrompt } from "@/lib/submission-store";
  *      race window. See lib/submission-store.ts for the full rationale.
  */
 export default function NewSessionScreen() {
-  const insets = useSafeAreaInsets();
   const navigation = useNavigation();
 
   // Default cwd: client-side "last used" wins; otherwise fall back to
@@ -99,14 +100,33 @@ export default function NewSessionScreen() {
       <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button icon="line.3.horizontal" onPress={openDrawer} />
       </Stack.Toolbar>
-      <View className="flex-1 bg-white dark:bg-black">
-        <View className="flex-1 items-center justify-center px-6">
-          <Text className="text-2xl font-semibold text-black dark:text-white">
-            New session
-          </Text>
-        </View>
+      <View className="flex-1 bg-white dark:bg-black pb-safe">
+        <KeyboardAvoidingView
+          behavior="padding"
+          className="flex-1"
+          keyboardVerticalOffset={8}
+        >
+          {/* Tap anywhere in the empty heading area to dismiss the
+              keyboard — standard iOS chat pattern. `KeyboardController.dismiss()`
+              from react-native-keyboard-controller goes through the same
+              worklet pipeline as KAV's translate, so the close animation
+              stays synced with the heading sliding back down (vs RN's
+              `Keyboard.dismiss()` which can lag by a frame).
+              `accessible={false}` so VoiceOver skips this dead-space
+              control instead of announcing "button". InputBar lives
+              OUTSIDE this Pressable so its own taps still focus the
+              TextInput. */}
+          <Pressable
+            accessible={false}
+            onPress={() => KeyboardController.dismiss()}
+            className="flex-1 items-center justify-center px-6"
+          >
+            <Text className="text-2xl font-semibold text-black dark:text-white">
+              New session
+            </Text>
+          </Pressable>
 
-        {/* Composer chrome — GitStatusBar (cwd picker trigger) sits
+          {/* Composer chrome — GitStatusBar (cwd picker trigger) sits
             above InputBar inside the same KeyboardStickyView so they
             translate as one unit when the keyboard moves. Picker mode:
             cwd display + tap target only, `+N -M` hidden since the user
@@ -122,13 +142,15 @@ export default function NewSessionScreen() {
             button misaligned on first keyboard show until the user
             switched IMEs. Reverting to the KSV pattern matches the
             detail page (chat-panel.tsx) and avoids the regression. */}
-        <KeyboardStickyView
-          offset={{ closed: -insets.bottom, opened: -8 }}
-          style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
-        >
-          <GitStatusBar cwd={cwd} onPress={openCwdPicker} showChanges={false} />
-          <InputBar onSend={handleSend} isRunning={false} />
-        </KeyboardStickyView>
+          <View>
+            <GitStatusBar
+              cwd={cwd}
+              onPress={openCwdPicker}
+              showChanges={false}
+            />
+            <InputBar onSend={handleSend} isRunning={false} />
+          </View>
+        </KeyboardAvoidingView>
       </View>
     </>
   );
