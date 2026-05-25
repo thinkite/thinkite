@@ -24,9 +24,19 @@ export interface SessionInfo {
   originCwd: string;
   /** Epoch ms. */
   lastActivityAt: number;
-  /** Compact model display (e.g. "Opus 4.7"). */
-  model: string;
-  /** Number of completed assistant turns; absent when unknown. */
-  completedTurns?: number;
+  /** Raw model string as persisted on disk — `claude-opus-4-7[1m]` for
+   *  Desktop sessions (preserves `[1m]` 1M-context suffix) or SDK alias
+   *  (`default` / `sonnet` / `haiku`) for sidecode-created. Use for
+   *  equality checks (picker-selected state) or to round-trip back into
+   *  sendPrompt. For display, prefer `modelLabel`. */
+  model?: string;
+  /** Display-formatted version of `model` — e.g. "Opus 4.7 1M" derived
+   *  on the daemon. Render this in lists / headers; fall back to `model`
+   *  when missing. */
+  modelLabel?: string;
+  /** Reasoning effort level if recorded ("low" / "medium" / "high" /
+   *  "xhigh" / "max"). Desktop Claude Code sessions persist this; absent
+   *  for sidecode-created until V0.5+ wires effort into the composer. */
+  effort?: string;
   isArchived: boolean;
 }

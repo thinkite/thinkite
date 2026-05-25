@@ -11,6 +11,7 @@ import type { CommandHandler } from "./command.js";
 import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
 import type { DesktopSession } from "./desktop/sessions.js";
 import type { GitWatcherRegistry } from "./git-watch.js";
+import { prettyModel } from "./models-metadata.js";
 import {
   ensureSessionLoop,
   pushPrompt,
@@ -596,8 +597,12 @@ function toSessionInfo(d: DesktopSession): SessionInfo {
     origin: "desktop-mirror",
     cliSessionId: d.cliSessionId,
     title: d.title || undefined,
-    model: prettyModel(d.model),
-    completedTurns: d.completedTurns,
+    // `model` carries the RAW string from disk (`claude-opus-4-7[1m]`
+    // etc.) so iOS can equality-check it; `modelLabel` is the pretty
+    // version for display. Both optional but populated here when on disk.
+    model: d.model || undefined,
+    modelLabel: d.model ? prettyModel(d.model) : undefined,
+    effort: d.effort || undefined,
     isArchived: d.isArchived,
   };
 }
@@ -621,7 +626,6 @@ function toSessionInfoFromSidecode(s: SidecodeSessionMetadata): SessionInfo {
     // shows the row without a model chip; Desktop-mirrored entries
     // still carry it.
     title: s.title || undefined,
-    completedTurns: s.completedTurns,
     isArchived: s.isArchived,
   };
 }
@@ -630,13 +634,6 @@ function toSessionInfoFromSidecode(s: SidecodeSessionMetadata): SessionInfo {
  * Convert raw model IDs like "claude-opus-4-7[1m]" to display strings like
  * "Opus 4.7". Tolerates unknown shapes by falling through.
  */
-function prettyModel(raw: string): string {
-  if (!raw) return "";
-  const match = raw.match(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)/i);
-  if (!match) return raw;
-  const family = match[1].charAt(0).toUpperCase() + match[1].slice(1);
-  return `${family} ${match[2]}.${match[3]}`;
-}
 
 /**
  * Expand "~" / "~/..." to the daemon machine's HOME, then normalize via

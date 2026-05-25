@@ -228,8 +228,23 @@ export const sessionInfo = z.object({
    *  daemon's reader filters out any local_*.json that lacks it. */
   cliSessionId: z.string(),
   title: z.string().optional(),
+  /** Raw model string as persisted on disk — e.g. `claude-opus-4-7[1m]`
+   *  for Desktop sessions (preserves the `[1m]` 1M-context suffix) or the
+   *  SDK alias (`default` / `sonnet` / `haiku`) for sidecode-created
+   *  sessions. iOS uses this for equality / picker-selected-state checks
+   *  and for sending back to the daemon on next sendPrompt. For display
+   *  use `modelLabel` instead. */
   model: z.string().optional(),
-  completedTurns: z.number().optional(),
+  /** Display-formatted version of `model` — e.g. "Opus 4.7 1M" derived
+   *  by daemon's `prettyModel`. iOS renders this in session list /
+   *  detail header. Optional because not every code path normalizes
+   *  (and iOS can fall back to raw `model` when missing). */
+  modelLabel: z.string().optional(),
+  /** Reasoning effort persisted on disk for Desktop Claude Code sessions
+   *  — `'low' | 'medium' | 'high' | 'xhigh' | 'max'`. Omitted for
+   *  sidecode-created sessions until V0.5+ wires effort into the
+   *  composer flow. */
+  effort: z.string().optional(),
   isArchived: z.boolean().optional(),
 });
 

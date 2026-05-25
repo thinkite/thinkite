@@ -32,11 +32,11 @@ export function SessionRow({ session, onPress }: SessionRowProps) {
         >
           {formatCwd(session.cwd)}
         </Text>
+        {/* Display label falls back to raw model id if daemon's prettifier
+            didn't normalize this entry. Turn count is intentionally omitted
+            — auto-compact rotates it, so the number is misleading. */}
         <Text className="text-xs text-gray-500 dark:text-gray-400">
-          {session.model}
-          {session.completedTurns !== undefined
-            ? ` · ${session.completedTurns} turn${session.completedTurns === 1 ? "" : "s"}`
-            : ""}
+          {session.modelLabel ?? session.model ?? ""}
         </Text>
       </View>
     </Pressable>

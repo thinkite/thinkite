@@ -375,12 +375,14 @@ describe("session metadata", () => {
       origin: "desktop-mirror",
       cliSessionId: "03f3f808-9702-4dda-82da-34a8b3f76879",
       title: "Plan project folder structure (fork)",
-      model: "Opus 4.7",
-      completedTurns: 21,
+      model: "claude-opus-4-7[1m]",
+      modelLabel: "Opus 4.7 1M",
+      effort: "xhigh",
       isArchived: false,
     });
     expect(p.cwd).not.toBe(p.originCwd);
-    expect(p.completedTurns).toBe(21);
+    expect(p.modelLabel).toBe("Opus 4.7 1M");
+    expect(p.effort).toBe("xhigh");
     expect(p.isArchived).toBe(false);
   });
 

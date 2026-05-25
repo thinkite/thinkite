@@ -291,7 +291,7 @@ export function InputBar({
                 else if (event === "library") pickFromLibrary();
               }}
             >
-              <Pressable className="p-1.75">
+              <Pressable className="p-1.75 rounded-full">
                 <SymbolView
                   name="plus"
                   size={22}
