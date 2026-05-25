@@ -15,7 +15,7 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
 import { consumePendingPrompt } from "@/lib/submission-store";
 import type { RenderBlock } from "@/lib/transcript-blocks";
 
-const INITIAL_COMPOSER_HEIGHT = 147;
+const INITIAL_COMPOSER_HEIGHT = 143;
 
 type ChatPanelProps = {
   cliSessionId: string;

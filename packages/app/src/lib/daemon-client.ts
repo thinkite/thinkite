@@ -4,6 +4,7 @@ import {
   type ChunkEnvelope,
   ChunkReassembler,
   chunkMessage,
+  type DirectoryEntry,
   decodePairOfferPayload,
   type EventDelta,
   type GitStatus,
@@ -455,6 +456,63 @@ export class DaemonClient {
     if (dir !== undefined) frame.dir = dir;
     const res = (await this.request(frame)) as { sessions: unknown[] };
     return res.sessions;
+  }
+
+  /**
+   * List one level of a directory on the daemon machine for the iOS
+   * cwd / file picker. `path` accepts an absolute path or "~" / "~/...";
+   * server expands. Options:
+   *   - `includeFiles`: surface file entries (default: folders only)
+   *   - `includeHidden`: surface dotfile entries (default: hidden)
+   *
+   * V0 leaves file `size` / `modifiedAt` undefined even when
+   * `includeFiles=true` — the per-entry stat path is deferred. See
+   * daemon's listDirectory handler header for the rationale.
+   */
+  async listDirectory(
+    path: string,
+    opts: { includeFiles?: boolean; includeHidden?: boolean } = {},
+  ): Promise<{
+    path: string;
+    parent: string | null;
+    entries: DirectoryEntry[];
+  }> {
+    const requestId = Crypto.randomUUID();
+    const frame: { type: string; requestId: string } & Record<string, unknown> =
+      { type: "listDirectory", requestId, path };
+    if (opts.includeFiles !== undefined) frame.includeFiles = opts.includeFiles;
+    if (opts.includeHidden !== undefined)
+      frame.includeHidden = opts.includeHidden;
+    const res = (await this.request(frame)) as {
+      path: string;
+      parent: string | null;
+      entries: DirectoryEntry[];
+    };
+    return res;
+  }
+
+  /**
+   * Bootstrap RPC for the picker — one call returns daemon machine's
+   * HOME + (if they exist) Desktop / Documents shortcut paths +
+   * recent-cwd candidates aggregated from session history. Callers
+   * typically wrap in react-query with a long staleTime.
+   */
+  async getFilesystemRoots(): Promise<{
+    home: string;
+    desktop?: string;
+    documents?: string;
+    recentCwds: { path: string; lastUsedAt: string }[];
+  }> {
+    const requestId = Crypto.randomUUID();
+    return (await this.request({
+      type: "getFilesystemRoots",
+      requestId,
+    })) as {
+      home: string;
+      desktop?: string;
+      documents?: string;
+      recentCwds: { path: string; lastUsedAt: string }[];
+    };
   }
 
   /**

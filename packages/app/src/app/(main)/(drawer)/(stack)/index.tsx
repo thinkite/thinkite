@@ -6,8 +6,10 @@ import { useCallback } from "react";
 import { Text, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
-import { DEV_CWD } from "@/lib/dev-config";
+import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
+import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { setPendingPrompt } from "@/lib/submission-store";
 
 /**
@@ -21,9 +23,20 @@ import { setPendingPrompt } from "@/lib/submission-store";
  * `(stack)` group is invisible in URLs, so this page is just `/`, not
  * `/session` — cold launch lands here directly.
  *
+ * cwd selection precedence:
+ *   1. `lastUsedCwd` (SecureStore) — what the user picked or opened
+ *      most recently on THIS device. Set on session-row tap (sidebar)
+ *      and on send below.
+ *   2. `recentCwds[0]` from daemon `getFilesystemRoots` — server's
+ *      best guess across all activity, used as the initial bootstrap
+ *      default before the user has picked anything on this device.
+ *   3. `undefined` — first launch with no session history. GitStatusBar
+ *      shows a "Select a project" placeholder + chevron; tap opens the
+ *      cwd picker. Send button stays disabled until cwd resolves.
+ *
  * Flow on first send:
  *   1. Generate a fresh UUIDv4 client-side
- *   2. Stash the prompt text in `submission-store` keyed by that UUID
+ *   2. Stash the prompt text + cwd in `submission-store` keyed by that UUID
  *   3. `router.replace("/session/[id]")` immediately — the user sees the
  *      detail screen with no perceptible RTT lag
  *   4. Detail screen mounts → `useLiveSession` fires `subscribe` and
@@ -32,25 +45,51 @@ import { setPendingPrompt } from "@/lib/submission-store";
  *      `sendPrompt` — guaranteeing user_message + turn_started events
  *      reach the iOS subscriber instead of falling into the cursor
  *      race window. See lib/submission-store.ts for the full rationale.
- *
- * cwd is hardcoded via DEV_CWD for V0; cwd picker is a V0.5+ task.
  */
 export default function NewSessionScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
 
-  const handleSend = useCallback((text: string, images?: ImageAttachment[]) => {
-    const newId = Crypto.randomUUID();
-    setPendingPrompt(newId, { text, cwd: DEV_CWD, images });
-    router.replace({
-      pathname: "/session/[cliSessionId]",
-      params: { cliSessionId: newId, cwd: DEV_CWD },
-    });
-  }, []);
+  // Default cwd: client-side "last used" wins; otherwise fall back to
+  // server's most-recent activity. Both can be undefined on a brand-
+  // new install — handleSend gates on cwd being defined.
+  const { data: lastUsedCwd } = useLastUsedCwd();
+  const { data: roots } = useFilesystemRoots();
+  const cwd = lastUsedCwd ?? roots?.recentCwds[0]?.path ?? undefined;
+  const setLastUsedCwd = useSetLastUsedCwd();
+
+  const handleSend = useCallback(
+    (text: string, images?: ImageAttachment[]) => {
+      if (cwd === undefined) {
+        // Placeholder state — user hasn't picked and there's no
+        // recent history to fall back on. InputBar.canSend already
+        // gates on text/images presence; this is the extra cwd gate
+        // so we don't ship a malformed sendPrompt to the daemon.
+        return;
+      }
+      // Refresh "last used" so subsequent new-session opens default
+      // to this same cwd even before the daemon records the activity.
+      setLastUsedCwd.mutate(cwd);
+      const newId = Crypto.randomUUID();
+      setPendingPrompt(newId, { text, cwd, images });
+      router.replace({
+        pathname: "/session/[cliSessionId]",
+        params: { cliSessionId: newId, cwd },
+      });
+    },
+    [cwd, setLastUsedCwd],
+  );
 
   const openDrawer = useCallback(() => {
     navigation.dispatch(DrawerActions.openDrawer());
   }, [navigation]);
+
+  const openCwdPicker = useCallback(() => {
+    // TODO: open <CwdPickerSheet /> here. The sheet calls back with
+    // the picked path → `setLastUsedCwd.mutate(picked)` → next render
+    // sees the new `cwd` via lastUsedCwd preference.
+    console.log("[NewSessionScreen] cwd picker not wired yet");
+  }, []);
 
   return (
     <>
@@ -69,16 +108,21 @@ export default function NewSessionScreen() {
             className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400"
             numberOfLines={1}
           >
-            cwd: {DEV_CWD}
+            cwd: {cwd ?? "—"}
           </Text>
         </View>
 
-        {/* InputBar — same component used inside session detail. The
-            pinned-to-bottom keyboard handling matches the detail screen. */}
+        {/* Composer chrome — GitStatusBar (cwd picker trigger) sits
+            above InputBar inside the same KeyboardStickyView so they
+            translate as one unit when the keyboard moves. */}
         <KeyboardStickyView
           offset={{ closed: -insets.bottom, opened: -8 }}
           style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
         >
+          {/* Picker mode: cwd display + tap target only. `+N -M`
+              hidden — user is choosing a project, not reviewing its
+              diff state. */}
+          <GitStatusBar cwd={cwd} onPress={openCwdPicker} showChanges={false} />
           <InputBar onSend={handleSend} isRunning={false} />
         </KeyboardStickyView>
       </View>

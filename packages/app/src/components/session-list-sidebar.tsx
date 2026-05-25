@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { router } from "expo-router";
 import { useMemo } from "react";
 import {
@@ -9,8 +10,10 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SessionRow } from "@/components/session-row";
+import { useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { useSessions } from "@/hooks/use-sessions";
 import { projectName } from "@/lib/format";
+import { clearLastUsedCwd } from "@/lib/last-used-cwd";
 import type { SessionInfo } from "@/types/session";
 
 interface ProjectSection {
@@ -52,6 +55,7 @@ export function SessionListSidebar({
   const query = useSessions();
   const sessions = query.data;
   const insets = useSafeAreaInsets();
+  const queryClient = useQueryClient();
 
   const sections = useMemo<ProjectSection[]>(() => {
     if (!sessions) return [];
@@ -83,7 +87,12 @@ export function SessionListSidebar({
   // treats different params as different instances by default), and the
   // user gets a back chevron in the UINavigationBar that pops to a session
   // they don't expect to "go back" to.
+  const setLastUsedCwd = useSetLastUsedCwd();
   const handleOpenSession = (session: SessionInfo) => {
+    // Record the current focus so the next "New session" defaults to
+    // the project the user just opened. Mutation is fire-and-forget;
+    // the navigation below shouldn't wait on SecureStore I/O.
+    setLastUsedCwd.mutate(session.cwd);
     navigation.closeDrawer();
     router.replace({
       pathname: "/session/[cliSessionId]",
@@ -158,19 +167,35 @@ export function SessionListSidebar({
         </Text>
       </Pressable>
 
-      {/* Dev shortcut, only in __DEV__ */}
+      {/* Dev shortcuts, only in __DEV__ */}
       {__DEV__ && (
-        <Pressable
-          onPress={() => {
-            navigation.closeDrawer();
-            router.push("/dev/diffs");
-          }}
-          className="px-4 py-2"
-        >
-          <Text className="text-xs text-blue-600 dark:text-blue-400">
-            Diffs dev →
-          </Text>
-        </Pressable>
+        <>
+          <Pressable
+            onPress={() => {
+              navigation.closeDrawer();
+              router.push("/dev/diffs");
+            }}
+            className="px-4 py-2"
+          >
+            <Text className="text-xs text-blue-600 dark:text-blue-400">
+              Diffs dev →
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={async () => {
+              await clearLastUsedCwd();
+              // Invalidate so subscribers re-read null without needing
+              // a Metro reload — lets you toggle the placeholder state
+              // back and forth quickly.
+              queryClient.invalidateQueries({ queryKey: ["lastUsedCwd"] });
+            }}
+            className="px-4 py-2"
+          >
+            <Text className="text-xs text-blue-600 dark:text-blue-400">
+              Clear last cwd (test placeholder) →
+            </Text>
+          </Pressable>
+        </>
       )}
     </View>
   );
