@@ -71,6 +71,15 @@ export interface SidecodeSessionMetadata {
    *  on disk won't have it; daemon treats absent as "unknown, use SDK
    *  default on next sendPrompt". */
   model?: string;
+  /** Schema placeholder for Desktop compatibility. Desktop's
+   *  `local_*.json` always carries an `effort` field; sidecode V0
+   *  doesn't expose effort in the picker (see input-bar.tsx) but still
+   *  writes the field so a sidecode-created file is forward-compatible
+   *  with a future "promote to Desktop" flow (or a manual `cp`).
+   *  Hardcoded to `"xhigh"` — the value isn't read by sidecode at any
+   *  point. Desktop's behavior with `effort` ≠ supportedEffortLevels
+   *  is their own concern (they don't cross-validate either). */
+  effort: "xhigh";
 }
 
 /**
@@ -286,6 +295,8 @@ export function buildNewSidecodeSession(input: {
     // project_session_replay_model memory: permission_requested /
     // permission_resolved frames deferred to V0.5+).
     permissionMode: "bypassPermissions",
+    // Hardcoded schema placeholder — see SidecodeSessionMetadata.effort.
+    effort: "xhigh",
     ...(input.model !== undefined ? { model: input.model } : {}),
   };
 }

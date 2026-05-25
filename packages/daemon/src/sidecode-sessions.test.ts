@@ -39,6 +39,9 @@ describe("buildNewSidecodeSession", () => {
     expect(meta.title).toBe("Refactor the auth module");
     expect(meta.titleSource).toBe("auto");
     expect(meta.permissionMode).toBe("bypassPermissions");
+    // effort is hardcoded for Desktop-schema compatibility — see
+    // SidecodeSessionMetadata.effort docstring.
+    expect(meta.effort).toBe("xhigh");
   });
 
   it("collapses newlines and excess whitespace in firstPrompt to a single line", () => {

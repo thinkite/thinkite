@@ -302,6 +302,7 @@ describe("createCommandHandler — listSessions", () => {
       titleSource: "auto",
       completedTurns: 0,
       permissionMode: "bypassPermissions",
+      effort: "xhigh",
       ...over,
     };
   }
@@ -1507,6 +1508,7 @@ describe("createCommandHandler — getFilesystemRoots", () => {
       titleSource: "auto",
       completedTurns: 0,
       permissionMode: "bypassPermissions",
+      effort: "xhigh",
       ...over,
     };
   }
