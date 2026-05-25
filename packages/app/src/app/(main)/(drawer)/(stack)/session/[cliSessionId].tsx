@@ -6,7 +6,9 @@ import { ActivityIndicator, Text, View } from "react-native";
 import { ChatPanel } from "@/components/transcript/chat-panel";
 import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 import { useLiveSession } from "@/hooks/use-live-session";
+import { useModels } from "@/hooks/use-models";
 import { useSessions } from "@/hooks/use-sessions";
+import { useSetSessionSelection } from "@/hooks/use-set-session-selection";
 import { flattenToBlocks } from "@/lib/transcript-blocks";
 
 /**
@@ -62,20 +64,30 @@ export default function SessionDetailScreen() {
 
   const blocks = useMemo(() => flattenToBlocks(session.items), [session.items]);
 
-  // Look up the SessionInfo for this cliSessionId to bootstrap the
-  // InputBar's model+effort picker. react-query dedupes with the sidebar
-  // listing, so this isn't an extra round-trip. `initialSelection` stays
-  // undefined until both lookups land (sessions list + the entry); the
-  // InputBar bootstrap only runs once anyway, after `useModels` resolves.
-  // No selection mutation on this screen — the InputBar owns committed
-  // state once bootstrapped.
+  // Picker selection is fully driven by the useSessions cache — the
+  // SessionInfo row for this cliSessionId carries `model` and `effort`.
+  // useSetSessionSelection mutates the cache optimistically on pick +
+  // fires the daemon RPC; rollback is automatic on RPC failure.
+  //
+  // Pre-feature sessions (no model on disk yet) fall back to the
+  // daemon's default model + that model's `defaultEffort`. Once the
+  // user picks anything the mutation writes the real entry, and the
+  // fallback drops out.
   const { data: sessions } = useSessions();
-  const initialSelection = useMemo(() => {
-    if (!sessions) return undefined;
-    const entry = sessions.find((s) => s.cliSessionId === cliSessionId);
-    if (!entry?.model) return undefined;
-    return { model: entry.model, effort: entry.effort as EffortLevel | undefined };
-  }, [sessions, cliSessionId]);
+  const { data: models } = useModels();
+  const setSelection = useSetSessionSelection(cliSessionId);
+  const selection = useMemo(() => {
+    const entry = sessions?.find((s) => s.cliSessionId === cliSessionId);
+    if (entry?.model) {
+      return {
+        model: entry.model,
+        effort: entry.effort as EffortLevel | undefined,
+      };
+    }
+    const def = models?.find((m) => m.isDefault) ?? models?.[0];
+    if (def) return { model: def.model, effort: def.defaultEffort };
+    return undefined;
+  }, [sessions, cliSessionId, models]);
 
   return (
     <>
@@ -110,7 +122,8 @@ export default function SessionDetailScreen() {
               cwd={cwd}
               blocks={blocks}
               isRunning={session.isRunning}
-              initialSelection={initialSelection}
+              selection={selection}
+              onSelectionChange={setSelection.mutate}
             />
           )}
         </View>

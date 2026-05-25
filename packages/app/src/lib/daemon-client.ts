@@ -608,11 +608,13 @@ export class DaemonClient {
    * `ImageBlockParam`s ahead of the text block when calling the SDK.
    * Empty / missing array sends a text-only prompt.
    *
-   * `model` and `effort` carry the input-bar picker's current selection.
-   * Daemon forwards them to SDK `query()` options. Per-prompt model
-   * switches use `query.setModel`; effort can only be set at query
-   * creation (SDK has no setEffort) so changes mid-session take effect
-   * after the next runtime restart.
+   * `model` and `effort` are used by the daemon as the SDK `query()`
+   * initial options on FIRST ensureSessionLoop (create path, or resume
+   * after a runtime respawn). They are NOT used for mid-session apply —
+   * that path is owned by `setSessionSelection` (pick-time RPC, single
+   * `applyFlagSettings({ model, effortLevel })` on the live query).
+   * iOS should still pass the current picker selection on every
+   * sendPrompt so daemon-restart recoveries inherit it cleanly.
    *
    * Argument shape is an options object — cwd/images/model/effort grew
    * past the comfortable positional-parameter threshold.
@@ -637,6 +639,35 @@ export class DaemonClient {
     if (opts.images !== undefined && opts.images.length > 0) {
       frame.images = opts.images;
     }
+    if (opts.model !== undefined) frame.model = opts.model;
+    if (opts.effort !== undefined) frame.effort = opts.effort;
+    await this.request(frame);
+  }
+
+  /**
+   * Pick-time commit of the input-bar's model + effort selection.
+   * Daemon applies to the live SDK query first via a single atomic
+   * `applyFlagSettings({ model?, effortLevel? })` call (max effort
+   * skipped — Settings.effortLevel enum can't carry max) and only
+   * writes the new values into sidecode metadata if that call
+   * succeeds. Throws on apply failure — callers (typically a
+   * TanStack Query mutation with onError rollback) revert the
+   * optimistic picker update.
+   *
+   * Either field may be undefined; both undefined is a no-op.
+   */
+  async setSessionSelection(opts: {
+    sessionId: string;
+    model?: string;
+    effort?: EffortLevel;
+  }): Promise<void> {
+    const requestId = Crypto.randomUUID();
+    const frame: { type: string; requestId: string } & Record<string, unknown> =
+      {
+        type: "setSessionSelection",
+        requestId,
+        sessionId: opts.sessionId,
+      };
     if (opts.model !== undefined) frame.model = opts.model;
     if (opts.effort !== undefined) frame.effort = opts.effort;
     await this.request(frame);

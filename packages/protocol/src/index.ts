@@ -762,6 +762,45 @@ export const sendPromptResponse = z.object({
   requestId: z.string(),
 });
 
+/**
+ * Pick-time commit of the input-bar model + effort selection.
+ *
+ * Fired by iOS the moment the user changes either knob in the picker
+ * (not bundled with sendPrompt). Daemon applies the change to the live
+ * SDK query first via a single atomic `applyFlagSettings({ model?,
+ * effortLevel? })` call (Settings has both keys; passing model there
+ * behaves identically to the dedicated setModel setter per upstream
+ * docs) and only writes the new values into sidecode metadata if that
+ * call succeeds — so the on-disk record stays in sync with the runtime.
+ *
+ * Either field may be undefined (e.g., user switched to a Haiku-tier
+ * model with no effort concept → effort cleared, model set). If both
+ * are undefined the call is a no-op.
+ *
+ * Errors: daemon replies with `error` (code `internal`) when the
+ * control plane apply throws — e.g., model not allowed by the user's
+ * account, transient subprocess issue. iOS uses this signal to roll
+ * back the optimistic picker update.
+ *
+ * Effort `'max'`: daemon skips the effortLevel field on the
+ * applyFlagSettings call when effort is max (Settings.effortLevel
+ * enum has no max). The iOS picker never offers max anyway. Sessions
+ * with effort=max on disk preserve it via the resume-time initial-
+ * options path on sendPromptCommand, NOT this RPC.
+ */
+export const setSessionSelectionCommand = z.object({
+  type: z.literal("setSessionSelection"),
+  requestId: z.string(),
+  sessionId: z.string(),
+  model: z.string().optional(),
+  effort: effortLevel.optional(),
+});
+
+export const setSessionSelectionResponse = z.object({
+  type: z.literal("setSessionSelection.response"),
+  requestId: z.string(),
+});
+
 /** User pressed "stop" on the live turn. Targets `runtime.query.interrupt()`
  *  — turn ends, session/subprocess stays alive for follow-up prompts. */
 export const interruptCommand = z.object({
@@ -1095,6 +1134,7 @@ export const command = z.discriminatedUnion("type", [
   subscribeCommand,
   unsubscribeCommand,
   sendPromptCommand,
+  setSessionSelectionCommand,
   interruptCommand,
   approveCommand,
   stopTaskCommand,
@@ -1115,6 +1155,7 @@ export const response = z.discriminatedUnion("type", [
   subscribeResponse,
   unsubscribeResponse,
   sendPromptResponse,
+  setSessionSelectionResponse,
   interruptResponse,
   listSessionsResponse,
   deleteSessionResponse,
@@ -1141,6 +1182,7 @@ export const clientFrame = z.discriminatedUnion("type", [
   subscribeCommand,
   unsubscribeCommand,
   sendPromptCommand,
+  setSessionSelectionCommand,
   interruptCommand,
   approveCommand,
   stopTaskCommand,
@@ -1171,6 +1213,7 @@ export const daemonFrame = z.discriminatedUnion("type", [
   subscribeResponse,
   unsubscribeResponse,
   sendPromptResponse,
+  setSessionSelectionResponse,
   interruptResponse,
   eventFrame,
   listSessionsResponse,

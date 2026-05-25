@@ -31,6 +31,8 @@ import {
   pongFrame,
   sendPromptCommand,
   sendPromptResponse,
+  setSessionSelectionCommand,
+  setSessionSelectionResponse,
   serverInfoEvent,
   sessionDivergedEvent,
   sessionInfo,
@@ -776,6 +778,67 @@ describe("daemonFrame union", () => {
         text: "x",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("setSessionSelection schemas", () => {
+  it("accepts a command with model + effort", () => {
+    const r = setSessionSelectionCommand.parse({
+      type: "setSessionSelection",
+      requestId: "r1",
+      sessionId: "s",
+      model: "claude-opus-4-7[1m]",
+      effort: "high",
+    });
+    expect(r.model).toBe("claude-opus-4-7[1m]");
+    expect(r.effort).toBe("high");
+  });
+
+  it("accepts a command with model only (Haiku-tier — effort cleared)", () => {
+    const r = setSessionSelectionCommand.parse({
+      type: "setSessionSelection",
+      requestId: "r1",
+      sessionId: "s",
+      model: "claude-haiku-4-5-20251001",
+    });
+    expect(r.model).toBe("claude-haiku-4-5-20251001");
+    expect(r.effort).toBeUndefined();
+  });
+
+  it("rejects a command with an invalid effort value", () => {
+    expect(
+      setSessionSelectionCommand.safeParse({
+        type: "setSessionSelection",
+        requestId: "r1",
+        sessionId: "s",
+        effort: "ultra",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("response is an empty ack", () => {
+    const r = setSessionSelectionResponse.parse({
+      type: "setSessionSelection.response",
+      requestId: "r1",
+    });
+    expect(r.requestId).toBe("r1");
+  });
+
+  it("plumbs through clientFrame + daemonFrame unions", () => {
+    expect(
+      clientFrame.parse({
+        type: "setSessionSelection",
+        requestId: "r1",
+        sessionId: "s",
+        model: "x",
+      }).type,
+    ).toBe("setSessionSelection");
+    expect(
+      daemonFrame.parse({
+        type: "setSessionSelection.response",
+        requestId: "r1",
+      }).type,
+    ).toBe("setSessionSelection.response");
   });
 });
 

@@ -73,8 +73,9 @@ export type ModelMetadata = {
    *  picker UX = drop the option that can't be runtime-switched. Power
    *  users who need max go to Desktop `/effort max` directly; if a
    *  resumed session has effort=max on disk, sidecode preserves it
-   *  (see input-bar `initialSelection` bootstrap) but never offers it
-   *  as a new choice. */
+   *  (the iOS picker reads it via `useSessions` and feeds it back into
+   *  InputBar's controlled `selection`) but never offers it as a new
+   *  choice. */
   supportedEffortLevels?: EffortLevel[];
 
   /** Default effort to commit when the user picks this model fresh (no

@@ -25,12 +25,14 @@ type ChatPanelProps = {
   cwd: string | undefined;
   blocks: RenderBlock[];
   isRunning: boolean;
-  /** Initial picker state for the InputBar — built by the parent screen
-   *  from the resumed `SessionInfo.model + .effort` so the picker
-   *  bootstraps to the session's prior selection. Undefined for the
-   *  new-session screen's pre-creation flow, where InputBar falls back
-   *  to the daemon-declared default model + that model's defaultEffort. */
-  initialSelection?: ModelSelection;
+  /** Current picker selection — InputBar is fully controlled. Parent
+   *  derives from useSessions cache for resume sessions (with
+   *  useSetSessionSelection mutation on change) or local state for
+   *  pre-creation new-session flow. */
+  selection?: ModelSelection;
+  /** Called on user pick; parent commits however it likes (optimistic
+   *  cache mutation, local setter, etc.). */
+  onSelectionChange?: (next: ModelSelection) => void;
 };
 
 /**
@@ -92,7 +94,8 @@ export function ChatPanel({
   cwd,
   blocks,
   isRunning,
-  initialSelection,
+  selection,
+  onSelectionChange,
 }: ChatPanelProps) {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
@@ -155,16 +158,17 @@ export function ChatPanel({
   );
 
   const onSend = useCallback(
-    (
-      text: string,
-      images?: ImageAttachment[],
-      selection?: ModelSelection,
-    ) => {
+    (text: string, images?: ImageAttachment[]) => {
       if (!client) return;
       // cwd is required for the SDK's project-key resolution on
       // `--resume`. For sessions opened from the list, cwd is plumbed
       // through route params; deeplink / direct nav (V0.5+) will need
       // a fallback fetch.
+      //
+      // model/effort are still attached on every send so the daemon's
+      // ensureSessionLoop has them as SDK initial options on first
+      // spawn (or after a daemon-restart respawn). Mid-session apply
+      // is owned by setSessionSelection — sendPrompt only seeds.
       void client
         .sendPrompt({
           sessionId: cliSessionId,
@@ -178,7 +182,7 @@ export function ChatPanel({
           console.error("sendPrompt failed", err);
         });
     },
-    [client, cliSessionId, cwd],
+    [client, cliSessionId, cwd, selection],
   );
 
   const onInterrupt = useCallback(() => {
@@ -327,7 +331,8 @@ export function ChatPanel({
             onSend={onSend}
             onInterrupt={onInterrupt}
             isRunning={isRunning}
-            initialSelection={initialSelection}
+            selection={selection}
+            onSelectionChange={onSelectionChange}
           />
         </View>
       </KeyboardStickyView>

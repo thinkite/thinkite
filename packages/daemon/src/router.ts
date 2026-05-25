@@ -415,18 +415,11 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           const runtime = deps.runtimeManager.getOrCreate(cmd.sessionId);
           const mode: "create" | "resume" = exists ? "resume" : "create";
 
-          // Persist sidecode metadata.
-          //
-          // create path: write the new file (with the picker's
-          //   model + effort snapshotted). If iOS reconnects mid-create,
-          //   listSessions already shows the entry. The user's first
-          //   prompt becomes the auto-title.
-          // resume path: best-effort UPDATE of model + effort on disk
-          //   so the next time the user opens this session, the iOS
-          //   picker can bootstrap to their latest pick. Dep silently
-          //   no-ops when the metadata file isn't sidecode's (i.e.,
-          //   Desktop-mirror sessions live under Desktop's
-          //   claude-code-sessions/ and we never write there).
+          // Persist sidecode metadata on the CREATE path only. Resume-
+          // path metadata updates are owned by the `setSessionSelection`
+          // RPC — pick-time writes after the runtime apply succeeds,
+          // never via sendPrompt. This keeps on-disk model+effort in
+          // lockstep with what the live SDK query actually has.
           if (mode === "create") {
             deps.writeSidecodeSession({
               cliSessionId: cmd.sessionId,
@@ -435,19 +428,17 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
               model: cmd.model,
               effort: cmd.effort,
             });
-          } else {
-            deps.updateSidecodeSessionSelection({
-              cliSessionId: cmd.sessionId,
-              model: cmd.model,
-              effort: cmd.effort,
-            });
           }
 
           // Idempotent — second sendPrompt for same session reuses the
-          // existing loop. Mode + model + effort are only consulted on
+          // existing loop. mode/cwd/model/effort are only consulted on
           // the FIRST call (when ensureSessionLoop actually spawns the
           // SDK query); subsequent calls return the existing promise
-          // and ignore the options.
+          // and ignore the options. On runtime respawn (e.g., daemon
+          // restart) cmd.model/cmd.effort act as the resume-time SDK
+          // initial options so SDK starts with the session's last
+          // picked values without waiting for a setSessionSelection
+          // round-trip.
           ensureSessionLoop(runtime, {
             mode,
             cwd: cmd.cwd,
@@ -455,36 +446,86 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             effort: cmd.effort,
             queryFactory: deps.queryFactory,
           });
-          // Mid-session model + effort apply. `runtime.query` exists
-          // synchronously after ensureSessionLoop. setModel /
-          // applyFlagSettings are optional on the interface (test seam
-          // doesn't implement them); production SDK Query always has
-          // them.
-          //
-          // Effort: skip when `'max'` — `Settings.effortLevel` enum
-          // doesn't include max (sdk.d.ts:5179), so applyFlagSettings
-          // can't carry it. Sessions on max stay there: either the
-          // SDK query was spawned with `options.effort: 'max'` on first
-          // ensureSessionLoop call (which DOES accept max), or the
-          // picker downgrades user back to a non-max level on next
-          // selection. Iff user newly picks max → impossible (picker
-          // doesn't offer it).
-          if (cmd.model !== undefined && runtime.query?.setModel) {
-            await runtime.query.setModel(cmd.model);
-          }
-          if (
-            cmd.effort !== undefined &&
-            cmd.effort !== "max" &&
-            runtime.query?.applyFlagSettings
-          ) {
-            await runtime.query.applyFlagSettings({ effortLevel: cmd.effort });
-          }
           // pushPrompt emits turn_started synchronously before the SDK
           // even sees the message — iOS flips the spinner immediately.
           pushPrompt(runtime, cmd.text, cmd.images);
 
           ctx.send({
             type: "sendPrompt.response",
+            requestId: cmd.requestId,
+          });
+        } catch (err) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
+      case "setSessionSelection": {
+        // Pick-time commit from the iOS input-bar picker. Apply to the
+        // live runtime first; only write metadata if those control
+        // calls succeed, so on-disk model+effort stays in lockstep
+        // with what the SDK actually has.
+        //
+        // Failure cascade: runtime apply throws → catch fires → error
+        // frame returned, metadata UNTOUCHED. iOS sees the error and
+        // rolls back the optimistic picker update via react-query's
+        // onError handler. Because we use a single atomic
+        // applyFlagSettings call, the SDK either gets the new
+        // model+effort fully or not at all — no half-applied state.
+        // Realistic trigger: model not allowed by the user's account.
+        //
+        // Deferred case: no live runtime (Desktop-mirror session that
+        // user hasn't sent a prompt into yet). Skip the apply step
+        // but still update metadata — the values get picked up as SDK
+        // initial options on the first sendPrompt via ensureSessionLoop.
+        if (deps.isShuttingDown()) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: "daemon is shutting down",
+          });
+          return;
+        }
+        try {
+          const runtime = deps.runtimeManager.get(cmd.sessionId);
+          // Atomic apply: a single `applyFlagSettings` carries both
+          // `model` and `effortLevel` because the SDK's `Settings` type
+          // has both keys (sdk.d.ts:5179 effortLevel + same struct's
+          // model). Per upstream docs, passing `model` here behaves
+          // identically to the dedicated `setModel()` setter, so we
+          // collapse two control round-trips into one.
+          //
+          // effort `'max'` is excluded — `Settings.effortLevel` enum
+          // doesn't include it. Picker never offers max anyway; sessions
+          // already running with effort=max keep it (SDK was started
+          // with `options.effort: 'max'` on first ensureSessionLoop).
+          const flagSettings: { model?: string; effortLevel?: string } = {};
+          if (cmd.model !== undefined) flagSettings.model = cmd.model;
+          if (cmd.effort !== undefined && cmd.effort !== "max") {
+            flagSettings.effortLevel = cmd.effort;
+          }
+          if (
+            Object.keys(flagSettings).length > 0 &&
+            runtime?.query?.applyFlagSettings
+          ) {
+            await runtime.query.applyFlagSettings(flagSettings);
+          }
+          // Apply succeeded (or no live runtime). Persist intent. Dep
+          // is a silent no-op when the metadata file doesn't exist
+          // (Desktop-mirror sessions live in Desktop's dir; we never
+          // write there).
+          deps.updateSidecodeSessionSelection({
+            cliSessionId: cmd.sessionId,
+            model: cmd.model,
+            effort: cmd.effort,
+          });
+          ctx.send({
+            type: "setSessionSelection.response",
             requestId: cmd.requestId,
           });
         } catch (err) {

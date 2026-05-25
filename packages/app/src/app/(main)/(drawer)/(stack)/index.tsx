@@ -1,17 +1,21 @@
-import type { EffortLevel, ImageAttachment } from "@sidecodeapp/protocol";
+import type { ImageAttachment } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import { router, Stack, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
   KeyboardAvoidingView,
   KeyboardController,
 } from "react-native-keyboard-controller";
 import { GitStatusBar } from "@/components/transcript/git-status-bar";
-import { InputBar } from "@/components/transcript/input-bar";
+import {
+  InputBar,
+  type ModelSelection,
+} from "@/components/transcript/input-bar";
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
+import { useModels } from "@/hooks/use-models";
 import { setPendingPrompt } from "@/lib/submission-store";
 
 /**
@@ -59,12 +63,21 @@ export default function NewSessionScreen() {
   const cwd = lastUsedCwd ?? roots?.recentCwds[0]?.path ?? undefined;
   const setLastUsedCwd = useSetLastUsedCwd();
 
+  // Picker state lives locally here — there's no session ID yet to mutate
+  // a useSessions cache entry against, and no daemon RPC to fire on pick.
+  // The first sendPrompt seeds this into the new session's metadata via
+  // setPendingPrompt → ChatPanel's first-send effect.
+  const { data: models } = useModels();
+  const [selection, setSelection] = useState<ModelSelection | null>(null);
+  useEffect(() => {
+    if (!models || selection !== null) return;
+    const def = models.find((m) => m.isDefault) ?? models[0];
+    if (!def) return;
+    setSelection({ model: def.model, effort: def.defaultEffort });
+  }, [models, selection]);
+
   const handleSend = useCallback(
-    (
-      text: string,
-      images?: ImageAttachment[],
-      selection?: { model: string; effort?: EffortLevel },
-    ) => {
+    (text: string, images?: ImageAttachment[]) => {
       if (cwd === undefined) {
         // Placeholder state — user hasn't picked and there's no
         // recent history to fall back on. InputBar.canSend already
@@ -88,7 +101,7 @@ export default function NewSessionScreen() {
         params: { cliSessionId: newId, cwd },
       });
     },
-    [cwd, setLastUsedCwd],
+    [cwd, setLastUsedCwd, selection],
   );
 
   const openDrawer = useCallback(() => {
@@ -158,7 +171,12 @@ export default function NewSessionScreen() {
               onPress={openCwdPicker}
               showChanges={false}
             />
-            <InputBar onSend={handleSend} isRunning={false} />
+            <InputBar
+              onSend={handleSend}
+              isRunning={false}
+              selection={selection ?? undefined}
+              onSelectionChange={setSelection}
+            />
           </View>
         </KeyboardAvoidingView>
       </View>

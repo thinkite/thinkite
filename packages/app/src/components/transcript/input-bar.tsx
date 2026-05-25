@@ -4,7 +4,7 @@ import { GlassView } from "expo-glass-effect";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -66,10 +66,12 @@ const EFFORT_LABEL: Record<EffortLevel, string> = {
  *  an effort in a submenu also pins the model. Bundled as one object so
  *  the two fields can never disagree in an intermediate render.
  *
- *  Exported so parent screens can build it from `SessionInfo` and pass
- *  it as `initialSelection` — the bootstrap path preserves whatever
- *  effort the session was last on (including legacy values like `'max'`
- *  that aren't user-pickable in the V0 menu). */
+ *  InputBar is fully controlled — parent screens own the source of truth
+ *  and pass it back in via `selection`. Sessions resumed from disk
+ *  preserve whatever effort was last on (including legacy values like
+ *  `'max'` that aren't user-pickable in the V0 menu) because the
+ *  resume-time `selection` is derived from `SessionInfo.effort` straight
+ *  from local_*.json without filtering against the picker's allowed list. */
 export type ModelSelection = {
   model: string;
   effort?: EffortLevel;
@@ -130,34 +132,31 @@ export function InputBar({
   onSend,
   onInterrupt,
   isRunning,
-  initialSelection,
+  selection,
+  onSelectionChange,
 }: {
   /** Fired on tap-to-send. `images` carries the compressed base64
    *  payloads ready for daemon's sendPrompt; the local DraftAttachment
    *  ids are stripped (parent doesn't need them). Send is gated by
    *  hasText OR images.length > 0 so an images-only message is also
-   *  valid (Claude vision accepts an image-only user turn).
-   *
-   *  `selection` is the current model/effort committed at send time —
-   *  forwarded verbatim into `client.sendPrompt` so the daemon can pin
-   *  the SDK options for THIS turn. Undefined while models are still
-   *  loading (extremely brief window); parent should gate sendPrompt
-   *  on selection presence if it cares about the SDK default vs an
-   *  explicit pick. */
-  onSend?: (
-    text: string,
-    images?: ImageAttachment[],
-    selection?: ModelSelection,
-  ) => void;
+   *  valid (Claude vision accepts an image-only user turn). */
+  onSend?: (text: string, images?: ImageAttachment[]) => void;
   onInterrupt?: () => void;
   isRunning?: boolean;
-  /** Caller-provided initial picker state — typically built from a
-   *  resumed `SessionInfo.model + .effort`. When supplied AND the model
-   *  still exists in `MODEL_METADATA`, bootstrap uses it verbatim
-   *  (preserves legacy values like `'max'` that aren't user-pickable).
-   *  When omitted (new-session screen), bootstrap falls back to the
-   *  daemon-declared default model + that model's `defaultEffort`. */
-  initialSelection?: ModelSelection;
+  /** Current model + effort selection. InputBar is a fully controlled
+   *  picker — never holds its own state. Parents are expected to own
+   *  the source of truth:
+   *    - New-session screen: local useState (no session yet to mutate)
+   *    - Session detail: derive from useSessions cache; mutate via
+   *      useSetSessionSelection() (optimistic + RPC + rollback)
+   *  Undefined while picker source data is still loading; menu renders
+   *  empty and chip shows fallback label. */
+  selection?: ModelSelection;
+  /** Called when the user picks a different model or effort in the
+   *  menu. Parents commit the change however they like — optimistic
+   *  cache mutation, local state setter, etc. Omitted = picker is
+   *  read-only (rarely needed). */
+  onSelectionChange?: (next: ModelSelection) => void;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<DraftAttachment[]>([]);
@@ -165,34 +164,7 @@ export function InputBar({
   const colorScheme = useColorScheme() ?? "light";
   const hasText = text.length > 0;
 
-  // Model + effort picker state. Local to the input bar — committed at
-  // send time and passed up via onSend so the daemon's `query()` call
-  // gets the freshest pick. Bundled together in one state so updates
-  // are atomic (see ModelSelection type at top of file).
   const { data: models } = useModels();
-  const [selection, setSelection] = useState<ModelSelection | null>(null);
-  // Bootstrap: prefer caller-provided `initialSelection` (resume case —
-  // preserves session's prior model/effort, including legacy values like
-  // `'max'` that aren't in current MODEL_METADATA's supportedEffortLevels)
-  // when the model still exists in the daemon's curated list. Otherwise
-  // fall back to the daemon-declared default model + that model's
-  // `defaultEffort` (new-session case).
-  //
-  // Re-runs only when models flips from undefined → array; selection is
-  // sticky after that (re-fetches don't reset the user's pick).
-  useEffect(() => {
-    if (!models || selection !== null) return;
-    if (
-      initialSelection &&
-      models.some((m) => m.model === initialSelection.model)
-    ) {
-      setSelection(initialSelection);
-      return;
-    }
-    const def = models.find((m) => m.isDefault) ?? models[0];
-    if (!def) return;
-    setSelection({ model: def.model, effort: def.defaultEffort });
-  }, [models, selection, initialSelection]);
   const currentModel = models?.find((m) => m.model === selection?.model);
   // Cap is enforced in three places: PHPicker's selectionLimit
   // (per-pick), Camera early-return guard, and MenuView action
@@ -269,7 +241,12 @@ export function InputBar({
       images.length > 0
         ? images.map(({ data, mediaType }) => ({ data, mediaType }))
         : undefined;
-    onSend?.(text, payload, selection ?? undefined);
+    // selection no longer dragged through onSend — pick-time RPC owns
+    // runtime apply via `setSessionSelection`. sendPrompt at the parent
+    // can still read the current selection from its own source of truth
+    // (useSessions for resume, local state for new-session) when seeding
+    // initial query options.
+    onSend?.(text, payload);
     setText("");
     setImages([]);
   };
@@ -438,12 +415,15 @@ export function InputBar({
                     // Haiku-tier, which is the only model currently
                     // exposed via the `model:` leaf path).
                     const target = models?.find((m) => m.model === key);
-                    setSelection({ model: key, effort: target?.defaultEffort });
+                    onSelectionChange?.({
+                      model: key,
+                      effort: target?.defaultEffort,
+                    });
                   } else if (event.startsWith("effort:")) {
                     const rest = event.slice("effort:".length);
                     const [modelKey, eff] = rest.split("|");
                     if (modelKey && eff) {
-                      setSelection({
+                      onSelectionChange?.({
                         model: modelKey,
                         effort: eff as EffortLevel,
                       });

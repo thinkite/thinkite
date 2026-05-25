@@ -923,7 +923,7 @@ describe("createCommandHandler — sendPrompt", () => {
     });
   });
 
-  it("resume path calls updateSidecodeSessionSelection (Desktop-mirror handled by dep's no-op)", async () => {
+  it("resume path does NOT call updateSidecodeSessionSelection (setSessionSelection owns that path)", async () => {
     const updateMeta = vi.fn();
     const handler = createCommandHandler(
       makeDeps({
@@ -944,26 +944,17 @@ describe("createCommandHandler — sendPrompt", () => {
       },
       ctx,
     );
-    expect(updateMeta).toHaveBeenCalledExactlyOnceWith({
-      cliSessionId: "S",
-      model: "claude-sonnet-4-6",
-      effort: "high",
-    });
+    expect(updateMeta).not.toHaveBeenCalled();
   });
 
-  it("calls runtime.query.setModel + applyFlagSettings for non-max effort", async () => {
+  it("resume path does NOT call applyFlagSettings (setSessionSelection owns runtime apply)", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
-    const setModelMock = vi.fn(async () => {});
     const applyFlagMock = vi.fn(async () => {});
-    // Pre-seed a runtime so handler doesn't await the SDK factory — we
-    // can attach our mocks BEFORE ensureSessionLoop runs (which would
-    // overwrite runtime.query with the SDK Query handle).
     const runtime = runtimeManager.getOrCreate("S");
     runtime.loopPromise = Promise.resolve();
     runtime.query = {
       interrupt: async () => {},
       close: () => {},
-      setModel: setModelMock,
       applyFlagSettings: applyFlagMock,
     };
     const handler = createCommandHandler(
@@ -977,7 +968,7 @@ describe("createCommandHandler — sendPrompt", () => {
     await handler(
       {
         type: "sendPrompt",
-        requestId: "sp-apply",
+        requestId: "sp-no-apply",
         sessionId: "S",
         text: "hi",
         model: "claude-opus-4-7[1m]",
@@ -985,15 +976,58 @@ describe("createCommandHandler — sendPrompt", () => {
       },
       ctx,
     );
-    expect(setModelMock).toHaveBeenCalledExactlyOnceWith(
-      "claude-opus-4-7[1m]",
+    expect(applyFlagMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("createCommandHandler — setSessionSelection", () => {
+  it("applies model + effort via a single applyFlagSettings call, then writes metadata", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const applyFlagMock = vi.fn(async () => {});
+    const updateMeta = vi.fn();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.loopPromise = Promise.resolve();
+    runtime.query = {
+      interrupt: async () => {},
+      close: () => {},
+      applyFlagSettings: applyFlagMock,
+    };
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        updateSidecodeSessionSelection: updateMeta,
+      }),
     );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "setSessionSelection",
+        requestId: "ss-1",
+        sessionId: "S",
+        model: "claude-opus-4-7[1m]",
+        effort: "xhigh",
+      },
+      ctx,
+    );
+    // Single atomic call carrying BOTH keys — Settings has model +
+    // effortLevel, and passing model via applyFlagSettings behaves
+    // identically to the dedicated setModel setter per upstream docs.
     expect(applyFlagMock).toHaveBeenCalledExactlyOnceWith({
+      model: "claude-opus-4-7[1m]",
       effortLevel: "xhigh",
+    });
+    expect(updateMeta).toHaveBeenCalledExactlyOnceWith({
+      cliSessionId: "S",
+      model: "claude-opus-4-7[1m]",
+      effort: "xhigh",
+    });
+    expect(sent.at(-1)).toMatchObject({
+      type: "setSessionSelection.response",
+      requestId: "ss-1",
     });
   });
 
-  it("skips applyFlagSettings when effort === 'max' (Settings.effortLevel enum can't carry it)", async () => {
+  it("with effort='max', applyFlagSettings carries only model (Settings.effortLevel enum can't carry max)", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
     const applyFlagMock = vi.fn(async () => {});
     const runtime = runtimeManager.getOrCreate("S");
@@ -1001,32 +1035,26 @@ describe("createCommandHandler — sendPrompt", () => {
     runtime.query = {
       interrupt: async () => {},
       close: () => {},
-      setModel: async () => {},
       applyFlagSettings: applyFlagMock,
     };
-    const handler = createCommandHandler(
-      makeDeps({
-        runtimeManager,
-        hasSession: vi.fn().mockResolvedValue(true),
-        queryFactory: emptyQueryFactory(),
-      }),
-    );
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
     const { ctx } = makeCtx();
     await handler(
       {
-        type: "sendPrompt",
-        requestId: "sp-max",
+        type: "setSessionSelection",
+        requestId: "ss-max",
         sessionId: "S",
-        text: "hi",
         model: "claude-opus-4-7[1m]",
         effort: "max",
       },
       ctx,
     );
-    expect(applyFlagMock).not.toHaveBeenCalled();
+    expect(applyFlagMock).toHaveBeenCalledExactlyOnceWith({
+      model: "claude-opus-4-7[1m]",
+    });
   });
 
-  it("skips applyFlagSettings entirely when effort is omitted (e.g. Haiku-tier)", async () => {
+  it("with no effort (Haiku-tier switch), applyFlagSettings carries only model", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
     const applyFlagMock = vi.fn(async () => {});
     const runtime = runtimeManager.getOrCreate("S");
@@ -1034,28 +1062,146 @@ describe("createCommandHandler — sendPrompt", () => {
     runtime.query = {
       interrupt: async () => {},
       close: () => {},
-      setModel: async () => {},
       applyFlagSettings: applyFlagMock,
     };
-    const handler = createCommandHandler(
-      makeDeps({
-        runtimeManager,
-        hasSession: vi.fn().mockResolvedValue(true),
-        queryFactory: emptyQueryFactory(),
-      }),
-    );
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
     const { ctx } = makeCtx();
     await handler(
       {
-        type: "sendPrompt",
-        requestId: "sp-haiku",
+        type: "setSessionSelection",
+        requestId: "ss-haiku",
         sessionId: "S",
-        text: "hi",
         model: "claude-haiku-4-5-20251001",
       },
       ctx,
     );
+    expect(applyFlagMock).toHaveBeenCalledExactlyOnceWith({
+      model: "claude-haiku-4-5-20251001",
+    });
+  });
+
+  it("no-op when both model and effort are omitted (defensive — iOS shouldn't fire this)", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const applyFlagMock = vi.fn(async () => {});
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.loopPromise = Promise.resolve();
+    runtime.query = {
+      interrupt: async () => {},
+      close: () => {},
+      applyFlagSettings: applyFlagMock,
+    };
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "setSessionSelection",
+        requestId: "ss-noop",
+        sessionId: "S",
+      },
+      ctx,
+    );
     expect(applyFlagMock).not.toHaveBeenCalled();
+    expect(sent.at(-1)).toMatchObject({
+      type: "setSessionSelection.response",
+      requestId: "ss-noop",
+    });
+  });
+
+  it("deferred case: no live runtime → still writes metadata, no apply attempted", async () => {
+    // Desktop-mirror session that the user hasn't sent a prompt into
+    // yet. updateSidecodeSessionSelection dep is a no-op when the file
+    // doesn't exist, so the actual write is best-effort.
+    const updateMeta = vi.fn();
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        updateSidecodeSessionSelection: updateMeta,
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "setSessionSelection",
+        requestId: "ss-deferred",
+        sessionId: "S",
+        model: "claude-opus-4-7",
+        effort: "high",
+      },
+      ctx,
+    );
+    expect(updateMeta).toHaveBeenCalledExactlyOnceWith({
+      cliSessionId: "S",
+      model: "claude-opus-4-7",
+      effort: "high",
+    });
+    expect(sent.at(-1)).toMatchObject({
+      type: "setSessionSelection.response",
+      requestId: "ss-deferred",
+    });
+  });
+
+  it("apply failure: applyFlagSettings throws → error frame, metadata UNTOUCHED", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const updateMeta = vi.fn();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.loopPromise = Promise.resolve();
+    runtime.query = {
+      interrupt: async () => {},
+      close: () => {},
+      applyFlagSettings: vi.fn(async () => {
+        throw new Error("model not allowed");
+      }),
+    };
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        updateSidecodeSessionSelection: updateMeta,
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "setSessionSelection",
+        requestId: "ss-fail",
+        sessionId: "S",
+        model: "bogus",
+      },
+      ctx,
+    );
+    expect(updateMeta).not.toHaveBeenCalled();
+    expect(sent.at(-1)).toMatchObject({
+      type: "error",
+      requestId: "ss-fail",
+      code: "internal",
+      message: expect.stringContaining("model not allowed"),
+    });
+  });
+
+  it("rejected during shutdown → error frame, no apply, no metadata write", async () => {
+    const updateMeta = vi.fn();
+    const handler = createCommandHandler(
+      makeDeps({
+        updateSidecodeSessionSelection: updateMeta,
+        isShuttingDown: () => true,
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "setSessionSelection",
+        requestId: "ss-shut",
+        sessionId: "S",
+        model: "x",
+      },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "error",
+      requestId: "ss-shut",
+      message: expect.stringContaining("shutting down"),
+    });
+    expect(updateMeta).not.toHaveBeenCalled();
   });
 });
 
