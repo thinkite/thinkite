@@ -209,41 +209,15 @@ describe("command union", () => {
     ).toBe(false);
   });
 
-  it("accepts a sendPrompt with model + effort (picker selection)", () => {
+  it("accepts a sendPrompt with model (picker selection)", () => {
     const r = sendPromptCommand.parse({
       type: "sendPrompt",
       requestId: "r3",
       sessionId: "x",
       text: "hi",
       model: "claude-opus-4-7[1m]",
-      effort: "high",
     });
     expect(r.model).toBe("claude-opus-4-7[1m]");
-    expect(r.effort).toBe("high");
-  });
-
-  it("accepts sendPrompt with model but no effort (Haiku-tier)", () => {
-    const r = sendPromptCommand.parse({
-      type: "sendPrompt",
-      requestId: "r4",
-      sessionId: "x",
-      text: "hi",
-      model: "claude-haiku-4-5-20251001",
-    });
-    expect(r.model).toBe("claude-haiku-4-5-20251001");
-    expect(r.effort).toBeUndefined();
-  });
-
-  it("rejects sendPrompt with an invalid effort value", () => {
-    expect(
-      sendPromptCommand.safeParse({
-        type: "sendPrompt",
-        requestId: "r5",
-        sessionId: "x",
-        text: "hi",
-        effort: "ultra",
-      }).success,
-    ).toBe(false);
   });
 
   it("rejects approve with bad decision", () => {
@@ -418,12 +392,10 @@ describe("session metadata", () => {
       title: "Plan project folder structure (fork)",
       model: "claude-opus-4-7[1m]",
       modelLabel: "Opus 4.7 1M",
-      effort: "xhigh",
       isArchived: false,
     });
     expect(p.cwd).not.toBe(p.originCwd);
     expect(p.modelLabel).toBe("Opus 4.7 1M");
-    expect(p.effort).toBe("xhigh");
     expect(p.isArchived).toBe(false);
   });
 
@@ -782,38 +754,23 @@ describe("daemonFrame union", () => {
 });
 
 describe("setSessionSelection schemas", () => {
-  it("accepts a command with model + effort", () => {
+  it("accepts a command with model", () => {
     const r = setSessionSelectionCommand.parse({
       type: "setSessionSelection",
       requestId: "r1",
       sessionId: "s",
       model: "claude-opus-4-7[1m]",
-      effort: "high",
     });
     expect(r.model).toBe("claude-opus-4-7[1m]");
-    expect(r.effort).toBe("high");
   });
 
-  it("accepts a command with model only (Haiku-tier — effort cleared)", () => {
+  it("accepts a command with no model (defensive no-op)", () => {
     const r = setSessionSelectionCommand.parse({
       type: "setSessionSelection",
       requestId: "r1",
       sessionId: "s",
-      model: "claude-haiku-4-5-20251001",
     });
-    expect(r.model).toBe("claude-haiku-4-5-20251001");
-    expect(r.effort).toBeUndefined();
-  });
-
-  it("rejects a command with an invalid effort value", () => {
-    expect(
-      setSessionSelectionCommand.safeParse({
-        type: "setSessionSelection",
-        requestId: "r1",
-        sessionId: "s",
-        effort: "ultra",
-      }).success,
-    ).toBe(false);
+    expect(r.model).toBeUndefined();
   });
 
   it("response is an empty ack", () => {
@@ -860,7 +817,7 @@ describe("getModels schemas", () => {
         },
       ],
     });
-    expect(r.models[0].supportedEffortLevels).toBeUndefined();
+    expect(r.models[0].displayName).toBe("Haiku 4.5");
   });
 
   it("response accepts an entry with all optional fields populated", () => {
@@ -873,57 +830,12 @@ describe("getModels schemas", () => {
           displayName: "Opus 4.7 1M",
           isDefault: true,
           description: "Best at agentic coding",
-          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
-          defaultEffort: "xhigh",
           contextWindow: 1_000_000,
         },
       ],
     });
-    expect(r.models[0].supportedEffortLevels).toEqual([
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-    ]);
-    expect(r.models[0].defaultEffort).toBe("xhigh");
+    expect(r.models[0].description).toBe("Best at agentic coding");
     expect(r.models[0].contextWindow).toBe(1_000_000);
-  });
-
-  it("response accepts defaultEffort independently (max remains a valid wire value)", () => {
-    // Wire schema deliberately retains 'max' so historical sessions
-    // with effort=max parse cleanly even though picker won't offer it.
-    const r = getModelsResponse.parse({
-      type: "getModels.response",
-      requestId: "r1",
-      models: [
-        {
-          model: "x",
-          displayName: "X",
-          isDefault: true,
-          supportedEffortLevels: ["high", "max"],
-          defaultEffort: "max",
-        },
-      ],
-    });
-    expect(r.models[0].defaultEffort).toBe("max");
-  });
-
-  it("rejects an invalid effort level", () => {
-    expect(
-      getModelsResponse.safeParse({
-        type: "getModels.response",
-        requestId: "r1",
-        models: [
-          {
-            model: "x",
-            displayName: "X",
-            isDefault: false,
-            supportedEffortLevels: ["ultra"],
-          },
-        ],
-      }).success,
-    ).toBe(false);
   });
 
   it("plumbs through both top-level unions", () => {

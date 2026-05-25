@@ -110,7 +110,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       return info !== undefined;
     },
     listSidecodeSessions: (opts) => listSidecodeSessions(home, opts),
-    writeSidecodeSession: ({ cliSessionId, cwd, firstPrompt, model, effort }) => {
+    writeSidecodeSession: ({ cliSessionId, cwd, firstPrompt, model }) => {
       writeSidecodeSession(
         home,
         buildNewSidecodeSession({
@@ -118,12 +118,11 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
           cwd,
           firstPrompt,
           model,
-          effort,
         }),
       );
     },
-    updateSidecodeSessionSelection: ({ cliSessionId, model, effort }) => {
-      updateSidecodeSessionSelection(home, cliSessionId, { model, effort });
+    updateSidecodeSessionSelection: ({ cliSessionId, model }) => {
+      updateSidecodeSessionSelection(home, cliSessionId, { model });
     },
     isShuttingDown: () => shuttingDown,
     gitWatchers,

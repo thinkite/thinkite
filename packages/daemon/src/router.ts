@@ -3,7 +3,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type {
   DirectoryEntry,
-  EffortLevel,
   EventDelta,
   SessionInfo,
   TimelineItem,
@@ -86,27 +85,23 @@ export interface RouterDeps {
     firstPrompt: string;
     /** Picker selection at create time. Persisted into the new local_*.json
      *  so resume-time bootstrap (iOS picker) sees the original choice
-     *  even before the first follow-up sendPrompt. Either may be
-     *  undefined when the iOS picker hadn't bootstrapped yet — daemon
-     *  records what it gets. */
+     *  even before the first follow-up sendPrompt. Undefined when the
+     *  iOS picker hadn't bootstrapped yet — daemon records what it gets. */
     model?: string;
-    effort?: EffortLevel;
   }) => void;
   /**
    * Merge an updated picker selection into a sidecode-created session's
-   * on-disk metadata. Called on every RESUME-path sendPrompt to keep
-   * the `model` / `effort` fields aligned with the user's current iOS
-   * picker state. Returns synchronously after the atomic tmp+rename.
+   * on-disk metadata. Called by the `setSessionSelection` handler after
+   * a successful runtime apply. Returns synchronously after the atomic
+   * tmp+rename.
    *
    * No-op when the metadata file is missing — Desktop-mirror sessions
    * live in Desktop's own `claude-code-sessions/` dir and sidecode
-   * never writes there. Router calls this unconditionally on resume;
-   * the dep handles the existence check.
+   * never writes there.
    */
   updateSidecodeSessionSelection: (input: {
     cliSessionId: string;
     model?: string;
-    effort?: EffortLevel;
   }) => void;
   /**
    * Whether the daemon is mid-shutdown. Router gates sendPrompt and
@@ -418,32 +413,29 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           // Persist sidecode metadata on the CREATE path only. Resume-
           // path metadata updates are owned by the `setSessionSelection`
           // RPC — pick-time writes after the runtime apply succeeds,
-          // never via sendPrompt. This keeps on-disk model+effort in
-          // lockstep with what the live SDK query actually has.
+          // never via sendPrompt. This keeps on-disk model in lockstep
+          // with what the live SDK query actually has.
           if (mode === "create") {
             deps.writeSidecodeSession({
               cliSessionId: cmd.sessionId,
               cwd: cmd.cwd as string,
               firstPrompt: cmd.text,
               model: cmd.model,
-              effort: cmd.effort,
             });
           }
 
           // Idempotent — second sendPrompt for same session reuses the
-          // existing loop. mode/cwd/model/effort are only consulted on
-          // the FIRST call (when ensureSessionLoop actually spawns the
-          // SDK query); subsequent calls return the existing promise
-          // and ignore the options. On runtime respawn (e.g., daemon
-          // restart) cmd.model/cmd.effort act as the resume-time SDK
-          // initial options so SDK starts with the session's last
-          // picked values without waiting for a setSessionSelection
-          // round-trip.
+          // existing loop. mode/cwd/model are only consulted on the
+          // FIRST call (when ensureSessionLoop actually spawns the SDK
+          // query); subsequent calls return the existing promise and
+          // ignore the options. On runtime respawn (e.g., daemon
+          // restart) cmd.model acts as the resume-time SDK initial
+          // option so SDK starts with the session's last picked model
+          // without waiting for a setSessionSelection round-trip.
           ensureSessionLoop(runtime, {
             mode,
             cwd: cmd.cwd,
             model: cmd.model,
-            effort: cmd.effort,
             queryFactory: deps.queryFactory,
           });
           // pushPrompt emits turn_started synchronously before the SDK
@@ -466,22 +458,20 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
       }
       case "setSessionSelection": {
         // Pick-time commit from the iOS input-bar picker. Apply to the
-        // live runtime first; only write metadata if those control
-        // calls succeed, so on-disk model+effort stays in lockstep
-        // with what the SDK actually has.
+        // live runtime first; only write metadata if the control call
+        // succeeds, so on-disk model stays in lockstep with what the
+        // SDK actually has.
         //
         // Failure cascade: runtime apply throws → catch fires → error
         // frame returned, metadata UNTOUCHED. iOS sees the error and
         // rolls back the optimistic picker update via react-query's
-        // onError handler. Because we use a single atomic
-        // applyFlagSettings call, the SDK either gets the new
-        // model+effort fully or not at all — no half-applied state.
-        // Realistic trigger: model not allowed by the user's account.
+        // onError handler. Realistic trigger: model not allowed by
+        // the user's account.
         //
         // Deferred case: no live runtime (Desktop-mirror session that
         // user hasn't sent a prompt into yet). Skip the apply step
-        // but still update metadata — the values get picked up as SDK
-        // initial options on the first sendPrompt via ensureSessionLoop.
+        // but still update metadata — the value gets picked up as SDK
+        // initial option on the first sendPrompt via ensureSessionLoop.
         if (deps.isShuttingDown()) {
           ctx.send({
             type: "error",
@@ -493,27 +483,11 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         }
         try {
           const runtime = deps.runtimeManager.get(cmd.sessionId);
-          // Atomic apply: a single `applyFlagSettings` carries both
-          // `model` and `effortLevel` because the SDK's `Settings` type
-          // has both keys (sdk.d.ts:5179 effortLevel + same struct's
-          // model). Per upstream docs, passing `model` here behaves
-          // identically to the dedicated `setModel()` setter, so we
-          // collapse two control round-trips into one.
-          //
-          // effort `'max'` is excluded — `Settings.effortLevel` enum
-          // doesn't include it. Picker never offers max anyway; sessions
-          // already running with effort=max keep it (SDK was started
-          // with `options.effort: 'max'` on first ensureSessionLoop).
-          const flagSettings: { model?: string; effortLevel?: string } = {};
-          if (cmd.model !== undefined) flagSettings.model = cmd.model;
-          if (cmd.effort !== undefined && cmd.effort !== "max") {
-            flagSettings.effortLevel = cmd.effort;
-          }
-          if (
-            Object.keys(flagSettings).length > 0 &&
-            runtime?.query?.applyFlagSettings
-          ) {
-            await runtime.query.applyFlagSettings(flagSettings);
+          // Use applyFlagSettings carrying `model` — per upstream docs
+          // this behaves identically to the dedicated `setModel()`
+          // setter. Keeping one entrypoint simplifies the test seam.
+          if (cmd.model !== undefined && runtime?.query?.applyFlagSettings) {
+            await runtime.query.applyFlagSettings({ model: cmd.model });
           }
           // Apply succeeded (or no live runtime). Persist intent. Dep
           // is a silent no-op when the metadata file doesn't exist
@@ -522,7 +496,6 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           deps.updateSidecodeSessionSelection({
             cliSessionId: cmd.sessionId,
             model: cmd.model,
-            effort: cmd.effort,
           });
           ctx.send({
             type: "setSessionSelection.response",
@@ -668,12 +641,6 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             ...(meta.description !== undefined
               ? { description: meta.description }
               : {}),
-            ...(meta.supportedEffortLevels !== undefined
-              ? { supportedEffortLevels: meta.supportedEffortLevels }
-              : {}),
-            ...(meta.defaultEffort !== undefined
-              ? { defaultEffort: meta.defaultEffort }
-              : {}),
             ...(meta.contextWindow !== undefined
               ? { contextWindow: meta.contextWindow }
               : {}),
@@ -746,7 +713,6 @@ function toSessionInfo(d: DesktopSession): SessionInfo {
     // version for display. Both optional but populated here when on disk.
     model: d.model || undefined,
     modelLabel: d.model ? prettyModel(d.model) : undefined,
-    effort: d.effort || undefined,
     isArchived: d.isArchived,
   };
 }

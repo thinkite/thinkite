@@ -28,23 +28,16 @@
 export interface RuntimeQueryHandle {
   interrupt(): Promise<void>;
   close(): void;
-  /** Mid-session control plane. Router's `setSessionSelection` handler
-   *  uses a single `applyFlagSettings` call carrying BOTH `model` and
-   *  `effortLevel` since the SDK's `Settings` type has both keys —
-   *  passing `model` here behaves identically to the dedicated
-   *  `setModel()` setter (upstream docs), so we never need the latter.
+  /** Mid-session model swap. Router's `setSessionSelection` handler
+   *  uses this. Passing `model` via applyFlagSettings behaves
+   *  identically to the dedicated `setModel()` setter per upstream
+   *  docs — so we use this one and skip setModel.
    *
    *  Optional in this interface because router tests inject a stub
-   *  query without it; production SDK `Query` always has both methods
-   *  (sdk.d.ts:2138 setModel, 2178 applyFlagSettings).
-   *
-   *  NOTE: `Settings.effortLevel` enum excludes `'max'` (sdk.d.ts:5179),
-   *  so the router gates the call on `effort !== 'max'`. Sessions
-   *  whose initial query was spawned with `effort: 'max'` keep that
-   *  level silently; the picker doesn't offer max in V0. */
+   *  query without it; production SDK `Query` always has the method
+   *  (sdk.d.ts:2178). */
   applyFlagSettings?(settings: {
     model?: string | null;
-    effortLevel?: string | null;
   }): Promise<void>;
 }
 

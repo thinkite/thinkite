@@ -165,10 +165,10 @@ export function ChatPanel({
       // through route params; deeplink / direct nav (V0.5+) will need
       // a fallback fetch.
       //
-      // model/effort are still attached on every send so the daemon's
-      // ensureSessionLoop has them as SDK initial options on first
-      // spawn (or after a daemon-restart respawn). Mid-session apply
-      // is owned by setSessionSelection — sendPrompt only seeds.
+      // `model` is still attached on every send so the daemon's
+      // ensureSessionLoop has it as SDK initial option on first spawn
+      // (or after a daemon-restart respawn). Mid-session apply is
+      // owned by setSessionSelection — sendPrompt only seeds.
       void client
         .sendPrompt({
           sessionId: cliSessionId,
@@ -176,7 +176,6 @@ export function ChatPanel({
           cwd,
           images,
           model: selection?.model,
-          effort: selection?.effort,
         })
         .catch((err) => {
           console.error("sendPrompt failed", err);
@@ -224,7 +223,6 @@ export function ChatPanel({
         cwd: pending.cwd,
         images: pending.images,
         model: pending.model,
-        effort: pending.effort,
       })
       .catch((err) => {
         console.error("initial sendPrompt failed", err);

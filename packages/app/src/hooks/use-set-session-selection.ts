@@ -4,11 +4,11 @@ import type { SessionInfo } from "@/types/session";
 import type { ModelSelection } from "@/components/transcript/input-bar";
 
 /**
- * Commit the input-bar picker's model + effort selection for a session.
+ * Commit the input-bar picker's model selection for a session.
  *
  * Optimistic mutation flow:
  *   1. `onMutate` snapshots the current `["sessions"]` cache and writes
- *      the new selection straight into the matching entry — the chip,
+ *      the new model straight into the matching entry — the chip,
  *      session list, and anything else reading the cache update with
  *      zero RPC latency.
  *   2. `mutationFn` fires `client.setSessionSelection`. Daemon applies
@@ -33,7 +33,6 @@ export function useSetSessionSelection(cliSessionId: string) {
       await client.setSessionSelection({
         sessionId: cliSessionId,
         model: selection.model,
-        effort: selection.effort,
       });
     },
     onMutate: async (next) => {
@@ -42,7 +41,7 @@ export function useSetSessionSelection(cliSessionId: string) {
       queryClient.setQueryData<SessionInfo[]>(["sessions"], (old) =>
         (old ?? []).map((s) =>
           s.cliSessionId === cliSessionId
-            ? { ...s, model: next.model, effort: next.effort }
+            ? { ...s, model: next.model }
             : s,
         ),
       );

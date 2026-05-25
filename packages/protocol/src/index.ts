@@ -240,11 +240,6 @@ export const sessionInfo = z.object({
    *  detail header. Optional because not every code path normalizes
    *  (and iOS can fall back to raw `model` when missing). */
   modelLabel: z.string().optional(),
-  /** Reasoning effort persisted on disk for Desktop Claude Code sessions
-   *  — `'low' | 'medium' | 'high' | 'xhigh' | 'max'`. Omitted for
-   *  sidecode-created sessions until V0.5+ wires effort into the
-   *  composer flow. */
-  effort: z.string().optional(),
   isArchived: z.boolean().optional(),
 });
 
@@ -665,19 +660,18 @@ export const unsubscribeResponse = z.object({
 
 // ─── Model picker — list available Claude models for the iOS picker ──────
 //
-// `effortLevel` + `modelEntry` are defined here (above sendPrompt) because
-// sendPromptCommand carries an optional `effort` field — JS module
-// evaluation is top-down so the enum must be in scope first. `getModels`
-// command/response live alongside since they share the same schema axes.
-//
 // Daemon serializes its MODEL_METADATA table (skipping `deprecated`
 // entries) so iOS doesn't have to ship its own copy — daemon owns the
 // source of truth and ships new models as part of each sidecode release.
 // iOS does equality on `model` strings against SessionInfo.model and
 // sendPromptCommand.model.
-
-export const effortLevel = z.enum(["low", "medium", "high", "xhigh", "max"]);
-export type EffortLevel = z.infer<typeof effortLevel>;
+//
+// `effort` deliberately omitted from this schema (and from sendPrompt /
+// setSessionSelection): sidecode V0 trusts Claude's adaptive thinking +
+// per-account `Settings.effortLevel` defaults, doesn't expose a per-
+// session effort knob. Power users tweak via Desktop `/effort` slash
+// command which persists to settings.json; sidecode honors that
+// implicitly by not passing `--effort` on its spawned subprocess.
 
 export const modelEntry = z.object({
   /** Raw key as it appears in Desktop session metadata + CLI `--model` flag,
@@ -693,17 +687,6 @@ export const modelEntry = z.object({
   isDefault: z.boolean(),
   /** Optional picker subtitle. */
   description: z.string().optional(),
-  /** Effort levels this model supports, in picker display order. `undefined`
-   *  means the model has no effort concept (Haiku-tier) — picker hides the
-   *  effort sub-menu entirely. Daemon V0 deliberately omits `'max'` even
-   *  for models that technically support it (no Settings.effortLevel
-   *  mid-session switch path); see daemon's models-metadata.ts. */
-  supportedEffortLevels: z.array(effortLevel).optional(),
-  /** Default effort to commit when the user picks this model fresh (no
-   *  prior session selection to inherit). Present iff
-   *  `supportedEffortLevels` is, and always one of its values (enforced
-   *  by daemon's module-load self-check). */
-  defaultEffort: effortLevel.optional(),
   /** Context window in tokens. Optional — iOS picker may derive 1M vs 200K
    *  from the `[1m]` suffix when this is absent. */
   contextWindow: z.number().optional(),
@@ -739,12 +722,10 @@ export const getModelsResponse = z.object({
  * images are sent. The chunking layer (chunking.ts) splits large image
  * payloads across DataChannel frames; protocol consumers don't see chunks.
  *
- * `model` and `effort` carry the input-bar picker's current selection,
- * forwarded to the SDK `query()` options on every send (NOT pinned per
- * session — user can switch mid-conversation). Both omitted = use the
- * SDK's default. `effort` omitted while `model` is set = model with no
- * effort concept (Haiku-tier); daemon should pass model to SDK but skip
- * the effort option entirely (don't pass `effort: undefined` explicitly).
+ * `model` carries the input-bar picker's current selection, forwarded
+ * to the SDK `query()` options on every send (NOT pinned per session —
+ * user can switch mid-conversation via `setSessionSelection`). Omitted
+ * = use the SDK's default.
  */
 export const sendPromptCommand = z.object({
   type: z.literal("sendPrompt"),
@@ -754,7 +735,6 @@ export const sendPromptCommand = z.object({
   cwd: z.string().optional(),
   images: z.array(imageAttachment).optional(),
   model: z.string().optional(),
-  effort: effortLevel.optional(),
 });
 
 export const sendPromptResponse = z.object({
@@ -763,37 +743,25 @@ export const sendPromptResponse = z.object({
 });
 
 /**
- * Pick-time commit of the input-bar model + effort selection.
+ * Pick-time commit of the input-bar model selection.
  *
- * Fired by iOS the moment the user changes either knob in the picker
- * (not bundled with sendPrompt). Daemon applies the change to the live
- * SDK query first via a single atomic `applyFlagSettings({ model?,
- * effortLevel? })` call (Settings has both keys; passing model there
- * behaves identically to the dedicated setModel setter per upstream
- * docs) and only writes the new values into sidecode metadata if that
- * call succeeds — so the on-disk record stays in sync with the runtime.
+ * Fired by iOS the moment the user picks a different model (not
+ * bundled with sendPrompt). Daemon applies via a single
+ * `applyFlagSettings({ model })` on the live SDK query first, then
+ * writes the new model into sidecode metadata if that call succeeds.
  *
- * Either field may be undefined (e.g., user switched to a Haiku-tier
- * model with no effort concept → effort cleared, model set). If both
- * are undefined the call is a no-op.
+ * Omitted model is a no-op (defensive — iOS shouldn't fire this).
  *
  * Errors: daemon replies with `error` (code `internal`) when the
  * control plane apply throws — e.g., model not allowed by the user's
  * account, transient subprocess issue. iOS uses this signal to roll
  * back the optimistic picker update.
- *
- * Effort `'max'`: daemon skips the effortLevel field on the
- * applyFlagSettings call when effort is max (Settings.effortLevel
- * enum has no max). The iOS picker never offers max anyway. Sessions
- * with effort=max on disk preserve it via the resume-time initial-
- * options path on sendPromptCommand, NOT this RPC.
  */
 export const setSessionSelectionCommand = z.object({
   type: z.literal("setSessionSelection"),
   requestId: z.string(),
   sessionId: z.string(),
   model: z.string().optional(),
-  effort: effortLevel.optional(),
 });
 
 export const setSessionSelectionResponse = z.object({

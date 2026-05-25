@@ -73,7 +73,7 @@ export default function NewSessionScreen() {
     if (!models || selection !== null) return;
     const def = models.find((m) => m.isDefault) ?? models[0];
     if (!def) return;
-    setSelection({ model: def.model, effort: def.defaultEffort });
+    setSelection({ model: def.model });
   }, [models, selection]);
 
   const handleSend = useCallback(
@@ -94,7 +94,6 @@ export default function NewSessionScreen() {
         cwd,
         images,
         model: selection?.model,
-        effort: selection?.effort,
       });
       router.replace({
         pathname: "/session/[cliSessionId]",

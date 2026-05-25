@@ -6,7 +6,6 @@ import {
   chunkMessage,
   type DirectoryEntry,
   decodePairOfferPayload,
-  type EffortLevel,
   type EventDelta,
   type GitStatus,
   type ImageAttachment,
@@ -519,10 +518,9 @@ export class DaemonClient {
 
   /**
    * Bootstrap RPC for the model picker — one call returns daemon's
-   * curated (non-deprecated) model list with display labels, default
-   * marker, and supported effort levels. Cache lifetime is the daemon
-   * lifetime (table is hardcoded), so callers should set a long
-   * staleTime in react-query.
+   * curated (non-deprecated) model list with display labels +
+   * default marker. Cache lifetime is the daemon lifetime (table is
+   * hardcoded), so callers should set a long staleTime in react-query.
    */
   async getModels(): Promise<ModelEntry[]> {
     const requestId = Crypto.randomUUID();
@@ -608,16 +606,15 @@ export class DaemonClient {
    * `ImageBlockParam`s ahead of the text block when calling the SDK.
    * Empty / missing array sends a text-only prompt.
    *
-   * `model` and `effort` are used by the daemon as the SDK `query()`
-   * initial options on FIRST ensureSessionLoop (create path, or resume
-   * after a runtime respawn). They are NOT used for mid-session apply —
-   * that path is owned by `setSessionSelection` (pick-time RPC, single
-   * `applyFlagSettings({ model, effortLevel })` on the live query).
-   * iOS should still pass the current picker selection on every
-   * sendPrompt so daemon-restart recoveries inherit it cleanly.
+   * `model` carries the input-bar picker's current selection. Daemon
+   * uses it as the SDK `query()` initial option on FIRST ensureSessionLoop
+   * (create path, or resume after a runtime respawn). Mid-session apply
+   * is owned by `setSessionSelection` (pick-time RPC). iOS should still
+   * pass the current selection on every sendPrompt so daemon-restart
+   * recoveries inherit it cleanly.
    *
-   * Argument shape is an options object — cwd/images/model/effort grew
-   * past the comfortable positional-parameter threshold.
+   * Argument shape is an options object — cwd/images/model grew past
+   * the comfortable positional-parameter threshold.
    */
   async sendPrompt(opts: {
     sessionId: string;
@@ -625,7 +622,6 @@ export class DaemonClient {
     cwd?: string;
     images?: ImageAttachment[];
     model?: string;
-    effort?: EffortLevel;
   }): Promise<void> {
     const requestId = Crypto.randomUUID();
     const frame: { type: string; requestId: string } & Record<string, unknown> =
@@ -640,26 +636,22 @@ export class DaemonClient {
       frame.images = opts.images;
     }
     if (opts.model !== undefined) frame.model = opts.model;
-    if (opts.effort !== undefined) frame.effort = opts.effort;
     await this.request(frame);
   }
 
   /**
-   * Pick-time commit of the input-bar's model + effort selection.
-   * Daemon applies to the live SDK query first via a single atomic
-   * `applyFlagSettings({ model?, effortLevel? })` call (max effort
-   * skipped — Settings.effortLevel enum can't carry max) and only
-   * writes the new values into sidecode metadata if that call
-   * succeeds. Throws on apply failure — callers (typically a
-   * TanStack Query mutation with onError rollback) revert the
-   * optimistic picker update.
+   * Pick-time commit of the input-bar's model selection. Daemon
+   * applies to the live SDK query via `applyFlagSettings({ model })`,
+   * then writes the new model into sidecode metadata if that call
+   * succeeds. Throws on apply failure — callers (typically a TanStack
+   * Query mutation with onError rollback) revert the optimistic picker
+   * update.
    *
-   * Either field may be undefined; both undefined is a no-op.
+   * Omitted model is a no-op (defensive — picker shouldn't fire this).
    */
   async setSessionSelection(opts: {
     sessionId: string;
     model?: string;
-    effort?: EffortLevel;
   }): Promise<void> {
     const requestId = Crypto.randomUUID();
     const frame: { type: string; requestId: string } & Record<string, unknown> =
@@ -669,7 +661,6 @@ export class DaemonClient {
         sessionId: opts.sessionId,
       };
     if (opts.model !== undefined) frame.model = opts.model;
-    if (opts.effort !== undefined) frame.effort = opts.effort;
     await this.request(frame);
   }
 

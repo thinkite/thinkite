@@ -34,9 +34,5 @@ export interface SessionInfo {
    *  on the daemon. Render this in lists / headers; fall back to `model`
    *  when missing. */
   modelLabel?: string;
-  /** Reasoning effort level if recorded ("low" / "medium" / "high" /
-   *  "xhigh" / "max"). Desktop Claude Code sessions persist this; absent
-   *  for sidecode-created until V0.5+ wires effort into the composer. */
-  effort?: string;
   isArchived: boolean;
 }

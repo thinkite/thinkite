@@ -1,4 +1,3 @@
-import type { EffortLevel } from "@sidecodeapp/protocol";
 import { Stack, useLocalSearchParams, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
 import { useCallback, useEffect, useMemo } from "react";
@@ -65,27 +64,23 @@ export default function SessionDetailScreen() {
   const blocks = useMemo(() => flattenToBlocks(session.items), [session.items]);
 
   // Picker selection is fully driven by the useSessions cache — the
-  // SessionInfo row for this cliSessionId carries `model` and `effort`.
+  // SessionInfo row for this cliSessionId carries `model`.
   // useSetSessionSelection mutates the cache optimistically on pick +
   // fires the daemon RPC; rollback is automatic on RPC failure.
   //
   // Pre-feature sessions (no model on disk yet) fall back to the
-  // daemon's default model + that model's `defaultEffort`. Once the
-  // user picks anything the mutation writes the real entry, and the
-  // fallback drops out.
+  // daemon's default model. Once the user picks anything the mutation
+  // writes the real entry, and the fallback drops out.
   const { data: sessions } = useSessions();
   const { data: models } = useModels();
   const setSelection = useSetSessionSelection(cliSessionId);
   const selection = useMemo(() => {
     const entry = sessions?.find((s) => s.cliSessionId === cliSessionId);
     if (entry?.model) {
-      return {
-        model: entry.model,
-        effort: entry.effort as EffortLevel | undefined,
-      };
+      return { model: entry.model };
     }
     const def = models?.find((m) => m.isDefault) ?? models?.[0];
-    if (def) return { model: def.model, effort: def.defaultEffort };
+    if (def) return { model: def.model };
     return undefined;
   }, [sessions, cliSessionId, models]);
 

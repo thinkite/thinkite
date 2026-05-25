@@ -3,7 +3,7 @@
  * for "what model strings does sidecode know about, and how should they
  * render in the iOS UI". Loaded by [router.ts] for the `prettyModel`
  * conversion (DesktopSession.model → SessionInfo.modelLabel) and by the
- * upcoming `getModels` RPC for the picker.
+ * `getModels` RPC for the picker.
  *
  * Why hardcoded instead of fetched from SDK at runtime:
  *   - SDK's `query.supportedModels()` requires spawning a Claude
@@ -20,14 +20,13 @@
  *   2. Move the previous-generation entry's `isDefault` to the new one
  *   3. Mark the displaced previous-generation entry as `deprecated: true`
  *      (DON'T delete — historical sessions still reference it on disk)
+ *
+ * Effort levels deliberately NOT modeled here. sidecode V0 trusts the
+ * SDK's adaptive thinking + per-account `Settings.effortLevel` default;
+ * we don't expose a per-session effort picker. Power users tweak via
+ * Desktop `/effort` slash command which persists to settings.json; we
+ * honor that implicitly by not passing `--effort` on our subprocess.
  */
-
-import type { EffortLevel } from "@sidecodeapp/protocol";
-
-/** Re-exported for ergonomics — this file is the canonical place to look
- *  for "which effort levels exist + which models support them". The wire
- *  enum lives in `@sidecodeapp/protocol` (the `effortLevel` schema). */
-export type { EffortLevel };
 
 /** Per-model metadata. All fields except `displayName` are optional —
  *  consumers that need richer info (picker UI, usage meter) add fields
@@ -38,9 +37,9 @@ export type ModelMetadata = {
   displayName: string;
 
   /** Exactly ONE entry in `MODEL_METADATA` should set this `true`. Marks
-   *  the model used when iOS hasn't picked anything explicitly (V0.5+
-   *  picker bootstrap; V0 doesn't consume yet). The startup self-check at
-   *  the bottom of this file throws if zero or multiple defaults are set. */
+   *  the model used when iOS hasn't picked anything explicitly (new-
+   *  session bootstrap). The startup self-check at the bottom of this
+   *  file throws if zero or multiple defaults are set. */
   isDefault?: boolean;
 
   /** Picker subtitle (V0.5+). Empty / omitted is fine — picker can fall
@@ -57,33 +56,6 @@ export type ModelMetadata = {
    *  meter can derive 1M vs 200K from the `[1m]` suffix of the key when
    *  this is absent. Set explicitly when needed. */
   contextWindow?: number;
-
-  /** Which effort levels this model supports, in the order the picker
-   *  should display them. `undefined` (the typical case for Haiku-tier
-   *  models) means the model has no effort concept — picker should hide
-   *  the effort sub-menu entirely. Ground truth captured from
-   *  `query.supportedModels()` (see `scripts/dump-models.ts`). Only
-   *  meaningful on non-deprecated entries since deprecated ones are
-   *  filtered out of the picker.
-   *
-   *  V0 NOTE: deliberately excludes `'max'` even for models that
-   *  technically support it (Opus 4.6/4.7, Sonnet 4.6). Reason: SDK's
-   *  `Settings.effortLevel` enum has no `'max'` value, so we can't
-   *  apply max mid-session via `applyFlagSettings`. Cleanly working
-   *  picker UX = drop the option that can't be runtime-switched. Power
-   *  users who need max go to Desktop `/effort max` directly; if a
-   *  resumed session has effort=max on disk, sidecode preserves it
-   *  (the iOS picker reads it via `useSessions` and feeds it back into
-   *  InputBar's controlled `selection`) but never offers it as a new
-   *  choice. */
-  supportedEffortLevels?: EffortLevel[];
-
-  /** Default effort to commit when the user picks this model fresh (no
-   *  prior session selection to inherit). Must be present iff
-   *  `supportedEffortLevels` is — enforced by the module-load self-check
-   *  at the bottom of this file. Must be one of the values in
-   *  `supportedEffortLevels`. */
-  defaultEffort?: EffortLevel;
 };
 
 /**
@@ -99,30 +71,18 @@ export const MODEL_METADATA: Record<string, ModelMetadata> = {
   "claude-opus-4-7[1m]": {
     displayName: "Opus 4.7 1M",
     isDefault: true,
-    supportedEffortLevels: ["low", "medium", "high", "xhigh"],
-    defaultEffort: "xhigh",
   },
   "claude-opus-4-7": {
     displayName: "Opus 4.7",
-    supportedEffortLevels: ["low", "medium", "high", "xhigh"],
-    defaultEffort: "xhigh",
   },
   "claude-sonnet-4-6[1m]": {
     displayName: "Sonnet 4.6 1M",
-    supportedEffortLevels: ["low", "medium", "high"],
-    defaultEffort: "high",
   },
   "claude-sonnet-4-6": {
     displayName: "Sonnet 4.6",
-    supportedEffortLevels: ["low", "medium", "high"],
-    defaultEffort: "high",
   },
   "claude-haiku-4-5-20251001": {
     displayName: "Haiku 4.5",
-    // Haiku has no effort concept — omit BOTH supportedEffortLevels and
-    // defaultEffort so the picker hides the effort sub-menu when this
-    // model is selected. The self-check at the bottom enforces that
-    // these two fields are set/unset together.
   },
 
   // ─── Deprecated (still present in historical Desktop session files) ─
@@ -201,31 +161,5 @@ export function getDefaultModel(): string {
     throw new Error(
       `MODEL_METADATA entry "${defaultKey}" can't be both isDefault and deprecated`,
     );
-  }
-  // Enforce effort consistency on non-deprecated entries:
-  //   - supportedEffortLevels and defaultEffort must both be present
-  //     or both absent (Haiku case)
-  //   - when present, defaultEffort must be one of supportedEffortLevels
-  // Deprecated entries are skipped — they exist only for prettyModel
-  // label rendering of historical Desktop sessions and aren't picker-
-  // facing, so the effort fields are optional/ignored on them.
-  for (const [key, meta] of Object.entries(MODEL_METADATA)) {
-    if (meta.deprecated) continue;
-    const hasSupported = meta.supportedEffortLevels !== undefined;
-    const hasDefault = meta.defaultEffort !== undefined;
-    if (hasSupported !== hasDefault) {
-      throw new Error(
-        `MODEL_METADATA entry "${key}": supportedEffortLevels and defaultEffort must be both set or both unset`,
-      );
-    }
-    if (
-      meta.defaultEffort !== undefined &&
-      meta.supportedEffortLevels !== undefined &&
-      !meta.supportedEffortLevels.includes(meta.defaultEffort)
-    ) {
-      throw new Error(
-        `MODEL_METADATA entry "${key}": defaultEffort "${meta.defaultEffort}" is not in supportedEffortLevels [${meta.supportedEffortLevels.join(", ")}]`,
-      );
-    }
   }
 })();

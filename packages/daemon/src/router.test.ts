@@ -195,7 +195,6 @@ describe("createCommandHandler — listSessions", () => {
             title: "Plan project folder structure",
             model: "claude-opus-4-7[1m]",
             modelLabel: "Opus 4.7 1M",
-            effort: "xhigh",
             isArchived: false,
           },
         ],
@@ -892,7 +891,7 @@ describe("createCommandHandler — sendPrompt", () => {
     expect(runtimeManager.has("S")).toBe(false);
   });
 
-  it("create path forwards model + effort into writeSidecodeSession", async () => {
+  it("create path forwards model into writeSidecodeSession", async () => {
     const writeMeta = vi.fn();
     const handler = createCommandHandler(
       makeDeps({
@@ -910,7 +909,6 @@ describe("createCommandHandler — sendPrompt", () => {
         text: "hi",
         cwd: "/p",
         model: "claude-opus-4-7[1m]",
-        effort: "xhigh",
       },
       ctx,
     );
@@ -919,7 +917,6 @@ describe("createCommandHandler — sendPrompt", () => {
       cwd: "/p",
       firstPrompt: "hi",
       model: "claude-opus-4-7[1m]",
-      effort: "xhigh",
     });
   });
 
@@ -940,7 +937,6 @@ describe("createCommandHandler — sendPrompt", () => {
         sessionId: "S",
         text: "hi",
         model: "claude-sonnet-4-6",
-        effort: "high",
       },
       ctx,
     );
@@ -972,7 +968,6 @@ describe("createCommandHandler — sendPrompt", () => {
         sessionId: "S",
         text: "hi",
         model: "claude-opus-4-7[1m]",
-        effort: "xhigh",
       },
       ctx,
     );
@@ -981,7 +976,7 @@ describe("createCommandHandler — sendPrompt", () => {
 });
 
 describe("createCommandHandler — setSessionSelection", () => {
-  it("applies model + effort via a single applyFlagSettings call, then writes metadata", async () => {
+  it("applies model via applyFlagSettings, then writes metadata", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
     const applyFlagMock = vi.fn(async () => {});
     const updateMeta = vi.fn();
@@ -1005,21 +1000,18 @@ describe("createCommandHandler — setSessionSelection", () => {
         requestId: "ss-1",
         sessionId: "S",
         model: "claude-opus-4-7[1m]",
-        effort: "xhigh",
       },
       ctx,
     );
-    // Single atomic call carrying BOTH keys — Settings has model +
-    // effortLevel, and passing model via applyFlagSettings behaves
-    // identically to the dedicated setModel setter per upstream docs.
+    // Passing model via applyFlagSettings behaves identically to the
+    // dedicated setModel setter per upstream docs — one entrypoint is
+    // enough.
     expect(applyFlagMock).toHaveBeenCalledExactlyOnceWith({
       model: "claude-opus-4-7[1m]",
-      effortLevel: "xhigh",
     });
     expect(updateMeta).toHaveBeenCalledExactlyOnceWith({
       cliSessionId: "S",
       model: "claude-opus-4-7[1m]",
-      effort: "xhigh",
     });
     expect(sent.at(-1)).toMatchObject({
       type: "setSessionSelection.response",
@@ -1027,60 +1019,7 @@ describe("createCommandHandler — setSessionSelection", () => {
     });
   });
 
-  it("with effort='max', applyFlagSettings carries only model (Settings.effortLevel enum can't carry max)", async () => {
-    const runtimeManager = new SessionRuntimeManager<EventDelta>();
-    const applyFlagMock = vi.fn(async () => {});
-    const runtime = runtimeManager.getOrCreate("S");
-    runtime.loopPromise = Promise.resolve();
-    runtime.query = {
-      interrupt: async () => {},
-      close: () => {},
-      applyFlagSettings: applyFlagMock,
-    };
-    const handler = createCommandHandler(makeDeps({ runtimeManager }));
-    const { ctx } = makeCtx();
-    await handler(
-      {
-        type: "setSessionSelection",
-        requestId: "ss-max",
-        sessionId: "S",
-        model: "claude-opus-4-7[1m]",
-        effort: "max",
-      },
-      ctx,
-    );
-    expect(applyFlagMock).toHaveBeenCalledExactlyOnceWith({
-      model: "claude-opus-4-7[1m]",
-    });
-  });
-
-  it("with no effort (Haiku-tier switch), applyFlagSettings carries only model", async () => {
-    const runtimeManager = new SessionRuntimeManager<EventDelta>();
-    const applyFlagMock = vi.fn(async () => {});
-    const runtime = runtimeManager.getOrCreate("S");
-    runtime.loopPromise = Promise.resolve();
-    runtime.query = {
-      interrupt: async () => {},
-      close: () => {},
-      applyFlagSettings: applyFlagMock,
-    };
-    const handler = createCommandHandler(makeDeps({ runtimeManager }));
-    const { ctx } = makeCtx();
-    await handler(
-      {
-        type: "setSessionSelection",
-        requestId: "ss-haiku",
-        sessionId: "S",
-        model: "claude-haiku-4-5-20251001",
-      },
-      ctx,
-    );
-    expect(applyFlagMock).toHaveBeenCalledExactlyOnceWith({
-      model: "claude-haiku-4-5-20251001",
-    });
-  });
-
-  it("no-op when both model and effort are omitted (defensive — iOS shouldn't fire this)", async () => {
+  it("no-op when model is omitted (defensive — iOS shouldn't fire this)", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
     const applyFlagMock = vi.fn(async () => {});
     const runtime = runtimeManager.getOrCreate("S");
@@ -1126,14 +1065,12 @@ describe("createCommandHandler — setSessionSelection", () => {
         requestId: "ss-deferred",
         sessionId: "S",
         model: "claude-opus-4-7",
-        effort: "high",
       },
       ctx,
     );
     expect(updateMeta).toHaveBeenCalledExactlyOnceWith({
       cliSessionId: "S",
       model: "claude-opus-4-7",
-      effort: "high",
     });
     expect(sent.at(-1)).toMatchObject({
       type: "setSessionSelection.response",
@@ -1700,60 +1637,4 @@ describe("createCommandHandler — getModels", () => {
     }
   });
 
-  it("includes supportedEffortLevels for models that declare them", async () => {
-    // Spot-check: at least one current model carries effort levels.
-    // Verifies the optional-field spread in the handler isn't dropping them.
-    const handler = createCommandHandler(makeDeps());
-    const { ctx, sent } = makeCtx();
-    await handler(
-      { type: "getModels", requestId: "gm2" } satisfies Command,
-      ctx,
-    );
-    if (sent[0]?.type !== "getModels.response")
-      throw new Error("expected getModels.response");
-    const withEffort = sent[0].models.filter(
-      (m) => m.supportedEffortLevels !== undefined,
-    );
-    expect(withEffort.length).toBeGreaterThan(0);
-  });
-
-  it("entries with supportedEffortLevels also expose defaultEffort (and it's a member)", async () => {
-    const handler = createCommandHandler(makeDeps());
-    const { ctx, sent } = makeCtx();
-    await handler(
-      { type: "getModels", requestId: "gm3" } satisfies Command,
-      ctx,
-    );
-    if (sent[0]?.type !== "getModels.response")
-      throw new Error("expected getModels.response");
-    for (const m of sent[0].models) {
-      const hasSupported = m.supportedEffortLevels !== undefined;
-      const hasDefault = m.defaultEffort !== undefined;
-      expect(hasSupported).toBe(hasDefault);
-      if (m.defaultEffort && m.supportedEffortLevels) {
-        expect(m.supportedEffortLevels).toContain(m.defaultEffort);
-      }
-    }
-  });
-
-  it("never offers `'max'` as a supported effort (deliberate V0 omission)", async () => {
-    // applyFlagSettings can't carry max (Settings.effortLevel enum
-    // excludes it) — picker UI must avoid it to keep the runtime-switch
-    // path consistent. See models-metadata.ts comment.
-    const handler = createCommandHandler(makeDeps());
-    const { ctx, sent } = makeCtx();
-    await handler(
-      { type: "getModels", requestId: "gm4" } satisfies Command,
-      ctx,
-    );
-    if (sent[0]?.type !== "getModels.response")
-      throw new Error("expected getModels.response");
-    for (const m of sent[0].models) {
-      // Haiku-tier has no supportedEffortLevels at all; only assert
-      // when the field is present.
-      if (m.supportedEffortLevels !== undefined) {
-        expect(m.supportedEffortLevels).not.toContain("max");
-      }
-    }
-  });
 });
