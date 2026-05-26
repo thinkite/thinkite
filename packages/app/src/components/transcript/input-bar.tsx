@@ -15,7 +15,6 @@ import {
 } from "react-native";
 import { useModels } from "@/hooks/use-models";
 import { Image } from "@/lib/styled";
-import { Stack } from "expo-router";
 
 /**
  * Local-only id so the pill row can have stable React keys + a cheap
@@ -388,9 +387,6 @@ export function InputBar({
           </View>
         </View>
       </GlassView>
-      <Stack.Toolbar>
-        <Stack.Toolbar.View hidden={true} />
-      </Stack.Toolbar>
     </View>
   );
 }
