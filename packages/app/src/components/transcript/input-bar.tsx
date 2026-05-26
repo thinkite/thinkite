@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import { useModels } from "@/hooks/use-models";
 import { Image } from "@/lib/styled";
+import { Stack } from "expo-router";
 
 /**
  * Local-only id so the pill row can have stable React keys + a cheap
@@ -357,7 +358,7 @@ export function InputBar({
                 }}
               >
                 <Pressable className="flex-row items-center gap-1 px-3 py-2 rounded-full bg-black/5 dark:bg-white/10">
-                  <Text className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+                  <Text className="text-sm text-zinc-700 dark:text-zinc-200">
                     {currentModel?.displayName ?? "Model"}
                   </Text>
                 </Pressable>
@@ -387,6 +388,9 @@ export function InputBar({
           </View>
         </View>
       </GlassView>
+      <Stack.Toolbar>
+        <Stack.Toolbar.View hidden={true} />
+      </Stack.Toolbar>
     </View>
   );
 }

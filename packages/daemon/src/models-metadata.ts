@@ -75,9 +75,11 @@ export const MODEL_METADATA: Record<string, ModelMetadata> = {
   "claude-opus-4-7": {
     displayName: "Opus 4.7",
   },
-  "claude-sonnet-4-6[1m]": {
-    displayName: "Sonnet 4.6 1M",
-  },
+  // Sonnet 4.6 1M intentionally NOT listed — the 1M-context variant
+  // requires opting into "extra usage" billing (overage credits) which is
+  // off by default. Users who have it enabled can still resume Desktop
+  // sessions saved with this model id; `prettyModel` will fall through
+  // to the raw string. We just don't surface it in the picker.
   "claude-sonnet-4-6": {
     displayName: "Sonnet 4.6",
   },

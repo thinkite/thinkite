@@ -283,16 +283,26 @@ export function ChatPanel({
         // message sits ~insets.bottom too low above composer when the
         // keyboard is shown.
         offset={insets.bottom - 8}
-        // Chat-mode triple: boot at the latest message
-        // (initialScrollAtEnd — runs a per-frame rAF ticker that
-        // retargets to true end as items measure and the inset
-        // settles, see beta.54 "retarget initial scroll after inset
-        // changes"), stick content to bottom when smaller than view
-        // (alignItemsAtEnd), keep viewport pinned to bottom when user
-        // is already near it (maintainScrollAtEnd). User scrolling up
-        // disengages the pin.
+        // ChatGPT-style scrolling, NOT Telegram-style:
+        //   - initialScrollAtEnd: boot at the latest message on session
+        //     re-open. Runs a per-frame rAF ticker that retargets to true
+        //     end as items measure and the inset settles (LegendList
+        //     beta.54 "retarget initial scroll after inset changes").
+        //   - maintainScrollAtEnd: when user is already pinned at bottom,
+        //     new messages keep them pinned; scrolling up disengages.
+        //
+        // DELIBERATELY OMITTED: `alignItemsAtEnd`. That's a
+        // Telegram/iMessage idiom (sparse messages stick to the bottom of
+        // the viewport via `flexGrow:1 + justifyContent:flex-end` on the
+        // contentContainer, see @legendapp/list/react.js:6611). For our
+        // ChatGPT layout messages flow top-down from the header, and we
+        // got two bugs from enabling it: (1) contentContainer was forced
+        // to fill the viewport even with one short message, making the
+        // list scrollable into the composer inset zone; (2) the
+        // bottom-aligned single message rendered behind the composer
+        // backdrop because the alignment didn't account for
+        // `contentInsetEndAdjustment`.
         initialScrollAtEnd
-        alignItemsAtEnd
         maintainScrollAtEnd={{ animated: true }}
         // Keep already-visible content's absolute position stable
         // when new items arrive or the keyboard toggles — the

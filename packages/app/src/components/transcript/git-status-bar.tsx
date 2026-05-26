@@ -82,17 +82,17 @@ export function GitStatusBar({
                 {status?.project ?? basename(cwd)}
               </Text>
               {isRepo && (
-                <Text className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                <Text className="text-sm text-zinc-900 dark:text-zinc-100">
                   {status.branch ?? "—"}
                 </Text>
               )}
               <View className="flex-1" />
               {hasChanges && (
                 <View className="flex-row items-center gap-1">
-                  <Text className="text-sm font-medium text-green-600 dark:text-green-500">
+                  <Text className="text-sm text-green-600 dark:text-green-500">
                     +{status.insertions}
                   </Text>
-                  <Text className="text-sm font-medium text-red-600 dark:text-red-500">
+                  <Text className="text-sm text-red-600 dark:text-red-500">
                     -{status.deletions}
                   </Text>
                 </View>
