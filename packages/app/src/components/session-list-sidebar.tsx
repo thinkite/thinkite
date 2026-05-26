@@ -215,6 +215,17 @@ export function SessionListSidebar({
             </Text>
           </Pressable>
           <Pressable
+            onPress={() => {
+              navigation.closeDrawer();
+              router.push("/dev/keyboard-extender" as never);
+            }}
+            className="px-4 py-2"
+          >
+            <Text className="text-xs text-blue-600 dark:text-blue-400">
+              KeyboardExtender spike →
+            </Text>
+          </Pressable>
+          <Pressable
             onPress={async () => {
               await clearLastUsedCwd();
               // Invalidate so subscribers re-read null without needing
