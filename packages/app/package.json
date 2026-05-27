@@ -20,6 +20,7 @@
     "@react-native-menu/menu": "^2.0.0",
     "@sidecodeapp/protocol": "workspace:*",
     "@tanstack/react-query": "^5.100.5",
+    "burnt": "^0.13.0",
     "expo": "56.0.4",
     "expo-build-properties": "~56.0.14",
     "expo-camera": "~56.0.7",

@@ -1,3 +1,11 @@
+import {
+  SLASH_COMMANDS,
+  type SlashCommandSpec,
+  getCommandsForContext,
+  isWhitelistedCommand,
+  parseSlashCommand,
+} from "@sidecodeapp/protocol";
+import * as Burnt from "burnt";
 import { GlassView } from "expo-glass-effect";
 import { Stack } from "expo-router";
 import { SymbolView } from "expo-symbols";
@@ -38,8 +46,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
  *       → GitStatusBar stays mounted, composer measured height stays
  *         stable, transcript doesn't move. Panel floats absolute-
  *         positioned over the composer top with `bottom: COMPOSER_
- *         VISUAL_HEIGHT + 8`. Hard-capped to 3 rows (≈152pt) so it
- *         fits even on iPhone SE under a keyboard.
+ *         VISUAL_HEIGHT + 8`. Hard-capped at PANEL_MAX_HEIGHT (~180pt
+ *         for 3 two-line rows) so it fits even on iPhone SE under a
+ *         keyboard.
  *
  *    Trigger rule (cursor-aware): take the substring from start of
  *    text up to the cursor, panel shows when THAT segment starts with
@@ -56,10 +65,11 @@ const TOOL_ROW_HEIGHT = 40;
 // mocks below, re-measure.
 const COMPOSER_VISUAL_HEIGHT = 145;
 
-// 3 rows × ~48pt (Pressable row) + 8pt vertical padding. Lock the cap
+// 3 rows × ~54pt (title text-sm ~20pt + subtitle text-xs ~16pt + mt-0.5
+// 2pt + py-2 16pt) + 8pt vertical scroll padding ≈ 170pt. Lock the cap
 // regardless of how many commands match so panel height is predictable
 // across devices.
-const PANEL_MAX_HEIGHT = 152;
+const PANEL_MAX_HEIGHT = 180;
 
 export default function KeyboardExtenderDevScreen() {
   const insets = useSafeAreaInsets();
@@ -88,8 +98,15 @@ export default function KeyboardExtenderDevScreen() {
   const isCommandMode =
     beforeCursor.startsWith("/") && !beforeCursor.includes(" ");
   const commandPrefix = isCommandMode ? beforeCursor.slice(1) : "";
-  const filtered = MOCK_COMMANDS.filter((c) =>
-    c.name.startsWith(commandPrefix),
+  // In-session picker for the spike — same data flows into the real
+  // ChatPanel later. New-session screen will call the same helper with
+  // `"new-session"` and get a 2-entry subset (`/init`, `/review`).
+  const filtered = useMemo(
+    () =>
+      getCommandsForContext("in-session").filter((c) =>
+        c.name.startsWith(commandPrefix),
+      ),
+    [commandPrefix],
   );
 
   const insertSlash = () => {
@@ -100,6 +117,51 @@ export default function KeyboardExtenderDevScreen() {
     setText(next);
     const cursor = safeStart + 1;
     setSelection({ start: cursor, end: cursor });
+  };
+
+  // Spike submit handler — wires the paperplane button to demo the
+  // full pre-send check via burnt toasts. Real ChatPanel will use a
+  // shared `useSlashCommandHandler` hook instead of inlining this.
+  const handleSubmit = () => {
+    const parsed = parseSlashCommand(text);
+    if (!parsed) {
+      Burnt.toast({
+        title: "Would sendPrompt",
+        message: text || "(empty)",
+        preset: "none",
+        duration: 2,
+      });
+      return;
+    }
+    if (!isWhitelistedCommand(parsed.name)) {
+      // SPIndicator pill is glanceable single-line by design. No message —
+      // user finds the supported list by tapping the `/` button → picker.
+      Burnt.toast({
+        title: `/${parsed.name} isn't available now`,
+        preset: "error",
+        haptic: "error",
+        duration: 2,
+      });
+      return;
+    }
+    const spec = SLASH_COMMANDS[parsed.name];
+    if (!spec.contexts.includes("in-session")) {
+      Burnt.toast({
+        title: `/${parsed.name} not on this screen`,
+        preset: "error",
+        haptic: "error",
+        duration: 2,
+      });
+      return;
+    }
+    // Real chat-panel splits here: intercept (clear/model) dispatches
+    // locally, passthrough (init/review/compact) calls sendPrompt.
+    Burnt.toast({
+      title: `Would ${spec.handling}`,
+      message: `/${parsed.name}${parsed.args ? ` ${parsed.args}` : ""}`,
+      preset: "done",
+      duration: 2,
+    });
   };
 
   const pickCommand = (cmd: string) => {
@@ -120,17 +182,70 @@ export default function KeyboardExtenderDevScreen() {
     <>
       <Stack.Screen options={{ title: "KeyboardExtender spike" }} />
       <View className="flex-1 bg-white dark:bg-black">
-        <View className="flex-1 items-center justify-center px-6">
+        <View className="flex-1 items-center justify-center px-6 gap-6">
           <Text className="text-center text-base text-zinc-600 dark:text-zinc-300">
-            Focus the input, then type `/` or tap the `/` button in the
-            tool row (only colored accent when cursor is at position 0).
+            Focus the input, then type `/` or tap the `/` button in the tool row
+            (only colored accent when cursor is at position 0).
             {"\n\n"}
-            Panel hovers ABOVE the composer — GitStatusBar stays mounted
-            so composer height doesn't jump. Capped at 3 rows + scroll.
+            Panel hovers ABOVE the composer — GitStatusBar stays mounted so
+            composer height doesn't jump. Capped at 3 rows + scroll.
             {"\n\n"}
-            Type a space (or cursor past it) to dismiss; cursor back into
-            the command name to reopen.
+            Type a space (or cursor past it) to dismiss; cursor back into the
+            command name to reopen.
+            {"\n\n"}
+            Tap paperplane to demo the pre-send check via burnt toast.
           </Text>
+          {/* Quick burnt visual preview — fires each preset without
+              going through the slash flow. Remove once the real
+              chat-panel integration replaces this spike. */}
+          <View className="flex-row gap-2">
+            <Pressable
+              onPress={() =>
+                Burnt.toast({
+                  title: "Done preset",
+                  message: "iOS system-pill style",
+                  preset: "done",
+                  duration: 2,
+                })
+              }
+              className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800"
+            >
+              <Text className="text-sm text-zinc-900 dark:text-zinc-100">
+                Done
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() =>
+                Burnt.toast({
+                  title: "Error preset",
+                  message: "Red X icon + error haptic",
+                  preset: "error",
+                  haptic: "error",
+                  duration: 2,
+                })
+              }
+              className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800"
+            >
+              <Text className="text-sm text-zinc-900 dark:text-zinc-100">
+                Error
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() =>
+                Burnt.alert({
+                  title: "Alert (HUD)",
+                  message: "Center-screen Apple-style HUD",
+                  preset: "done",
+                  duration: 2,
+                })
+              }
+              className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800"
+            >
+              <Text className="text-sm text-zinc-900 dark:text-zinc-100">
+                Alert HUD
+              </Text>
+            </Pressable>
+          </View>
         </View>
 
         {/* Single KSV holds the whole composer chrome — panel/git-status,
@@ -219,7 +334,7 @@ export default function KeyboardExtenderDevScreen() {
                     ? `/${commandPrefix} · ${filtered.length} match${filtered.length === 1 ? "" : "es"}`
                     : "—"}
                 </Text>
-                <Pressable className="p-1.75">
+                <Pressable className="p-1.75" onPress={handleSubmit}>
                   <SymbolView
                     name="paperplane.fill"
                     size={22}
@@ -305,7 +420,7 @@ function SlashPanel({
   isDark,
   onPick,
 }: {
-  commands: typeof MOCK_COMMANDS;
+  commands: readonly SlashCommandSpec[];
   isDark: boolean;
   onPick: (cmd: string) => void;
 }) {
@@ -337,13 +452,23 @@ function SlashPanel({
               <Pressable
                 key={c.name}
                 onPress={() => onPick(c.name)}
-                className="px-4 py-2 flex-row items-center gap-3"
+                className="px-4 py-2"
               >
-                <Text className="text-sm font-medium text-zinc-900 dark:text-zinc-100 w-20">
+                {/* Row 1: `/cmd [argHint]` — argHint muted (POSIX
+                    placeholder convention). Single Text so the hint
+                    chunk inherits baseline. */}
+                <Text className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
                   /{c.name}
+                  {c.argHint && (
+                    <Text className="text-zinc-400 dark:text-zinc-500 font-normal">
+                      {" "}
+                      {c.argHint}
+                    </Text>
+                  )}
                 </Text>
+                {/* Row 2: description subtitle */}
                 <Text
-                  className="flex-1 text-sm text-zinc-500 dark:text-zinc-400"
+                  className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5"
                   numberOfLines={1}
                 >
                   {c.description}
@@ -389,11 +514,3 @@ function GitStatusBarMock({ isDark }: { isDark: boolean }) {
     </View>
   );
 }
-
-const MOCK_COMMANDS = [
-  { name: "model", description: "Switch the active model" },
-  { name: "clear", description: "Archive this session, start a fresh one" },
-  { name: "new", description: "Same as /clear" },
-  { name: "help", description: "List sidecode-supported slash commands" },
-  { name: "compact", description: "(auto-only — sidecode can't trigger)" },
-];
