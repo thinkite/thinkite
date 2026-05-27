@@ -1,4 +1,13 @@
-import type { EventDelta, TimelineItem } from "@sidecodeapp/protocol";
+import type {
+  EventDelta,
+  TimelineItem,
+  TurnUsage,
+} from "@sidecodeapp/protocol";
+
+// Re-export so app-side consumers (lib/context-usage, hooks/use-context-
+// usage) can import TurnUsage from one place. Was a local Extract<> alias
+// before protocol exported the type directly.
+export type { TurnUsage };
 
 /**
  * Per-session UI state derived from `EventDelta` stream + initial settled
@@ -26,6 +35,24 @@ export interface TimelineState {
   isRunning: boolean;
   /** Set on `turn_failed`; cleared on the next `turn_started`. */
   lastError: string | null;
+  /**
+   * Usage snapshot from the most recent `turn_completed` delta. SDK's
+   * `usage` per turn is cumulative-at-API-call (cache_read covers the
+   * full prior context), so iOS treats it as "current context size" and
+   * replaces — does NOT accumulate. `useContextUsage` reads this to
+   * drive the meter fill on the model picker chip.
+   *
+   * `null` semantics — meter renders no fill:
+   *   - Fresh subscribe to a session with no turns yet
+   *   - Resumed session: settled snapshot never carries usage (JSONL
+   *     replay produces TimelineItems only); the next live
+   *     turn_completed populates this. Until then, no meter on resumes.
+   *     Acceptable V0 trade — V0.5+ could surface JSONL last-usage via
+   *     subscribe.response if useful.
+   *   - Cleared on `applySettled` (subscribe re-snapshot) and
+   *     `emptyTimelineState` (mount).
+   */
+  latestUsage: TurnUsage | null;
 }
 
 /** Fresh, empty state — used on first mount before subscribe() resolves. */
@@ -35,6 +62,7 @@ export function emptyTimelineState(): TimelineState {
     cursor: 0,
     isRunning: false,
     lastError: null,
+    latestUsage: null,
   };
 }
 
@@ -44,16 +72,24 @@ export function emptyTimelineState(): TimelineState {
  * Always starts `isRunning: false` — even if a turn was in flight at
  * subscribe time, the next live `turn_started` delta will flip it back
  * to true.
+ *
+ * `initialUsage` is the daemon's resume-time seed for the context
+ * meter — extracted from the JSONL's last assistant message envelope
+ * so the meter renders something on session open rather than waiting
+ * for the next live `turn_completed`. Undefined → meter stays null
+ * (fresh session, or last turn was tool-only with no usage payload).
  */
 export function applySettled(
   settled: readonly TimelineItem[],
   cursor: number,
+  initialUsage?: TurnUsage,
 ): TimelineState {
   return {
     items: [...settled],
     cursor,
     isRunning: false,
     lastError: null,
+    latestUsage: initialUsage ?? null,
   };
 }
 
@@ -109,7 +145,16 @@ export function applyDelta(
     case "turn_started":
       return { ...state, isRunning: true, lastError: null, cursor };
     case "turn_completed":
-      return { ...state, isRunning: false, cursor };
+      // `usage` is optional on the delta (daemon may omit when SDK
+      // result envelope lacks it, e.g. error subtypes that don't route
+      // here but defending anyway). Preserve prior usage in that case
+      // — better to keep stale than drop the meter entirely.
+      return {
+        ...state,
+        isRunning: false,
+        cursor,
+        latestUsage: delta.usage ?? state.latestUsage,
+      };
     case "turn_failed":
       return { ...state, isRunning: false, lastError: delta.error, cursor };
     case "turn_canceled":

@@ -15,6 +15,7 @@ import {
   PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
   type TimelineItem,
+  type TurnUsage,
 } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
@@ -571,17 +572,26 @@ export class DaemonClient {
   ): Promise<{
     settled: TimelineItem[];
     cursor: number;
+    /** Usage seed for the context meter — extracted by daemon from
+     *  the last assistant message's raw envelope so the meter has a
+     *  number on resume. Undefined for fresh sessions or sessions
+     *  whose last assistant turn was tool-only. */
+    initialUsage?: TurnUsage;
     unsubscribe: () => Promise<void>;
   }> {
     this.eventCallbacks.set(sessionId, onEvent);
-    let res: { settled: TimelineItem[]; cursor: number };
+    let res: {
+      settled: TimelineItem[];
+      cursor: number;
+      initialUsage?: TurnUsage;
+    };
     try {
       const requestId = Crypto.randomUUID();
       res = (await this.request({
         type: "subscribe",
         requestId,
         sessionId,
-      })) as { settled: TimelineItem[]; cursor: number };
+      })) as { settled: TimelineItem[]; cursor: number; initialUsage?: TurnUsage };
     } catch (err) {
       if (this.eventCallbacks.get(sessionId) === onEvent) {
         this.eventCallbacks.delete(sessionId);
@@ -591,6 +601,7 @@ export class DaemonClient {
     return {
       settled: res.settled,
       cursor: res.cursor,
+      initialUsage: res.initialUsage,
       unsubscribe: () => this.unsubscribeOwned(sessionId, onEvent),
     };
   }

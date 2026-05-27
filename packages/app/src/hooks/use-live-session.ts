@@ -49,12 +49,16 @@ export function useLiveSession(cliSessionId: string) {
         if (!active) return;
         setState((prev) => applyDelta(prev, delta, prev.cursor + 1));
       })
-      .then(({ settled, cursor, unsubscribe }) => {
+      .then(({ settled, cursor, initialUsage, unsubscribe }) => {
         if (!active) {
           void unsubscribe();
           return;
         }
-        setState(applySettled(settled, cursor));
+        // `initialUsage` seeds the context meter immediately on resume
+        // (extracted by daemon from the JSONL's last assistant
+        // message). Undefined = meter stays null until next live
+        // turn_completed — fresh session, or last turn was tool-only.
+        setState(applySettled(settled, cursor, initialUsage));
         setIsInitialLoading(false);
         cleanup = unsubscribe;
       })
@@ -74,6 +78,11 @@ export function useLiveSession(cliSessionId: string) {
     items: state.items,
     isRunning: state.isRunning,
     lastError: state.lastError,
+    /** Usage snapshot from the most recent `turn_completed` delta. Null
+     *  on first mount and on session re-subscribe — populated by the
+     *  next completed turn. Drives the context meter on the model
+     *  picker chip. See timeline-reducer.ts for the longer rationale. */
+    latestUsage: state.latestUsage,
     isInitialLoading,
     error,
   };

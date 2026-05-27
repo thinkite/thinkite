@@ -48,7 +48,7 @@ function makeDeps(
     continueOnDesktop: vi.fn().mockResolvedValue(undefined),
     listSessions: vi.fn().mockResolvedValue([]),
     listSidecodeSessions: vi.fn().mockReturnValue([]),
-    getMessages: vi.fn().mockResolvedValue([]),
+    getMessages: vi.fn().mockResolvedValue({ items: [] }),
     runtimeManager: new SessionRuntimeManager<EventDelta>(),
     hasSession: vi.fn().mockResolvedValue(true),
     writeSidecodeSession: vi.fn(),
@@ -425,7 +425,7 @@ describe("createCommandHandler — getMessages", () => {
       { type: "user_message" as const, uuid: "u-1", text: "hi" },
       { type: "assistant_message" as const, uuid: "u-2", text: "hello" },
     ];
-    const getMessages = vi.fn().mockResolvedValue(items);
+    const getMessages = vi.fn().mockResolvedValue({ items });
     const handler = createCommandHandler(makeDeps({ getMessages }));
     const { ctx, sent } = makeCtx();
     await handler(
@@ -447,7 +447,7 @@ describe("createCommandHandler — getMessages", () => {
   });
 
   it("forwards cwd hint when caller provides one", async () => {
-    const getMessages = vi.fn().mockResolvedValue([]);
+    const getMessages = vi.fn().mockResolvedValue({ items: [] });
     const handler = createCommandHandler(makeDeps({ getMessages }));
     const { ctx } = makeCtx();
     await handler(
@@ -486,7 +486,7 @@ describe("createCommandHandler — getMessages", () => {
 
   it("ships an empty items array when normalize returns []", async () => {
     const handler = createCommandHandler(
-      makeDeps({ getMessages: vi.fn().mockResolvedValue([]) }),
+      makeDeps({ getMessages: vi.fn().mockResolvedValue({ items: [] }) }),
     );
     const { ctx, sent } = makeCtx();
     await handler(
@@ -537,11 +537,9 @@ describe("createCommandHandler — subscribe / unsubscribe", () => {
     const handler = createCommandHandler(
       makeDeps({
         runtimeManager,
-        getMessages: vi
-          .fn()
-          .mockResolvedValue([
-            { type: "user_message", uuid: "u-1", text: "hi" },
-          ]),
+        getMessages: vi.fn().mockResolvedValue({
+          items: [{ type: "user_message", uuid: "u-1", text: "hi" }],
+        }),
       }),
     );
     const { ctx, sent } = makeCtx();
@@ -579,6 +577,43 @@ describe("createCommandHandler — subscribe / unsubscribe", () => {
       sessionId: "S",
       cursor: 2,
       delta: { kind: "patch_text", uuid: "msg:0", deltaText: "hello" },
+    });
+  });
+
+  it("subscribe forwards initialUsage from getMessages onto the response", async () => {
+    // Resume-time seed for the iOS context meter: daemon extracts
+    // usage from the last assistant message's raw envelope (see
+    // daemon/src/index.ts:extractLatestUsage), piggybacks on the
+    // existing getMessages call, ships it on subscribe.response so
+    // the meter renders before any live turn fires. Forwarding test
+    // only — extraction logic lives in daemon/src/index.ts and is
+    // smoke-checked there.
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager: new SessionRuntimeManager<EventDelta>(),
+        getMessages: vi.fn().mockResolvedValue({
+          items: [],
+          initialUsage: {
+            inputTokens: 500,
+            cacheReadInputTokens: 120_000,
+            cacheCreationInputTokens: 2_000,
+          },
+        }),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-iu", sessionId: "S" },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.response",
+      requestId: "sub-iu",
+      initialUsage: {
+        inputTokens: 500,
+        cacheReadInputTokens: 120_000,
+        cacheCreationInputTokens: 2_000,
+      },
     });
   });
 

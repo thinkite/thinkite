@@ -46,6 +46,7 @@ describe("emptyTimelineState", () => {
       cursor: 0,
       isRunning: false,
       lastError: null,
+      latestUsage: null,
     });
     expect(a).not.toBe(b);
     expect(a.items).not.toBe(b.items);
@@ -69,6 +70,31 @@ describe("applySettled", () => {
     // a turn is genuinely active.
     const state = applySettled([assistantMsg("a1", "...")], 99);
     expect(state.isRunning).toBe(false);
+  });
+
+  it("starts latestUsage null when no initialUsage is supplied", () => {
+    // Fresh session, or a resumed session whose last assistant turn
+    // was tool-only (no API usage stamp on the envelope).
+    const state = applySettled([assistantMsg("a1", "hi")], 42);
+    expect(state.latestUsage).toBe(null);
+  });
+
+  it("seeds latestUsage from initialUsage when supplied", () => {
+    // Resume path — daemon extracted usage from the JSONL's last
+    // assistant message (subscribe.response.initialUsage) so the
+    // context meter renders immediately rather than waiting for the
+    // next live turn_completed. Verifies the seed is passed through
+    // verbatim.
+    const state = applySettled([assistantMsg("a1", "hi")], 42, {
+      inputTokens: 500,
+      cacheReadInputTokens: 120_000,
+      cacheCreationInputTokens: 2_000,
+    });
+    expect(state.latestUsage).toEqual({
+      inputTokens: 500,
+      cacheReadInputTokens: 120_000,
+      cacheCreationInputTokens: 2_000,
+    });
   });
 });
 
@@ -299,6 +325,57 @@ describe("applyDelta — turn lifecycle", () => {
     expect(after.isRunning).toBe(false);
     expect(after.lastError).toBe(null);
     expect(after.cursor).toBe(9);
+  });
+
+  it("turn_completed writes through `usage` payload to latestUsage", () => {
+    // Meter consumer (useContextUsage) reads this. Snapshot replaces
+    // prior — SDK's per-turn usage is cumulative (cache_read covers
+    // full prior context), not delta.
+    const init = emptyTimelineState();
+    const after = applyDelta(
+      init,
+      {
+        kind: "turn_completed",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadInputTokens: 80_000,
+          cacheCreationInputTokens: 2_000,
+        },
+      },
+      1,
+    );
+    expect(after.latestUsage).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadInputTokens: 80_000,
+      cacheCreationInputTokens: 2_000,
+    });
+  });
+
+  it("turn_completed without `usage` preserves prior latestUsage", () => {
+    // Defensive: protocol marks usage optional on the delta. Don't
+    // drop the meter back to null just because one turn's envelope
+    // lacked the field — better to keep slightly-stale than blank.
+    const prior: TimelineState = {
+      ...emptyTimelineState(),
+      latestUsage: { inputTokens: 5_000 },
+    };
+    const after = applyDelta(prior, { kind: "turn_completed" }, 2);
+    expect(after.latestUsage).toEqual({ inputTokens: 5_000 });
+  });
+
+  it("turn_completed overwrites a prior latestUsage with the newer one", () => {
+    const prior: TimelineState = {
+      ...emptyTimelineState(),
+      latestUsage: { inputTokens: 1_000 },
+    };
+    const after = applyDelta(
+      prior,
+      { kind: "turn_completed", usage: { inputTokens: 9_999 } },
+      3,
+    );
+    expect(after.latestUsage).toEqual({ inputTokens: 9_999 });
   });
 
   it("turn_failed sets isRunning false + records error", () => {

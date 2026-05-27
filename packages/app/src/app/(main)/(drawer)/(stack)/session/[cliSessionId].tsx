@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { ChatPanel } from "@/components/transcript/chat-panel";
 import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
+import { useContextUsage } from "@/hooks/use-context-usage";
 import { useLiveSession } from "@/hooks/use-live-session";
 import { useModels } from "@/hooks/use-models";
 import { useSessions } from "@/hooks/use-sessions";
@@ -84,6 +85,12 @@ export default function SessionDetailScreen() {
     return undefined;
   }, [sessions, cliSessionId, models]);
 
+  // Context-window meter for the model picker chip. Joins the latest
+  // turn_completed.usage (from useLiveSession) with the selected
+  // model's contextWindow (from useModels). Returns null until both are
+  // ready — InputBar then renders the chip with no fill.
+  const contextUsage = useContextUsage(session.latestUsage, selection?.model);
+
   return (
     <>
       {/* Title via Stack.Screen options. Header chrome (transparent +
@@ -119,6 +126,7 @@ export default function SessionDetailScreen() {
               isRunning={session.isRunning}
               selection={selection}
               onSelectionChange={setSelection.mutate}
+              contextUsage={contextUsage ?? undefined}
             />
           )}
         </View>

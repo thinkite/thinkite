@@ -31,6 +31,49 @@ interface DraftAttachment extends ImageAttachment {
   id: string;
 }
 
+/**
+ * Color for the context meter fill on the model picker chip. Three
+ * tiers tuned to feel informational at low usage and clearly warn near
+ * the cap:
+ *
+ *   - <70%: iOS system blue — visible as a "this exists, it's
+ *     tracking" signal without alarming. Lighter opacity in light
+ *     mode (chip background `bg-black/5` is pale, so blue at 0.30
+ *     reads too saturated); kept at 0.30 in dark mode (chip
+ *     `bg-white/10` needs more contrast).
+ *   - 70–90%: amber — "you should consider /compact soon."
+ *   - ≥90%: red — "next turn likely to auto-compact or get clipped."
+ *
+ * Warning tiers (amber/red) use a single opacity on both themes — both
+ * read as alarming enough either way. Only the informational blue
+ * needs the theme-aware split.
+ *
+ * Thresholds are picked to roughly mirror Claude Code's auto-compact
+ * heuristic — Claude Code starts surfacing context warnings in the
+ * mid-70s and aggressively compacts in the high 80s/90s.
+ */
+function meterFillColor(percentage: number, isDark: boolean): string {
+  if (percentage >= 90) return "rgba(239, 68, 68, 0.50)"; // red-500
+  if (percentage >= 70) return "rgba(245, 158, 11, 0.40)"; // amber-500
+  // iOS systemBlue (#007aff)
+  return isDark ? "rgba(0, 122, 255, 0.30)" : "rgba(0, 122, 255, 0.18)";
+}
+
+/** Format a token count as a short string for the picker menu's
+ *  `Context usage: 145k / 200k` header. Switches to `M` once values
+ *  hit a million so the 1M-context variant reads as "1M" rather than
+ *  "1000k". Round (not floor) so the displayed number tracks intuition
+ *  near boundaries; the meter bar's fill width carries the fine-
+ *  grained accuracy visually. Drops `.0` so `1_000_000` shows as `1M`
+ *  not `1.0M`; keeps one decimal for non-integer M values
+ *  (e.g. `1_500_000` → `1.5M`). */
+function formatTokensK(n: number): string {
+  if (n >= 1_000_000) {
+    return `${Number((n / 1_000_000).toFixed(1))}M`;
+  }
+  return `${Math.round(n / 1000)}k`;
+}
+
 /** Compose Anthropic Claude 4.x's vision input cap: long edge 2576px,
  *  ≤3.75MP. We resize the long edge then let JPEG q0.85 do the bytes
  *  work; SDK accepts base64 inline so daemon writes nothing to disk. */
@@ -114,6 +157,7 @@ export function InputBar({
   selection,
   onSelectionChange,
   slashContext,
+  contextUsage,
 }: {
   /** Fired on tap-to-send. `images` carries the compressed base64
    *  payloads ready for daemon's sendPrompt; the local DraftAttachment
@@ -149,6 +193,13 @@ export function InputBar({
    *  Handler({ context: slashContext, ... })` — both pieces use the
    *  same `@sidecodeapp/protocol` source of truth. */
   slashContext?: CommandContext;
+  /** Context-window usage for the meter rendered as a fill on the
+   *  model picker chip's background AND as a header on the menu it
+   *  opens (`Context usage: 145k / 200k`). Omit (new-session screen,
+   *  fresh resume before first turn) → chip renders plain + menu has
+   *  no header. Parent computes via
+   *  `useContextUsage(latestUsage, selection?.model)`. */
+  contextUsage?: { used: number; max: number; percentage: number };
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<DraftAttachment[]>([]);
@@ -438,6 +489,17 @@ export function InputBar({
                   V0 trusts SDK adaptive thinking + per-account
                   Settings.effortLevel). */}
               <MenuView
+                // Menu-level title — UIMenu's `title` renders as a
+                // greyed header above the action rows. Used here to
+                // surface the meter's exact numbers (the chip fill
+                // alone reads as % only). Omitted when contextUsage is
+                // undefined so the menu doesn't show an empty header
+                // on new-session / pre-first-turn states.
+                title={
+                  contextUsage
+                    ? `Context usage: ${formatTokensK(contextUsage.used)} / ${formatTokensK(contextUsage.max)}`
+                    : undefined
+                }
                 actions={(models ?? []).map<MenuAction>((m) => ({
                   id: m.model,
                   title: m.displayName,
@@ -447,7 +509,26 @@ export function InputBar({
                   onSelectionChange?.({ model: event });
                 }}
               >
-                <Pressable className="flex-row items-center gap-1 px-3 py-2 rounded-full bg-black/5 dark:bg-white/10">
+                {/* Context meter — fills the chip background left→right
+                    proportional to context-window usage. `overflow-hidden`
+                    clips the absolute fill to the rounded-full silhouette;
+                    the fill is the FIRST child so the Text label naturally
+                    layers on top (RN sibling order = z-order). No extra
+                    layout cost when `contextUsage` is undefined — the
+                    null branch skips the absolute View entirely. */}
+                <Pressable className="relative flex-row items-center gap-1 px-3 py-2 rounded-full bg-black/5 dark:bg-white/10 overflow-hidden">
+                  {contextUsage && (
+                    <View
+                      className="absolute inset-y-0 left-0"
+                      style={{
+                        width: `${contextUsage.percentage}%`,
+                        backgroundColor: meterFillColor(
+                          contextUsage.percentage,
+                          colorScheme === "dark",
+                        ),
+                      }}
+                    />
+                  )}
                   <Text className="text-sm text-zinc-700 dark:text-zinc-200">
                     {currentModel?.displayName ?? "Model"}
                   </Text>

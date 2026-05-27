@@ -52,9 +52,19 @@ export type ModelMetadata = {
    *  in the session list / detail header. */
   deprecated?: boolean;
 
-  /** Context window in tokens (V1 usage meter). Optional because the
-   *  meter can derive 1M vs 200K from the `[1m]` suffix of the key when
-   *  this is absent. Set explicitly when needed. */
+  /** Context window in tokens. Powers iOS's context meter on the model
+   *  picker chip (fill % of chip background = used / contextWindow).
+   *  Formula mirrors Claude Code's `/context` command:
+   *  `used = input_tokens + cache_creation_input_tokens + cache_read_input_tokens`
+   *  (output tokens excluded). Filled for ALL entries — even deprecated
+   *  ones — so a resume of a deprecated-model session that we ever
+   *  surface in the future has the data ready. Today getModels filters
+   *  deprecated out so iOS only sees current entries.
+   *
+   *  Anthropic context window reference (verify before adding new
+   *  entries): https://docs.anthropic.com/en/docs/about-claude/models.
+   *  Defaults to 200_000 for current Claude 4.x models; `[1m]` variants
+   *  opt into the 1M-context beta. */
   contextWindow?: number;
 };
 
@@ -71,9 +81,11 @@ export const MODEL_METADATA: Record<string, ModelMetadata> = {
   "claude-opus-4-7[1m]": {
     displayName: "Opus 4.7 1M",
     isDefault: true,
+    contextWindow: 1_000_000,
   },
   "claude-opus-4-7": {
     displayName: "Opus 4.7",
+    contextWindow: 200_000,
   },
   // Sonnet 4.6 1M intentionally NOT listed — the 1M-context variant
   // requires opting into "extra usage" billing (overage credits) which is
@@ -82,39 +94,48 @@ export const MODEL_METADATA: Record<string, ModelMetadata> = {
   // to the raw string. We just don't surface it in the picker.
   "claude-sonnet-4-6": {
     displayName: "Sonnet 4.6",
+    contextWindow: 200_000,
   },
   "claude-haiku-4-5-20251001": {
     displayName: "Haiku 4.5",
+    contextWindow: 200_000,
   },
 
   // ─── Deprecated (still present in historical Desktop session files) ─
   "claude-opus-4-6[1m]": {
     displayName: "Opus 4.6 1M",
     deprecated: true,
+    contextWindow: 1_000_000,
   },
   "claude-opus-4-6": {
     displayName: "Opus 4.6",
     deprecated: true,
+    contextWindow: 200_000,
   },
   "claude-sonnet-4-5-20250929": {
     displayName: "Sonnet 4.5",
     deprecated: true,
+    contextWindow: 200_000,
   },
   "claude-opus-4-5-20251101": {
     displayName: "Opus 4.5",
     deprecated: true,
+    contextWindow: 200_000,
   },
   "claude-opus-4-1-20250805": {
     displayName: "Opus 4.1",
     deprecated: true,
+    contextWindow: 200_000,
   },
   "claude-sonnet-4-20250514": {
     displayName: "Sonnet 4",
     deprecated: true,
+    contextWindow: 200_000,
   },
   "claude-opus-4-20250514": {
     displayName: "Opus 4",
     deprecated: true,
+    contextWindow: 200_000,
   },
 };
 

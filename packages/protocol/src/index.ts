@@ -578,6 +578,29 @@ export type TimelineItem = z.infer<typeof timelineItem>;
  *     cold-start). They never coexist in iOS view, so the divergence is OK.
  *   - tool_call `callId`: Anthropic tool_use_id, identical live + settled.
  */
+/**
+ * Per-turn token usage. Lifted into a named schema (rather than inlined
+ * on `turn_completed` only) because two surfaces consume the same
+ * shape:
+ *   - `eventDelta.turn_completed.usage` — live broadcast after each turn.
+ *   - `subscribeResponse.initialUsage` — resume-time seed extracted
+ *     from the last assistant message in the JSONL, so the iOS
+ *     context-window meter shows a number immediately on session open
+ *     rather than waiting for the next live turn.
+ *
+ * Field naming converts Anthropic's snake_case to sidecode's camelCase
+ * (one place — both surfaces inherit). All fields optional because
+ * different SDK code paths populate different subsets, and cache_*
+ * are always undefined for very-first-turn responses.
+ */
+export const turnUsage = z.object({
+  inputTokens: z.number().optional(),
+  outputTokens: z.number().optional(),
+  cacheReadInputTokens: z.number().optional(),
+  cacheCreationInputTokens: z.number().optional(),
+});
+export type TurnUsage = z.infer<typeof turnUsage>;
+
 export const eventDelta = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("append"),
@@ -613,15 +636,10 @@ export const eventDelta = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("turn_completed"),
-    /** Optional usage stats lifted from the SDK `result` envelope. */
-    usage: z
-      .object({
-        inputTokens: z.number().optional(),
-        outputTokens: z.number().optional(),
-        cacheReadInputTokens: z.number().optional(),
-        cacheCreationInputTokens: z.number().optional(),
-      })
-      .optional(),
+    /** Optional usage stats lifted from the SDK `result` envelope.
+     *  Same shape reused by `subscribeResponse.initialUsage` for the
+     *  resume-time meter seed. */
+    usage: turnUsage.optional(),
   }),
   z.object({
     kind: z.literal("turn_failed"),
@@ -655,6 +673,15 @@ export const subscribeResponse = z.object({
   settled: z.array(timelineItem),
   /** Runtime cursor at subscribe time. iOS may use it for debug/log; live deltas carry their own cursor. */
   cursor: z.number(),
+  /** Optional usage seed for the context meter — extracted by daemon
+   *  from the most recent assistant message in the JSONL (via SDK's
+   *  `getSessionMessages`, whose `message: unknown` carries the raw
+   *  Anthropic envelope with its `usage` field intact). Lets the
+   *  meter render immediately on resume rather than waiting for the
+   *  next live `turn_completed`. Undefined when the session has no
+   *  assistant messages yet or its last assistant message had no
+   *  usage payload (e.g. a tool-only turn). */
+  initialUsage: turnUsage.optional(),
 });
 
 export const unsubscribeCommand = z.object({

@@ -44,6 +44,12 @@ type ChatPanelProps = {
   /** Called on user pick; parent commits however it likes (optimistic
    *  cache mutation, local setter, etc.). */
   onSelectionChange?: (next: ModelSelection) => void;
+  /** Context-window meter for the model picker. Forwarded as-is to
+   *  InputBar — drives both the chip background fill (percentage) and
+   *  the picker menu's header (`Context usage: 145k / 200k`). Parent
+   *  (SessionDetailScreen) computes via
+   *  `useContextUsage(session.latestUsage, selection?.model)`. */
+  contextUsage?: { used: number; max: number; percentage: number };
 };
 
 /**
@@ -109,6 +115,7 @@ export function ChatPanel({
   isRunning,
   selection,
   onSelectionChange,
+  contextUsage,
 }: ChatPanelProps) {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
@@ -407,6 +414,7 @@ export function ChatPanel({
             selection={selection}
             onSelectionChange={onSelectionChange}
             slashContext="in-session"
+            contextUsage={contextUsage}
           />
         </View>
       </KeyboardStickyView>

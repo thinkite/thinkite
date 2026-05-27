@@ -6,6 +6,7 @@ import type {
   EventDelta,
   SessionInfo,
   TimelineItem,
+  TurnUsage,
 } from "@sidecodeapp/protocol";
 import {
   SLASH_COMMANDS,
@@ -49,13 +50,26 @@ export interface RouterDeps {
    * Empty array if the session file is missing — caller distinguishes via
    * UX, not error.
    *
+   * Also returns `initialUsage` extracted from the last assistant
+   * message's raw envelope (SDK's `SessionMessage.message: unknown`
+   * preserves the Anthropic `usage` payload that normalize() then
+   * strips for TimelineItem). subscribe.response forwards it so the
+   * iOS context meter renders immediately on resume rather than
+   * waiting for the next live turn. Undefined when the session has no
+   * assistant messages, or its last assistant message lacked a usage
+   * payload. Computed in the same getSessionMessages() call as the
+   * items — no extra SDK round-trip.
+   *
    * `cwd` is an optional hint. When omitted, SDK scans every project key —
    * robust for fork sessions where the JSONL location isn't deterministic.
    *
    * SDK's `listSessions` is shunned (test noise per feedback file) but
    * `getSessionMessages` is per-id deterministic and safe to use.
    */
-  getMessages: (cliSessionId: string, cwd?: string) => Promise<TimelineItem[]>;
+  getMessages: (
+    cliSessionId: string,
+    cwd?: string,
+  ) => Promise<{ items: TimelineItem[]; initialUsage?: TurnUsage }>;
   /**
    * Per-session runtime manager. G2's subscribe/unsubscribe handlers
    * register their fanout callbacks on the runtime; G3 wires sendPrompt /
@@ -242,7 +256,10 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
       }
       case "getMessages": {
         try {
-          const items = await deps.getMessages(cmd.cliSessionId, cmd.cwd);
+          // getMessages now returns { items, initialUsage? }; this RPC
+          // handler only needs items. initialUsage is consumed by the
+          // subscribe handler below for the resume-time meter seed.
+          const { items } = await deps.getMessages(cmd.cliSessionId, cmd.cwd);
           ctx.send({
             type: "getMessages.response",
             requestId: cmd.requestId,
@@ -266,7 +283,15 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           // (reads JSONL on disk) and runtime.subscribe (registers the
           // live fanout). V0 accepts this — see project_session_replay_model
           // memory; user-perceived gap is bounded by SDK flush latency.
-          const settled = await deps.getMessages(cmd.sessionId);
+          //
+          // `initialUsage` rides on the same getMessages call (no extra
+          // SDK round-trip) — daemon extracts it from the raw envelope
+          // of the last assistant message so iOS's context meter has
+          // something to display on resume. See RouterDeps.getMessages
+          // JSDoc for the longer rationale.
+          const { items: settled, initialUsage } = await deps.getMessages(
+            cmd.sessionId,
+          );
           const cursor = runtime.currentCursor;
 
           // If iOS re-subscribes to the same session on the same connection
@@ -299,6 +324,7 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             sessionId,
             settled,
             cursor,
+            initialUsage,
           });
         } catch (err) {
           ctx.send({
