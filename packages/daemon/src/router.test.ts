@@ -974,6 +974,110 @@ describe("createCommandHandler — sendPrompt", () => {
     );
     expect(applyFlagMock).not.toHaveBeenCalled();
   });
+
+  // ─── V0 slash-command whitelist defense-in-depth ────────────────────────
+  // iOS's `useSlashCommandHandler` does the same check pre-send; these
+  // tests cover the daemon's fallback rejection if iOS misbehaves. Single
+  // source of truth = packages/protocol/src/slash-commands.ts.
+
+  it("unknown slash command → unsupported error, no hasSession call, no runtime", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const hasSession = vi.fn();
+    const writeMeta = vi.fn();
+    const handler = createCommandHandler(
+      makeDeps({ runtimeManager, hasSession, writeSidecodeSession: writeMeta }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "sendPrompt",
+        requestId: "sp-foo",
+        sessionId: "S",
+        text: "/foo bar baz",
+      },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "error",
+      requestId: "sp-foo",
+      code: "unsupported",
+      message: expect.stringContaining("/foo"),
+    });
+    // Defense check happens BEFORE hasSession + writeMeta, so neither
+    // is invoked. Important: a misbehaving client can't trigger session
+    // metadata writes by spamming garbage slashes.
+    expect(hasSession).not.toHaveBeenCalled();
+    expect(writeMeta).not.toHaveBeenCalled();
+    expect(runtimeManager.has("S")).toBe(false);
+  });
+
+  it("intercept-handling slash (/clear) → unsupported error with hint", async () => {
+    const handler = createCommandHandler(makeDeps({}));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "sendPrompt",
+        requestId: "sp-clear",
+        sessionId: "S",
+        text: "/clear",
+      },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "error",
+      requestId: "sp-clear",
+      code: "unsupported",
+      message: expect.stringContaining("intercept-handling"),
+    });
+  });
+
+  it("intercept-handling slash (/model with id) → unsupported error", async () => {
+    // /model in the daemon = client bug. setSessionSelection RPC is the
+    // correct path for runtime model switches.
+    const handler = createCommandHandler(makeDeps({}));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "sendPrompt",
+        requestId: "sp-model",
+        sessionId: "S",
+        text: "/model claude-opus-4-7",
+      },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "error",
+      requestId: "sp-model",
+      code: "unsupported",
+      message: expect.stringContaining("/model"),
+    });
+  });
+
+  it("passthrough slash (/init) → proceeds normally, reaches SDK as raw text", async () => {
+    // Sanity check that the defense doesn't accidentally block whitelisted
+    // passthrough commands. /init flows through unchanged — its prompt
+    // template expansion happens inside the SDK.
+    const handler = createCommandHandler(
+      makeDeps({
+        hasSession: vi.fn().mockResolvedValue(true),
+        queryFactory: emptyQueryFactory(),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "sendPrompt",
+        requestId: "sp-init",
+        sessionId: "S",
+        text: "/init",
+      },
+      ctx,
+    );
+    expect(sent.at(-1)).toEqual({
+      type: "sendPrompt.response",
+      requestId: "sp-init",
+    });
+  });
 });
 
 describe("createCommandHandler — setSessionSelection", () => {

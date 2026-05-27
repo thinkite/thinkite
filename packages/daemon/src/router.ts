@@ -7,6 +7,11 @@ import type {
   SessionInfo,
   TimelineItem,
 } from "@sidecodeapp/protocol";
+import {
+  SLASH_COMMANDS,
+  isWhitelistedCommand,
+  parseSlashCommand,
+} from "@sidecodeapp/protocol";
 import type { CommandHandler } from "./command.js";
 import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
 import type { DesktopSession } from "./desktop/sessions.js";
@@ -387,6 +392,46 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             message: "daemon is shutting down",
           });
           return;
+        }
+
+        // V0 slash-command whitelist (defense-in-depth — iOS's
+        // `useSlashCommandHandler` runs the same check before this RPC
+        // ever fires; if either side has a bug, the other catches it).
+        //
+        // Source of truth: packages/protocol/src/slash-commands.ts
+        //
+        //   - Unknown `/foo`               → unsupported, rejected
+        //   - Whitelisted `passthrough`    → fall through to the SDK as
+        //                                    raw text (`/init`, `/review`,
+        //                                    `/compact`)
+        //   - Whitelisted `intercept`      → rejected — the client should
+        //                                    have dispatched locally
+        //                                    instead of sending text
+        //                                    (`/clear`, `/model`).
+        //
+        // Non-slash text always falls through.
+        const slash = parseSlashCommand(cmd.text);
+        if (slash !== null) {
+          if (!isWhitelistedCommand(slash.name)) {
+            ctx.send({
+              type: "error",
+              requestId: cmd.requestId,
+              code: "unsupported",
+              message: `/${slash.name} isn't a supported sidecode V0 command`,
+            });
+            return;
+          }
+          if (SLASH_COMMANDS[slash.name].handling === "intercept") {
+            ctx.send({
+              type: "error",
+              requestId: cmd.requestId,
+              code: "unsupported",
+              message:
+                `/${slash.name} is an intercept-handling command — ` +
+                `client should dispatch locally, not send as text`,
+            });
+            return;
+          }
         }
 
         try {
