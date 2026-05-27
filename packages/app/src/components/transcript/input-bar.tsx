@@ -1,10 +1,14 @@
 import { type MenuAction, MenuView } from "@react-native-menu/menu";
-import type { ImageAttachment } from "@sidecodeapp/protocol";
+import {
+  type CommandContext,
+  type ImageAttachment,
+  getCommandsForContext,
+} from "@sidecodeapp/protocol";
 import { GlassView } from "expo-glass-effect";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { SymbolView } from "expo-symbols";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -13,6 +17,7 @@ import {
   useColorScheme,
   View,
 } from "react-native";
+import { SlashPanel } from "@/components/transcript/slash-panel";
 import { useModels } from "@/hooks/use-models";
 import { Image } from "@/lib/styled";
 
@@ -108,6 +113,7 @@ export function InputBar({
   isRunning,
   selection,
   onSelectionChange,
+  slashContext,
 }: {
   /** Fired on tap-to-send. `images` carries the compressed base64
    *  payloads ready for daemon's sendPrompt; the local DraftAttachment
@@ -135,12 +141,59 @@ export function InputBar({
    *  local state setter, etc. Omitted = picker is read-only (rarely
    *  needed). */
   onSelectionChange?: (next: ModelSelection) => void;
+  /** Screen the InputBar is mounted in. Drives the slash-command
+   *  picker's visibility + filter. Omit to disable the picker entirely
+   *  (e.g. dev pages that don't want slash UX). The picker filters its
+   *  rows via `getCommandsForContext(slashContext)` and parents are
+   *  expected to also wrap onSend with the matching `useSlashCommand
+   *  Handler({ context: slashContext, ... })` — both pieces use the
+   *  same `@sidecodeapp/protocol` source of truth. */
+  slashContext?: CommandContext;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<DraftAttachment[]>([]);
+  // Tracks the TextInput's text cursor / selection range. Powers the
+  // cursor-aware slash trigger: panel opens only when the segment from
+  // start-of-text up to the cursor starts with `/` and has no space.
+  // Lets the user cursor BACK into a command name to re-open the picker
+  // after they've typed parameter text (e.g. fix a typo in `/modle`).
+  const [textCursor, setTextCursor] = useState({ start: 0, end: 0 });
   const draftIdRef = useRef(0);
   const colorScheme = useColorScheme() ?? "light";
   const hasText = text.length > 0;
+
+  // ─── Slash-command picker state ──────────────────────────────────────
+  // Compute the prefix segment (start-of-text → cursor) and whether
+  // we're in slash mode at all. Both are cheap O(n) string ops; no
+  // need to memoize.
+  const beforeCursor = text.slice(0, textCursor.start);
+  const isCommandMode =
+    slashContext !== undefined &&
+    beforeCursor.startsWith("/") &&
+    !beforeCursor.includes(" ");
+  const commandPrefix = isCommandMode ? beforeCursor.slice(1) : "";
+  // Filter the context's allowed commands by the live prefix. Memoize
+  // since the filter result drives a list render — stable identity
+  // helps the panel skip work when only `text` after a space changes.
+  const filteredCommands = useMemo(() => {
+    if (slashContext === undefined) return [];
+    return getCommandsForContext(slashContext).filter((c) =>
+      c.name.startsWith(commandPrefix),
+    );
+  }, [slashContext, commandPrefix]);
+
+  // IDE-style replace on pick: swap ONLY the command-name segment (from
+  // `/` through the first space, or to end of text if no space), keep
+  // any parameter text after that space. So `/mo|del claude-opus` +
+  // pick `/model` → `/model claude-opus`, cursor at start of params.
+  const pickCommand = (cmdName: string) => {
+    const firstSpace = text.indexOf(" ");
+    const head = `/${cmdName}`;
+    const tail = firstSpace >= 0 ? text.slice(firstSpace) : " ";
+    setText(head + tail);
+    const cursor = head.length + 1; // right after `/cmd ` — at param start
+    setTextCursor({ start: cursor, end: cursor });
+  };
 
   const { data: models } = useModels();
   const currentModel = models?.find((m) => m.model === selection?.model);
@@ -233,6 +286,9 @@ export function InputBar({
     if (result === false) return;
     setText("");
     setImages([]);
+    // textCursor doesn't need an explicit reset: iOS clamps the
+    // selection when value shrinks and fires onSelectionChange with the
+    // clamped position, which React then writes back into state.
   };
 
   const sendIconName: "arrow.up" | "waveform" | "stop.fill" = isRunning
@@ -243,6 +299,26 @@ export function InputBar({
 
   return (
     <View className="px-4">
+      {/* SlashPanel as absolute overlay above the composer.
+          `bottom-full` anchors the panel's bottom edge to the top of
+          this wrap (outside, above); `pb-2` adds the 8pt gap to the
+          GlassView below. Briefly obscures GitStatusBar (a sibling
+          above InputBar in ChatPanel) — acceptable trade since slash
+          mode is a focused state. `pointerEvents="box-none"` lets
+          taps outside the panel's rows pass through (e.g. dismissing
+          the keyboard). */}
+      {isCommandMode && (
+        <View
+          pointerEvents="box-none"
+          // `bottom-full` = bottom:100% → panel's bottom edge sits at
+          // the top of this wrap (outside it, above). `left-4 right-4`
+          // matches the wrap's px-4 padding so the panel aligns with
+          // the GlassView below. `pb-2` adds the 8pt visual gap.
+          className="absolute left-4 right-4 bottom-full pb-2"
+        >
+          <SlashPanel commands={filteredCommands} onPick={pickCommand} />
+        </View>
+      )}
       <GlassView
         isInteractive
         style={{
@@ -299,6 +375,11 @@ export function InputBar({
             numberOfLines={5}
             value={text}
             onChangeText={setText}
+            // Track cursor / selection so the slash picker can detect
+            // command mode (start-of-text→cursor prefix). Cheap — fires
+            // on any cursor move incl. typing.
+            selection={textCursor}
+            onSelectionChange={(e) => setTextCursor(e.nativeEvent.selection)}
             placeholder="Reply to Claude"
             // placeholderTextColor is a native prop with no className
             // equivalent — keep the colorScheme ternary for this one.

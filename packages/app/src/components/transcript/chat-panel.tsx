@@ -406,6 +406,7 @@ export function ChatPanel({
             isRunning={isRunning}
             selection={selection}
             onSelectionChange={onSelectionChange}
+            slashContext="in-session"
           />
         </View>
       </KeyboardStickyView>

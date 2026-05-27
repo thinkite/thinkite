@@ -186,6 +186,7 @@ export default function NewSessionScreen() {
               isRunning={false}
               selection={selection ?? undefined}
               onSelectionChange={setSelection}
+              slashContext="new-session"
             />
           </View>
         </KeyboardAvoidingView>
