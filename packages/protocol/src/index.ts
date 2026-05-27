@@ -12,6 +12,16 @@ export {
   dtlsFingerprintTranscript,
   extractDtlsFingerprint,
 } from "./sdp-fingerprint.js";
+export {
+  type CommandContext,
+  type CommandHandling,
+  SLASH_COMMANDS,
+  type SlashCommandName,
+  type SlashCommandSpec,
+  getCommandsForContext,
+  isWhitelistedCommand,
+  parseSlashCommand,
+} from "./slash-commands.js";
 
 // ─── Protocol version ──────────────────────────────────────────────────────
 //
