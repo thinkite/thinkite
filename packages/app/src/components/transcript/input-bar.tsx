@@ -113,8 +113,12 @@ export function InputBar({
    *  payloads ready for daemon's sendPrompt; the local DraftAttachment
    *  ids are stripped (parent doesn't need them). Send is gated by
    *  hasText OR images.length > 0 so an images-only message is also
-   *  valid (Claude vision accepts an image-only user turn). */
-  onSend?: (text: string, images?: ImageAttachment[]) => void;
+   *  valid (Claude vision accepts an image-only user turn).
+   *
+   *  Return `false` to keep the input — used by slash-command rejection
+   *  paths (unknown command, wrong screen, invalid arg). Any other
+   *  return (void / true / Promise) clears the input as usual. */
+  onSend?: (text: string, images?: ImageAttachment[]) => boolean | void;
   onInterrupt?: () => void;
   isRunning?: boolean;
   /** Current model selection. InputBar is a fully controlled picker —
@@ -220,7 +224,13 @@ export function InputBar({
     // can still read the current selection from its own source of truth
     // (useSessions for resume, local state for new-session) when seeding
     // initial query options.
-    onSend?.(text, payload);
+    // `onSend` may return `false` to signal "rejected, keep input"
+    // (used by `useSlashCommandHandler` when a slash command isn't
+    // whitelisted, isn't available on this screen, or has an invalid
+    // arg — user typically wants to fix a typo rather than retype).
+    // Anything else (void / true / Promise) = "consumed, clear input".
+    const result = onSend?.(text, payload);
+    if (result === false) return;
     setText("");
     setImages([]);
   };

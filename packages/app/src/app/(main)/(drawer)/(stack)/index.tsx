@@ -16,6 +16,7 @@ import {
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { useModels } from "@/hooks/use-models";
+import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
 import { setPendingPrompt } from "@/lib/submission-store";
 
 /**
@@ -76,7 +77,12 @@ export default function NewSessionScreen() {
     setSelection({ model: def.model });
   }, [models, selection]);
 
-  const handleSend = useCallback(
+  // Raw send — invoked for non-slash text AND for whitelisted
+  // passthrough commands (/init, /review). On new-session only those
+  // two passthrough commands are reachable; intercept commands aren't
+  // in the new-session picker so the slash hook never dispatches
+  // /clear or /model from here.
+  const rawSend = useCallback(
     (text: string, images?: ImageAttachment[]) => {
       if (cwd === undefined) {
         // Placeholder state — user hasn't picked and there's no
@@ -102,6 +108,11 @@ export default function NewSessionScreen() {
     },
     [cwd, setLastUsedCwd, selection],
   );
+
+  const handleSend = useSlashCommandHandler({
+    context: "new-session",
+    onPassthrough: rawSend,
+  });
 
   const openDrawer = useCallback(() => {
     navigation.dispatch(DrawerActions.openDrawer());

@@ -20,6 +20,7 @@ import {
 } from "@/components/transcript/input-bar";
 import { TextBlock } from "@/components/transcript/text-block";
 import { ToolBlock } from "@/components/transcript/tool-block";
+import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 import { consumePendingPrompt } from "@/lib/submission-store";
 import type { RenderBlock } from "@/lib/transcript-blocks";
@@ -186,7 +187,11 @@ export function ChatPanel({
     [reportInset],
   );
 
-  const onSend = useCallback(
+  // Raw sendPrompt — invoked for non-slash text AND for whitelisted
+  // passthrough commands (/init, /review, /compact). Intercept-handling
+  // commands (/clear, /model) never reach here — `useSlashCommandHandler`
+  // dispatches them locally instead. See the hook's file header.
+  const rawSend = useCallback(
     (text: string, images?: ImageAttachment[]) => {
       if (!client) return;
       // cwd is required for the SDK's project-key resolution on
@@ -212,6 +217,12 @@ export function ChatPanel({
     },
     [client, cliSessionId, cwd, selection],
   );
+
+  const onSend = useSlashCommandHandler({
+    context: "in-session",
+    sessionId: cliSessionId,
+    onPassthrough: rawSend,
+  });
 
   const onInterrupt = useCallback(() => {
     if (!client) return;
