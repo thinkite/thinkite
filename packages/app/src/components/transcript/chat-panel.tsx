@@ -282,13 +282,16 @@ export function ChatPanel({
         ref={listRef}
         data={blocks}
         keyExtractor={(b) => b.id}
-        renderItem={({ item }) =>
-          item.kind === "text" ? (
-            <TextBlock block={item} />
-          ) : (
-            <ToolBlock block={item} />
-          )
-        }
+        renderItem={({ item }) => {
+          if (item.kind === "text") return <TextBlock block={item} />;
+          if (item.kind === "tool") return <ToolBlock block={item} />;
+          // `compact_divider` + `compact_summary` — placeholders render
+          // nothing for this commit. Actual components (divider chip +
+          // tappable summary row that opens the shared transcript sheet)
+          // land in the next Slice 2 commits alongside the reducer
+          // wiring + sheet generalization.
+          return null;
+        }}
         // Manual top inset to clear the transparent Stack.Header.
         // With `contentInsetAdjustmentBehavior="never"` below, iOS no
         // longer auto-pads the top; we have to do it ourselves.

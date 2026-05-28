@@ -551,6 +551,53 @@ export const timelineItem = z.discriminatedUnion("type", [
     stopReason: assistantStopReason.optional(),
   }),
   toolCallItem,
+  // ─── Compact divider ─────────────────────────────────────────────────
+  // Visual marker for "the conversation was compacted here." Produced by:
+  //   - normalize() when it sees a compact_boundary system message in
+  //     `getSessionMessages({ includeSystemMessages: true })` output
+  //   - reducer when it consumes a live `compact_applied` EventDelta
+  // Renders as a horizontal divider + caption ("Context compacted ·
+  // 215k → 18k (manual)"). UI never lets the user mistake it for a
+  // chat message — it's chrome, not content.
+  z.object({
+    type: z.literal("compact_divider"),
+    /** SDK SessionMessage uuid of the originating compact_boundary
+     *  system message. Stable key + matches what JSONL persists, so
+     *  live divider and resume divider have identical identity. */
+    uuid: z.string(),
+    /** Manual `/compact` vs SDK auto-compact. Caption tag for the
+     *  divider; doesn't change layout. */
+    trigger: z.enum(["manual", "auto"]),
+    /** Token counts before / after compaction (from compactMetadata).
+     *  Powers the divider's `215k → 18k` caption. */
+    preTokens: z.number(),
+    postTokens: z.number(),
+  }),
+  // ─── Compact summary ─────────────────────────────────────────────────
+  // The post-compact "what we talked about" message that SDK injects as
+  // the model's new context anchor — a user-role message in JSONL with
+  // `isCompactSummary: true`, always parented to the preceding
+  // compact_boundary. iOS surfaces this as a tappable row that opens
+  // the shared transcript sheet with the full text; rendered inline
+  // as a chip + truncated preview rather than a full user-bubble
+  // (avoids being mistaken for something the user typed).
+  //
+  // Produced by:
+  //   - normalize() detecting `type === "user" && isCompactSummary === true`
+  //     on cold-load via getSessionMessages
+  //   - daemon's live handleUserEnvelope branch on the same flag during
+  //     the post-compact stream
+  z.object({
+    type: z.literal("compact_summary"),
+    /** Original user-message uuid in the JSONL. Stable across live +
+     *  resume so the divider chip → sheet handoff has consistent
+     *  identity. */
+    uuid: z.string(),
+    /** Full summary text. Can be multi-KB (the SDK's structured
+     *  summary covers prior conversation in detail). iOS truncates
+     *  for the inline preview and renders full-text in the sheet. */
+    text: z.string(),
+  }),
 ]);
 export type TimelineItem = z.infer<typeof timelineItem>;
 
@@ -647,6 +694,45 @@ export const eventDelta = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("turn_canceled"),
+  }),
+  // ─── Compact lifecycle (nested inside turn_started/turn_completed) ───
+  // SDK runs compaction either when user invokes `/compact` or when its
+  // own auto-compact heuristic fires before processing a normal turn.
+  // Either way it happens INSIDE an active turn — turn_started has
+  // already fired, turn_completed hasn't yet. Compact UI lives in its
+  // own state slot (`isCompacting`) parallel to `isRunning` so the
+  // "Compacting context…" indicator can show alongside the normal
+  // running state.
+  z.object({
+    /** Emitted when the daemon sees the SDK's transient
+     *  `SDKStatusMessage { status: 'compacting' }` (not persisted to
+     *  JSONL — live-only signal). Carries no trigger field because
+     *  status messages don't know manual-vs-auto; the divider added
+     *  by `compact_applied` carries that. */
+    kind: z.literal("compact_started"),
+  }),
+  z.object({
+    /** Emitted when the daemon sees `SDKCompactBoundaryMessage`. iOS
+     *  reducer responds by (a) filtering `items` to keep only
+     *  `preservedUuids`, (b) appending a `compact_divider` TimelineItem
+     *  for the visual marker, (c) flipping `isCompacting` back to
+     *  false. The next live `turn_completed.usage` then naturally
+     *  drops the context meter. */
+    kind: z.literal("compact_applied"),
+    trigger: z.enum(["manual", "auto"]),
+    preTokens: z.number(),
+    postTokens: z.number(),
+    durationMs: z.number().optional(),
+    /** UUIDs of messages that survive compaction (preserved tail).
+     *  Undefined / empty = full compaction (the 99% case — manual
+     *  /compact + auto-compact both go this way). Defined only when
+     *  Claude Code's partial-compaction path fires (REPL multi-select
+     *  UI), which sidecode rarely sees. */
+    preservedUuids: z.array(z.string()).optional(),
+    /** Mirror of the compact_boundary message's uuid — used by the
+     *  reducer as the divider TimelineItem's uuid so live + resume
+     *  paths render the same identity. */
+    uuid: z.string(),
   }),
 ]);
 export type EventDelta = z.infer<typeof eventDelta>;

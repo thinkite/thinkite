@@ -159,5 +159,16 @@ export function applyDelta(
       return { ...state, isRunning: false, lastError: delta.error, cursor };
     case "turn_canceled":
       return { ...state, isRunning: false, cursor };
+    case "compact_started":
+      // STUB — full handling (set isCompacting:true) lands in the next
+      // Slice 2 commit. For now just keep cursor in sync so the switch
+      // is exhaustive and we don't drop the delta on the floor; UI
+      // doesn't show a banner yet because the state field isn't here.
+      return { ...state, cursor };
+    case "compact_applied":
+      // STUB — full handling (prune items by preservedUuids, append
+      // compact_divider TimelineItem, flip isCompacting:false) lands
+      // in the next Slice 2 commit. Same cursor-only no-op as above.
+      return { ...state, cursor };
   }
 }
