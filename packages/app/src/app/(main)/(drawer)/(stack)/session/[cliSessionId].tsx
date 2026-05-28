@@ -5,8 +5,8 @@ import { ActivityIndicator, Text, View } from "react-native";
 import { ChatPanel } from "@/components/transcript/chat-panel";
 import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 import { useContextUsage } from "@/hooks/use-context-usage";
-import { useLiveSession } from "@/hooks/use-live-session";
 import { useModels } from "@/hooks/use-models";
+import { useSessionTranscript } from "@/hooks/use-session-transcript";
 import { useSessions } from "@/hooks/use-sessions";
 import { useSetSessionSelection } from "@/hooks/use-set-session-selection";
 import { flattenToBlocks } from "@/lib/transcript-blocks";
@@ -45,7 +45,7 @@ export default function SessionDetailScreen() {
     title?: string;
     cwd?: string;
   }>();
-  const session = useLiveSession(cliSessionId);
+  const session = useSessionTranscript(cliSessionId);
   const navigation = useNavigation();
 
   // Log turn-failure errors. UI is intentionally absent for V0 —

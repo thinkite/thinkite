@@ -2,7 +2,7 @@ import {
   computeContextUsage,
   type ContextUsage,
 } from "@/lib/context-usage";
-import type { TurnUsage } from "@/lib/timeline-reducer";
+import type { TurnUsage } from "@sidecodeapp/protocol";
 import { useModels } from "@/hooks/use-models";
 
 /**

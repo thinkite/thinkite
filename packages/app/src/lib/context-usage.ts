@@ -1,4 +1,4 @@
-import type { TurnUsage } from "@/lib/timeline-reducer";
+import type { TurnUsage } from "@sidecodeapp/protocol";
 
 /**
  * Pure derivation for the context-window meter. Lives in `lib/`
