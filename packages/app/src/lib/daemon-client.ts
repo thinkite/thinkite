@@ -958,33 +958,6 @@ export class Transport {
 // ─── Subscription registry types ────────────────────────────────────────
 
 /**
- * Public 3-state machine for a `Subscription`. Spelled out as a string
- * union rather than an enum so consumers can `switch (sub.state)` with
- * exhaustiveness and TS narrowing.
- *
- *   - `subscribing`: facade has the Subscription in its registry but
- *     no live `subscribe` RPC has resolved yet. Covers (a) first mount
- *     before the transport is up, (b) actively-in-flight RPC after
- *     transport is up, (c) post-reconnect re-attach. From consumer
- *     POV all three are "no events flowing, show loading."
- *   - `subscribed`: the subscribe RPC resolved. Live events are
- *     flowing through `onEvent`. `isUpToDate` distinguishes
- *     "still catching up on replay events from a recent reconnect"
- *     from "fully live."
- *   - `unsubscribed`: terminal. Consumer called `.unsubscribe()`;
- *     facade removed from registry and (if transport was up) sent the
- *     unsubscribe RPC. Won't be revived.
- *
- * No `errored` terminal state in V0 — every error we'd see in our
- * 1-daemon-1-client model is recoverable (network blip, daemon
- * restart with epoch mismatch → cold-path fallback). `lastError`
- * field carries transient failures so UI can render an "offline"
- * badge while state stays `subscribing`. Add `errored` if/when we
- * grow non-retryable cases (permission denied, session deleted).
- */
-export type SubscriptionState = "subscribing" | "subscribed" | "unsubscribed";
-
-/**
  * Payload delivered to `onSubscribed`. The fields distinguish the two
  * RPC outcomes:
  *
@@ -1010,45 +983,41 @@ export interface SubscriptionAttached {
 }
 
 /**
- * Per-session subscription handle owned by the `DaemonClient` facade.
- * Internal state (`_cursor`, `_epoch`, `_currentUnsubscribe`,
- * `_targetCursor`) is leading-underscored — public consumers should
- * only read `state`, `isUpToDate`, `lastError` and call `unsubscribe()`.
+ * Opaque per-session subscription handle owned by the `DaemonClient`
+ * facade. Public surface is just `unsubscribe()` — everything else is
+ * internal bookkeeping for the registry's replay-on-reconnect logic.
  *
- * One-shot lifecycle: created by `daemonClient.subscribe(...)`, lives
- * across any number of transport reconnects (re-attached by the
- * facade's registry replay), terminates on `.unsubscribe()`.
+ * State fields are all leading-underscored to signal "facade-only".
+ * No public observable state machine: V0 consumers don't need to
+ * render "subscribing" / "catching up" / "errored" badges — the
+ * useDaemonClient hook's `connectionStatus` covers the offline UX.
+ * If/when we add per-subscription error UI, expose what's needed at
+ * that point — adding fields is non-breaking.
+ *
+ * Lifecycle: created by `daemonClient.subscribe(...)`, lives across
+ * any number of transport reconnects (re-attached by the facade's
+ * registry replay), terminates on `.unsubscribe()`.
  */
 export class Subscription {
-  state: SubscriptionState = "subscribing";
-  /** True iff the consumer's view is caught up with daemon's current
-   *  cursor as of the most recent attach. Set to false during
-   *  `subscribing` AND during the brief catch-up window after a warm-
-   *  path resume (between subscribe response and the last replayed
-   *  event). UI uses this for "loading" vs "live" affordances. */
-  isUpToDate = false;
-  /** Most recent transient error from a failed attach attempt. Cleared
-   *  on the next successful attach. Does NOT block retries — the
-   *  facade keeps trying on every transport swap. */
-  lastError: Error | null = null;
-
-  /** Last cursor we've consumed (live event OR set from response).
-   *  Passed back as `sinceCursor` on the next attach attempt. Null
-   *  until the first successful subscribe response. */
+  /** Internal state for race detection during attach/detach handoffs
+   *  — NOT public observable state. Three values:
+   *    - "subscribing": registered but no in-flight subscribe RPC has
+   *      resolved on the current transport (or no transport attached)
+   *    - "subscribed": last subscribe RPC resolved; live events flow
+   *    - "unsubscribed": terminal; .unsubscribe() removed from registry
+   *  Used only to detect "consumer raced us during an await" — see
+   *  the cast sites in attachSubscription. */
+  _state: "subscribing" | "subscribed" | "unsubscribed" = "subscribing";
+  /** Last cursor consumed via onEvent OR set from a cold-path
+   *  response. Passed back as `sinceCursor` on the next attach.
+   *  Null until the first successful subscribe response. */
   _cursor: number | null = null;
-  /** Daemon's epoch as of the most recent subscribe response. Passed
-   *  back as `sinceEpoch` on the next attach attempt. Null until first
+  /** Daemon epoch from the most recent subscribe response. Passed
+   *  back as `sinceEpoch` on the next attach. Null until first
    *  successful attach. */
   _epoch: string | null = null;
-  /** Cursor target from the most recent subscribe response. Once
-   *  `_cursor >= _targetCursor`, isUpToDate flips true. For cold path
-   *  this is set equal to response.cursor and the very next event
-   *  (cursor > target) keeps isUpToDate true. For warm path
-   *  isUpToDate stays false until the replay catches up. */
-  _targetCursor: number | null = null;
   /** Transport-level unsubscribe thunk for the current attachment, or
-   *  null when no transport is attached (initial mount / between
-   *  transports during reconnect). */
+   *  null when no transport is attached. */
   _currentUnsubscribe: (() => Promise<void>) | null = null;
 
   constructor(
@@ -1056,7 +1025,6 @@ export class Subscription {
     readonly callbacks: {
       onEvent: (delta: EventDelta) => void;
       onSubscribed: (info: SubscriptionAttached) => void;
-      onStateChange?: (sub: Subscription) => void;
     },
     private readonly facadeUnsubscribe: (sub: Subscription) => Promise<void>,
   ) {}
@@ -1064,7 +1032,7 @@ export class Subscription {
   /** Consumer entrypoint. Removes from facade registry; if a transport
    *  is currently attached, sends the unsubscribe RPC. Idempotent. */
   async unsubscribe(): Promise<void> {
-    if (this.state === "unsubscribed") return;
+    if (this._state === "unsubscribed") return;
     await this.facadeUnsubscribe(this);
   }
 }
@@ -1148,108 +1116,89 @@ export class DaemonClient {
     });
     for (const sub of this.subs) {
       sub._currentUnsubscribe = null;
-      if (sub.state === "subscribed") {
-        sub.state = "subscribing";
-        sub.isUpToDate = false;
-        sub.callbacks.onStateChange?.(sub);
-      }
+      // Flag for race-detection in the next attach attempt — see the
+      // cast sites in attachSubscription. Won't fire if sub is already
+      // unsubscribed (idempotent).
+      if (sub._state === "subscribed") sub._state = "subscribing";
     }
   }
 
   private async attachSubscription(t: Transport, sub: Subscription): Promise<void> {
-    if (sub.state === "unsubscribed") return;
-    sub.state = "subscribing";
-    sub.isUpToDate = false;
-    sub.lastError = null;
-    sub.callbacks.onStateChange?.(sub);
+    if (sub._state === "unsubscribed") return;
+    sub._state = "subscribing";
 
-    const haveResumeHints = sub._cursor !== null && sub._epoch !== null;
-    const opts = haveResumeHints
-      ? { sinceCursor: sub._cursor ?? undefined, sinceEpoch: sub._epoch ?? undefined }
-      : {};
+    const opts =
+      sub._cursor !== null && sub._epoch !== null
+        ? { sinceCursor: sub._cursor, sinceEpoch: sub._epoch }
+        : {};
 
     try {
       const result = await t.subscribe(
         sub.cliSessionId,
-        // Wrap onEvent to: (a) update the resume cursor with the wire
-        // cursor verbatim — single source of truth, robust against
-        // future daemon-side batching / skipping; (b) flip isUpToDate
-        // when we've caught up with the target cursor recorded on the
-        // most recent subscribe response.
+        // Wrap onEvent to update the resume cursor with the wire cursor
+        // verbatim — single source of truth, robust against future
+        // daemon-side batching / skipping.
         (cursor, delta) => {
           sub._cursor = cursor;
-          if (
-            !sub.isUpToDate &&
-            sub._targetCursor !== null &&
-            cursor >= sub._targetCursor
-          ) {
-            sub.isUpToDate = true;
-            sub.callbacks.onStateChange?.(sub);
-          }
           sub.callbacks.onEvent(delta);
         },
         opts,
       );
-      // TS narrows `sub.state` to "subscribing" based on the assignment
+      // TS narrows `sub._state` to "subscribing" based on the assignment
       // at the top of this function, but consumer can call .unsubscribe()
       // during the await — re-cast to acknowledge the mutability.
-      if ((sub.state as SubscriptionState) === "unsubscribed") {
+      if ((sub._state as Subscription["_state"]) === "unsubscribed") {
         // Consumer raced us — drop the freshly-attached handle.
         void result.unsubscribe().catch(() => {});
         return;
       }
       sub._epoch = result.epoch;
-      sub._targetCursor = result.cursor;
       sub._currentUnsubscribe = result.unsubscribe;
-      sub.state = "subscribed";
-      // _cursor semantics = "highest cursor of an event/snapshot the
-      // consumer has actually seen". Two paths set it differently:
-      //   - Cold (recovered:false): the consumer is about to receive
-      //     `settled[]` via onSubscribed which covers everything up
-      //     to result.cursor — we've consumed that. Set _cursor =
-      //     result.cursor so the next reconnect uses it as resume
-      //     hint AND we're immediately up-to-date.
-      //   - Warm (recovered:true): leave _cursor alone. It's whatever
-      //     value the onEvent wrapper last set on the prior attach
-      //     (= the last live event seen pre-disconnect, which we
-      //     sent as sinceCursor). The replay events about to arrive
-      //     will advance it forward until it reaches _targetCursor.
-      if (!result.recovered) {
-        sub._cursor = result.cursor;
-      }
-      sub.isUpToDate =
-        sub._cursor !== null && sub._cursor >= sub._targetCursor;
+      sub._state = "subscribed";
+      // _cursor semantics = "highest cursor consumer has seen".
+      //   - Cold (recovered:false): settled[] in onSubscribed covers
+      //     everything up to result.cursor — record that as our high
+      //     water so the next reconnect resumes from here.
+      //   - Warm (recovered:true): leave _cursor alone (set by the
+      //     last onEvent on the prior attach, = sinceCursor we sent).
+      //     The replay events about to arrive will advance it forward.
+      if (!result.recovered) sub._cursor = result.cursor;
       sub.callbacks.onSubscribed({
         recovered: result.recovered,
         settled: result.settled,
         cursor: result.cursor,
         initialUsage: result.initialUsage,
       });
-      sub.callbacks.onStateChange?.(sub);
-    } catch (err) {
-      // Same mutability re-cast as above — consumer may have raced us.
-      if ((sub.state as SubscriptionState) === "unsubscribed") return;
-      sub.lastError = err instanceof Error ? err : new Error(String(err));
-      // Stay in 'subscribing' state — next transport attach will retry.
-      // Consumer sees lastError and can render an offline badge.
-      sub.callbacks.onStateChange?.(sub);
+    } catch {
+      // Transport-level failure (RPC reject, transport closed
+      // mid-await). Leave sub._state as "subscribing" — the next
+      // _attachTransport will retry. Swallowed silently because the
+      // offline UX is owned by connectionStatus, not per-sub error
+      // surface; we don't want to spam console with expected errors
+      // during reconnect storms.
     }
   }
 
   /**
    * Subscribe to a session's live event stream with auto-resume across
-   * transport reconnects. Returns a `Subscription` handle the consumer
-   * can introspect (`state`, `isUpToDate`, `lastError`) and unsubscribe
-   * via `.unsubscribe()`. Safe to call at any time — if the underlying
-   * transport isn't up yet, the facade queues the subscribe to fire on
-   * the next `_attachTransport`.
+   * transport reconnects. Returns a `Subscription` handle whose only
+   * public method is `.unsubscribe()`. Safe to call at any time — if
+   * the underlying transport isn't up yet, the facade queues the
+   * subscribe to fire on the next `_attachTransport`.
+   *
+   * `onSubscribed.recovered === false` is the consumer's signal to
+   * truncate its local cache and ingest the response's `settled[]`
+   * fresh — happens on first subscribe AND on reconnect when the
+   * daemon couldn't serve incrementally (epoch mismatch / cursor
+   * predates ring). `recovered === true` means the consumer's
+   * existing collection is still valid; subsequent `onEvent` calls
+   * fill the gap.
    */
   subscribe(
     cliSessionId: string,
     callbacks: {
       onEvent: (delta: EventDelta) => void;
       onSubscribed: (info: SubscriptionAttached) => void;
-      onStateChange?: (sub: Subscription) => void;
     },
   ): Subscription {
     const sub = new Subscription(
@@ -1265,11 +1214,10 @@ export class DaemonClient {
   }
 
   private async removeSubscription(sub: Subscription): Promise<void> {
-    sub.state = "unsubscribed";
+    sub._state = "unsubscribed";
     this.subs.delete(sub);
     const unsub = sub._currentUnsubscribe;
     sub._currentUnsubscribe = null;
-    sub.callbacks.onStateChange?.(sub);
     if (unsub !== null) {
       try {
         await unsub();

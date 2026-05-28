@@ -105,7 +105,15 @@ export function useSessionTranscript(cliSessionId: string) {
   // every transport reconnect — facade re-attaches with our sinceCursor
   // + sinceEpoch and replays the gap automatically. We only need to
   // unsubscribe on unmount + sessionId change.
+  //
+  // Gated on `!liveQueryLoading`: the collection is in 'pending' state
+  // until its queryFn first resolves; calling writeInsert/writeDelete
+  // before then throws `SyncNotInitializedError`. Since subscribe RPC
+  // and the collection's getMessages RPC race (both ~30-100ms), the
+  // subscribe response can arrive before queryFn resolves — wait until
+  // useLiveQuery's hydration completes before attaching.
   useEffect(() => {
+    if (liveQueryLoading) return;
     let active = true;
     setIsSubLoading(true);
 
@@ -215,7 +223,7 @@ export function useSessionTranscript(cliSessionId: string) {
       active = false;
       void sub.unsubscribe();
     };
-  }, [client, cliSessionId, collection]);
+  }, [client, cliSessionId, collection, liveQueryLoading]);
 
   // Mirror old useLiveSession return shape so call sites don't need
   // to rename properties. Old field `isInitialLoading` maps directly;
