@@ -200,7 +200,6 @@ export function ChatPanel({
   // dispatches them locally instead. See the hook's file header.
   const rawSend = useCallback(
     (text: string, images?: ImageAttachment[]) => {
-      if (!client) return;
       // cwd is required for the SDK's project-key resolution on
       // `--resume`. For sessions opened from the list, cwd is plumbed
       // through route params; deeplink / direct nav (V0.5+) will need
@@ -232,7 +231,6 @@ export function ChatPanel({
   });
 
   const onInterrupt = useCallback(() => {
-    if (!client) return;
     void client.interrupt(cliSessionId).catch((err) => {
       console.error("interrupt failed", err);
     });
@@ -259,7 +257,6 @@ export function ChatPanel({
   const sentInitialRef = useRef(false);
   useEffect(() => {
     if (sentInitialRef.current) return;
-    if (!client) return;
     const pending = consumePendingPrompt(cliSessionId);
     if (!pending) return;
     sentInitialRef.current = true;

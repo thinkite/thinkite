@@ -15,6 +15,7 @@ import {
   decodePairOffer,
   getPairedDaemon,
   type PairedDaemon,
+  Transport,
 } from "./daemon-client";
 import { loadOrCreateIdentity } from "./identity";
 
@@ -34,10 +35,15 @@ const reconnectDelayMs = (attempt: number): number =>
  * exponential-backoff sequence. `attempt === 0` means "first try since
  * pair / reset / mount". On a successful connect the counter resets so
  * that a brief drop heals quickly with a 1.5s retry, not a 30s one.
+ *
+ * Post-facade-refactor: state no longer carries the live client (the
+ * `DaemonClient` facade is stable for the Provider's lifetime and held
+ * in a ref). State is purely the connection-status machine; consumers
+ * always get back the same facade instance via context.
  */
 type DaemonState =
   | { status: "connecting"; attempt: number }
-  | { status: "ready"; client: DaemonClient }
+  | { status: "ready" }
   | { status: "offline"; reason?: string; attempt: number }
   | { status: "unpaired" }
   | { status: "error"; error: Error };
@@ -109,6 +115,10 @@ export function statusLabel(status: ConnectionStatus | null): string {
 }
 
 interface DaemonClientContextValue {
+  /** Stable facade reference — same instance for the Provider's
+   *  lifetime. Use this for all RPCs; the underlying Transport gets
+   *  swapped on each reconnect transparently. */
+  client: DaemonClient;
   state: DaemonState;
   paired: PairedDaemon | null;
   initialized: boolean;
@@ -171,7 +181,18 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   // detects supersession by comparing its captured epoch to the current
   // value; mismatch = bail out without touching state.
   const epochRef = useRef(0);
-  const clientRef = useRef<DaemonClient | null>(null);
+  // Stable facade — instantiated ONCE per Provider mount and kept alive
+  // across every transport reconnect. The Transport instance comes and
+  // goes (one per successful WebRTC handshake); the facade swaps it via
+  // _attachTransport / _detachTransport without changing this ref's
+  // identity. Consumers bind to this object and never see a null /
+  // re-identified `client`.
+  const facadeRef = useRef<DaemonClient | null>(null);
+  if (facadeRef.current === null) {
+    facadeRef.current = new DaemonClient();
+  }
+  const facade = facadeRef.current;
+  const transportRef = useRef<Transport | null>(null);
   // Pending reconnect schedule. Cleared on user-initiated transitions
   // (reset / pair / unpair) and on provider unmount.
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -242,8 +263,13 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
       const epoch = epochRef.current;
 
       clearReconnectTimer();
-      clientRef.current?.close();
-      clientRef.current = null;
+      // Detach BEFORE closing — facade re-arms its readyPromise so any
+      // in-flight RPC blocks until the next attach instead of resolving
+      // against a dead transport. Then close the old transport.
+      const prevTransport = transportRef.current;
+      transportRef.current = null;
+      if (prevTransport !== null) facade._detachTransport();
+      prevTransport?.close();
       shouldReconnectRef.current = true;
       setState({ status: "connecting", attempt });
 
@@ -263,9 +289,9 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
           // through the connecting + offline window. Decoupled from the
           // connection state machine.
           setPaired(loaded);
-          let client: DaemonClient;
+          let transport: Transport;
           try {
-            client = await DaemonClient.reconnect(identity, loaded);
+            transport = await Transport.reconnect(identity, loaded);
           } catch (err) {
             if (epoch !== epochRef.current) return;
             if (everConnectedRef.current && shouldReconnectRef.current) {
@@ -298,13 +324,18 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
             return;
           }
           if (epoch !== epochRef.current) {
-            client.close();
+            transport.close();
             return;
           }
-          client.setOnUnexpectedClose(() => handleUnexpectedClose(epoch));
+          transport.setOnUnexpectedClose(() => handleUnexpectedClose(epoch));
           everConnectedRef.current = true;
-          clientRef.current = client;
-          setState({ status: "ready", client });
+          transportRef.current = transport;
+          // Attach to the stable facade — readyPromise resolves and
+          // every registered Subscription replays against the new
+          // transport (with sinceCursor + sinceEpoch hints for
+          // incremental resume).
+          facade._attachTransport(transport);
+          setState({ status: "ready" });
           setInitialized(true);
         } catch (err) {
           if (epoch !== epochRef.current) return;
@@ -318,10 +349,10 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
     },
     // handleBootRetry / handleUnexpectedClose are useEffectEvent —
     // stable-identity by contract, intentionally excluded from deps.
-    [clearReconnectTimer],
+    [clearReconnectTimer, facade],
   );
 
-  // First-time pair via a freshly-scanned / pasted offer. The DaemonClient
+  // First-time pair via a freshly-scanned / pasted offer. The Transport.pair
   // call persists PairedDaemon on success, so subsequent boots skip the
   // pair screen. We bump the epoch to invalidate any in-flight connect()
   // attempt (e.g. if connect() lost the race against pair()).
@@ -346,31 +377,36 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
       try {
         const identity = await loadOrCreateIdentity();
         const offer = decodePairOffer(offerB64);
-        const client = await DaemonClient.pair(identity, offer);
+        const transport = await Transport.pair(identity, offer);
         if (epoch !== epochRef.current) {
-          client.close();
+          transport.close();
           return;
         }
-        // DaemonClient.pair persists PairedDaemon synchronously before
+        // Transport.pair persists PairedDaemon synchronously before
         // resolving, so this read always sees the freshly-written record.
         const loaded = await getPairedDaemon();
         if (!loaded) {
           // Defensive — shouldn't happen, but if SecureStore lied we'd
           // rather fall through to error than render `ready` with no
           // `paired`.
-          client.close();
+          transport.close();
           throw new Error("paired record missing after successful pair");
         }
         if (epoch !== epochRef.current) {
-          client.close();
+          transport.close();
           return;
         }
-        clientRef.current?.close();
-        client.setOnUnexpectedClose(() => handleUnexpectedClose(epoch));
+        // Swap: detach old transport first, close it, attach new one.
+        const prevTransport = transportRef.current;
+        transportRef.current = null;
+        if (prevTransport !== null) facade._detachTransport();
+        prevTransport?.close();
+        transport.setOnUnexpectedClose(() => handleUnexpectedClose(epoch));
         everConnectedRef.current = true;
-        clientRef.current = client;
+        transportRef.current = transport;
+        facade._attachTransport(transport);
         setPaired(loaded);
-        setState({ status: "ready", client });
+        setState({ status: "ready" });
         setInitialized(true);
       } catch (err) {
         if (epoch !== epochRef.current) return;
@@ -381,7 +417,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
       }
     },
     // handleUnexpectedClose is useEffectEvent — see note in `connect`.
-    [clearReconnectTimer],
+    [clearReconnectTimer, facade],
   );
 
   // Explicit user-initiated unpair (settings → host → "Forget host").
@@ -395,12 +431,14 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
     shouldReconnectRef.current = false;
     everConnectedRef.current = false;
     clearReconnectTimer();
-    clientRef.current?.close();
-    clientRef.current = null;
+    const prevTransport = transportRef.current;
+    transportRef.current = null;
+    if (prevTransport !== null) facade._detachTransport();
+    prevTransport?.close();
     await clearPairedDaemon();
     setPaired(null);
     setState({ status: "unpaired" });
-  }, [clearReconnectTimer]);
+  }, [clearReconnectTimer, facade]);
 
   useEffect(() => {
     connect();
@@ -408,25 +446,30 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
       epochRef.current += 1;
       shouldReconnectRef.current = false;
       clearReconnectTimer();
-      clientRef.current?.close();
-      clientRef.current = null;
+      const prevTransport = transportRef.current;
+      transportRef.current = null;
+      if (prevTransport !== null) facade._detachTransport();
+      prevTransport?.close();
     };
-  }, [connect, clearReconnectTimer]);
+  }, [connect, clearReconnectTimer, facade]);
 
   const reset = useCallback(() => connect(0), [connect]);
 
   const value = useMemo<DaemonClientContextValue>(
-    () => ({ state, paired, initialized, reset, pair, unpair }),
-    [state, paired, initialized, reset, pair, unpair],
+    () => ({ client: facade, state, paired, initialized, reset, pair, unpair }),
+    [facade, state, paired, initialized, reset, pair, unpair],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
 interface UseDaemonClientResult {
-  /** Live client when handshake has completed; `null` while connecting,
-   *  unpaired, after error, or while waiting for a reconnect retry. */
-  client: DaemonClient | null;
+  /** Stable facade reference, valid for the Provider's lifetime. RPCs
+   *  on this object await the underlying transport's readyPromise
+   *  internally; the facade survives every reconnect transparently.
+   *  Use `connectionStatus` / `isUnpaired` / `isInitialized` for UI
+   *  badges that need to show offline / connecting state. */
+  client: DaemonClient;
   /**
    * Persisted paired-daemon record (serviceName + daemon pubkey).
    * Available throughout `ready` AND `offline` AND reconnect-loop
@@ -467,9 +510,9 @@ export function useDaemonClient(): UseDaemonClientResult {
       "useDaemonClient must be used inside <DaemonClientProvider>",
     );
   }
-  const { state, paired, initialized, reset, pair, unpair } = v;
+  const { client, state, paired, initialized, reset, pair, unpair } = v;
   return {
-    client: state.status === "ready" ? state.client : null,
+    client,
     paired,
     isLoading: state.status === "connecting",
     isUnpaired: state.status === "unpaired",

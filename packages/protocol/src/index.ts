@@ -723,20 +723,69 @@ export type EventDelta = z.infer<typeof eventDelta>;
 // to subscribers. ws disconnect is treated as an implicit `unsubscribe-all`
 // for that connection (no RPC needed).
 
+/**
+ * Subscribe to a session's live event stream.
+ *
+ * Two paths, dispatched daemon-side on whether the client passes
+ * resume metadata:
+ *
+ * **Cold path** (no `sinceCursor` / `sinceEpoch`): daemon reads the
+ * full settled snapshot from JSONL and returns it inline on the
+ * response, then live events flow with monotonically-increasing
+ * cursor > response.cursor. Used on first subscribe AND on app cold
+ * start where the in-memory cursor was lost.
+ *
+ * **Warm path** (resume — `sinceCursor` + `sinceEpoch` provided):
+ * if `sinceEpoch` matches the daemon's current process epoch AND
+ * `sinceCursor` is still within the runtime's ring buffer, daemon
+ * returns an EMPTY `settled[]` + `recovered: true`, then synchronously
+ * replays events with cursor > sinceCursor (these arrive as `event`
+ * frames AFTER the subscribe.response). Used by the facade on
+ * WebRTC reconnect — client preserves its in-memory collection and
+ * only catches up on the gap.
+ *
+ * If the warm path can't be served (epoch mismatch from daemon
+ * restart, or sinceCursor predates the ring buffer), daemon falls
+ * back transparently to the cold path: full settled[] + recovered:
+ * false. Client sees recovered:false and truncates its collection
+ * before ingesting settled[].
+ */
 export const subscribeCommand = z.object({
   type: z.literal("subscribe"),
   requestId: z.string(),
   sessionId: z.string(),
+  /** Warm-path resume — last cursor the client saw on this session.
+   *  Daemon serves incrementally from cursor+1. Undefined = cold path. */
+  sinceCursor: z.number().optional(),
+  /** Warm-path epoch guard — daemon's process nonce from the previous
+   *  subscribe.response on this session. Mismatch (daemon restarted,
+   *  ring buffer is fresh) → fallback to cold path automatically. */
+  sinceEpoch: z.string().optional(),
 });
 
 export const subscribeResponse = z.object({
   type: z.literal("subscribe.response"),
   requestId: z.string(),
   sessionId: z.string(),
-  /** Settled JSONL state at subscribe time (empty if session has no transcript yet). */
+  /** Settled JSONL state at subscribe time. Empty array on the warm
+   *  path (recovered:true) — client preserves its in-memory state
+   *  and consumes the replayed event frames instead. */
   settled: z.array(timelineItem),
-  /** Runtime cursor at subscribe time. iOS may use it for debug/log; live deltas carry their own cursor. */
+  /** Runtime cursor at subscribe time. Client stores this as the
+   *  high-water mark; subsequent live event frames carry cursors >
+   *  this value, and the next reconnect passes this as sinceCursor. */
   cursor: z.number(),
+  /** Daemon's process epoch nonce. Stable for the daemon's lifetime
+   *  (regenerated on daemon boot). Client passes back as sinceEpoch
+   *  on reconnect — mismatch triggers cold-path fallback. */
+  epoch: z.string(),
+  /** Server-side decision: true = warm-path incremental resume served
+   *  (client may merge incoming events into existing collection);
+   *  false = full snapshot returned (client should truncate the
+   *  collection and ingest `settled` from scratch). Always false on
+   *  the cold path; true on the warm path when both epoch matches
+   *  AND sinceCursor is within the ring buffer. */
+  recovered: z.boolean(),
   /** Optional usage seed for the context meter — extracted by daemon
    *  from the most recent assistant message in the JSONL (via SDK's
    *  `getSessionMessages`, whose `message: unknown` carries the raw
@@ -744,7 +793,8 @@ export const subscribeResponse = z.object({
    *  meter render immediately on resume rather than waiting for the
    *  next live `turn_completed`. Undefined when the session has no
    *  assistant messages yet or its last assistant message had no
-   *  usage payload (e.g. a tool-only turn). */
+   *  usage payload (e.g. a tool-only turn). Skipped on the warm path
+   *  — client already has the latest usage from the live stream. */
   initialUsage: turnUsage.optional(),
 });
 

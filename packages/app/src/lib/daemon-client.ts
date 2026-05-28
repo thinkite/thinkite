@@ -116,8 +116,13 @@ interface PendingRequest {
  * Per-session callback receiving server-initiated `eventFrame` payloads.
  * Function identity (not just sessionId) determines ownership: stale
  * unsubscribes after a re-subscribe won't clobber the new owner.
+ *
+ * `cursor` is the wire cursor for this event — passed through verbatim
+ * so the facade can use it as the resume hint on the next reconnect
+ * without re-deriving from an event count (which would break if the
+ * daemon ever batched or skipped cursors).
  */
-type EventCallback = (delta: EventDelta) => void;
+type EventCallback = (cursor: number, delta: EventDelta) => void;
 type GitStatusCallback = (status: GitStatus) => void;
 
 /**
@@ -133,8 +138,19 @@ type GitStatusCallback = (status: GitStatus) => void;
  */
 const CONNECT_TIMEOUT_MS = 15_000;
 
-/** Minimal authenticated daemon DataChannel client. One per app launch. */
-export class DaemonClient {
+/**
+ * Single underlying WebRTC + RPC transport for the daemon connection.
+ * Throwaway: one instance per successful WebRTC handshake; replaced
+ * wholesale on every reconnect. Consumers should NEVER reference this
+ * directly — they bind to the stable `DaemonClient` facade below, which
+ * holds a `Transport | null` ref and swaps it out across reconnects.
+ *
+ * Renamed from the old public `DaemonClient` class on the WebRTC facade
+ * refactor (see project_v0_webrtc_pivot.md + the durable-streams /
+ * Centrifuge inspiration). The static `pair` / `reconnect` factories
+ * stay here — Provider wires `Transport.reconnect(...)` → facade._attach.
+ */
+export class Transport {
   /**
    * Per-session live event callbacks. Set on `subscribe`, cleared on
    * `unsubscribe` (only if the stored cb is still the same identity), and
@@ -195,8 +211,8 @@ export class DaemonClient {
   static async pair(
     identity: ClientIdentity,
     offer: PairOffer,
-  ): Promise<DaemonClient> {
-    const client = await DaemonClient.connect(
+  ): Promise<Transport> {
+    const client = await Transport.connect(
       identity,
       offer.daemonIdentityPublicKey,
     );
@@ -211,8 +227,8 @@ export class DaemonClient {
   static async reconnect(
     identity: ClientIdentity,
     daemon: PairedDaemon,
-  ): Promise<DaemonClient> {
-    return DaemonClient.connect(identity, daemon.daemonIdentityPublicKey);
+  ): Promise<Transport> {
+    return Transport.connect(identity, daemon.daemonIdentityPublicKey);
   }
 
   /**
@@ -234,7 +250,7 @@ export class DaemonClient {
   private static connect(
     identity: ClientIdentity,
     daemonPubkey: string,
-  ): Promise<DaemonClient> {
+  ): Promise<Transport> {
     return new Promise((resolve, reject) => {
       // daemon-side connection ID we learn from `peers` / `peer.joined`,
       // used to address candidate / answer frames back to the daemon.
@@ -373,7 +389,7 @@ export class DaemonClient {
               } catch {
                 // ignore
               }
-              const client = new DaemonClient(signaling, peer, dc, pending);
+              const client = new Transport(signaling, peer, dc, pending);
               client.installMessageHandlers();
               resolve(client);
             }
@@ -553,29 +569,38 @@ export class DaemonClient {
   }
 
   /**
-   * Subscribe to a session's live event stream. Returns the settled
-   * snapshot at subscribe time, the runtime cursor, and an `unsubscribe`
-   * thunk that drops the callback + sends the matching RPC.
+   * Subscribe to a session's live event stream. Low-level RPC — the
+   * facade (`DaemonClient`) wraps this with the registry that handles
+   * cross-reconnect resumption + state machine; consumers should call
+   * `daemonClient.subscribe(...)`, not this directly.
    *
-   * The callback is invoked once per `eventFrame` for this sessionId.
-   * Caller is responsible for applying `EventDelta`s to local state
-   * (see `timeline-reducer.ts`).
+   * `opts.sinceCursor` + `opts.sinceEpoch` are the resume hints. Pass
+   * both when the caller has previously subscribed to this session on
+   * THIS process (= within the same DaemonClient facade lifetime) and
+   * wants the daemon to skip the JSONL re-read and only fill the gap.
+   * Daemon falls back to a full snapshot transparently if the epoch
+   * doesn't match or the ring buffer evicted the gap events — caller
+   * detects via `recovered: false` on the response.
    *
-   * Re-subscribe / re-mount safety: each subscribe gets a unique
-   * callback identity, and `unsubscribe` only deletes the registry
-   * slot if the stored cb still matches — so a stale cleanup after
-   * a quick remount won't clobber the new subscription.
+   * Returns the daemon's response (settled / cursor / epoch / recovered
+   * / initialUsage) plus the `unsubscribe` thunk. The thunk is
+   * identity-checked: a stale cleanup after a quick remount won't
+   * clobber the new subscription.
    */
   async subscribe(
     sessionId: string,
     onEvent: EventCallback,
+    opts: { sinceCursor?: number; sinceEpoch?: string } = {},
   ): Promise<{
     settled: TimelineItem[];
     cursor: number;
-    /** Usage seed for the context meter — extracted by daemon from
-     *  the last assistant message's raw envelope so the meter has a
-     *  number on resume. Undefined for fresh sessions or sessions
-     *  whose last assistant turn was tool-only. */
+    epoch: string;
+    recovered: boolean;
+    /** Usage seed for the context meter — daemon extracts from the
+     *  last assistant message's raw envelope so the meter has a number
+     *  on resume. Undefined for fresh sessions, tool-only last turns,
+     *  AND for the warm path (recovered:true) where the client already
+     *  has the latest usage from the live stream. */
     initialUsage?: TurnUsage;
     unsubscribe: () => Promise<void>;
   }> {
@@ -583,15 +608,28 @@ export class DaemonClient {
     let res: {
       settled: TimelineItem[];
       cursor: number;
+      epoch: string;
+      recovered: boolean;
       initialUsage?: TurnUsage;
     };
     try {
       const requestId = Crypto.randomUUID();
-      res = (await this.request({
-        type: "subscribe",
-        requestId,
-        sessionId,
-      })) as { settled: TimelineItem[]; cursor: number; initialUsage?: TurnUsage };
+      const frame: {
+        type: string;
+        requestId: string;
+        sessionId: string;
+        sinceCursor?: number;
+        sinceEpoch?: string;
+      } = { type: "subscribe", requestId, sessionId };
+      if (opts.sinceCursor !== undefined) frame.sinceCursor = opts.sinceCursor;
+      if (opts.sinceEpoch !== undefined) frame.sinceEpoch = opts.sinceEpoch;
+      res = (await this.request(frame)) as {
+        settled: TimelineItem[];
+        cursor: number;
+        epoch: string;
+        recovered: boolean;
+        initialUsage?: TurnUsage;
+      };
     } catch (err) {
       if (this.eventCallbacks.get(sessionId) === onEvent) {
         this.eventCallbacks.delete(sessionId);
@@ -601,6 +639,8 @@ export class DaemonClient {
     return {
       settled: res.settled,
       cursor: res.cursor,
+      epoch: res.epoch,
+      recovered: res.recovered,
       initialUsage: res.initialUsage,
       unsubscribe: () => this.unsubscribeOwned(sessionId, onEvent),
     };
@@ -869,10 +909,11 @@ export class DaemonClient {
       if (
         frame.type === "event" &&
         typeof frame.sessionId === "string" &&
-        frame.delta !== undefined
+        frame.delta !== undefined &&
+        typeof (frame as { cursor?: unknown }).cursor === "number"
       ) {
         const cb = this.eventCallbacks.get(frame.sessionId);
-        if (cb) cb(frame.delta);
+        if (cb) cb((frame as { cursor: number }).cursor, frame.delta);
         return;
       }
       // Server-initiated git status update. Routed by `cwd` — multiple
@@ -914,6 +955,414 @@ export class DaemonClient {
   }
 }
 
+// ─── Subscription registry types ────────────────────────────────────────
+
+/**
+ * Public 3-state machine for a `Subscription`. Spelled out as a string
+ * union rather than an enum so consumers can `switch (sub.state)` with
+ * exhaustiveness and TS narrowing.
+ *
+ *   - `subscribing`: facade has the Subscription in its registry but
+ *     no live `subscribe` RPC has resolved yet. Covers (a) first mount
+ *     before the transport is up, (b) actively-in-flight RPC after
+ *     transport is up, (c) post-reconnect re-attach. From consumer
+ *     POV all three are "no events flowing, show loading."
+ *   - `subscribed`: the subscribe RPC resolved. Live events are
+ *     flowing through `onEvent`. `isUpToDate` distinguishes
+ *     "still catching up on replay events from a recent reconnect"
+ *     from "fully live."
+ *   - `unsubscribed`: terminal. Consumer called `.unsubscribe()`;
+ *     facade removed from registry and (if transport was up) sent the
+ *     unsubscribe RPC. Won't be revived.
+ *
+ * No `errored` terminal state in V0 — every error we'd see in our
+ * 1-daemon-1-client model is recoverable (network blip, daemon
+ * restart with epoch mismatch → cold-path fallback). `lastError`
+ * field carries transient failures so UI can render an "offline"
+ * badge while state stays `subscribing`. Add `errored` if/when we
+ * grow non-retryable cases (permission denied, session deleted).
+ */
+export type SubscriptionState = "subscribing" | "subscribed" | "unsubscribed";
+
+/**
+ * Payload delivered to `onSubscribed`. The fields distinguish the two
+ * RPC outcomes:
+ *
+ *   - `recovered: false` — daemon returned a full snapshot. Consumer
+ *     MUST truncate its collection and ingest `settled` from scratch.
+ *     Fires on first subscribe of a session, on app cold start, and on
+ *     reconnect when the daemon couldn't serve incrementally (epoch
+ *     mismatch or sinceCursor predates ring).
+ *   - `recovered: true` — daemon served incrementally. `settled` is
+ *     empty; consumer keeps its existing collection state and the
+ *     facade will replay events (`onEvent`) for the gap between the
+ *     last seen cursor and the daemon's current cursor.
+ *
+ * `initialUsage` is only present on cold-path responses — daemon
+ * skips it on warm path because the consumer's live `latestUsage`
+ * state is already current.
+ */
+export interface SubscriptionAttached {
+  recovered: boolean;
+  settled: TimelineItem[];
+  cursor: number;
+  initialUsage?: TurnUsage;
+}
+
+/**
+ * Per-session subscription handle owned by the `DaemonClient` facade.
+ * Internal state (`_cursor`, `_epoch`, `_currentUnsubscribe`,
+ * `_targetCursor`) is leading-underscored — public consumers should
+ * only read `state`, `isUpToDate`, `lastError` and call `unsubscribe()`.
+ *
+ * One-shot lifecycle: created by `daemonClient.subscribe(...)`, lives
+ * across any number of transport reconnects (re-attached by the
+ * facade's registry replay), terminates on `.unsubscribe()`.
+ */
+export class Subscription {
+  state: SubscriptionState = "subscribing";
+  /** True iff the consumer's view is caught up with daemon's current
+   *  cursor as of the most recent attach. Set to false during
+   *  `subscribing` AND during the brief catch-up window after a warm-
+   *  path resume (between subscribe response and the last replayed
+   *  event). UI uses this for "loading" vs "live" affordances. */
+  isUpToDate = false;
+  /** Most recent transient error from a failed attach attempt. Cleared
+   *  on the next successful attach. Does NOT block retries — the
+   *  facade keeps trying on every transport swap. */
+  lastError: Error | null = null;
+
+  /** Last cursor we've consumed (live event OR set from response).
+   *  Passed back as `sinceCursor` on the next attach attempt. Null
+   *  until the first successful subscribe response. */
+  _cursor: number | null = null;
+  /** Daemon's epoch as of the most recent subscribe response. Passed
+   *  back as `sinceEpoch` on the next attach attempt. Null until first
+   *  successful attach. */
+  _epoch: string | null = null;
+  /** Cursor target from the most recent subscribe response. Once
+   *  `_cursor >= _targetCursor`, isUpToDate flips true. For cold path
+   *  this is set equal to response.cursor and the very next event
+   *  (cursor > target) keeps isUpToDate true. For warm path
+   *  isUpToDate stays false until the replay catches up. */
+  _targetCursor: number | null = null;
+  /** Transport-level unsubscribe thunk for the current attachment, or
+   *  null when no transport is attached (initial mount / between
+   *  transports during reconnect). */
+  _currentUnsubscribe: (() => Promise<void>) | null = null;
+
+  constructor(
+    readonly cliSessionId: string,
+    readonly callbacks: {
+      onEvent: (delta: EventDelta) => void;
+      onSubscribed: (info: SubscriptionAttached) => void;
+      onStateChange?: (sub: Subscription) => void;
+    },
+    private readonly facadeUnsubscribe: (sub: Subscription) => Promise<void>,
+  ) {}
+
+  /** Consumer entrypoint. Removes from facade registry; if a transport
+   *  is currently attached, sends the unsubscribe RPC. Idempotent. */
+  async unsubscribe(): Promise<void> {
+    if (this.state === "unsubscribed") return;
+    await this.facadeUnsubscribe(this);
+  }
+}
+
+// ─── DaemonClient facade ────────────────────────────────────────────────
+
+/**
+ * Stable, long-lived public client. The Provider instantiates ONE per
+ * app lifetime and consumers bind to it; the underlying `Transport`
+ * comes and goes on WebRTC reconnects without changing this object's
+ * identity.
+ *
+ * Why this layer exists:
+ *   - Removes the `client: DaemonClient | null` flicker every consumer
+ *     used to gate on (the brief null between `_detachTransport` and
+ *     the next `_attachTransport`). Consumers see a steady reference;
+ *     RPCs await `readyPromise` internally.
+ *   - Owns the per-session subscription registry. On every reconnect
+ *     the facade replays the registry against the new Transport with
+ *     each sub's `_cursor` + `_epoch` as resume hints — daemon serves
+ *     incrementally when it can, falls back to a fresh snapshot
+ *     transparently when it can't. Consumer's onEvent / onSubscribed
+ *     fire continuously; the `recovered: false` flag on a re-attach
+ *     tells the consumer "your collection is stale, rebuild it."
+ *
+ * Non-subscribe RPCs (`getMessages`, `listSessions`, etc.) are thin
+ * pass-throughs that `await this.readyPromise` then dispatch to the
+ * current transport. If a transport drops while a pass-through is
+ * in-flight, the request rejects with "daemon connection closed" —
+ * caller handles via react-query's retry or visible error state, same
+ * as today.
+ *
+ * Consumers holding non-facade-managed subscriptions (`subscribeGitStatus`
+ * today — git status doesn't get the auto-resume treatment because it's
+ * inherently per-cwd and cheap to re-fetch) read `connectionStatus`
+ * from `useDaemonClient` and put IT in their useEffect deps. A
+ * "offline" → "online" transition fires the effect's cleanup + re-run,
+ * which lands a fresh subscribe on the new transport. No facade-side
+ * machinery needed for this case.
+ *
+ * Lifecycle calls are leading-underscored — Provider is the only
+ * legitimate caller. External consumers MUST NOT touch them.
+ */
+export class DaemonClient {
+  private transport: Transport | null = null;
+  private readyPromise: Promise<Transport>;
+  private resolveReady!: (t: Transport) => void;
+  private readonly subs = new Set<Subscription>();
+
+  constructor() {
+    this.readyPromise = new Promise((r) => {
+      this.resolveReady = r;
+    });
+  }
+
+  /** Provider hook. Called after each successful Transport handshake.
+   *  Re-resolves the readyPromise, then replays every registered
+   *  subscription against the new transport (in parallel, with per-sub
+   *  try/catch for error isolation). */
+  _attachTransport(t: Transport): void {
+    this.transport = t;
+    this.resolveReady(t);
+    // Replay every active subscription. Parallel + isolated — a single
+    // session's subscribe RPC failure must not stall the rest.
+    for (const sub of this.subs) {
+      void this.attachSubscription(t, sub);
+    }
+  }
+
+  /** Provider hook. Called BEFORE the transport is closed (so the
+   *  pending readyPromise gets re-armed before any RPC tries to
+   *  resolve against a dead handle). The transport's own teardown
+   *  cleans up its eventCallbacks map; we just clear our local
+   *  unsubscribe thunks (they're tied to that dead map). */
+  _detachTransport(): void {
+    this.transport = null;
+    // Re-arm readyPromise so any in-flight `await` blocks until the
+    // next _attachTransport.
+    this.readyPromise = new Promise((r) => {
+      this.resolveReady = r;
+    });
+    for (const sub of this.subs) {
+      sub._currentUnsubscribe = null;
+      if (sub.state === "subscribed") {
+        sub.state = "subscribing";
+        sub.isUpToDate = false;
+        sub.callbacks.onStateChange?.(sub);
+      }
+    }
+  }
+
+  private async attachSubscription(t: Transport, sub: Subscription): Promise<void> {
+    if (sub.state === "unsubscribed") return;
+    sub.state = "subscribing";
+    sub.isUpToDate = false;
+    sub.lastError = null;
+    sub.callbacks.onStateChange?.(sub);
+
+    const haveResumeHints = sub._cursor !== null && sub._epoch !== null;
+    const opts = haveResumeHints
+      ? { sinceCursor: sub._cursor ?? undefined, sinceEpoch: sub._epoch ?? undefined }
+      : {};
+
+    try {
+      const result = await t.subscribe(
+        sub.cliSessionId,
+        // Wrap onEvent to: (a) update the resume cursor with the wire
+        // cursor verbatim — single source of truth, robust against
+        // future daemon-side batching / skipping; (b) flip isUpToDate
+        // when we've caught up with the target cursor recorded on the
+        // most recent subscribe response.
+        (cursor, delta) => {
+          sub._cursor = cursor;
+          if (
+            !sub.isUpToDate &&
+            sub._targetCursor !== null &&
+            cursor >= sub._targetCursor
+          ) {
+            sub.isUpToDate = true;
+            sub.callbacks.onStateChange?.(sub);
+          }
+          sub.callbacks.onEvent(delta);
+        },
+        opts,
+      );
+      // TS narrows `sub.state` to "subscribing" based on the assignment
+      // at the top of this function, but consumer can call .unsubscribe()
+      // during the await — re-cast to acknowledge the mutability.
+      if ((sub.state as SubscriptionState) === "unsubscribed") {
+        // Consumer raced us — drop the freshly-attached handle.
+        void result.unsubscribe().catch(() => {});
+        return;
+      }
+      sub._epoch = result.epoch;
+      sub._targetCursor = result.cursor;
+      sub._currentUnsubscribe = result.unsubscribe;
+      sub.state = "subscribed";
+      // _cursor semantics = "highest cursor of an event/snapshot the
+      // consumer has actually seen". Two paths set it differently:
+      //   - Cold (recovered:false): the consumer is about to receive
+      //     `settled[]` via onSubscribed which covers everything up
+      //     to result.cursor — we've consumed that. Set _cursor =
+      //     result.cursor so the next reconnect uses it as resume
+      //     hint AND we're immediately up-to-date.
+      //   - Warm (recovered:true): leave _cursor alone. It's whatever
+      //     value the onEvent wrapper last set on the prior attach
+      //     (= the last live event seen pre-disconnect, which we
+      //     sent as sinceCursor). The replay events about to arrive
+      //     will advance it forward until it reaches _targetCursor.
+      if (!result.recovered) {
+        sub._cursor = result.cursor;
+      }
+      sub.isUpToDate =
+        sub._cursor !== null && sub._cursor >= sub._targetCursor;
+      sub.callbacks.onSubscribed({
+        recovered: result.recovered,
+        settled: result.settled,
+        cursor: result.cursor,
+        initialUsage: result.initialUsage,
+      });
+      sub.callbacks.onStateChange?.(sub);
+    } catch (err) {
+      // Same mutability re-cast as above — consumer may have raced us.
+      if ((sub.state as SubscriptionState) === "unsubscribed") return;
+      sub.lastError = err instanceof Error ? err : new Error(String(err));
+      // Stay in 'subscribing' state — next transport attach will retry.
+      // Consumer sees lastError and can render an offline badge.
+      sub.callbacks.onStateChange?.(sub);
+    }
+  }
+
+  /**
+   * Subscribe to a session's live event stream with auto-resume across
+   * transport reconnects. Returns a `Subscription` handle the consumer
+   * can introspect (`state`, `isUpToDate`, `lastError`) and unsubscribe
+   * via `.unsubscribe()`. Safe to call at any time — if the underlying
+   * transport isn't up yet, the facade queues the subscribe to fire on
+   * the next `_attachTransport`.
+   */
+  subscribe(
+    cliSessionId: string,
+    callbacks: {
+      onEvent: (delta: EventDelta) => void;
+      onSubscribed: (info: SubscriptionAttached) => void;
+      onStateChange?: (sub: Subscription) => void;
+    },
+  ): Subscription {
+    const sub = new Subscription(
+      cliSessionId,
+      callbacks,
+      (s) => this.removeSubscription(s),
+    );
+    this.subs.add(sub);
+    if (this.transport !== null) {
+      void this.attachSubscription(this.transport, sub);
+    }
+    return sub;
+  }
+
+  private async removeSubscription(sub: Subscription): Promise<void> {
+    sub.state = "unsubscribed";
+    this.subs.delete(sub);
+    const unsub = sub._currentUnsubscribe;
+    sub._currentUnsubscribe = null;
+    sub.callbacks.onStateChange?.(sub);
+    if (unsub !== null) {
+      try {
+        await unsub();
+      } catch {
+        // Transport may already be dead; ignore.
+      }
+    }
+  }
+
+  // ─── Pass-through RPCs (await readyPromise → dispatch) ────────────
+
+  async getMessages(cliSessionId: string): Promise<TimelineItem[]> {
+    const t = await this.readyPromise;
+    return t.getMessages(cliSessionId);
+  }
+
+  async listSessions(dir?: string): Promise<unknown[]> {
+    const t = await this.readyPromise;
+    return t.listSessions(dir);
+  }
+
+  async listDirectory(
+    path: string,
+    opts?: { includeFiles?: boolean; includeHidden?: boolean },
+  ): Promise<{
+    path: string;
+    parent: string | null;
+    entries: DirectoryEntry[];
+  }> {
+    const t = await this.readyPromise;
+    return t.listDirectory(path, opts);
+  }
+
+  async getFilesystemRoots(): Promise<{
+    home: string;
+    desktop?: string;
+    documents?: string;
+    recentCwds: { path: string; lastUsedAt: string }[];
+  }> {
+    const t = await this.readyPromise;
+    return t.getFilesystemRoots();
+  }
+
+  async getModels(): Promise<ModelEntry[]> {
+    const t = await this.readyPromise;
+    return t.getModels();
+  }
+
+  async sendPrompt(opts: {
+    sessionId: string;
+    text: string;
+    cwd?: string;
+    images?: ImageAttachment[];
+    model?: string;
+  }): Promise<void> {
+    const t = await this.readyPromise;
+    return t.sendPrompt(opts);
+  }
+
+  async setSessionSelection(opts: {
+    sessionId: string;
+    model?: string;
+  }): Promise<void> {
+    const t = await this.readyPromise;
+    return t.setSessionSelection(opts);
+  }
+
+  async interrupt(sessionId: string): Promise<void> {
+    const t = await this.readyPromise;
+    return t.interrupt(sessionId);
+  }
+
+  /**
+   * Per-cwd git status subscribe. Pass-through to the current
+   * transport — NO facade-managed registry (git status is cheap to
+   * re-fetch and per-cwd subscriptions don't have the same continuity
+   * requirements as transcript). Consumers re-subscribe on transport
+   * swap by including `daemonClient.connectionEpoch` in their useEffect
+   * deps.
+   */
+  async subscribeGitStatus(
+    cwd: string,
+    onUpdate: (status: GitStatus) => void,
+  ): Promise<{
+    status: GitStatus;
+    unsubscribe: () => Promise<void>;
+  }> {
+    const t = await this.readyPromise;
+    return t.subscribeGitStatus(cwd, onUpdate);
+  }
+}
+
 // Shared-connection orchestration lives in `daemon-client-context.tsx` —
-// this module exports primitives (DaemonClient class + pair / reconnect /
-// store helpers); the Context owns the single live connection.
+// this module exports primitives (Transport class + DaemonClient facade
+// + Subscription handle + pair / reconnect / store helpers); the Context
+// owns the single live DaemonClient + its current Transport.

@@ -9,10 +9,8 @@ import {
 } from "@/lib/transcript-collection-factory";
 
 /**
- * Reactive per-session transcript binding. Replaces the previous
- * `useLiveSession + timeline-reducer + useMessages` stack with a
- * TanStack DB QueryCollection driven by the daemon's getMessages
- * (initial fetch) + subscribe stream (live deltas).
+ * Reactive per-session transcript binding, backed by a TanStack DB
+ * QueryCollection + the facade's auto-resume Subscription.
  *
  * Architecture decisions:
  *
@@ -20,136 +18,106 @@ import {
  *    (`getTranscriptCollection`). Maintainer-blessed pattern from
  *    TanStack/db#652 — one collection per cliSessionId, Map cache
  *    keyed by sessionId, auto-evict on `status:change` cleaned-up.
- *    Future migration to `createPartitionedCollection`
- *    (TanStack/db#315) when that lands.
  *
- * 2. **No useEffect cleanup() call**. TanStack DB's `gcTime` config
- *    (60s in our factory) handles the "no subscribers → wait → clean
- *    up" lifecycle. Component unmount drops the useLiveQuery
- *    subscription; if no other subscriber attaches within gcTime, the
- *    collection self-cleans and evicts from the factory cache.
- *    Manually calling `collection.cleanup()` on every unmount would
- *    nuke the 60s "back-nav cache" benefit.
+ * 2. **Stable facade — collection survives reconnect**. The facade
+ *    refactor means `client` is the same instance for the Provider's
+ *    lifetime; the underlying Transport gets swapped on reconnect
+ *    transparently. So the collection's useMemo no longer takes
+ *    `client` as a dep — it only re-creates on cliSessionId change.
+ *    This removes the old `QueryBuilderError: Invalid source for
+ *    live query` race where a brief null window during reconnect
+ *    would crash useLiveQuery.
  *
- * 3. **Turn lifecycle (isRunning / lastError / latestUsage) lives
- *    OUTSIDE the collection** as plain useState. These are
- *    per-session state, not items — folding them into the collection
+ * 3. **Auto-resume via facade Subscription**. The facade's
+ *    `client.subscribe(...)` returns a long-lived Subscription that
+ *    survives transport reconnects: it keeps the per-sub cursor +
+ *    epoch and re-issues subscribe RPCs against fresh transports
+ *    with those resume hints. Daemon serves the gap incrementally
+ *    when it can; falls back to a full snapshot (recovered:false)
+ *    when it can't (epoch mismatch from daemon restart, OR
+ *    sinceCursor predates the runtime ring buffer). The
+ *    `onSubscribed` callback's `recovered` flag tells us which
+ *    happened, and we truncate+ingest on cold path or keep going on
+ *    warm.
+ *
+ * 4. **No useEffect cleanup() call on the collection**. TanStack DB's
+ *    `gcTime` config (60s in our factory) handles the "no subscribers
+ *    → wait → clean up" lifecycle.
+ *
+ * 5. **Turn lifecycle (isRunning / lastError / latestUsage) lives
+ *    OUTSIDE the collection** as plain useState. These are per-
+ *    session state, not items — folding them into the collection
  *    would force a tagged "control row" or a second collection just
  *    for state. Cheap useState in the hook is the right level.
  *
- * 4. **`useLiveQuery` deps include `[collection]`** — without this,
- *    the closure captures the collection reference once and never
- *    re-binds when the user switches sessions, leaving the new
- *    collection without subscribers (its queryFn never fires) and
- *    later manual writes throw `SyncNotInitializedError`. See the
- *    spike file for the longer story.
- *
- * 5. **Subscribe writes use `collection.utils.writeXxx`**, not
+ * 6. **Subscribe writes use `collection.utils.writeXxx`**, not
  *    `collection.update()`. The latter is the optimistic-mutation
  *    entry point and requires an `onUpdate` handler — for SDK-pushed
  *    events that are already canonical, direct writes bypass the
  *    optimistic system. Optimistic insert for user-typed prompts
  *    lands in Phase 3.
  *
- * 6. **Manual writes gated on `!isInitialLoading`**. The collection is
- *    in 'pending' state until queryFn first resolves; calling
- *    writeInsert/writeUpdate before then throws
- *    `SyncNotInitializedError`. Subscribe registration is deferred
- *    until the loading gate flips false.
- *
  * Return shape mirrors the old `useLiveSession` for drop-in
  * compatibility at the call site:
- *   - `items` / `isInitialLoading` (was `isLoading`)
+ *   - `items` / `isInitialLoading`
  *   - `isRunning` / `lastError` / `latestUsage`
- *   - `error` (top-level subscribe failure)
+ *   - `error` (terminal subscribe failure — none today; field kept
+ *     for API compat, always null)
  */
 export function useSessionTranscript(cliSessionId: string) {
   const { client } = useDaemonClient();
   const queryClient = useQueryClient();
 
+  // Collection lifetime tracks cliSessionId only — `client` is stable
+  // post-facade refactor, so no need to gate on it. Factory returns
+  // the same instance across hook re-renders for a given sessionId
+  // (Map cache); evicts after gcTime when no subscribers.
   const collection = useMemo(
-    () =>
-      client === null
-        ? null
-        : getTranscriptCollection(cliSessionId, { client, queryClient }),
+    () => getTranscriptCollection(cliSessionId, { client, queryClient }),
     [cliSessionId, client, queryClient],
   );
 
-  // useLiveQuery's queryFn can return `null` to enter a "disabled"
-  // status — TanStack DB then yields `data: undefined` instead of
-  // throwing. Critical for two transient states:
-  //   - first mount before daemon-client is ready (client === null)
-  //   - app backgrounds → WebRTC drops → daemon-client briefly
-  //     re-initializes → useMemo recomputes collection as null, then
-  //     non-null again as client reconnects
-  // Without the null-guard the second case crashes with
-  // `QueryBuilderError: Invalid source for live query`.
-  //
-  // Explicit `.orderBy(_order)` is the visible sort. The collection's
-  // internal SortedMap also has a `compare` config doing the same
-  // thing, but useLiveQuery's projection layer doesn't always inherit
-  // that (depends on the query plan), so we apply orderBy here too as
-  // belt-and-suspenders. `_order` is assigned by queryFn (idx in the
-  // SDK-returned array) and by the live `append` handler below
-  // (`collection.size`); see those sites + the OrderedTimelineItem
-  // JSDoc in transcript-collection-factory.ts for the rationale.
   const { data, isLoading: liveQueryLoading } = useLiveQuery(
     (q) =>
-      collection === null
-        ? null
-        : q.from({ item: collection }).orderBy(({ item }) => item._order, "asc"),
+      q.from({ item: collection }).orderBy(({ item }) => item._order, "asc"),
     [collection],
   );
   const items = data ?? [];
-
-  // Match the old `isInitialLoading` semantic: true until the
-  // collection has hydrated AND we've registered for live deltas.
-  // useLiveQuery's isLoading covers the hydration half; we OR with
-  // a local flag for the subscribe handshake.
-  const isInitialLoading = client === null || collection === null || liveQueryLoading;
 
   // Turn lifecycle state — driven by subscribe callback below.
   const [isRunning, setIsRunning] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [latestUsage, setLatestUsage] = useState<TurnUsage | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  // `error` is kept for API compatibility with the old useLiveSession
+  // return shape, but the facade now retries forever — no terminal
+  // failure surface from this hook. Always null until we add real
+  // terminal cases (permission denied / session not found).
+  const [error] = useState<Error | null>(null);
+  // Subscription-loading gate: separate from useLiveQuery's hydration
+  // so the consumer can distinguish "collection hasn't hydrated yet"
+  // (data is empty array) from "first subscribe response landed and
+  // we're catching up to live" (settled has been ingested).
+  const [isSubLoading, setIsSubLoading] = useState(true);
 
-  // Subscribe to daemon live events + write deltas into the
-  // collection. Cleanup pattern mirrors the old useLiveSession:
-  // - `active` flag guards against state updates after unmount (the
-  //   subscribe Promise can resolve, or a delta can arrive, after
-  //   useEffect cleanup ran)
-  // - if subscribe resolves AFTER unmount, still call its
-  //   unsubscribe thunk so daemon doesn't keep fanning to a stale cb
+  const isInitialLoading = liveQueryLoading || isSubLoading;
+
+  // Subscribe via the stable facade. The returned Subscription survives
+  // every transport reconnect — facade re-attaches with our sinceCursor
+  // + sinceEpoch and replays the gap automatically. We only need to
+  // unsubscribe on unmount + sessionId change.
   useEffect(() => {
-    if (client === null || collection === null || isInitialLoading) return;
-
     let active = true;
-    let cleanup: (() => Promise<void>) | null = null;
-    setError(null);
+    setIsSubLoading(true);
 
-    void client
-      .subscribe(cliSessionId, (delta) => {
+    const sub = client.subscribe(cliSessionId, {
+      onEvent: (delta) => {
         if (!active) return;
         // writeBatch coalesces multiple writes into one collection
-        // change event — even for single deltas it's harmless and
-        // matches the WebSocket example pattern from TanStack docs.
+        // change event — harmless for single deltas, matches the
+        // WebSocket example pattern from TanStack docs.
         collection.utils.writeBatch(() => {
           switch (delta.kind) {
             case "append": {
-              // `_order` continues from the initial snapshot's last
-              // index. `collection.size` at the moment of insert =
-              // next index since we never delete in Phase 2 (compact
-              // prune lands in a follow-up slice). For full-compact
-              // (the 99% case — verified empirically across all our
-              // session JSONLs) this remains safe even after prune:
-              // delete-then-insert means size first drops to 0, then
-              // grows from 0. Partial compact (preservedSegment) IS
-              // a theoretical collision case (surviving items keep
-              // high _order values while size restarts low and
-              // climbs into them), but sidecode-via-SDK paths can't
-              // currently trigger partial — revisit when compact
-              // prune actually lands.
               const ordered: OrderedTimelineItem = {
                 ...delta.item,
                 _order: collection.size,
@@ -160,7 +128,6 @@ export function useSessionTranscript(cliSessionId: string) {
             case "patch_text": {
               const cur = collection.get(delta.uuid);
               if (cur?.type !== "assistant_message") return;
-              // Partial update — `_order` not touched, preserved.
               collection.utils.writeUpdate({
                 uuid: delta.uuid,
                 text: cur.text + delta.deltaText,
@@ -194,34 +161,61 @@ export function useSessionTranscript(cliSessionId: string) {
             case "compact_started":
             case "compact_applied":
               // Slice 2 follow-up commit will handle these — for now
-              // they're no-ops at the items level (compact_applied
-              // would prune + append divider when ready).
+              // no-ops at the items level (compact_applied would prune
+              // + append divider when ready).
               break;
           }
         });
-      })
-      .then(({ initialUsage, unsubscribe }) => {
-        if (!active) {
-          void unsubscribe();
-          return;
-        }
-        // initialUsage seeds the context meter on resume — daemon
-        // extracts it from the JSONL's last assistant message. Without
-        // this, the meter stays empty on resume until the next live
-        // turn_completed.
-        if (initialUsage !== undefined) setLatestUsage(initialUsage);
-        cleanup = unsubscribe;
-      })
-      .catch((err) => {
+      },
+      onSubscribed: ({ recovered, settled, initialUsage }) => {
         if (!active) return;
-        setError(err instanceof Error ? err : new Error(String(err)));
-      });
+        if (!recovered) {
+          // Cold path — daemon returned a full snapshot. Truncate the
+          // collection and ingest `settled` from scratch. Triggers on
+          // first subscribe AND on reconnect when daemon couldn't
+          // serve incrementally (epoch mismatch from daemon restart,
+          // or sinceCursor predates the ring buffer).
+          //
+          // The first-subscribe case looks redundant: queryFn already
+          // populated the collection with the SAME data (both read the
+          // JSONL via daemon's getMessages). But the daemon's settled
+          // is taken atomically with the live-fanout attach, while
+          // queryFn ran at a different moment — settled is the
+          // authoritative "starting point" of the live stream. Worst-
+          // case flash is one React re-render with identical content.
+          //
+          // Materialize keys BEFORE writeBatch to avoid iterator
+          // invalidation when we then mutate the collection. Then do
+          // delete-all + re-insert-all in one batch so the UI sees a
+          // single change event.
+          const keysToDelete: string[] = [];
+          for (const item of collection.values()) {
+            keysToDelete.push(
+              item.type === "tool_call" ? item.callId : item.uuid,
+            );
+          }
+          collection.utils.writeBatch(() => {
+            for (const key of keysToDelete) {
+              collection.utils.writeDelete(key);
+            }
+            for (let i = 0; i < settled.length; i += 1) {
+              collection.utils.writeInsert({ ...settled[i], _order: i });
+            }
+          });
+        }
+        // Warm path: keep the collection as-is. The replay events for
+        // the gap (sinceCursor, response.cursor] will arrive via
+        // onEvent right after this callback returns.
+        if (initialUsage !== undefined) setLatestUsage(initialUsage);
+        setIsSubLoading(false);
+      },
+    });
 
     return () => {
       active = false;
-      void cleanup?.();
+      void sub.unsubscribe();
     };
-  }, [client, cliSessionId, collection, isInitialLoading]);
+  }, [client, cliSessionId, collection]);
 
   // Mirror old useLiveSession return shape so call sites don't need
   // to rename properties. Old field `isInitialLoading` maps directly;

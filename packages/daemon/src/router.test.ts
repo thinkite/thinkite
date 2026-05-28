@@ -55,6 +55,7 @@ function makeDeps(
     updateSidecodeSessionSelection: vi.fn(),
     isShuttingDown: () => false,
     gitWatchers: new GitWatcherRegistry(),
+    epoch: "test-epoch",
     ...overrides,
   };
 }
@@ -643,6 +644,161 @@ describe("createCommandHandler — subscribe / unsubscribe", () => {
       type: "event",
       cursor: 3,
       delta: { kind: "turn_failed", error: "boom" },
+    });
+  });
+
+  it("cold-path subscribe response carries epoch + recovered:false", async () => {
+    // Cold path = no resume metadata from client. Daemon returns the
+    // full settled snapshot AND the process epoch so the client can
+    // pass it back as `sinceEpoch` on the next reconnect.
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager: new SessionRuntimeManager<EventDelta>(),
+        getMessages: vi.fn().mockResolvedValue({ items: [] }),
+        epoch: "epoch-cold",
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-cold", sessionId: "S" },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.response",
+      epoch: "epoch-cold",
+      recovered: false,
+    });
+  });
+
+  it("warm-path subscribe with matching epoch + in-buffer sinceCursor replays gap and recovered:true", async () => {
+    // Simulates iOS reconnect: client previously saw events up to
+    // cursor 2, transport dropped, ring buffer (still in memory)
+    // accumulated events 3-4 during the gap. On re-subscribe with
+    // sinceCursor=2 + matching epoch, daemon must:
+    //   - return EMPTY settled[] (client preserves its in-memory state)
+    //   - mark recovered: true
+    //   - replay the buffered events 3-4 as event frames
+    //   - NO getMessages call (no JSONL re-read)
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.addEvent({ kind: "turn_started" }); // cursor 1
+    runtime.addEvent({ kind: "turn_completed" }); // cursor 2
+    runtime.addEvent({ kind: "turn_started" }); // cursor 3
+    runtime.addEvent({ kind: "turn_failed", error: "x" }); // cursor 4
+
+    const getMessages = vi.fn();
+    const handler = createCommandHandler(
+      makeDeps({ runtimeManager, getMessages, epoch: "e1" }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "subscribe",
+        requestId: "sub-warm",
+        sessionId: "S",
+        sinceCursor: 2,
+        sinceEpoch: "e1",
+      },
+      ctx,
+    );
+
+    // Wire ordering: response first, then replay frames (events 3 + 4).
+    expect(sent).toHaveLength(3);
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.response",
+      epoch: "e1",
+      recovered: true,
+      cursor: 4,
+      settled: [],
+    });
+    expect(sent[1]).toMatchObject({
+      type: "event",
+      cursor: 3,
+      delta: { kind: "turn_started" },
+    });
+    expect(sent[2]).toMatchObject({
+      type: "event",
+      cursor: 4,
+      delta: { kind: "turn_failed", error: "x" },
+    });
+    // Warm path bypasses JSONL — getMessages must NOT have fired.
+    expect(getMessages).not.toHaveBeenCalled();
+  });
+
+  it("warm-path falls back to cold-path on epoch mismatch", async () => {
+    // Simulates daemon restart between iOS sessions: client's stored
+    // sinceEpoch is from the OLD process, current daemon has a new
+    // nonce. Daemon must transparently fall back to full snapshot —
+    // no error frame, just recovered:false so the client knows to
+    // truncate its in-memory state and re-ingest.
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.addEvent({ kind: "turn_started" }); // cursor 1
+
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        getMessages: vi.fn().mockResolvedValue({
+          items: [{ type: "user_message", uuid: "u-1", text: "old" }],
+        }),
+        epoch: "epoch-new",
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "subscribe",
+        requestId: "sub-mismatch",
+        sessionId: "S",
+        sinceCursor: 1,
+        sinceEpoch: "epoch-old",
+      },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.response",
+      epoch: "epoch-new",
+      recovered: false,
+    });
+    expect((sent[0] as { settled: TimelineItem[] }).settled).toEqual([
+      { type: "user_message", uuid: "u-1", text: "old" },
+    ]);
+  });
+
+  it("warm-path falls back to cold-path when sinceCursor predates the ring buffer", async () => {
+    // Simulates: WebRTC was disconnected long enough for the ring
+    // buffer (cap 500) to evict the events the client needs. Even
+    // though the epoch matches, the daemon can't serve an incremental
+    // resume — falls back to cold path. Tested with a tiny bufferCap
+    // for determinism.
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S", { bufferCap: 2 });
+    runtime.addEvent({ kind: "turn_started" }); // cursor 1 → will be evicted
+    runtime.addEvent({ kind: "turn_completed" }); // cursor 2 → will be evicted
+    runtime.addEvent({ kind: "turn_started" }); // cursor 3 → kept (oldest)
+    runtime.addEvent({ kind: "turn_completed" }); // cursor 4 → kept
+
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        getMessages: vi.fn().mockResolvedValue({ items: [] }),
+        epoch: "e1",
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "subscribe",
+        requestId: "sub-stale",
+        sessionId: "S",
+        sinceCursor: 1, // events 2 (the gap-fill we'd need) was evicted
+        sinceEpoch: "e1",
+      },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.response",
+      recovered: false,
     });
   });
 

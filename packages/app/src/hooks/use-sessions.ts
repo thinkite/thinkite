@@ -8,19 +8,18 @@ import type { SessionInfo } from "@/types/session";
  * `claude-code-sessions/`; we don't filter on the wire.
  *
  * Daemon connection is owned by `<DaemonClientProvider>`, which handshakes
- * eagerly on mount. The root layout gates the tree behind a splash until
- * `client` is ready, so in practice this query runs with a live connection
- * the first time it mounts. The `enabled` guard is just defense for the
- * brief window after `reset()` when we're handshaking again.
+ * eagerly on mount. Post-facade refactor `client` is always non-null and
+ * the listSessions call awaits the transport's readyPromise internally,
+ * so no `enabled` gate is needed — the first call after mount blocks
+ * until the handshake completes.
  */
 export function useSessions() {
   const { client } = useDaemonClient();
   return useQuery<SessionInfo[]>({
     queryKey: ["sessions"],
     queryFn: async () => {
-      const raw = await client!.listSessions();
+      const raw = await client.listSessions();
       return raw as SessionInfo[];
     },
-    enabled: !!client,
   });
 }

@@ -11,18 +11,14 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  * snapshotting them per picker-open is fresh enough; we don't need
  * live updates.
  *
- * Disabled while the daemon client isn't ready — caller (new-session
- * screen) handles the "no data yet" UI state separately.
+ * Post-facade: `client` is always non-null; calls queue internally
+ * until the transport handshake completes. No `enabled` gate needed.
  */
 export function useFilesystemRoots() {
   const { client } = useDaemonClient();
   return useQuery({
     queryKey: ["filesystemRoots"],
-    queryFn: () => {
-      if (!client) throw new Error("daemon client not ready");
-      return client.getFilesystemRoots();
-    },
-    enabled: client !== null,
+    queryFn: () => client.getFilesystemRoots(),
     staleTime: 30_000,
   });
 }

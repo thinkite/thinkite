@@ -144,6 +144,30 @@ export interface RouterDeps {
    * + cache. Daemon disposes the whole registry on shutdown.
    */
   gitWatchers: GitWatcherRegistry;
+  /**
+   * Process-wide epoch nonce. Generated once on daemon boot and stable
+   * for the lifetime of the process. Returned to clients on every
+   * `subscribe.response` so they can pass it back as `sinceEpoch` on
+   * reconnect — a mismatch (= daemon restarted, in-memory ring buffers
+   * are fresh) forces the subscribe handler to fall back to the cold
+   * path (full settled snapshot) instead of attempting an incremental
+   * replay that would silently drop events.
+   *
+   * Why a single process-wide value (not per-session): the runtime ring
+   * buffer is the resource whose contents we're gating on, and that
+   * lives or dies with the daemon process. A per-session epoch would
+   * be more precise (only bump on that session's buffer rotation,
+   * e.g. compaction-driven cursor renumber) but adds bookkeeping
+   * without buying anything for V0 — every realistic "I can't serve
+   * sinceCursor" case is "the whole process restarted." V0.5+ may
+   * split this when compact-prune lands.
+   *
+   * Why expose it as a value, not a getter: it's literally a string
+   * constant for the process lifetime; a function would just obscure
+   * that. Tests inject a deterministic value (e.g. `"test-epoch"`)
+   * to make assertions stable.
+   */
+  epoch: string;
 }
 
 // ─── Per-connection ctx.state keys (G2: subscriptions) ─────────────────────
@@ -277,33 +301,111 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
       }
       case "subscribe": {
         try {
-          const runtime = deps.runtimeManager.getOrCreate(cmd.sessionId);
-          // Settled snapshot taken atomically with the cursor below. Race
-          // window: an event may land in the buffer between getMessages
-          // (reads JSONL on disk) and runtime.subscribe (registers the
-          // live fanout). V0 accepts this — see project_session_replay_model
-          // memory; user-perceived gap is bounded by SDK flush latency.
-          //
-          // `initialUsage` rides on the same getMessages call (no extra
-          // SDK round-trip) — daemon extracts it from the raw envelope
-          // of the last assistant message so iOS's context meter has
-          // something to display on resume. See RouterDeps.getMessages
-          // JSDoc for the longer rationale.
-          const { items: settled, initialUsage } = await deps.getMessages(
-            cmd.sessionId,
-          );
-          const cursor = runtime.currentCursor;
+          const sessionId = cmd.sessionId;
+          const runtime = deps.runtimeManager.getOrCreate(sessionId);
 
           // If iOS re-subscribes to the same session on the same connection
           // (e.g. after a quick navigate-away-and-back), drop the previous
           // fanout cb so we don't double-deliver events.
           const subs = getOrCreateSubs(ctx);
-          const previous = subs.get(cmd.sessionId);
+          const previous = subs.get(sessionId);
           if (previous !== undefined) previous();
 
-          // sinceCursor=cursor → don't replay the buffer; iOS already has
-          // settled state up to this point. Live deltas only from here.
-          const sessionId = cmd.sessionId;
+          // ─── Warm vs cold path ──────────────────────────────────────
+          //
+          // Warm path: client passed sinceCursor + sinceEpoch matches
+          // the current process epoch AND the runtime's ring still has
+          // every event with cursor > sinceCursor. We return EMPTY
+          // settled[] + recovered:true, then runtime.subscribe replays
+          // the gap synchronously (so the replayed event frames arrive
+          // immediately after the response).
+          //
+          // Cold path: any of the above fails (no resume hint, daemon
+          // restart bumped the epoch, or sinceCursor predates the ring
+          // because >500 events accumulated during the disconnect). We
+          // re-read the full settled snapshot from JSONL + recovered:
+          // false, signaling the client to truncate and start over.
+          //
+          // Ring-buffer completeness check: every event in (sinceCursor,
+          // currentCursor] must still be present. The buffer holds
+          // events with cursors in [oldestCursor, currentCursor], so
+          // the first event we'd need to replay is sinceCursor+1; that
+          // exists iff sinceCursor+1 >= oldestCursor (equivalently
+          // sinceCursor >= oldestCursor - 1). Edge case: buffer empty
+          // → oldestCursor null → any sinceCursor >= currentCursor is
+          // trivially complete (nothing to replay).
+          const currentEpoch = deps.epoch;
+          const oldestCursor = runtime.oldestCursor;
+          const currentCursor = runtime.currentCursor;
+          const epochOk =
+            cmd.sinceCursor !== undefined &&
+            cmd.sinceEpoch !== undefined &&
+            cmd.sinceEpoch === currentEpoch;
+          const bufferOk =
+            cmd.sinceCursor !== undefined &&
+            (oldestCursor === null
+              ? cmd.sinceCursor >= currentCursor
+              : cmd.sinceCursor + 1 >= oldestCursor);
+          const canRecover = epochOk && bufferOk;
+
+          if (canRecover) {
+            // Warm path. No JSONL read, no initialUsage (client already
+            // has it from before — sending it again would clobber the
+            // live `latestUsage` state the iOS hook maintains).
+            //
+            // Important: response goes out BEFORE runtime.subscribe so
+            // the wire order is response → replayed events → live tail.
+            // Without this ordering, the client would see event frames
+            // with cursors > sinceCursor arriving before it knew the
+            // subscribe was accepted (frame ordering is monotonic over
+            // a single DataChannel, but client state machine treats
+            // pre-response events as orphans).
+            ctx.send({
+              type: "subscribe.response",
+              requestId: cmd.requestId,
+              sessionId,
+              settled: [],
+              cursor: currentCursor,
+              epoch: currentEpoch,
+              recovered: true,
+            });
+            const sinceCursor = cmd.sinceCursor;
+            const unsubscribe = runtime.subscribe((event) => {
+              ctx.send({
+                type: "event",
+                sessionId,
+                cursor: event.cursor,
+                delta: event.payload,
+              });
+            }, sinceCursor);
+            subs.set(sessionId, unsubscribe);
+            ctx.onDisconnect(unsubscribe);
+            return;
+          }
+
+          // Cold path — full settled snapshot + initialUsage. Read both
+          // atomically out of the same getMessages call (no extra SDK
+          // round-trip). Race window: an event may land in the buffer
+          // between getMessages and the cursor snapshot below; V0
+          // accepts this — see project_session_replay_model memory.
+          const { items: settled, initialUsage } = await deps.getMessages(
+            sessionId,
+          );
+          const cursor = runtime.currentCursor;
+
+          // Response first (mirrors warm-path ordering for consistency).
+          // Then runtime.subscribe at the snapshotted cursor — no replay
+          // (sinceCursor === cursor), just registers the live fanout.
+          ctx.send({
+            type: "subscribe.response",
+            requestId: cmd.requestId,
+            sessionId,
+            settled,
+            cursor,
+            epoch: currentEpoch,
+            recovered: false,
+            initialUsage,
+          });
           const unsubscribe = runtime.subscribe((event) => {
             ctx.send({
               type: "event",
@@ -317,15 +419,6 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           // (runtime.subscribe's returned closure is idempotent), so an
           // explicit unsubscribe RPC followed by ws close is fine.
           ctx.onDisconnect(unsubscribe);
-
-          ctx.send({
-            type: "subscribe.response",
-            requestId: cmd.requestId,
-            sessionId,
-            settled,
-            cursor,
-            initialUsage,
-          });
         } catch (err) {
           ctx.send({
             type: "error",

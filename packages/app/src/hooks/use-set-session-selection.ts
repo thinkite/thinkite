@@ -29,7 +29,6 @@ export function useSetSessionSelection(cliSessionId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (selection: ModelSelection) => {
-      if (!client) throw new Error("daemon client not ready");
       await client.setSessionSelection({
         sessionId: cliSessionId,
         model: selection.model,

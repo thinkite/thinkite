@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   getSessionInfo,
   getSessionMessages,
@@ -129,6 +130,15 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // Disposed on daemon.stop() to release fs.watch handles cleanly.
   const gitWatchers = new GitWatcherRegistry();
 
+  // Process-wide epoch nonce. Stable for the daemon's lifetime — every
+  // subscribe.response carries this so iOS can pass it back as
+  // `sinceEpoch` on reconnect. A mismatch tells the daemon it cannot
+  // serve an incremental resume (the runtime ring buffers are fresh)
+  // and to fall back to the cold-path full snapshot. See RouterDeps.epoch
+  // for the longer rationale. UUID is plenty of entropy; we never log
+  // or surface this to the user.
+  const epoch = randomUUID();
+
   const commandHandler = createCommandHandler({
     continueOnDesktop,
     listSessions: listDesktopSessions,
@@ -187,6 +197,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     },
     isShuttingDown: () => shuttingDown,
     gitWatchers,
+    epoch,
   });
 
   const webrtc = new WebRTCPeerServer({

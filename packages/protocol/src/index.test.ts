@@ -287,15 +287,40 @@ describe("eventDelta union", () => {
 });
 
 describe("streaming-session response + event frames", () => {
-  it("subscribe.response carries settled + cursor", () => {
+  it("subscribe.response carries settled + cursor + epoch + recovered", () => {
     const p = subscribeResponse.parse({
       type: "subscribe.response",
       requestId: "r1",
       sessionId: "s",
       settled: [],
       cursor: 0,
+      epoch: "test-epoch",
+      recovered: false,
     });
     expect(p.cursor).toBe(0);
+    expect(p.epoch).toBe("test-epoch");
+    expect(p.recovered).toBe(false);
+  });
+
+  it("subscribeCommand accepts optional resume hints", () => {
+    // No resume hints — cold path.
+    const cold = subscribeCommand.parse({
+      type: "subscribe",
+      requestId: "r1",
+      sessionId: "s",
+    });
+    expect(cold.sinceCursor).toBeUndefined();
+    expect(cold.sinceEpoch).toBeUndefined();
+    // Warm path — both hints present.
+    const warm = subscribeCommand.parse({
+      type: "subscribe",
+      requestId: "r2",
+      sessionId: "s",
+      sinceCursor: 42,
+      sinceEpoch: "epoch-prev",
+    });
+    expect(warm.sinceCursor).toBe(42);
+    expect(warm.sinceEpoch).toBe("epoch-prev");
   });
 
   it("unsubscribe / sendPrompt / interrupt responses are minimal", () => {
@@ -724,6 +749,8 @@ describe("daemonFrame union", () => {
         sessionId: "s",
         settled: [],
         cursor: 0,
+        epoch: "test-epoch",
+        recovered: false,
       }).type,
     ).toBe("subscribe.response");
     expect(

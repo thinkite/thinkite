@@ -20,11 +20,10 @@ export function useListDirectory(path: string | undefined) {
   return useQuery({
     queryKey: ["listDirectory", path],
     queryFn: () => {
-      if (!client) throw new Error("daemon client not ready");
       if (!path) throw new Error("path required");
       return client.listDirectory(path);
     },
-    enabled: client !== null && path !== undefined,
+    enabled: path !== undefined,
     staleTime: 30_000,
   });
 }

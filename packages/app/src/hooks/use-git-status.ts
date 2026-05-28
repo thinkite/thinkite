@@ -4,25 +4,35 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
 
 /**
  * Subscribe to live git status for a `cwd`. Returns the latest snapshot
- * or `null` while loading / when client isn't ready / cwd is undefined.
+ * or `null` while loading / cwd is undefined.
  *
- * Race / cleanup mirrors `useLiveSession`:
+ * Why `connectionStatus` is in useEffect deps: unlike the transcript
+ * subscribe (which goes through the facade's auto-resume Subscription
+ * registry), git status is a pass-through to the current Transport.
+ * When the transport drops + reconnects the old subscription is dead;
+ * the facade's stable `client` reference alone wouldn't trigger a
+ * re-subscribe. Including `connectionStatus` makes the effect re-fire
+ * on every offline→online transition, landing a fresh subscribe on the
+ * new transport. Git watcher updates are cheap so the extra round-trip
+ * is fine — auto-resume in the facade is the wrong tool for this case.
+ *
+ * Race / cleanup:
  *   - `active` guards against setState after unmount.
  *   - If the subscribe Promise resolves after unmount, we still call
- *     the returned `unsubscribe` thunk so the daemon stops fanning
- *     events to a callback whose owner is gone.
- *   - DaemonClient's `subscribeGitStatus` is identity-checked: a stale
+ *     the returned `unsubscribe` thunk (best-effort — transport may
+ *     already be dead).
+ *   - Transport's `subscribeGitStatus` is identity-checked: a stale
  *     unsubscribe after a quick remount won't clobber the new sub.
  *
  * Returns `null` when there's no usable state to render. Caller (the
  * info bar) decides whether to hide entirely or show a placeholder.
  */
 export function useGitStatus(cwd: string | undefined): GitStatus | null {
-  const { client } = useDaemonClient();
+  const { client, connectionStatus } = useDaemonClient();
   const [status, setStatus] = useState<GitStatus | null>(null);
 
   useEffect(() => {
-    if (!client || !cwd) {
+    if (!cwd || connectionStatus !== "online") {
       setStatus(null);
       return;
     }
@@ -40,7 +50,7 @@ export function useGitStatus(cwd: string | undefined): GitStatus | null {
       })
       .then(({ status: initial, unsubscribe }) => {
         if (!active) {
-          void unsubscribe();
+          void unsubscribe().catch(() => {});
           return;
         }
         setStatus(initial);
@@ -53,9 +63,9 @@ export function useGitStatus(cwd: string | undefined): GitStatus | null {
 
     return () => {
       active = false;
-      void cleanup?.();
+      void cleanup?.().catch(() => {});
     };
-  }, [client, cwd]);
+  }, [client, cwd, connectionStatus]);
 
   return status;
 }
