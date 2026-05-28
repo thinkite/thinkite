@@ -205,14 +205,16 @@ export function getTranscriptCollection(
           },
           onSubscribed: ({ recovered, settled, initialUsage }) => {
             if (!recovered) {
-              // Cold path — daemon returned a full snapshot. `truncate()`
-              // is TanStack DB's built-in atomic clear; the framework
-              // buffers the deletes + subsequent inserts so observers
+              // Cold path — daemon returned a full snapshot. truncate()
+              // is an operation INSIDE a sync transaction (must be
+              // bracketed by begin()/commit()), not a standalone clear.
+              // TanStack DB internally buffers the truncate + the
+              // subsequent inserts in the same transaction so observers
               // never see a flash of empty content. Works correctly
               // whether collection was empty (first subscribe) or had
               // stale items (reconnect with epoch mismatch).
-              truncate();
               begin();
+              truncate();
               for (let i = 0; i < settled.length; i += 1) {
                 write({
                   type: "insert",

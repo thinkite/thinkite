@@ -1149,13 +1149,22 @@ export class DaemonClient {
         cursor: result.cursor,
         initialUsage: result.initialUsage,
       });
-    } catch {
-      // Transport-level failure (RPC reject, transport closed
-      // mid-await). Leave sub._state as "subscribing" — the next
-      // _attachTransport will retry. Swallowed silently because the
-      // offline UX is owned by connectionStatus, not per-sub error
-      // surface; we don't want to spam console with expected errors
-      // during reconnect storms.
+    } catch (err) {
+      // Transport-level failures (RPC reject, transport closed
+      // mid-await) are EXPECTED during reconnect storms and don't
+      // warrant noisy logging — leave sub._state as "subscribing"
+      // so the next _attachTransport retries. But also DON'T swallow
+      // silently: errors from inside the consumer's onSubscribed
+      // callback (e.g. accidental misuse of begin/commit/truncate in
+      // a sync handler) would otherwise vanish into this catch and
+      // leave the consumer in a stuck-loading state with no signal.
+      // Console-warn so dev sees the actual exception. In production
+      // this is fine — the next reconnect retry will produce the same
+      // warn line, which still beats silent stuck-loading.
+      console.warn(
+        `[sidecode] subscribe(${sub.cliSessionId}) failed:`,
+        err,
+      );
     }
   }
 
