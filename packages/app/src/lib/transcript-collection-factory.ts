@@ -97,6 +97,22 @@ export function getTranscriptCollection(
       // duplicate fetch path that previously had queryFn AND
       // subscribe both pulling the same JSONL.
       queryFn: async (): Promise<OrderedTimelineItem[]> => [],
+      // staleTime: Infinity — without this, React Query's default
+      // (`staleTime: 0`) treats data as stale immediately, so every
+      // time a new useLiveQuery observer mounts (e.g. user navs back
+      // to a cached session within gcTime), React Query re-fires
+      // queryFn → TanStack DB syncs collection to [] → any items
+      // previously written via subscribe.onSubscribed / onEvent get
+      // wiped. The downstream subscribe handler tries to reinsert,
+      // but the writeBatch can collide with the in-flight queryFn
+      // reconciliation and leave `isInitialLoading` stuck true.
+      //
+      // Since subscribe is the only source of truth here, queryFn
+      // should run exactly once per collection lifetime — to flip
+      // status pending → ready on creation, and never again. Setting
+      // staleTime: Infinity tells React Query "data is never stale,
+      // never refetch."
+      staleTime: Number.POSITIVE_INFINITY,
       // tool_call rows use `callId` (Anthropic tool_use_id) as their
       // identity. user_message / assistant_message use `uuid`. The
       // collection key has to discriminate both — patch_tool_call
