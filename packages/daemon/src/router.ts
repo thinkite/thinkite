@@ -400,13 +400,26 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             settled = got.items;
             initialUsage = got.initialUsage;
             settledCursor = runtime.currentCursor;
-            // Memoize so subsequent cold paths get Path A. This is
-            // safe because we've taken settled AND settledCursor at
-            // the same instant — any subsequent addEvent has cursor >
-            // settledCursor and will be replayed correctly.
-            runtime.settled = settled;
-            runtime.settledCursor = settledCursor;
-            if (initialUsage !== undefined) runtime.latestUsage = initialUsage;
+            // Memoize ONLY when an SDK loop is currently running for
+            // this session — turn-boundary refresh (run-query.ts) is
+            // what keeps the memo current, and that path only fires
+            // while query is non-null. Without this gate, Desktop-
+            // mirror sessions (SDK loop runs in Desktop, not here)
+            // would memoize once and then serve stale data forever
+            // since nothing in this daemon process invalidates it.
+            // Same for previously-owned sessions whose SDK loop has
+            // exited — settled would be stale.
+            //
+            // Cost of NOT memoizing: every cold-path subscribe for
+            // Desktop-mirror sessions re-reads JSONL (~30ms local SSD).
+            // Acceptable because: (a) back-nav within gcTime hits the
+            // cached collection without re-subscribing at all, (b)
+            // post-gcTime re-mounts are rare in real usage.
+            if (runtime.query !== null) {
+              runtime.settled = settled;
+              runtime.settledCursor = settledCursor;
+              if (initialUsage !== undefined) runtime.latestUsage = initialUsage;
+            }
           }
           const cursor = runtime.currentCursor;
 

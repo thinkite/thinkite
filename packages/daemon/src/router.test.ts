@@ -1492,13 +1492,21 @@ describe("createCommandHandler — subscribe with turn-boundary settled cache", 
     expect(sent[2]).toMatchObject({ type: "event", cursor: 4 });
   });
 
-  it("lazy-init fallback when runtime.settled is null + memoizes for next subscribe", async () => {
-    // Fresh runtime (no turn has completed yet) → settled is null →
-    // first subscribe uses deps.getMessages. The handler memoizes the
-    // result on runtime.settled so the NEXT subscribe takes the
-    // in-memory path with zero JSONL re-reads.
+  it("lazy-init fallback memoizes ONLY when runtime.query is set (active SDK loop)", async () => {
+    // Fresh runtime with active SDK loop simulated → first subscribe
+    // lazy-inits via deps.getMessages AND memoizes onto runtime.settled
+    // because turn-boundary refresh will keep it current. The NEXT
+    // subscribe takes the fast in-memory path with zero JSONL re-reads.
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
-    runtimeManager.getOrCreate("S"); // settled stays null
+    const runtime = runtimeManager.getOrCreate("S"); // settled stays null
+    // Simulate an active SDK loop — turn-boundary refresh would be
+    // running, so it's safe to memoize. Just need a non-null value
+    // for the gate check; the actual interface methods aren't exercised
+    // by this code path.
+    runtime.query = {
+      interrupt: () => Promise.resolve(),
+      close: () => {},
+    };
     const fetched = [
       { type: "user_message" as const, uuid: "u-1", text: "lazy hi" },
     ];
@@ -1532,6 +1540,38 @@ describe("createCommandHandler — subscribe with turn-boundary settled cache", 
     expect(sent2[0]).toMatchObject({
       initialUsage: { inputTokens: 7 },
     });
+  });
+
+  it("does NOT memoize when runtime.query is null (Desktop-mirror / inactive)", async () => {
+    // Desktop-mirror sessions: SDK loop runs in Desktop, not in our
+    // daemon. runtime.query stays null forever. Without the memo
+    // gate, the first subscribe would cache the JSONL snapshot and
+    // serve it forever — even as Desktop continues writing new
+    // messages. With the gate: each cold-path subscribe re-reads
+    // JSONL so subsequent fresh subscribes see updated content.
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    runtimeManager.getOrCreate("S"); // query stays null
+    const getMessages = vi.fn().mockResolvedValue({
+      items: [{ type: "user_message" as const, uuid: "u-1", text: "old" }],
+      initialUsage: undefined,
+    });
+    const handler = createCommandHandler(makeDeps({ runtimeManager, getMessages }));
+
+    // First subscribe — fetches via getMessages.
+    const { ctx: ctx1 } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "ds-1", sessionId: "S" },
+      ctx1,
+    );
+    expect(getMessages).toHaveBeenCalledTimes(1);
+
+    // Second subscribe — fetches AGAIN, no memoization.
+    const { ctx: ctx2 } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "ds-2", sessionId: "S" },
+      ctx2,
+    );
+    expect(getMessages).toHaveBeenCalledTimes(2);
   });
 });
 

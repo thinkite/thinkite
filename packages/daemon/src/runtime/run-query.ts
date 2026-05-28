@@ -232,6 +232,16 @@ export function ensureSessionLoop(
       runtime.query = null;
       runtime.inputChannel = null;
       runtime.loopPromise = null;
+      // Invalidate the in-memory settled snapshot — turn-boundary
+      // refresh isn't running anymore, so it would go stale. Next
+      // cold-path subscribe re-reads JSONL fresh. Router's lazy-init
+      // path also won't re-memoize until ensureSessionLoop spawns a
+      // new query handle (i.e. another sendPrompt comes in for this
+      // session). See router subscribe handler's `if (runtime.query
+      // !== null)` gate for the matching half of this invariant.
+      runtime.settled = null;
+      runtime.settledCursor = 0;
+      runtime.latestUsage = null;
     }
   })();
   runtime.loopPromise = loopPromise;
