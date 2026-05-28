@@ -78,13 +78,13 @@ export type ModelMetadata = {
  */
 export const MODEL_METADATA: Record<string, ModelMetadata> = {
   // ─── Current models ─────────────────────────────────────────────────
-  "claude-opus-4-7[1m]": {
-    displayName: "Opus 4.7 1M",
+  "claude-opus-4-8[1m]": {
+    displayName: "Opus 4.8 1M",
     isDefault: true,
     contextWindow: 1_000_000,
   },
-  "claude-opus-4-7": {
-    displayName: "Opus 4.7",
+  "claude-opus-4-8": {
+    displayName: "Opus 4.8",
     contextWindow: 200_000,
   },
   // Sonnet 4.6 1M intentionally NOT listed — the 1M-context variant
@@ -102,6 +102,16 @@ export const MODEL_METADATA: Record<string, ModelMetadata> = {
   },
 
   // ─── Deprecated (still present in historical Desktop session files) ─
+  "claude-opus-4-7[1m]": {
+    displayName: "Opus 4.7 1M",
+    deprecated: true,
+    contextWindow: 1_000_000,
+  },
+  "claude-opus-4-7": {
+    displayName: "Opus 4.7",
+    deprecated: true,
+    contextWindow: 200_000,
+  },
   "claude-opus-4-6[1m]": {
     displayName: "Opus 4.6 1M",
     deprecated: true,
