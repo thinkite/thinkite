@@ -1,8 +1,8 @@
-import type { TimelineItem } from "@sidecodeapp/protocol";
+import type { TimelineItem, TurnUsage } from "@sidecodeapp/protocol";
 import type { Collection } from "@tanstack/db";
-import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { createCollection } from "@tanstack/react-db";
-import type { QueryClient } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
+import type { DaemonClient } from "@/lib/daemon-client";
 
 /**
  * Augmented item type stored inside the collection. `_order` is an
@@ -33,100 +33,216 @@ import type { QueryClient } from "@tanstack/react-query";
 export type OrderedTimelineItem = TimelineItem & { _order: number };
 
 /**
- * Module-level per-session collection cache for transcript items.
- * Implements the maintainer-blessed pattern from TanStack/db#652:
+ * Per-session ephemeral state that lives next to the transcript
+ * collection but doesn't fit as a row inside it. The collection holds
+ * TimelineItems (chat content); these three fields are turn-machine
+ * status that the UI displays but isn't "an item."
+ *
+ * Driven by the same sync handler that drives the collection — both
+ * update from one Subscription callback. Exposed to React via
+ * `useSessionMeta(cliSessionId)` (useSyncExternalStore wrapper below).
+ *
+ * Lives only while the collection lives (factory map). Cleared on the
+ * collection's sync-handler cleanup (gcTime expiry).
+ */
+export interface SessionMeta {
+  isRunning: boolean;
+  lastError: string | null;
+  latestUsage: TurnUsage | null;
+}
+
+const EMPTY_META: SessionMeta = {
+  isRunning: false,
+  lastError: null,
+  latestUsage: null,
+};
+
+/**
+ * Module-level per-session collection cache. Implements the
+ * maintainer-blessed pattern from TanStack/db#652:
  *   - One collection per cliSessionId, keyed in a Map
- *   - Cache eviction wired to the collection's own `status:change` event
- *     so when TanStack DB's gcTime timer fires `cleanup()`, the entry
- *     drops out of the cache automatically — no manual ref counting
+ *   - Cache eviction wired to `status:change` event so when TanStack
+ *     DB's gcTime timer fires `cleanup()`, the entry drops out of
+ *     this Map automatically — no manual ref counting
  *
- * Why Map (not WeakMap):
- *   - WeakMap requires object keys; our sessionId is a string primitive
- *   - Eviction via `status:change` is deterministic; WeakMap's GC timing
- *     is not, and we can't `console.log(cache.size)` to debug
- *
- * Why module-level (not inside the hook):
- *   - useMemo inside a component would re-create the collection on
- *     every cliSessionId change AND fail to share the instance across
- *     two components viewing the same session
- *   - Module-level means `getTranscriptCollection("alpha")` from any
- *     caller returns the same Collection instance
- *
- * gcTime (60s) tradeoff:
- *   - User navigates away from a session → 60s window where re-mount
- *     hits the cache (instant render)
- *   - After 60s no subscribers → TanStack DB auto-cleanup → entry
- *     drops from this Map via the status:change listener
- *   - Tuned for iOS where memory pressure matters and users typically
- *     view one session at a time. Default would be 5min (300_000ms);
- *     we go shorter to be a good mobile citizen
+ * The collection's `sync` config opens a single `client.subscribe(...)`
+ * call inside its handler. This is THE difference vs the old
+ * queryCollectionOptions approach:
+ *   - Old: queryFn was vestigial (returned [], needed staleTime:Infinity
+ *     to stop React Query from re-firing it); subscribe lived in the
+ *     consumer hook's useEffect → one subscription per hook mount
+ *   - New: sync handler owns the subscription → one subscription per
+ *     collection lifetime → multiple consumers viewing the same session
+ *     share one subscription → back-nav within gcTime doesn't even
+ *     close+reopen the subscribe RPC (sync handler keeps running)
  *
  * Future migration (V0.5+): when TanStack/db#315 ships
  * `createPartitionedCollection`, this factory becomes a thin shim or
- * is removed entirely — the partitioned API will handle per-key
- * collection lifecycle natively.
+ * is removed entirely.
  */
-
-const cache = new Map<string, Collection<OrderedTimelineItem, string>>();
-
+const collections = new Map<string, Collection<OrderedTimelineItem, string>>();
+const metas = new Map<string, SessionMeta>();
+const metaListeners = new Map<string, Set<() => void>>();
 const GC_TIME_MS = 60_000;
 
+function emitMetaChange(cliSessionId: string): void {
+  const listeners = metaListeners.get(cliSessionId);
+  if (listeners === undefined) return;
+  for (const cb of listeners) cb();
+}
+
+function updateMeta(
+  cliSessionId: string,
+  patch: Partial<SessionMeta>,
+): void {
+  const current = metas.get(cliSessionId) ?? EMPTY_META;
+  metas.set(cliSessionId, { ...current, ...patch });
+  emitMetaChange(cliSessionId);
+}
+
 export interface TranscriptCollectionDeps {
-  queryClient: QueryClient;
+  client: DaemonClient;
 }
 
 export function getTranscriptCollection(
   cliSessionId: string,
   deps: TranscriptCollectionDeps,
 ): Collection<OrderedTimelineItem, string> {
-  const cached = cache.get(cliSessionId);
+  const cached = collections.get(cliSessionId);
   if (cached !== undefined) return cached;
 
-  const collection = createCollection(
-    queryCollectionOptions({
-      // Stable id for debugging + matches TanStack Query devtools naming
-      id: `transcript-${cliSessionId}`,
-      queryClient: deps.queryClient,
-      queryKey: ["messages", cliSessionId],
-      // Empty queryFn — the subscribe stream is the sole source of
-      // truth for transcript data. queryFn resolving immediately is
-      // what flips the collection out of `pending` state so
-      // writeInsert/writeDelete work; the actual rows come from the
-      // facade Subscription's `onSubscribed` (cold-path settled
-      // ingest) + `onEvent` (live deltas). This eliminates the
-      // duplicate fetch path that previously had queryFn AND
-      // subscribe both pulling the same JSONL.
-      queryFn: async (): Promise<OrderedTimelineItem[]> => [],
-      // staleTime: Infinity — without this, React Query's default
-      // (`staleTime: 0`) treats data as stale immediately, so every
-      // time a new useLiveQuery observer mounts (e.g. user navs back
-      // to a cached session within gcTime), React Query re-fires
-      // queryFn → TanStack DB syncs collection to [] → any items
-      // previously written via subscribe.onSubscribed / onEvent get
-      // wiped. The downstream subscribe handler tries to reinsert,
-      // but the writeBatch can collide with the in-flight queryFn
-      // reconciliation and leave `isInitialLoading` stuck true.
-      //
-      // Since subscribe is the only source of truth here, queryFn
-      // should run exactly once per collection lifetime — to flip
-      // status pending → ready on creation, and never again. Setting
-      // staleTime: Infinity tells React Query "data is never stale,
-      // never refetch."
-      staleTime: Number.POSITIVE_INFINITY,
-      // tool_call rows use `callId` (Anthropic tool_use_id) as their
-      // identity. user_message / assistant_message use `uuid`. The
-      // collection key has to discriminate both — patch_tool_call
-      // deltas reference `callId`, so picking `callId` for tool rows
-      // lets writeUpdate({callId, ...}) match cleanly without a
-      // synthetic compound key.
-      getKey: (item: OrderedTimelineItem): string =>
-        item.type === "tool_call" ? item.callId : item.uuid,
-      // Sort by our injected `_order` field, NOT by key. See the
-      // OrderedTimelineItem JSDoc for the longer rationale.
-      compare: (a, b) => a._order - b._order,
-      gcTime: GC_TIME_MS,
-    }),
-  );
+  // Seed meta so consumers reading via useSessionMeta before the
+  // first turn fires get a stable EMPTY_META reference (not undefined).
+  metas.set(cliSessionId, EMPTY_META);
+
+  const collection = createCollection<OrderedTimelineItem, string>({
+    id: `transcript-${cliSessionId}`,
+    // tool_call rows use `callId` (Anthropic tool_use_id) as their
+    // identity. user_message / assistant_message use `uuid`. The
+    // collection key has to discriminate both.
+    getKey: (item: OrderedTimelineItem): string =>
+      item.type === "tool_call" ? item.callId : item.uuid,
+    // Sort by our injected `_order` field, NOT by key.
+    compare: (a, b) => a._order - b._order,
+    gcTime: GC_TIME_MS,
+    sync: {
+      sync: ({ begin, write, commit, markReady, truncate, collection: coll }) => {
+        // markReady() must be called exactly once per sync handler
+        // lifetime to unblock useLiveQuery's isLoading. Subsequent
+        // onSubscribed firings (e.g. on transport reconnect) re-ingest
+        // settled but don't re-call markReady — collection is already
+        // ready, we're just refreshing its contents.
+        let hasMarkedReady = false;
+
+        const sub = deps.client.subscribe(cliSessionId, {
+          onEvent: (delta) => {
+            switch (delta.kind) {
+              case "append": {
+                // `_order` continues from the collection's current size
+                // — first event after a cold-path settled[] ingest gets
+                // _order = settled.length; subsequent _order increments
+                // by 1 per append.
+                begin();
+                write({
+                  type: "insert",
+                  value: { ...delta.item, _order: coll.size },
+                });
+                commit();
+                break;
+              }
+              case "patch_text": {
+                const current = coll.get(delta.uuid);
+                if (current?.type !== "assistant_message") return;
+                begin();
+                write({
+                  type: "update",
+                  value: { ...current, text: current.text + delta.deltaText },
+                });
+                commit();
+                break;
+              }
+              case "patch_tool_call": {
+                const current = coll.get(delta.callId);
+                if (current?.type !== "tool_call") return;
+                begin();
+                write({
+                  type: "update",
+                  value: {
+                    ...current,
+                    status: delta.status,
+                    error: delta.error,
+                    detail: delta.detail,
+                  },
+                });
+                commit();
+                break;
+              }
+              case "turn_started":
+                updateMeta(cliSessionId, { isRunning: true, lastError: null });
+                break;
+              case "turn_completed":
+                updateMeta(cliSessionId, {
+                  isRunning: false,
+                  ...(delta.usage !== undefined
+                    ? { latestUsage: delta.usage }
+                    : {}),
+                });
+                break;
+              case "turn_failed":
+                updateMeta(cliSessionId, {
+                  isRunning: false,
+                  lastError: delta.error,
+                });
+                break;
+              case "turn_canceled":
+                updateMeta(cliSessionId, { isRunning: false });
+                break;
+              case "compact_started":
+              case "compact_applied":
+                // V0.5+ — divider rendering + summary handling.
+                break;
+            }
+          },
+          onSubscribed: ({ recovered, settled, initialUsage }) => {
+            if (!recovered) {
+              // Cold path — daemon returned a full snapshot. `truncate()`
+              // is TanStack DB's built-in atomic clear; the framework
+              // buffers the deletes + subsequent inserts so observers
+              // never see a flash of empty content. Works correctly
+              // whether collection was empty (first subscribe) or had
+              // stale items (reconnect with epoch mismatch).
+              truncate();
+              begin();
+              for (let i = 0; i < settled.length; i += 1) {
+                write({
+                  type: "insert",
+                  value: { ...settled[i], _order: i },
+                });
+              }
+              commit();
+            }
+            if (initialUsage !== undefined) {
+              updateMeta(cliSessionId, { latestUsage: initialUsage });
+            }
+            if (!hasMarkedReady) {
+              markReady();
+              hasMarkedReady = true;
+            }
+          },
+        });
+
+        // Cleanup runs when the collection's gcTime expires (no active
+        // subscribers for ≥60s). Unsub from the facade — daemon stops
+        // fanning events for this session to us. Clear our meta state
+        // so a future re-create starts fresh.
+        return () => {
+          void sub.unsubscribe();
+          metas.delete(cliSessionId);
+          metaListeners.delete(cliSessionId);
+        };
+      },
+    },
+  });
 
   // Auto-evict from this Map when the collection finishes its own
   // cleanup lifecycle. Without this listener, an evicted collection
@@ -137,10 +253,41 @@ export function getTranscriptCollection(
   // so this delete is reliable.
   collection.on("status:change", ({ status }) => {
     if (status === "cleaned-up") {
-      cache.delete(cliSessionId);
+      collections.delete(cliSessionId);
     }
   });
 
-  cache.set(cliSessionId, collection);
+  collections.set(cliSessionId, collection);
   return collection;
+}
+
+/**
+ * React hook for the per-session turn-machine state (isRunning /
+ * lastError / latestUsage). Uses `useSyncExternalStore` because the
+ * state lives in a module-level Map driven by the collection's sync
+ * handler — not React state — and useSyncExternalStore is the
+ * canonical pattern for binding external mutable stores to React.
+ *
+ * Stable EMPTY_META is returned when the session has no entry (= the
+ * collection is gc'd or never existed). useSyncExternalStore requires
+ * the snapshot function to return a stable reference for unchanged
+ * data; sharing one EMPTY_META singleton across all "no entry" reads
+ * satisfies that.
+ */
+export function useSessionMeta(cliSessionId: string): SessionMeta {
+  return useSyncExternalStore(
+    (callback) => {
+      let listeners = metaListeners.get(cliSessionId);
+      if (listeners === undefined) {
+        listeners = new Set();
+        metaListeners.set(cliSessionId, listeners);
+      }
+      listeners.add(callback);
+      return () => {
+        listeners?.delete(callback);
+      };
+    },
+    () => metas.get(cliSessionId) ?? EMPTY_META,
+    () => EMPTY_META,
+  );
 }
