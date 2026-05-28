@@ -552,18 +552,21 @@ export const timelineItem = z.discriminatedUnion("type", [
   }),
   toolCallItem,
   // ─── Compact divider ─────────────────────────────────────────────────
-  // Visual marker for "the conversation was compacted here." Produced by:
-  //   - normalize() when it sees a compact_boundary system message in
-  //     `getSessionMessages({ includeSystemMessages: true })` output
-  //   - reducer when it consumes a live `compact_applied` EventDelta
+  // Visual marker for "the conversation was compacted here." Produced
+  // ONLY by the iOS reducer consuming a live `compact_applied`
+  // EventDelta. Resume can't emit one — SDK's getSessionMessages strips
+  // `subtype` / `compactMetadata` from system messages, so normalize
+  // has no way to identify a compact_boundary on disk. Tracked in
+  // sidecodeapp/sidecode#13. Live-only divider is the V0 trade.
+  //
   // Renders as a horizontal divider + caption ("Context compacted ·
   // 215k → 18k (manual)"). UI never lets the user mistake it for a
   // chat message — it's chrome, not content.
   z.object({
     type: z.literal("compact_divider"),
     /** SDK SessionMessage uuid of the originating compact_boundary
-     *  system message. Stable key + matches what JSONL persists, so
-     *  live divider and resume divider have identical identity. */
+     *  system message (forwarded by daemon on the compact_applied
+     *  delta). Stable key. */
     uuid: z.string(),
     /** Manual `/compact` vs SDK auto-compact. Caption tag for the
      *  divider; doesn't change layout. */
@@ -572,31 +575,6 @@ export const timelineItem = z.discriminatedUnion("type", [
      *  Powers the divider's `215k → 18k` caption. */
     preTokens: z.number(),
     postTokens: z.number(),
-  }),
-  // ─── Compact summary ─────────────────────────────────────────────────
-  // The post-compact "what we talked about" message that SDK injects as
-  // the model's new context anchor — a user-role message in JSONL with
-  // `isCompactSummary: true`, always parented to the preceding
-  // compact_boundary. iOS surfaces this as a tappable row that opens
-  // the shared transcript sheet with the full text; rendered inline
-  // as a chip + truncated preview rather than a full user-bubble
-  // (avoids being mistaken for something the user typed).
-  //
-  // Produced by:
-  //   - normalize() detecting `type === "user" && isCompactSummary === true`
-  //     on cold-load via getSessionMessages
-  //   - daemon's live handleUserEnvelope branch on the same flag during
-  //     the post-compact stream
-  z.object({
-    type: z.literal("compact_summary"),
-    /** Original user-message uuid in the JSONL. Stable across live +
-     *  resume so the divider chip → sheet handoff has consistent
-     *  identity. */
-    uuid: z.string(),
-    /** Full summary text. Can be multi-KB (the SDK's structured
-     *  summary covers prior conversation in detail). iOS truncates
-     *  for the inline preview and renders full-text in the sheet. */
-    text: z.string(),
   }),
 ]);
 export type TimelineItem = z.infer<typeof timelineItem>;

@@ -43,6 +43,13 @@ export function normalize(messages: readonly SessionMessage[]): TimelineItem[] {
   const pendingByCallId = new Map<string, ToolCallItem>();
 
   for (const sdkMsg of messages) {
+    // System messages are dropped — SDK's getSessionMessages by default
+    // doesn't return them (we don't pass includeSystemMessages anyway),
+    // and even when forced through, the AH mapper strips `subtype` /
+    // `compactMetadata` so we can't differentiate compact_boundary
+    // from stop_hook_summary. Resume therefore has no compact_divider
+    // for V0; live path produces dividers via run-query.ts handling
+    // SDKCompactBoundaryMessage directly. See sidecodeapp/sidecode#13.
     if (sdkMsg.type === "system") continue;
     const env = sdkMsg.message;
     if (typeof env !== "object" || env === null) continue;

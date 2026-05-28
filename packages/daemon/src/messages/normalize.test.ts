@@ -712,3 +712,22 @@ describe("normalize — bash run_in_background", () => {
     expect(item.detail.taskId).toBeUndefined();
   });
 });
+
+describe("normalize — system messages dropped", () => {
+  it("drops system messages entirely (SDK strips subtype/metadata anyway)", () => {
+    // V0 trade documented in normalize.ts: getSessionMessages's AH
+    // mapper strips `subtype` + `compactMetadata` from any system
+    // message it returns, so we can't tell a compact_boundary apart
+    // from a stop_hook_summary. Dropping all system messages keeps the
+    // output deterministic; live path renders the compact divider
+    // separately via run-query.ts (which sees the typed SDKCompactBoundaryMessage).
+    const sys = {
+      type: "system",
+      uuid: "sys-1",
+      session_id: "test-session",
+    } as unknown as SessionMessage;
+    expect(normalize([sys, userMsg("u-1", "hi")])).toEqual([
+      { type: "user_message", uuid: "u-1", text: "hi" },
+    ]);
+  });
+});

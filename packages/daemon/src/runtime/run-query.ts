@@ -86,6 +86,16 @@ interface StreamingState {
   appendedToolUseIds: Set<string>;
   /** tool_use_id → detail (kept around so tool_result patching reuses the typed shape). */
   pendingTools: Map<string, ToolCallDetail>;
+  /**
+   * Set to true after a `compact_boundary` arrives; the NEXT user
+   * envelope is the SDK-injected compact summary message (JSONL marks
+   * it `isCompactSummary: true`, but SDK's live `SDKUserMessage` type
+   * doesn't surface that flag — see sdk.d.ts:3672). We use this
+   * "next user is summary" hint to lift it to a `compact_summary`
+   * append instead of dropping it like a normal SDK-echoed user msg.
+   * Cleared the moment we consume the next user envelope.
+   */
+  expectingCompactSummary: boolean;
 }
 
 function newStreamingState(): StreamingState {
@@ -94,6 +104,7 @@ function newStreamingState(): StreamingState {
     textBlockUuids: new Map(),
     appendedToolUseIds: new Set(),
     pendingTools: new Map(),
+    expectingCompactSummary: false,
   };
 }
 
@@ -323,8 +334,106 @@ function handleSdkMessage(
     handleUserEnvelope(runtime, state, msg);
   } else if (msg.type === "result") {
     handleResultEnvelope(runtime, msg);
+  } else if (msg.type === "system") {
+    // Two `type: "system"` subtypes drive compact UI:
+    //   - "status" with status:'compacting' → compact_started (UI banner)
+    //   - "compact_boundary" → compact_applied (prune + divider) +
+    //     prime expectingCompactSummary so the next user envelope is
+    //     lifted to compact_summary
+    // Other system subtypes (init etc) are still ignored.
+    handleSystemMessage(runtime, state, msg);
   }
-  // Others ignored for V0.
+  // Others (hook_*, task_*, etc) ignored for V0.
+}
+
+/**
+ * Dispatch on system subtype. SDK's `SDKStatusMessage` is transient
+ * (not persisted to JSONL) — we only see it via the live stream, so
+ * resume can't reconstruct "compacting in progress" state. That's
+ * fine: resume always sees stable state, never mid-compact.
+ *
+ * `SDKCompactBoundaryMessage` IS persisted (the JSONL line tagged
+ * subtype:"compact_boundary") so normalize() also emits a
+ * compact_divider on cold-load. Both paths converge to the same
+ * TimelineItem shape — see protocol/src/index.ts compact_divider.
+ */
+function handleSystemMessage(
+  runtime: SessionRuntime<EventDelta>,
+  state: StreamingState,
+  msg: SDKMessage,
+): void {
+  const m = msg as unknown as Record<string, unknown>;
+  if (m.subtype === "status") {
+    // SDKStatusMessage: status enum is 'compacting' | 'requesting' | null.
+    // Only 'compacting' interests us — 'requesting' fires for every API
+    // call and would be UI noise; null is the resting state.
+    if (m.status === "compacting") {
+      runtime.addEvent({ kind: "compact_started" });
+    }
+    return;
+  }
+  if (m.subtype === "compact_boundary") {
+    handleCompactBoundary(runtime, state, m);
+    return;
+  }
+}
+
+/**
+ * Pull compact metadata off the SDKCompactBoundaryMessage and emit the
+ * `compact_applied` EventDelta iOS reducer needs. Also primes
+ * `expectingCompactSummary` so handleUserEnvelope can lift the
+ * immediately-following SDK-injected summary user message into a
+ * `compact_summary` append (SDK live type doesn't carry the
+ * isCompactSummary flag the JSONL persists, so we infer by sequence).
+ *
+ * Real-world JSONL samples have NEVER carried preservedSegment /
+ * preservedMessages (manual /compact + auto-compact both go full-
+ * compaction). Partial compaction only fires from REPL multi-select
+ * UI, which sidecode shouldn't see. preservedUuids → undefined in
+ * the 99% case; iOS reducer treats that as "drop everything".
+ */
+function handleCompactBoundary(
+  runtime: SessionRuntime<EventDelta>,
+  state: StreamingState,
+  m: Record<string, unknown>,
+): void {
+  const meta = m.compact_metadata as Record<string, unknown> | undefined;
+  if (meta === undefined) return;
+  const trigger = meta.trigger;
+  if (trigger !== "manual" && trigger !== "auto") return;
+  const preTokens = numberOrUndef(meta.pre_tokens);
+  const postTokens = numberOrUndef(meta.post_tokens);
+  if (preTokens === undefined || postTokens === undefined) return;
+  const durationMs = numberOrUndef(meta.duration_ms);
+  const uuid = typeof m.uuid === "string" ? m.uuid : undefined;
+  if (uuid === undefined) return;
+
+  // preserved_messages.uuids supersedes preserved_segment per SDK docs.
+  // Both shapes carry the surviving message UUIDs differently — segment
+  // gives head/anchor/tail, messages gives the full list. For V0 we
+  // only forward the simpler `preserved_messages.uuids`. Partial-
+  // compaction via preservedSegment fires only from REPL multi-select
+  // UI sidecode shouldn't see; if it does happen, iOS reducer treats
+  // undefined as full-compaction (drops everything) which is wrong but
+  // recoverable on next reload. TODO V0.5+: also handle preservedSegment.
+  const preservedMessages = meta.preserved_messages as
+    | { uuids?: unknown }
+    | undefined;
+  const preservedUuids = Array.isArray(preservedMessages?.uuids)
+    ? preservedMessages.uuids.filter((u): u is string => typeof u === "string")
+    : undefined;
+
+  runtime.addEvent({
+    kind: "compact_applied",
+    trigger,
+    preTokens,
+    postTokens,
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(preservedUuids !== undefined ? { preservedUuids } : {}),
+    uuid,
+  });
+  // Prime: the next user envelope is the SDK-injected summary message.
+  state.expectingCompactSummary = true;
 }
 
 /**
@@ -488,6 +597,47 @@ function handleUserEnvelope(
   msg: SDKUserMessage,
 ): void {
   const content = (msg.message as { content?: unknown })?.content;
+
+  // First check: if a compact just landed, the very next user envelope
+  // is the SDK-injected summary message. SDK live type doesn't surface
+  // isCompactSummary, so we infer-by-sequence. Lift to a regular
+  // user_message append so iOS renders it (without the lift it'd be
+  // dropped — handleUserEnvelope only processes tool_result blocks on
+  // plain text user messages). Done BEFORE the tool_result loop because
+  // summary content is plain text — no tool_result to process. The
+  // summary intentionally uses the user_message variant rather than a
+  // dedicated compact_summary one: getSessionMessages strips
+  // isCompactSummary on resume so we couldn't render distinctly there
+  // anyway (#13), and keeping it as user_message lets the upcoming
+  // long-text max-height + sheet-trigger affordance handle both
+  // summaries and paste-blob user inputs uniformly.
+  if (state.expectingCompactSummary) {
+    state.expectingCompactSummary = false;
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content
+              .filter(
+                (b): b is { type: "text"; text: string } =>
+                  typeof b === "object" &&
+                  b !== null &&
+                  (b as { type?: unknown }).type === "text" &&
+                  typeof (b as { text?: unknown }).text === "string",
+              )
+              .map((b) => b.text)
+              .join("\n\n")
+          : "";
+    const uuid = typeof msg.uuid === "string" ? msg.uuid : undefined;
+    if (text.length > 0 && uuid !== undefined) {
+      runtime.addEvent({
+        kind: "append",
+        item: { type: "user_message", uuid, text },
+      });
+    }
+    return;
+  }
+
   if (!Array.isArray(content)) return;
   for (const rawBlock of content) {
     const parsed = toolResultBlock.safeParse(rawBlock);

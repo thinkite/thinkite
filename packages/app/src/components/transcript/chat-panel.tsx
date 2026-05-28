@@ -285,11 +285,10 @@ export function ChatPanel({
         renderItem={({ item }) => {
           if (item.kind === "text") return <TextBlock block={item} />;
           if (item.kind === "tool") return <ToolBlock block={item} />;
-          // `compact_divider` + `compact_summary` — placeholders render
-          // nothing for this commit. Actual components (divider chip +
-          // tappable summary row that opens the shared transcript sheet)
-          // land in the next Slice 2 commits alongside the reducer
-          // wiring + sheet generalization.
+          // `compact_divider` — placeholder renders nothing for this
+          // commit. Actual divider component (horizontal line + caption)
+          // lands in the next Slice 2 commit alongside the reducer
+          // wiring that materializes the item.
           return null;
         }}
         // Manual top inset to clear the transparent Stack.Header.

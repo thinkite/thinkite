@@ -140,7 +140,20 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       // rather than mis-route.
       const sdkMessages = await getSessionMessages(
         cliSessionId,
+        // `cwd` is a hint only — when undefined the SDK scans every
+        // project key (robust for fork sessions where the JSONL location
+        // isn't deterministic).
         cwd === undefined ? undefined : { dir: cwd },
+        // Deliberately NOT passing `includeSystemMessages: true`. The
+        // flag returns system messages but SDK's AH mapper strips
+        // `subtype` + `compactMetadata`, leaving anonymous
+        // `{type:'system', uuid, ...}` envelopes we can't act on (can't
+        // tell compact_boundary from stop_hook_summary). Resume gets
+        // no compact_divider for V0; live path emits dividers via
+        // run-query.ts handling SDKCompactBoundaryMessage directly,
+        // which still has the typed fields. See sidecodeapp/sidecode#13
+        // for the long-term fix (self-built session reader that
+        // preserves these fields off the raw JSONL).
       );
       // Two derivations from the same SDK call (no duplicate JSONL
       // read): the normalized timeline iOS renders, and the resume-

@@ -619,3 +619,199 @@ describe("ensureSessionLoop — mode parameter passes correct option to SDK", ()
     ).toBeUndefined();
   });
 });
+
+// ─── Compact lifecycle (SDK live stream) ────────────────────────────────
+// SDKStatusMessage with status='compacting' → compact_started
+// SDKCompactBoundaryMessage → compact_applied (+ primes summary lift)
+// Following SDKUserMessage → compact_summary append (sequence-detected)
+
+function statusMsg(status: "compacting" | "requesting" | null): SDKMessage {
+  return {
+    type: "system",
+    subtype: "status",
+    uuid: `env-status-${status ?? "null"}`,
+    session_id: "s",
+    status,
+  } as unknown as SDKMessage;
+}
+
+function compactBoundaryEnvelope(
+  uuid: string,
+  meta: {
+    trigger: "manual" | "auto";
+    pre_tokens: number;
+    post_tokens: number;
+    duration_ms?: number;
+    preserved_messages?: { anchor_uuid: string; uuids: string[] };
+  },
+): SDKMessage {
+  return {
+    type: "system",
+    subtype: "compact_boundary",
+    uuid,
+    session_id: "s",
+    compact_metadata: meta,
+  } as unknown as SDKMessage;
+}
+
+function plainUserEnvelope(uuid: string, text: string): SDKMessage {
+  return {
+    type: "user",
+    uuid,
+    session_id: "s",
+    parent_tool_use_id: null,
+    message: { role: "user", content: text },
+  } as unknown as SDKMessage;
+}
+
+describe("ensureSessionLoop — compact lifecycle", () => {
+  it("SDKStatusMessage status='compacting' → compact_started", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([statusMsg("compacting")]),
+    });
+    expect(payloads(runtime)).toEqual([{ kind: "compact_started" }]);
+  });
+
+  it("status='requesting' and status=null are ignored (UI noise)", async () => {
+    // Only 'compacting' is a UI-relevant signal. 'requesting' fires for
+    // every API call and would spam the UI; null is resting state.
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([statusMsg("requesting"), statusMsg(null)]),
+    });
+    expect(payloads(runtime)).toEqual([]);
+  });
+
+  it("compact_boundary → compact_applied with metadata fields mapped", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        compactBoundaryEnvelope("b-1", {
+          trigger: "manual",
+          pre_tokens: 34000,
+          post_tokens: 4000,
+          duration_ms: 37000,
+        }),
+      ]),
+    });
+    expect(payloads(runtime)).toEqual([
+      {
+        kind: "compact_applied",
+        trigger: "manual",
+        preTokens: 34000,
+        postTokens: 4000,
+        durationMs: 37000,
+        uuid: "b-1",
+      },
+    ]);
+  });
+
+  it("compact_boundary with preserved_messages → preservedUuids forwarded", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        compactBoundaryEnvelope("b-1", {
+          trigger: "auto",
+          pre_tokens: 180000,
+          post_tokens: 18000,
+          preserved_messages: {
+            anchor_uuid: "anchor-1",
+            uuids: ["keep-1", "keep-2", "keep-3"],
+          },
+        }),
+      ]),
+    });
+    const ev = payloads(runtime)[0];
+    if (ev?.kind !== "compact_applied")
+      throw new Error("expected compact_applied");
+    expect(ev.preservedUuids).toEqual(["keep-1", "keep-2", "keep-3"]);
+  });
+
+  it("compact_boundary without preserved_messages → preservedUuids omitted (full compact)", async () => {
+    // The 99% case — manual /compact and auto-compact both go full.
+    // iOS reducer treats undefined as "drop everything pre-compact".
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        compactBoundaryEnvelope("b-1", {
+          trigger: "manual",
+          pre_tokens: 34000,
+          post_tokens: 4000,
+        }),
+      ]),
+    });
+    const ev = payloads(runtime)[0];
+    if (ev?.kind !== "compact_applied")
+      throw new Error("expected compact_applied");
+    expect(ev.preservedUuids).toBeUndefined();
+  });
+
+  it("the user message immediately following compact_boundary → user_message append (summary lift)", async () => {
+    // SDK live type doesn't expose isCompactSummary, so we detect by
+    // sequence: the first user msg after a compact_boundary is the
+    // SDK-injected summary. Lifted to a regular user_message append so
+    // iOS renders it (without the lift it'd be dropped — handleUserEnvelope
+    // only processes tool_result blocks on plain text user msgs). Verifies
+    // the expectingCompactSummary flag is set + consumed correctly.
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        compactBoundaryEnvelope("b-1", {
+          trigger: "manual",
+          pre_tokens: 34000,
+          post_tokens: 4000,
+        }),
+        plainUserEnvelope("s-1", "Summary covering earlier conversation..."),
+      ]),
+    });
+    const evts = payloads(runtime);
+    expect(evts).toEqual([
+      {
+        kind: "compact_applied",
+        trigger: "manual",
+        preTokens: 34000,
+        postTokens: 4000,
+        uuid: "b-1",
+      },
+      {
+        kind: "append",
+        item: {
+          type: "user_message",
+          uuid: "s-1",
+          text: "Summary covering earlier conversation...",
+        },
+      },
+    ]);
+  });
+
+  it("subsequent user msgs after the summary are NOT lifted", async () => {
+    // Flag clears on first consume — only ONE summary per boundary.
+    // Later user messages flow through the normal tool_result path
+    // (which no-ops on plain text user msgs, preventing duplicate
+    // rendering of iOS-typed prompts).
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        compactBoundaryEnvelope("b-1", {
+          trigger: "manual",
+          pre_tokens: 34000,
+          post_tokens: 4000,
+        }),
+        plainUserEnvelope("s-1", "Summary text"),
+        plainUserEnvelope("u-2", "user's next prompt"),
+      ]),
+    });
+    const evts = payloads(runtime);
+    // Expect: compact_applied + ONE user_message append (the lifted
+    // summary), but NOT a second append for u-2.
+    expect(evts.filter((e) => e.kind === "append")).toHaveLength(1);
+  });
+});
