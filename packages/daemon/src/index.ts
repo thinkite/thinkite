@@ -2,13 +2,8 @@ import { randomUUID } from "node:crypto";
 import {
   getSessionInfo,
   getSessionMessages,
-  type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import {
-  type EventDelta,
-  PROTOCOL_VERSION,
-  type TurnUsage,
-} from "@sidecodeapp/protocol";
+import { type EventDelta, PROTOCOL_VERSION } from "@sidecodeapp/protocol";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { listDesktopSessions } from "./desktop/sessions.js";
@@ -16,7 +11,7 @@ import { GitWatcherRegistry } from "./git-watch.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
-import { normalize } from "./messages/normalize.js";
+import { extractLatestUsage, normalize } from "./messages/normalize.js";
 import { createPairOffer } from "./pairing.js";
 import { createCommandHandler } from "./router.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
@@ -71,44 +66,6 @@ export interface Daemon {
  * open, two consecutive misses (= window closed for ≥ 5min) closes it.
  */
 const PAIR_WINDOW_MS = 5 * 60_000;
-
-/**
- * Pull a usage seed for the iOS context-window meter out of the JSONL
- * replay returned by `getSessionMessages`. Scans newest-first for the
- * last assistant message whose raw envelope carries a `usage` field,
- * extracts the four token counts using the same snake_case → camelCase
- * mapping as `run-query.ts`'s live extractor. Returns `undefined` when:
- *   - The session has no assistant messages (empty/user-only JSONL)
- *   - The most recent assistant turn was tool-only (no API usage stamp)
- *   - The .message envelope is missing or shaped unexpectedly
- *
- * `SessionMessage.message` is typed as `unknown` by the SDK, but in
- * practice carries the raw Anthropic API response (Claude Code writes
- * the full response shape into JSONL). Defensive casting + optional
- * field access keeps us safe if the SDK's serialization changes.
- */
-function extractLatestUsage(
-  messages: readonly SessionMessage[],
-): TurnUsage | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m === undefined || m.type !== "assistant") continue;
-    const raw = m.message as { usage?: Record<string, unknown> } | undefined;
-    const u = raw?.usage;
-    if (u === undefined) continue;
-    return {
-      inputTokens: numberOrUndef(u.input_tokens),
-      outputTokens: numberOrUndef(u.output_tokens),
-      cacheReadInputTokens: numberOrUndef(u.cache_read_input_tokens),
-      cacheCreationInputTokens: numberOrUndef(u.cache_creation_input_tokens),
-    };
-  }
-  return undefined;
-}
-
-function numberOrUndef(v: unknown): number | undefined {
-  return typeof v === "number" ? v : undefined;
-}
 
 export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   const home = options.homeDir ?? resolveSidecodeHome();

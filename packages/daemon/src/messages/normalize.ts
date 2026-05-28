@@ -4,6 +4,7 @@ import type {
   ImageAttachment,
   TimelineItem,
   ToolCallItem,
+  TurnUsage,
 } from "@sidecodeapp/protocol";
 import { assistantStopReason } from "@sidecodeapp/protocol";
 import {
@@ -176,4 +177,47 @@ export function normalize(messages: readonly SessionMessage[]): TimelineItem[] {
   }
 
   return out;
+}
+
+/**
+ * Pull a usage seed for the iOS context-window meter out of the JSONL
+ * replay returned by `getSessionMessages`. Scans newest-first for the
+ * last assistant message whose raw envelope carries a `usage` field,
+ * extracts the four token counts using the same snake_case → camelCase
+ * mapping as `run-query.ts`'s live extractor. Returns `undefined` when:
+ *   - The session has no assistant messages (empty/user-only JSONL)
+ *   - The most recent assistant turn was tool-only (no API usage stamp)
+ *   - The .message envelope is missing or shaped unexpectedly
+ *
+ * `SessionMessage.message` is typed as `unknown` by the SDK, but in
+ * practice carries the raw Anthropic API response (Claude Code writes
+ * the full response shape into JSONL). Defensive casting + optional
+ * field access keeps us safe if the SDK's serialization changes.
+ *
+ * Lives here (rather than in daemon/index.ts) so both daemon-level
+ * code paths can share it: (1) `RouterDeps.getMessages` for the
+ * subscribe lazy-init fallback; (2) `run-query.ts` for the
+ * turn-boundary in-memory refresh.
+ */
+export function extractLatestUsage(
+  messages: readonly SessionMessage[],
+): TurnUsage | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m === undefined || m.type !== "assistant") continue;
+    const raw = m.message as { usage?: Record<string, unknown> } | undefined;
+    const u = raw?.usage;
+    if (u === undefined) continue;
+    return {
+      inputTokens: numberOrUndef(u.input_tokens),
+      outputTokens: numberOrUndef(u.output_tokens),
+      cacheReadInputTokens: numberOrUndef(u.cache_read_input_tokens),
+      cacheCreationInputTokens: numberOrUndef(u.cache_creation_input_tokens),
+    };
+  }
+  return undefined;
+}
+
+function numberOrUndef(v: unknown): number | undefined {
+  return typeof v === "number" ? v : undefined;
 }

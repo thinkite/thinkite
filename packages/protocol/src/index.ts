@@ -1005,41 +1005,6 @@ export const continueOnDesktopResponse = z.object({
   error: z.string().optional(),
 });
 
-/**
- * Read a session's full message transcript. Backed by the SDK's
- * `getSessionMessages`, which parses the JSONL at
- * `~/.claude/projects/<projectKey>/<cliSessionId>.jsonl`.
- *
- * V0 returns the whole transcript — no pagination. For typical Claude Code
- * sessions this is hundreds of messages at most, well within FlatList's
- * virtualized rendering envelope. Add `limit`/`offset` later (non-breaking)
- * if profiling shows it matters.
- *
- * `cwd` is intentionally optional. Empirically the JSONL location for fork
- * sessions in worktrees isn't deterministic — sometimes it lives at the
- * worktree's project key, sometimes at originCwd's. Omitting `cwd` makes
- * the SDK do an all-projects scan (~20 stat calls, sub-ms on SSD), which
- * is robust. Future optimization: pass `cwd` and `originCwd` as hints,
- * daemon tries each before falling back to scan.
- */
-export const getMessagesCommand = z.object({
-  type: z.literal("getMessages"),
-  requestId: z.string(),
-  cliSessionId: z.string(),
-  cwd: z.string().optional(),
-});
-
-export const getMessagesResponse = z.object({
-  type: z.literal("getMessages.response"),
-  requestId: z.string(),
-  /**
-   * Server-normalized timeline (assistant text / user text / paired tool_call).
-   * Replaces the previous raw `messages: SessionMessage[]` shape on
-   * 2026-05-02 — see Slice D normalization commit.
-   */
-  items: z.array(timelineItem),
-});
-
 // ─── Git status subscription (workspace info bar) ─────────────────────────
 //
 // Push-based per-cwd live status. Client opens a subscription on a cwd
@@ -1260,7 +1225,6 @@ export const command = z.discriminatedUnion("type", [
   listSessionsCommand,
   deleteSessionCommand,
   continueOnDesktopCommand,
-  getMessagesCommand,
   subscribeGitStatusCommand,
   unsubscribeGitStatusCommand,
   listDirectoryCommand,
@@ -1279,7 +1243,6 @@ export const response = z.discriminatedUnion("type", [
   listSessionsResponse,
   deleteSessionResponse,
   continueOnDesktopResponse,
-  getMessagesResponse,
   subscribeGitStatusResponse,
   unsubscribeGitStatusResponse,
   listDirectoryResponse,
@@ -1308,7 +1271,6 @@ export const clientFrame = z.discriminatedUnion("type", [
   listSessionsCommand,
   deleteSessionCommand,
   continueOnDesktopCommand,
-  getMessagesCommand,
   subscribeGitStatusCommand,
   unsubscribeGitStatusCommand,
   listDirectoryCommand,
@@ -1338,7 +1300,6 @@ export const daemonFrame = z.discriminatedUnion("type", [
   listSessionsResponse,
   deleteSessionResponse,
   continueOnDesktopResponse,
-  getMessagesResponse,
   subscribeGitStatusResponse,
   unsubscribeGitStatusResponse,
   gitStatusEvent,

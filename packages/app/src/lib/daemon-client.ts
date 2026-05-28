@@ -549,26 +549,6 @@ export class Transport {
   }
 
   /**
-   * Fetch a session's full transcript, normalized server-side into
-   * `TimelineItem[]` (assistant text / user text / paired tool_call). See
-   * Slice D normalization in daemon/src/messages/normalize.ts for the
-   * detail shape.
-   *
-   * No `cwd` arg: the SDK does an all-projects scan to find the JSONL.
-   * Cheap (~20 stat calls) and robust against fork sessions where the
-   * file location varies between worktree and originCwd project keys.
-   */
-  async getMessages(cliSessionId: string): Promise<TimelineItem[]> {
-    const requestId = Crypto.randomUUID();
-    const res = (await this.request({
-      type: "getMessages",
-      requestId,
-      cliSessionId,
-    })) as { items: TimelineItem[] };
-    return res.items;
-  }
-
-  /**
    * Subscribe to a session's live event stream. Low-level RPC — the
    * facade (`DaemonClient`) wraps this with the registry that handles
    * cross-reconnect resumption + state machine; consumers should call
@@ -1058,7 +1038,7 @@ export class Subscription {
  *     fire continuously; the `recovered: false` flag on a re-attach
  *     tells the consumer "your collection is stale, rebuild it."
  *
- * Non-subscribe RPCs (`getMessages`, `listSessions`, etc.) are thin
+ * Non-subscribe RPCs (`listSessions`, `getModels`, etc.) are thin
  * pass-throughs that `await this.readyPromise` then dispatch to the
  * current transport. If a transport drops while a pass-through is
  * in-flight, the request rejects with "daemon connection closed" —
@@ -1228,11 +1208,6 @@ export class DaemonClient {
   }
 
   // ─── Pass-through RPCs (await readyPromise → dispatch) ────────────
-
-  async getMessages(cliSessionId: string): Promise<TimelineItem[]> {
-    const t = await this.readyPromise;
-    return t.getMessages(cliSessionId);
-  }
 
   async listSessions(dir?: string): Promise<unknown[]> {
     const t = await this.readyPromise;

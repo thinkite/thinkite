@@ -3,7 +3,6 @@ import type { Collection } from "@tanstack/db";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { createCollection } from "@tanstack/react-db";
 import type { QueryClient } from "@tanstack/react-query";
-import type { DaemonClient } from "@/lib/daemon-client";
 
 /**
  * Augmented item type stored inside the collection. `_order` is an
@@ -73,7 +72,6 @@ const cache = new Map<string, Collection<OrderedTimelineItem, string>>();
 const GC_TIME_MS = 60_000;
 
 export interface TranscriptCollectionDeps {
-  client: DaemonClient;
   queryClient: QueryClient;
 }
 
@@ -89,18 +87,16 @@ export function getTranscriptCollection(
       // Stable id for debugging + matches TanStack Query devtools naming
       id: `transcript-${cliSessionId}`,
       queryClient: deps.queryClient,
-      // Same queryKey shape the old useMessages hook used — keeps the
-      // existing React Query cache compatible if anyone else queries
-      // it (currently nobody does, but it's a free invariant to hold).
       queryKey: ["messages", cliSessionId],
-      // Tag each item with its array index. SDK returns items in the
-      // correct chronological order; we preserve that as `_order` so
-      // the collection's SortedMap can keep them in line. Without
-      // this, items get sorted by key (uuid → lexical random order).
-      queryFn: async (): Promise<OrderedTimelineItem[]> => {
-        const items = await deps.client.getMessages(cliSessionId);
-        return items.map((item, idx) => ({ ...item, _order: idx }));
-      },
+      // Empty queryFn — the subscribe stream is the sole source of
+      // truth for transcript data. queryFn resolving immediately is
+      // what flips the collection out of `pending` state so
+      // writeInsert/writeDelete work; the actual rows come from the
+      // facade Subscription's `onSubscribed` (cold-path settled
+      // ingest) + `onEvent` (live deltas). This eliminates the
+      // duplicate fetch path that previously had queryFn AND
+      // subscribe both pulling the same JSONL.
+      queryFn: async (): Promise<OrderedTimelineItem[]> => [],
       // tool_call rows use `callId` (Anthropic tool_use_id) as their
       // identity. user_message / assistant_message use `uuid`. The
       // collection key has to discriminate both — patch_tool_call

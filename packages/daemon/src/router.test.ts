@@ -420,91 +420,6 @@ describe("createCommandHandler — listSessions", () => {
   });
 });
 
-describe("createCommandHandler — getMessages", () => {
-  it("calls getMessages with cliSessionId; cwd undefined when caller omits it", async () => {
-    const items = [
-      { type: "user_message" as const, uuid: "u-1", text: "hi" },
-      { type: "assistant_message" as const, uuid: "u-2", text: "hello" },
-    ];
-    const getMessages = vi.fn().mockResolvedValue({ items });
-    const handler = createCommandHandler(makeDeps({ getMessages }));
-    const { ctx, sent } = makeCtx();
-    await handler(
-      {
-        type: "getMessages",
-        requestId: "gm-1",
-        cliSessionId: "cli-abc",
-      },
-      ctx,
-    );
-    expect(getMessages).toHaveBeenCalledWith("cli-abc", undefined);
-    expect(sent).toEqual([
-      {
-        type: "getMessages.response",
-        requestId: "gm-1",
-        items,
-      },
-    ]);
-  });
-
-  it("forwards cwd hint when caller provides one", async () => {
-    const getMessages = vi.fn().mockResolvedValue({ items: [] });
-    const handler = createCommandHandler(makeDeps({ getMessages }));
-    const { ctx } = makeCtx();
-    await handler(
-      {
-        type: "getMessages",
-        requestId: "gm-hint",
-        cliSessionId: "cli-abc",
-        cwd: "/Users/x/proj",
-      },
-      ctx,
-    );
-    expect(getMessages).toHaveBeenCalledWith("cli-abc", "/Users/x/proj");
-  });
-
-  it("returns an error frame when getMessages throws", async () => {
-    const getMessages = vi
-      .fn()
-      .mockRejectedValue(new Error("session file gone"));
-    const handler = createCommandHandler(makeDeps({ getMessages }));
-    const { ctx, sent } = makeCtx();
-    await handler(
-      {
-        type: "getMessages",
-        requestId: "gm-2",
-        cliSessionId: "cli-x",
-      },
-      ctx,
-    );
-    expect(sent[0]).toMatchObject({
-      type: "error",
-      requestId: "gm-2",
-      code: "internal",
-      message: "session file gone",
-    });
-  });
-
-  it("ships an empty items array when normalize returns []", async () => {
-    const handler = createCommandHandler(
-      makeDeps({ getMessages: vi.fn().mockResolvedValue({ items: [] }) }),
-    );
-    const { ctx, sent } = makeCtx();
-    await handler(
-      {
-        type: "getMessages",
-        requestId: "gm-3",
-        cliSessionId: "cli-empty",
-      },
-      ctx,
-    );
-    expect(sent[0]).toMatchObject({
-      type: "getMessages.response",
-      items: [],
-    });
-  });
-});
-
 describe("createCommandHandler — unsupported commands", () => {
   it("replies error/unsupported with the inbound requestId", async () => {
     // deleteSession is reserved for V1+ (per project_sidecode_persistence
@@ -1492,6 +1407,130 @@ describe("createCommandHandler — interrupt", () => {
       requestId: "int-fail",
       code: "internal",
       message: expect.stringContaining("control_lost"),
+    });
+  });
+});
+
+describe("createCommandHandler — subscribe with turn-boundary settled cache", () => {
+  // These tests cover the race-elimination path added with the turn-
+  // boundary refresh refactor. The key invariant: when runtime.settled
+  // is populated (because run-query did an in-iterator refresh at the
+  // last turn boundary), cold-path subscribe must serve from memory
+  // WITHOUT calling deps.getMessages. When settled is null (fresh
+  // runtime or Desktop-mirror read-only session), the lazy-init
+  // fallback uses deps.getMessages AND memoizes the result for next
+  // time.
+  it("cold path uses runtime.settled when populated; no JSONL re-read", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S");
+    // Simulate: a prior turn already completed and run-query refreshed
+    // settled in-memory.
+    runtime.addEvent({ kind: "turn_started" }); // cursor=1
+    runtime.addEvent({ kind: "turn_completed" }); // cursor=2
+    runtime.settled = [
+      { type: "user_message", uuid: "u-1", text: "hello" },
+      { type: "assistant_message", uuid: "m-1", text: "hi" },
+    ];
+    runtime.settledCursor = 2;
+    runtime.latestUsage = { inputTokens: 100, outputTokens: 50 };
+
+    const getMessages = vi.fn();
+    const handler = createCommandHandler(makeDeps({ runtimeManager, getMessages }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-warm-mem", sessionId: "S" },
+      ctx,
+    );
+
+    expect(getMessages).not.toHaveBeenCalled();
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.response",
+      cursor: 2,
+      recovered: false,
+      initialUsage: { inputTokens: 100, outputTokens: 50 },
+    });
+    expect((sent[0] as { settled: TimelineItem[] }).settled).toEqual([
+      { type: "user_message", uuid: "u-1", text: "hello" },
+      { type: "assistant_message", uuid: "m-1", text: "hi" },
+    ]);
+  });
+
+  it("cold path replays buffer events with cursor > settledCursor", async () => {
+    // Simulates: turn 1 completed (settled refreshed at cursor=2),
+    // turn 2 partially streamed (events 3 + 4 in buffer), client
+    // subscribes mid-turn-2. Daemon must return turn-1 settled AND
+    // replay events 3, 4 so the client catches up to live.
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.addEvent({ kind: "turn_started" }); // cursor=1
+    runtime.addEvent({ kind: "turn_completed" }); // cursor=2
+    runtime.settled = [
+      { type: "assistant_message", uuid: "m-1", text: "turn 1 final" },
+    ];
+    runtime.settledCursor = 2;
+    runtime.addEvent({ kind: "turn_started" }); // cursor=3 — turn 2 begins
+    runtime.addEvent({
+      kind: "patch_text",
+      uuid: "m-2",
+      deltaText: "hello",
+    }); // cursor=4
+
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-mid", sessionId: "S" },
+      ctx,
+    );
+
+    // Response: settled from cursor=2, current cursor=4.
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.response",
+      cursor: 4,
+    });
+    // Replay: events 3, 4 in order (they're > settledCursor=2).
+    expect(sent[1]).toMatchObject({ type: "event", cursor: 3 });
+    expect(sent[2]).toMatchObject({ type: "event", cursor: 4 });
+  });
+
+  it("lazy-init fallback when runtime.settled is null + memoizes for next subscribe", async () => {
+    // Fresh runtime (no turn has completed yet) → settled is null →
+    // first subscribe uses deps.getMessages. The handler memoizes the
+    // result on runtime.settled so the NEXT subscribe takes the
+    // in-memory path with zero JSONL re-reads.
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    runtimeManager.getOrCreate("S"); // settled stays null
+    const fetched = [
+      { type: "user_message" as const, uuid: "u-1", text: "lazy hi" },
+    ];
+    const getMessages = vi.fn().mockResolvedValue({
+      items: fetched,
+      initialUsage: { inputTokens: 7 },
+    });
+    const handler = createCommandHandler(makeDeps({ runtimeManager, getMessages }));
+
+    // First subscribe — uses fallback.
+    const { ctx: ctx1, sent: sent1 } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-lazy-1", sessionId: "S" },
+      ctx1,
+    );
+    expect(getMessages).toHaveBeenCalledTimes(1);
+    expect((sent1[0] as { settled: TimelineItem[] }).settled).toEqual(fetched);
+    expect(sent1[0]).toMatchObject({
+      initialUsage: { inputTokens: 7 },
+    });
+
+    // Second subscribe (different connection ctx) — runtime.settled is
+    // now memoized, no second getMessages call.
+    const { ctx: ctx2, sent: sent2 } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-lazy-2", sessionId: "S" },
+      ctx2,
+    );
+    expect(getMessages).toHaveBeenCalledTimes(1); // unchanged
+    expect((sent2[0] as { settled: TimelineItem[] }).settled).toEqual(fetched);
+    expect(sent2[0]).toMatchObject({
+      initialUsage: { inputTokens: 7 },
     });
   });
 });

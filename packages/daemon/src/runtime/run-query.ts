@@ -49,6 +49,7 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  getSessionMessages,
   type Query,
   query,
   type SDKAssistantMessage,
@@ -61,6 +62,7 @@ import type {
   ImageAttachment,
   ToolCallDetail,
 } from "@sidecodeapp/protocol";
+import { extractLatestUsage, normalize } from "../messages/normalize.js";
 import {
   attachOutputToDetail,
   buildDetailFromInput,
@@ -212,7 +214,12 @@ export function ensureSessionLoop(
     const state = newStreamingState();
     try {
       for await (const msg of q) {
-        handleSdkMessage(runtime, state, msg);
+        // await: handleSdkMessage may refresh the in-memory settled
+        // snapshot after `result` envelopes — that's an async JSONL
+        // read. Awaiting here pauses the SDK iterator for the duration,
+        // which is the whole point: no new addEvent fires while we
+        // refresh settled, so the snapshot is taken atomically.
+        await handleSdkMessage(runtime, state, msg);
       }
     } catch (err) {
       // Surface the SDK error as a `turn_failed` so iOS can render it
@@ -321,11 +328,11 @@ function buildUserMessage(
 
 // ─── SDK message dispatch ───────────────────────────────────────────────
 
-function handleSdkMessage(
+async function handleSdkMessage(
   runtime: SessionRuntime<EventDelta>,
   state: StreamingState,
   msg: SDKMessage,
-): void {
+): Promise<void> {
   if (msg.type === "stream_event") {
     handleStreamEvent(runtime, state, msg);
   } else if (msg.type === "assistant") {
@@ -334,6 +341,37 @@ function handleSdkMessage(
     handleUserEnvelope(runtime, state, msg);
   } else if (msg.type === "result") {
     handleResultEnvelope(runtime, msg);
+    // Turn-boundary refresh — race elimination for cold-path subscribe.
+    //
+    // The SDK iterator is paused here (we're inside its `for await`),
+    // so no other addEvent can fire while we read JSONL + normalize.
+    // After this returns the iterator processes the next message (if
+    // any) AND the next addEvent advances cursor past settledCursor.
+    //
+    // Why JSONL re-read instead of in-memory incremental fold: we'd
+    // have to duplicate the entire normalize.ts logic incrementally
+    // (text-streaming aggregation, tool_use+result pairing, compact
+    // boundary handling). The JSONL re-read is ~10-30ms on local SSD
+    // and trivially correct — SDK has already flushed everything for
+    // this turn by the time we see `result`.
+    //
+    // Failure here is non-fatal: log + continue. Subsequent cold-path
+    // subscribes fall through to the lazy-init JSONL read in the
+    // router. We don't bubble the error up because the SDK loop must
+    // stay alive to handle the next user prompt.
+    try {
+      const snap = runtime.currentCursor;
+      const sdkMessages = await getSessionMessages(runtime.sessionId);
+      runtime.settled = normalize(sdkMessages);
+      runtime.settledCursor = snap;
+      const latestUsage = extractLatestUsage(sdkMessages);
+      if (latestUsage !== undefined) runtime.latestUsage = latestUsage;
+    } catch (err) {
+      console.warn(
+        `[sidecode] turn-boundary settled refresh failed for session ${runtime.sessionId}:`,
+        err,
+      );
+    }
   } else if (msg.type === "system") {
     // Two `type: "system"` subtypes drive compact UI:
     //   - "status" with status:'compacting' → compact_started (UI banner)
@@ -474,6 +512,12 @@ function handleResultEnvelope(
 
   if (r.subtype === "success") {
     runtime.addEvent({ kind: "turn_completed", usage });
+    // Stash live for the context-window meter's resume seed — saves
+    // a subscribe-time JSONL re-extraction in the common warm path
+    // (subscriber dropped + reconnected after this turn). The
+    // subsequent turn-boundary refresh will overwrite this with the
+    // JSONL-derived value as belt-and-suspenders.
+    if (usage !== undefined) runtime.latestUsage = usage;
     return;
   }
   // Any non-"success" subtype is an error variant. Pull the

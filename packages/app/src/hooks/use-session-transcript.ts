@@ -68,16 +68,15 @@ export function useSessionTranscript(cliSessionId: string) {
   const { client } = useDaemonClient();
   const queryClient = useQueryClient();
 
-  // Collection lifetime tracks cliSessionId only — `client` is stable
-  // post-facade refactor, so no need to gate on it. Factory returns
-  // the same instance across hook re-renders for a given sessionId
-  // (Map cache); evicts after gcTime when no subscribers.
+  // Collection lifetime tracks cliSessionId only. Factory returns the
+  // same instance across hook re-renders for a given sessionId (Map
+  // cache); evicts after gcTime when no subscribers.
   const collection = useMemo(
-    () => getTranscriptCollection(cliSessionId, { client, queryClient }),
-    [cliSessionId, client, queryClient],
+    () => getTranscriptCollection(cliSessionId, { queryClient }),
+    [cliSessionId, queryClient],
   );
 
-  const { data, isLoading: liveQueryLoading } = useLiveQuery(
+  const { data } = useLiveQuery(
     (q) =>
       q.from({ item: collection }).orderBy(({ item }) => item._order, "asc"),
     [collection],
@@ -93,29 +92,20 @@ export function useSessionTranscript(cliSessionId: string) {
   // failure surface from this hook. Always null until we add real
   // terminal cases (permission denied / session not found).
   const [error] = useState<Error | null>(null);
-  // Subscription-loading gate: separate from useLiveQuery's hydration
-  // so the consumer can distinguish "collection hasn't hydrated yet"
-  // (data is empty array) from "first subscribe response landed and
-  // we're catching up to live" (settled has been ingested).
-  const [isSubLoading, setIsSubLoading] = useState(true);
-
-  const isInitialLoading = liveQueryLoading || isSubLoading;
+  // Loading flag: true until the first `onSubscribed` lands. The
+  // collection's queryFn returns [] immediately (no real data fetch
+  // — subscribe drives everything), so `useLiveQuery.isLoading` flips
+  // false right away; the meaningful "is data here yet" signal is
+  // whether the subscribe response has arrived.
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
 
   // Subscribe via the stable facade. The returned Subscription survives
   // every transport reconnect — facade re-attaches with our sinceCursor
   // + sinceEpoch and replays the gap automatically. We only need to
   // unsubscribe on unmount + sessionId change.
-  //
-  // Gated on `!liveQueryLoading`: the collection is in 'pending' state
-  // until its queryFn first resolves; calling writeInsert/writeDelete
-  // before then throws `SyncNotInitializedError`. Since subscribe RPC
-  // and the collection's getMessages RPC race (both ~30-100ms), the
-  // subscribe response can arrive before queryFn resolves — wait until
-  // useLiveQuery's hydration completes before attaching.
   useEffect(() => {
-    if (liveQueryLoading) return;
     let active = true;
-    setIsSubLoading(true);
+    setIsInitialLoading(true);
 
     const sub = client.subscribe(cliSessionId, {
       onEvent: (delta) => {
@@ -178,29 +168,22 @@ export function useSessionTranscript(cliSessionId: string) {
       onSubscribed: ({ recovered, settled, initialUsage }) => {
         if (!active) return;
         if (!recovered) {
-          // Cold path — daemon returned a full snapshot. Truncate the
-          // collection and ingest `settled` from scratch. Triggers on
-          // first subscribe AND on reconnect when daemon couldn't
-          // serve incrementally (epoch mismatch from daemon restart,
-          // or sinceCursor predates the ring buffer).
-          //
-          // The first-subscribe case looks redundant: queryFn already
-          // populated the collection with the SAME data (both read the
-          // JSONL via daemon's getMessages). But the daemon's settled
-          // is taken atomically with the live-fanout attach, while
-          // queryFn ran at a different moment — settled is the
-          // authoritative "starting point" of the live stream. Worst-
-          // case flash is one React re-render with identical content.
-          //
-          // Materialize keys BEFORE writeBatch to avoid iterator
-          // invalidation when we then mutate the collection. Then do
-          // delete-all + re-insert-all in one batch so the UI sees a
-          // single change event.
+          // Cold path — daemon returned a full snapshot. Ingest into
+          // the collection. Two sub-cases:
+          //   - First subscribe: collection is empty (queryFn returned
+          //     []) → straight insert.
+          //   - Reconnect with epoch mismatch / sinceCursor evicted:
+          //     collection has stale data from before disconnect → we
+          //     need to truncate before re-ingest. Detected by
+          //     `collection.size > 0`.
+          const needsTruncate = collection.size > 0;
           const keysToDelete: string[] = [];
-          for (const item of collection.values()) {
-            keysToDelete.push(
-              item.type === "tool_call" ? item.callId : item.uuid,
-            );
+          if (needsTruncate) {
+            for (const item of collection.values()) {
+              keysToDelete.push(
+                item.type === "tool_call" ? item.callId : item.uuid,
+              );
+            }
           }
           collection.utils.writeBatch(() => {
             for (const key of keysToDelete) {
@@ -215,7 +198,7 @@ export function useSessionTranscript(cliSessionId: string) {
         // the gap (sinceCursor, response.cursor] will arrive via
         // onEvent right after this callback returns.
         if (initialUsage !== undefined) setLatestUsage(initialUsage);
-        setIsSubLoading(false);
+        setIsInitialLoading(false);
       },
     });
 
@@ -223,7 +206,7 @@ export function useSessionTranscript(cliSessionId: string) {
       active = false;
       void sub.unsubscribe();
     };
-  }, [client, cliSessionId, collection, liveQueryLoading]);
+  }, [client, cliSessionId, collection]);
 
   // Mirror old useLiveSession return shape so call sites don't need
   // to rename properties. Old field `isInitialLoading` maps directly;

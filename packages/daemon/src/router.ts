@@ -278,27 +278,6 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         }
         return;
       }
-      case "getMessages": {
-        try {
-          // getMessages now returns { items, initialUsage? }; this RPC
-          // handler only needs items. initialUsage is consumed by the
-          // subscribe handler below for the resume-time meter seed.
-          const { items } = await deps.getMessages(cmd.cliSessionId, cmd.cwd);
-          ctx.send({
-            type: "getMessages.response",
-            requestId: cmd.requestId,
-            items,
-          });
-        } catch (err) {
-          ctx.send({
-            type: "error",
-            requestId: cmd.requestId,
-            code: "internal",
-            message: err instanceof Error ? err.message : String(err),
-          });
-        }
-        return;
-      }
       case "subscribe": {
         try {
           const sessionId = cmd.sessionId;
@@ -383,19 +362,58 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             return;
           }
 
-          // Cold path — full settled snapshot + initialUsage. Read both
-          // atomically out of the same getMessages call (no extra SDK
-          // round-trip). Race window: an event may land in the buffer
-          // between getMessages and the cursor snapshot below; V0
-          // accepts this — see project_session_replay_model memory.
-          const { items: settled, initialUsage } = await deps.getMessages(
-            sessionId,
-          );
+          // Cold path — two flavors:
+          //
+          //   (A) **In-memory settled** (the race-free path). run-query
+          //       refreshes runtime.settled + runtime.settledCursor on
+          //       every turn boundary, AT a moment when the SDK iterator
+          //       is paused so no addEvent can race. If settled is
+          //       populated, we serve from memory atomically with the
+          //       cursor + epoch + latestUsage. Replay events in
+          //       (settledCursor, currentCursor] from the ring buffer
+          //       — these events are from any in-progress turn AFTER
+          //       the snapshot, so they touch items NOT in settled
+          //       (no patch_text overwriting final assistant text).
+          //
+          //   (B) **JSONL fallback** (the lazy-init path). Used when:
+          //       - First subscribe for a session before its first
+          //         turn completes (settled still null)
+          //       - Desktop-mirror read-only sessions (no SDK loop
+          //         in this daemon → settled never populates)
+          //       This path has the old race window (await JSONL read
+          //       while events may land in the buffer); kept for
+          //       compatibility but transparently displaced by path A
+          //       after one turn.
+          let settled: TimelineItem[];
+          let settledCursor: number;
+          let initialUsage: TurnUsage | undefined;
+
+          if (runtime.settled !== null) {
+            // Path A — atomic in-memory read. No await between fields.
+            settled = runtime.settled;
+            settledCursor = runtime.settledCursor;
+            initialUsage = runtime.latestUsage ?? undefined;
+          } else {
+            // Path B — lazy init. The cursor snapshot is taken AFTER
+            // the await; race window exists (see Path A's comment).
+            const got = await deps.getMessages(sessionId);
+            settled = got.items;
+            initialUsage = got.initialUsage;
+            settledCursor = runtime.currentCursor;
+            // Memoize so subsequent cold paths get Path A. This is
+            // safe because we've taken settled AND settledCursor at
+            // the same instant — any subsequent addEvent has cursor >
+            // settledCursor and will be replayed correctly.
+            runtime.settled = settled;
+            runtime.settledCursor = settledCursor;
+            if (initialUsage !== undefined) runtime.latestUsage = initialUsage;
+          }
           const cursor = runtime.currentCursor;
 
           // Response first (mirrors warm-path ordering for consistency).
-          // Then runtime.subscribe at the snapshotted cursor — no replay
-          // (sinceCursor === cursor), just registers the live fanout.
+          // Then runtime.subscribe at settledCursor — replays events
+          // in (settledCursor, cursor] from the ring buffer + registers
+          // the live fanout.
           ctx.send({
             type: "subscribe.response",
             requestId: cmd.requestId,
@@ -413,7 +431,7 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
               cursor: event.cursor,
               delta: event.payload,
             });
-          }, cursor);
+          }, settledCursor);
           subs.set(sessionId, unsubscribe);
           // ws.onclose → unsubscribe automatically. Safe to call twice
           // (runtime.subscribe's returned closure is idempotent), so an

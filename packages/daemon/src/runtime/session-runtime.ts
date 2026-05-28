@@ -1,9 +1,14 @@
+import type { TimelineItem, TurnUsage } from "@sidecodeapp/protocol";
+
 /**
  * Per-session in-memory state for streaming/live messaging. Holds:
  *   - a ring buffer of events the daemon has pushed (for replay on subscribe)
  *   - a monotonic cursor assigned on each addEvent
  *   - a set of live subscriber callbacks (for fanout)
  *   - a slot for the SDK Query handle (populated by F2's run-query)
+ *   - in-memory settled snapshot (refreshed at turn boundaries by run-query)
+ *     so subscribe-time cold path can serve atomically from memory instead
+ *     of racing with the live event stream over an async JSONL read
  *
  * Generic over `T` so callers can store whatever payload type makes sense
  * (TimelineItem delta, raw SDK message, etc.). F1 stays decoupled from the
@@ -17,6 +22,17 @@
  *     is responsible for filling the gap from settled state (JSONL on disk
  *     via getSessionMessages) — runtime only guarantees what's in the ring
  *   - bufferCap defaults to 500 events
+ *
+ * Settled semantics:
+ *   - `settled` is null until something populates it: either run-query's
+ *     turn-boundary refresh (after each `result` envelope) or a lazy
+ *     cold-path init from the router's subscribe handler.
+ *   - `settledCursor` is the cursor that `settled` corresponds to — i.e.
+ *     replay of buffer events with cursor > settledCursor reconstructs
+ *     state from settled onward. Set atomically with `settled`.
+ *   - The settled snapshot is for OUR own runtime's session. For sessions
+ *     replayed from disk (no SDK loop running here), settled stays null
+ *     and cold path always reads JSONL fresh.
  */
 
 /**
@@ -74,6 +90,25 @@ export class SessionRuntime<T> {
   inputChannel: RuntimeInputChannel | null = null;
   /** Promise that resolves when F2's consumer loop exits (graceful close, error, or natural end-of-iterator). Null when no loop is active. F3's daemon shutdown awaits this per runtime. */
   loopPromise: Promise<void> | null = null;
+
+  /** In-memory normalized snapshot of the JSONL. Refreshed by run-query
+   *  at every turn boundary (after `result` envelope) so cold-path
+   *  subscribes can serve directly from memory. Null until the first
+   *  refresh — router's cold path falls back to deps.getMessages until
+   *  populated. Imports TimelineItem from protocol because that's the
+   *  one shape we ever stash here; keeping it as `unknown` would force
+   *  every caller to cast. */
+  settled: TimelineItem[] | null = null;
+  /** Cursor that `settled` corresponds to — i.e. settled reflects state
+   *  through cursor=settledCursor. Replay (settledCursor, currentCursor]
+   *  from the ring buffer to reconstruct state from settled to live. */
+  settledCursor = 0;
+  /** Latest turn usage stats (input tokens / cache tokens). Updated
+   *  live whenever a `turn_completed` event is added with usage AND
+   *  reloaded at turn-boundary refresh as belt-and-suspenders. Null
+   *  for sessions whose most recent turn was tool-only or that haven't
+   *  completed a turn yet on this runtime. */
+  latestUsage: TurnUsage | null = null;
 
   private readonly bufferCap: number;
   private readonly buffer: RuntimeEvent<T>[] = [];

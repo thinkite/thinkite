@@ -14,8 +14,6 @@ import {
   event,
   eventDelta,
   eventFrame,
-  getMessagesCommand,
-  getMessagesResponse,
   getModelsCommand,
   getModelsResponse,
   helloCommand,
@@ -38,6 +36,7 @@ import {
   sessionInfo,
   subscribeCommand,
   subscribeResponse,
+  timelineItem,
   unsubscribeCommand,
   unsubscribeResponse,
 } from "./index.js";
@@ -540,83 +539,6 @@ describe("request/response correlation", () => {
     ).toBe("continueOnDesktop.response");
   });
 
-  it("getMessages command requires cliSessionId; cwd is an optional hint", () => {
-    // cwd-less is the canonical V0 shape — fork sessions' JSONL location
-    // isn't deterministic, so iOS omits the hint and lets the SDK scan all
-    // projects.
-    const minimal = getMessagesCommand.parse({
-      type: "getMessages",
-      requestId: "g1",
-      cliSessionId: "cli-abc",
-    });
-    expect(minimal.cliSessionId).toBe("cli-abc");
-    expect(minimal.cwd).toBeUndefined();
-
-    // cwd is still allowed (forward-compat for a future "try cwd hint
-    // first" perf optimization).
-    const withHint = getMessagesCommand.parse({
-      type: "getMessages",
-      requestId: "g1",
-      cliSessionId: "cli-abc",
-      cwd: "/Users/x/proj",
-    });
-    expect(withHint.cwd).toBe("/Users/x/proj");
-  });
-
-  it("getMessages response carries normalized TimelineItem[]", () => {
-    const res = getMessagesResponse.parse({
-      type: "getMessages.response",
-      requestId: "g1",
-      items: [
-        { type: "user_message", uuid: "m-1", text: "hi" },
-        { type: "assistant_message", uuid: "m-2", text: "hello" },
-        {
-          type: "tool_call",
-          callId: "tu-1",
-          name: "Bash",
-          summary: "List files in current directory",
-          status: "completed",
-          error: null,
-          detail: {
-            type: "bash",
-            command: "ls",
-            description: "List files in current directory",
-            output: "file.txt\n",
-          },
-        },
-      ],
-    });
-    expect(res.items).toHaveLength(3);
-    expect(res.items[0]?.type).toBe("user_message");
-    const tool = res.items[2];
-    if (tool?.type !== "tool_call")
-      throw new Error("expected tool_call as last item");
-    expect(tool.detail.type).toBe("bash");
-  });
-
-  it("getMessages is included in command + clientFrame + daemonFrame unions", () => {
-    expect(
-      command.parse({
-        type: "getMessages",
-        requestId: "g",
-        cliSessionId: "x",
-      }).type,
-    ).toBe("getMessages");
-    expect(
-      clientFrame.parse({
-        type: "getMessages",
-        requestId: "g",
-        cliSessionId: "x",
-      }).type,
-    ).toBe("getMessages");
-    expect(
-      daemonFrame.parse({
-        type: "getMessages.response",
-        requestId: "g",
-        items: [],
-      }).type,
-    ).toBe("getMessages.response");
-  });
 });
 
 describe("hello / server_info wire-version handshake", () => {
@@ -937,54 +859,40 @@ describe("imageAttachment schema", () => {
 
 describe("user_message with images", () => {
   it("carries images inline in timeline", () => {
-    const res = getMessagesResponse.parse({
-      type: "getMessages.response",
-      requestId: "g",
-      items: [
-        {
-          type: "user_message",
-          uuid: "m-img",
-          text: "see attached",
-          images: [{ data: "/9j/...", mediaType: "image/jpeg" }],
-        },
-      ],
+    const item = timelineItem.parse({
+      type: "user_message",
+      uuid: "m-img",
+      text: "see attached",
+      images: [{ data: "/9j/...", mediaType: "image/jpeg" }],
     });
-    const first = res.items[0];
-    if (first?.type !== "user_message")
+    if (item.type !== "user_message")
       throw new Error("expected user_message");
-    expect(first.images).toHaveLength(1);
-    expect(first.images?.[0]?.mediaType).toBe("image/jpeg");
+    expect(item.images).toHaveLength(1);
+    expect(item.images?.[0]?.mediaType).toBe("image/jpeg");
   });
 
   it("user_message without images still parses (back-compat)", () => {
-    const res = getMessagesResponse.parse({
-      type: "getMessages.response",
-      requestId: "g",
-      items: [{ type: "user_message", uuid: "m", text: "no images here" }],
+    const item = timelineItem.parse({
+      type: "user_message",
+      uuid: "m",
+      text: "no images here",
     });
-    expect(res.items).toHaveLength(1);
+    expect(item.type).toBe("user_message");
   });
 });
 
 describe("assistant_message stopReason", () => {
   it("null stopReason is significant — encodes user-interrupted", () => {
-    const res = getMessagesResponse.parse({
-      type: "getMessages.response",
-      requestId: "g",
-      items: [
-        {
-          type: "assistant_message",
-          uuid: "m",
-          text: "(interrupted mid-stream)",
-          stopReason: null,
-        },
-      ],
+    const item = timelineItem.parse({
+      type: "assistant_message",
+      uuid: "m",
+      text: "(interrupted mid-stream)",
+      stopReason: null,
     });
-    const first = res.items[0];
-    if (first?.type !== "assistant_message")
+    if (item.type !== "assistant_message")
       throw new Error("expected assistant_message");
     // null is preserved (vs being normalized away to undefined)
-    expect(first.stopReason).toBeNull();
+    expect(item.stopReason).toBeNull();
   });
 
   it("accepts every documented stop_reason enum value", () => {
@@ -999,12 +907,11 @@ describe("assistant_message stopReason", () => {
     ] as const;
     for (const v of values) {
       expect(() =>
-        getMessagesResponse.parse({
-          type: "getMessages.response",
-          requestId: "g",
-          items: [
-            { type: "assistant_message", uuid: "m", text: "x", stopReason: v },
-          ],
+        timelineItem.parse({
+          type: "assistant_message",
+          uuid: "m",
+          text: "x",
+          stopReason: v,
         }),
       ).not.toThrow();
     }
@@ -1012,17 +919,11 @@ describe("assistant_message stopReason", () => {
 
   it("rejects unknown stop_reason values", () => {
     expect(
-      getMessagesResponse.safeParse({
-        type: "getMessages.response",
-        requestId: "g",
-        items: [
-          {
-            type: "assistant_message",
-            uuid: "m",
-            text: "x",
-            stopReason: "completed_normally",
-          },
-        ],
+      timelineItem.safeParse({
+        type: "assistant_message",
+        uuid: "m",
+        text: "x",
+        stopReason: "completed_normally",
       }).success,
     ).toBe(false);
   });
@@ -1041,15 +942,11 @@ describe("toolCallDetail — new V0 variants", () => {
     };
   }
   function parseOne(detail: unknown) {
-    return getMessagesResponse.parse({
-      type: "getMessages.response",
-      requestId: "g",
-      items: [makeToolCall(detail)],
-    });
+    return timelineItem.parse(makeToolCall(detail));
   }
 
   it("bash variant carries runInBackground + taskId", () => {
-    const res = parseOne({
+    const item = parseOne({
       type: "bash",
       command: "pnpm dev",
       description: "Start menubar dev server",
@@ -1057,8 +954,7 @@ describe("toolCallDetail — new V0 variants", () => {
       runInBackground: true,
       taskId: "b3v2ethee",
     });
-    const item = res.items[0];
-    if (item?.type !== "tool_call" || item.detail.type !== "bash")
+    if (item.type !== "tool_call" || item.detail.type !== "bash")
       throw new Error("expected bash detail");
     expect(item.detail.runInBackground).toBe(true);
     expect(item.detail.taskId).toBe("b3v2ethee");
@@ -1124,17 +1020,13 @@ describe("toolCallDetail — new V0 variants", () => {
 
   it("task_update status enum is closed", () => {
     expect(
-      getMessagesResponse.safeParse({
-        type: "getMessages.response",
-        requestId: "g",
-        items: [
-          makeToolCall({
-            type: "task_update",
-            taskId: "1",
-            status: "in-progress", // hyphen instead of underscore
-          }),
-        ],
-      }).success,
+      timelineItem.safeParse(
+        makeToolCall({
+          type: "task_update",
+          taskId: "1",
+          status: "in-progress", // hyphen instead of underscore
+        }),
+      ).success,
     ).toBe(false);
   });
 
