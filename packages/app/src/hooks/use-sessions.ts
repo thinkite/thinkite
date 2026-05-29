@@ -1,25 +1,26 @@
-import { useQuery } from "@tanstack/react-query";
-import { useDaemonClient } from "@/lib/daemon-client-context";
-import type { SessionInfo } from "@/types/session";
+import { useLiveQuery } from "@tanstack/react-db";
+import { sessionsCollection } from "@/lib/sessions-collection";
 
 /**
- * Fetch all sessions from the daemon. iOS groups by `cwd` client-side
- * (see SessionsScreen). The daemon walks every Desktop env-pair under
- * `claude-code-sessions/`; we don't filter on the wire.
+ * Reactive list of all sessions, read from the sessions TanStack DB
+ * collection (a module singleton backed by the `listSessions` RPC — see
+ * `sessions-collection.ts`). The daemon walks every Desktop env-pair
+ * under `claude-code-sessions/` plus sidecode's own metadata; we don't
+ * filter on the wire and group by project client-side (SessionListSidebar).
  *
- * Daemon connection is owned by `<DaemonClientProvider>`, which handshakes
- * eagerly on mount. Post-facade refactor `client` is always non-null and
- * the listSessions call awaits the transport's readyPromise internally,
- * so no `enabled` gate is needed — the first call after mount blocks
- * until the handshake completes.
+ * Returns the `useLiveQuery` shape — `{ data, isLoading, isReady,
+ * isError, status }`. NOT the React Query shape: no `isPending`, no
+ * `error` object (use `isLoading` / `isError` / `status`). Sorted
+ * recent-first so per-project groups render newest sessions at the top.
+ *
+ * The collection's queryFn awaits the daemon transport's readyPromise
+ * internally, so the first fetch blocks until the handshake completes —
+ * no `enabled` gate needed.
  */
 export function useSessions() {
-  const { client } = useDaemonClient();
-  return useQuery<SessionInfo[]>({
-    queryKey: ["sessions"],
-    queryFn: async () => {
-      const raw = await client.listSessions();
-      return raw as SessionInfo[];
-    },
-  });
+  return useLiveQuery((q) =>
+    q
+      .from({ s: sessionsCollection })
+      .orderBy(({ s }) => s.lastActivityAt, "desc"),
+  );
 }

@@ -1297,4 +1297,25 @@ export class DaemonClient {
 // Shared-connection orchestration lives in `daemon-client-context.tsx` —
 // this module exports primitives (Transport class + DaemonClient facade
 // + Subscription handle + pair / reconnect / store helpers); the Context
-// owns the single live DaemonClient + its current Transport.
+// owns the connection lifecycle + status machine and drives the singleton
+// below (attach / detach Transport).
+
+/**
+ * The app's one DaemonClient, as a module-level singleton.
+ *
+ * The facade is framework-agnostic (no React, no hooks; its constructor
+ * just arms a readyPromise), and there is only ever one connection per
+ * app process — so it lives at module scope, mirroring the TanStack Query
+ * `queryClient`. This lets non-React, module-scope consumers (TanStack DB
+ * collections in `sessions-collection.ts`, future collections) reference
+ * the client directly instead of threading it through React context.
+ *
+ * React consumers still go through `useDaemonClient()` — the Provider
+ * owns the connection lifecycle (connect / reconnect / pair / unpair) and
+ * the status machine that drives UI, and merely attaches/detaches the
+ * Transport on this singleton. Safe at module scope because RN is a
+ * single-process, single-user runtime — the SSR "shared cache leaks
+ * across requests" hazard that makes TanStack Query avoid module-global
+ * clients on the server doesn't exist here.
+ */
+export const daemonClient = new DaemonClient();

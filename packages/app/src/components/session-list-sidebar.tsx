@@ -98,7 +98,10 @@ export function SessionListSidebar({
       pathname: "/session/[cliSessionId]",
       params: {
         cliSessionId: session.cliSessionId,
-        title: session.title,
+        // No title param — the detail screen reads it from the session's
+        // collection row (filtered live query), so it stays correct as
+        // the daemon's canonical title lands.
+        //
         // Pass cwd so the session screen can hand it to sendPrompt — the
         // SDK derives the project key from cwd to locate the JSONL for
         // `claude --resume`.
@@ -254,7 +257,7 @@ function Body({
   sections: ProjectSection[];
   onOpenSession: (s: SessionInfo) => void;
 }) {
-  if (query.isPending) {
+  if (query.isLoading) {
     return (
       <View className="flex-1 items-center justify-center">
         <ActivityIndicator />
@@ -263,15 +266,13 @@ function Body({
   }
 
   if (query.isError) {
+    // useLiveQuery surfaces error state via `status`/`isError` but not an
+    // error object — show a static message (the daemon facade retries the
+    // underlying fetch forever, so this is a transient first-load state).
     return (
       <View className="flex-1 items-center justify-center px-6">
         <Text className="text-center text-base font-medium text-red-600 dark:text-red-400">
           Couldn't load sessions
-        </Text>
-        <Text className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400">
-          {query.error instanceof Error
-            ? query.error.message
-            : String(query.error)}
         </Text>
       </View>
     );

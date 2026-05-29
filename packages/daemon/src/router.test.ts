@@ -404,6 +404,34 @@ describe("createCommandHandler — listSessions", () => {
     expect(res.sessions[0]?.title).toBeUndefined();
   });
 
+  it("surfaces the persisted model + display label for a sidecode session", async () => {
+    const sidecode = makeSidecodeMeta({ model: "claude-opus-4-7[1m]" });
+    const handler = createCommandHandler(
+      makeDeps({
+        listSidecodeSessions: vi.fn().mockReturnValue([sidecode]),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler({ type: "listSessions", requestId: "ls-model" }, ctx);
+    const res = sent[0] as { sessions: SessionInfo[] };
+    expect(res.sessions[0]?.model).toBe("claude-opus-4-7[1m]");
+    expect(res.sessions[0]?.modelLabel).toBe("Opus 4.7 1M");
+  });
+
+  it("leaves model/modelLabel undefined when a sidecode session has no model", async () => {
+    const sidecode = makeSidecodeMeta();
+    const handler = createCommandHandler(
+      makeDeps({
+        listSidecodeSessions: vi.fn().mockReturnValue([sidecode]),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler({ type: "listSessions", requestId: "ls-nomodel" }, ctx);
+    const res = sent[0] as { sessions: SessionInfo[] };
+    expect(res.sessions[0]?.model).toBeUndefined();
+    expect(res.sessions[0]?.modelLabel).toBeUndefined();
+  });
+
   it("forwards cwd filter to both listSessions and listSidecodeSessions", async () => {
     const listSessions = vi.fn().mockResolvedValue([]);
     const listSidecodeSessions = vi.fn().mockReturnValue([]);

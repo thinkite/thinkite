@@ -355,6 +355,31 @@ describe("ensureSessionLoop — lifecycle", () => {
     expect(runtime.loopPromise).toBeNull();
   });
 
+  it("create mode seeds settled=[] (cursor 0) so the first subscribe is race-free", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s-create");
+    // Don't await — the seed is set synchronously, before the (empty) loop
+    // drains and the finally clears settled back to null. This is the state
+    // the first subscribe reads.
+    const loop = ensureSessionLoop(runtime, {
+      mode: "create",
+      cwd: "/x",
+      queryFactory: fakeQueryYielding([]),
+    });
+    expect(runtime.settled).toEqual([]);
+    expect(runtime.settledCursor).toBe(0);
+    await loop; // drain + clean up
+  });
+
+  it("resume mode does NOT seed settled (stays null → JSONL cold-path)", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s-resume");
+    const loop = ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([]),
+    });
+    expect(runtime.settled).toBeNull();
+    await loop;
+  });
+
   it("iterator errors → turn_failed EventDelta + runtime state cleared", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     // Hand-rolled async iterator whose `next()` rejects — biome's `useYield`

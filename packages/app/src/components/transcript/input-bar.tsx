@@ -175,8 +175,8 @@ export function InputBar({
    *  never holds its own state. Parents are expected to own the source
    *  of truth:
    *    - New-session screen: local useState (no session yet to mutate)
-   *    - Session detail: derive from useSessions cache; mutate via
-   *      useSetSessionSelection() (optimistic + RPC + rollback)
+   *    - Session detail: derive from the session's collection row; mutate
+   *      via useSetSessionSelection() (optimistic + RPC + rollback)
    *  Undefined while picker source data is still loading; menu renders
    *  empty and chip shows fallback label. */
   selection?: ModelSelection;

@@ -1,3 +1,4 @@
+import { eq, useLiveQuery } from "@tanstack/react-db";
 import { Stack, useLocalSearchParams, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
 import { useCallback, useEffect, useMemo } from "react";
@@ -7,8 +8,8 @@ import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 import { useContextUsage } from "@/hooks/use-context-usage";
 import { useModels } from "@/hooks/use-models";
 import { useSessionTranscript } from "@/hooks/use-session-transcript";
-import { useSessions } from "@/hooks/use-sessions";
 import { useSetSessionSelection } from "@/hooks/use-set-session-selection";
+import { sessionsCollection } from "@/lib/sessions-collection";
 import { flattenToBlocks } from "@/lib/transcript-blocks";
 
 /**
@@ -16,19 +17,21 @@ import { flattenToBlocks } from "@/lib/transcript-blocks";
  * rows (text + tool) with role attribution managed by a speaker state
  * machine (see flattenToBlocks).
  *
- * Route: /session/<cliSessionId>?title=<encoded>
+ * Route: /session/<cliSessionId>
  *  - cliSessionId: path slug — the canonical conversation identity
- *  - title: query — header label; falls back to "Session" for deeplink
- *    navigations (V0.5+) where the caller didn't have one
+ *  - header title comes from the session's row in the sessions collection
+ *    (filtered live query below), NOT a route param — so it stays correct
+ *    as the daemon's canonical title lands; falls back to "Session" until
+ *    the row is available (e.g. cold deeplink before the list syncs)
  *
- * Live: this screen owns the session subscription (`useLiveSession`)
+ * Live: this screen owns the session subscription (`useSessionTranscript`)
  * and the loading / error / ready branching. The ready branch hands
  * off to <ChatPanel/>, which owns everything chat-surface — the
  * virtualized list, the sticky composer, the composer-inset pipeline,
- * sendPrompt / interrupt wiring, and the first-send-after-create
- * effect. That split keeps `useDaemonClient` out of this file
- * entirely: imperative daemon calls live next to the UI that
- * triggers them.
+ * and in-session sendPrompt / interrupt wiring. (The FIRST send for a new
+ * session fires from the new-session screen via `createSession`, not
+ * here.) That split keeps `useDaemonClient` out of this file entirely:
+ * imperative daemon calls live next to the UI that triggers them.
  *
  * Why ChatPanel is a separate component rather than inlined here:
  * mounting ChatPanel only in the ready branch makes the chat
@@ -40,9 +43,8 @@ import { flattenToBlocks } from "@/lib/transcript-blocks";
  * story.
  */
 export default function SessionDetailScreen() {
-  const { cliSessionId, title, cwd } = useLocalSearchParams<{
+  const { cliSessionId, cwd } = useLocalSearchParams<{
     cliSessionId: string;
-    title?: string;
     cwd?: string;
   }>();
   const session = useSessionTranscript(cliSessionId);
@@ -64,29 +66,35 @@ export default function SessionDetailScreen() {
 
   const blocks = useMemo(() => flattenToBlocks(session.items), [session.items]);
 
-  // Picker selection is fully driven by the useSessions cache — the
-  // SessionInfo row for this cliSessionId carries `model`.
-  // useSetSessionSelection mutates the cache optimistically on pick +
-  // fires the daemon RPC; rollback is automatic on RPC failure.
-  //
-  // Pre-feature sessions (no model on disk yet) fall back to the
-  // daemon's default model. Once the user picks anything the mutation
-  // writes the real entry, and the fallback drops out.
-  const { data: sessions } = useSessions();
+  // Read THIS session's row from the collection with a filtered live query
+  // (findOne on cliSessionId) — not the whole list. Drives the header
+  // title and the picker's current model. The row is present at mount
+  // because the new-session screen inserts it optimistically before
+  // navigating (resume sessions already have it from listSessions).
+  const { data: sessionInfo } = useLiveQuery(
+    (q) =>
+      q
+        .from({ s: sessionsCollection })
+        .where(({ s }) => eq(s.cliSessionId, cliSessionId))
+        .findOne(),
+    [cliSessionId],
+  );
+
+  // Picker selection comes from the row's `model`; useSetSessionSelection
+  // updates the collection optimistically on pick + fires the daemon RPC,
+  // with automatic rollback on failure. Sessions with no model on disk
+  // fall back to the daemon's default until the user picks.
   const { data: models } = useModels();
   const setSelection = useSetSessionSelection(cliSessionId);
   const selection = useMemo(() => {
-    const entry = sessions?.find((s) => s.cliSessionId === cliSessionId);
-    if (entry?.model) {
-      return { model: entry.model };
-    }
+    if (sessionInfo?.model) return { model: sessionInfo.model };
     const def = models?.find((m) => m.isDefault) ?? models?.[0];
     if (def) return { model: def.model };
     return undefined;
-  }, [sessions, cliSessionId, models]);
+  }, [sessionInfo?.model, models]);
 
   // Context-window meter for the model picker chip. Joins the latest
-  // turn_completed.usage (from useLiveSession) with the selected
+  // turn_completed.usage (from useSessionTranscript) with the selected
   // model's contextWindow (from useModels). Returns null until both are
   // ready — InputBar then renders the chip with no fill.
   const contextUsage = useContextUsage(session.latestUsage, selection?.model);
@@ -98,7 +106,7 @@ export default function SessionDetailScreen() {
           Stack.Header / Stack.Toolbar APIs — these render natively
           (UIKit UINavigationBar), so the system handles blur strength
           tracking with scroll, dynamic-type sizing, RTL, etc. */}
-      <Stack.Screen options={{ title: title || "Session" }} />
+      <Stack.Screen options={{ title: sessionInfo?.title || "Session" }} />
       <Stack.Header transparent />
       <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button icon="line.3.horizontal" onPress={openDrawer} />

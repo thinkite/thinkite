@@ -22,3 +22,7 @@ worker-configuration.d.ts
 
 # wrangler local dev state (.dev.vars, .wrangler/state caches)
 .wrangler
+
+# CCR/bridge capability spikes — throwaway probes against api.anthropic.com,
+# hardcode local paths + hit a real account. Reference only, not shipped code.
+spikes/

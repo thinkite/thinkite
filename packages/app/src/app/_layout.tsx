@@ -1,5 +1,8 @@
+// Must be first: installs the global crypto polyfills (getRandomValues +
+// randomUUID) before any consumer — ed25519 identity, TanStack DB — runs.
+import "@/lib/polyfills";
 import "@/global.css";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
@@ -15,6 +18,7 @@ import {
   DaemonClientProvider,
   useDaemonClient,
 } from "@/lib/daemon-client-context";
+import { queryClient } from "@/lib/query-client";
 import { SafeAreaView } from "@/lib/styled";
 
 // Hold the native splash open through the daemon handshake. Per Expo docs,
@@ -38,19 +42,6 @@ SplashScreen.setOptions({ duration: 200, fade: true });
 export const unstable_settings = {
   anchor: "(main)",
 };
-
-// One QueryClient for the app's lifetime. Defaults are deliberately quiet —
-// V0 fetches are cheap and the daemon push events (W3) will eventually
-// invalidate cache directly, so polling-style refetch isn't needed.
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 30_000,
-      retry: 1,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
 
 export default function RootLayout() {
   return (

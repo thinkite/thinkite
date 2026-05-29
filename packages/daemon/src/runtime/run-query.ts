@@ -210,6 +210,22 @@ export function ensureSessionLoop(
   // Query satisfies RuntimeQueryHandle structurally (interrupt + close).
   runtime.query = q;
 
+  if (options.mode === "create") {
+    // Seed an empty settled snapshot for a freshly-created session. The
+    // first subscribe then takes the race-free Path A (serve settled=[]
+    // atomically + replay the ring buffer from cursor 0) instead of the
+    // JSONL cold-path, whose `settledCursor = currentCursor` would give an
+    // empty replay window. This is what lets a create's first sendPrompt
+    // fire BEFORE iOS subscribes (e.g. straight from the new-session
+    // screen): whenever iOS subscribes, settled=[] + buffer replay
+    // (0, currentCursor] delivers the synthesized user_message /
+    // turn_started that pushPrompt is about to append. A brand-new
+    // session has no prior messages, so [] is correct; the real snapshot
+    // replaces it at the first turn boundary (handleSdkMessage).
+    runtime.settled = [];
+    runtime.settledCursor = 0;
+  }
+
   const loopPromise = (async () => {
     const state = newStreamingState();
     try {

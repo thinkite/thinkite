@@ -17,7 +17,7 @@ import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { useModels } from "@/hooks/use-models";
 import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
-import { setPendingPrompt } from "@/lib/submission-store";
+import { createSession } from "@/lib/sessions-collection";
 
 /**
  * (drawer)/(stack)/index — new-session create page, URL `/`. Lives inside
@@ -43,15 +43,19 @@ import { setPendingPrompt } from "@/lib/submission-store";
  *
  * Flow on first send:
  *   1. Generate a fresh UUIDv4 client-side
- *   2. Stash the prompt text + cwd in `submission-store` keyed by that UUID
- *   3. `router.replace("/session/[id]")` immediately — the user sees the
- *      detail screen with no perceptible RTT lag
- *   4. Detail screen mounts → `useLiveSession` fires `subscribe` and
- *      awaits its response (so daemon has registered the live fanout
- *      callback). Only then does it consume the pending prompt and fire
- *      `sendPrompt` — guaranteeing user_message + turn_started events
- *      reach the iOS subscriber instead of falling into the cursor
- *      race window. See lib/submission-store.ts for the full rationale.
+ *   2. `createSession(...)` — its onMutate optimistically inserts the
+ *      session row (so the sidebar + detail screen show it, with a title,
+ *      immediately), and its mutationFn fires the first sendPrompt +
+ *      reconciles via refetch
+ *   3. `router.replace("/session/[id]")` immediately — the detail screen
+ *      reads the just-inserted row via its own filtered live query
+ *
+ * The first sendPrompt fires HERE (not deferred to the detail screen)
+ * because the daemon seeds an empty settled snapshot for a freshly-created
+ * query — so the synthesized user_message + turn_started are recovered via
+ * ring-buffer replay whenever the detail screen subscribes, regardless of
+ * order. (Previously this was deferred to ChatPanel's first-send effect to
+ * dodge the cursor race window; the daemon-side seed removes that need.)
  */
 export default function NewSessionScreen() {
   const navigation = useNavigation();
@@ -64,10 +68,10 @@ export default function NewSessionScreen() {
   const cwd = lastUsedCwd ?? roots?.recentCwds[0]?.path ?? undefined;
   const setLastUsedCwd = useSetLastUsedCwd();
 
-  // Picker state lives locally here — there's no session ID yet to mutate
-  // a useSessions cache entry against, and no daemon RPC to fire on pick.
-  // The first sendPrompt seeds this into the new session's metadata via
-  // setPendingPrompt → ChatPanel's first-send effect.
+  // Picker state lives locally here — there's no session row yet to mutate
+  // and no daemon RPC to fire on pick. The chosen model is passed into
+  // `createSession` on first send (rawSend below): it seeds both the
+  // optimistic collection row and the sendPrompt that creates the session.
   const { data: models } = useModels();
   const [selection, setSelection] = useState<ModelSelection | null>(null);
   useEffect(() => {
@@ -95,11 +99,21 @@ export default function NewSessionScreen() {
       // to this same cwd even before the daemon records the activity.
       setLastUsedCwd.mutate(cwd);
       const newId = Crypto.randomUUID();
-      setPendingPrompt(newId, {
+      // Optimistically create the session: `createSession`'s onMutate
+      // inserts the row synchronously (so the sidebar + detail screen show
+      // it — with a title — the instant we navigate), and its mutationFn
+      // fires the first sendPrompt + reconciles via refetch. The daemon
+      // seeds an empty settled snapshot for the freshly-created query, so
+      // this sendPrompt firing before the detail screen subscribes is
+      // race-free. sendPrompt failure rolls the optimistic row back.
+      createSession({
+        cliSessionId: newId,
         text,
         cwd,
         images,
         model: selection?.model,
+      }).isPersisted.promise.catch((err) => {
+        console.error("create session failed", err);
       });
       router.replace({
         pathname: "/session/[cliSessionId]",

@@ -926,11 +926,15 @@ function toSessionInfoFromSidecode(s: SidecodeSessionMetadata): SessionInfo {
     cliSessionId: s.cliSessionId,
     // `title` is populated at session creation from the user's first
     // prompt (see sidecode-sessions.ts:buildNewSidecodeSession) — never
-    // empty for a properly-created session. We don't fold model into
-    // sidecode metadata yet (V0 only tracks permissionMode), so iOS
-    // shows the row without a model chip; Desktop-mirrored entries
-    // still carry it.
+    // empty for a properly-created session.
     title: s.title || undefined,
+    // `model` is persisted in sidecode metadata at creation and on every
+    // setSessionSelection pick. Surface it (+ its display label) so the
+    // iOS picker chip reflects the chosen model and survives a list
+    // refetch — without this the chip would blank out after the
+    // collection reconciles against listSessions.
+    model: s.model || undefined,
+    modelLabel: s.model ? prettyModel(s.model) : undefined,
     isArchived: s.isArchived,
   };
 }

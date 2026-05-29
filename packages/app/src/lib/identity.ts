@@ -1,10 +1,13 @@
-import "react-native-get-random-values";
 import * as ed25519 from "@noble/ed25519";
 import { sha256, sha512 } from "@noble/hashes/sha2.js";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { base64UrlToBytes, bytesToBase64Url } from "./base64";
 
+// Global crypto (getRandomValues / randomUUID) is polyfilled in
+// `@/lib/polyfills`, imported first in app/_layout.tsx — so it's installed
+// before this module's runtime code (key gen / signing) runs.
+//
 // noble/ed25519 v3 ships without a hash impl bundled. Async APIs default to
 // `crypto.subtle.digest("SHA-512")` — RN doesn't have WebCrypto, so we MUST
 // wire `sha512Async` ourselves. `sha512` is for the sync paths (some helpers

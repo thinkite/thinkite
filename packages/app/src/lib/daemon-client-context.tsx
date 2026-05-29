@@ -12,6 +12,7 @@ import {
 import {
   clearPairedDaemon,
   DaemonClient,
+  daemonClient,
   decodePairOffer,
   getPairedDaemon,
   type PairedDaemon,
@@ -181,17 +182,15 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   // detects supersession by comparing its captured epoch to the current
   // value; mismatch = bail out without touching state.
   const epochRef = useRef(0);
-  // Stable facade — instantiated ONCE per Provider mount and kept alive
-  // across every transport reconnect. The Transport instance comes and
-  // goes (one per successful WebRTC handshake); the facade swaps it via
-  // _attachTransport / _detachTransport without changing this ref's
-  // identity. Consumers bind to this object and never see a null /
-  // re-identified `client`.
-  const facadeRef = useRef<DaemonClient | null>(null);
-  if (facadeRef.current === null) {
-    facadeRef.current = new DaemonClient();
-  }
-  const facade = facadeRef.current;
+  // Stable facade — the module-level singleton (see daemon-client.ts). One
+  // instance for the whole app process, kept alive across every transport
+  // reconnect. The Transport comes and goes (one per successful WebRTC
+  // handshake); this Provider swaps it via _attachTransport /
+  // _detachTransport without changing the facade identity. Consumers bind
+  // to this object and never see a null / re-identified `client`. Held at
+  // module scope (not a useRef) so non-React consumers — TanStack DB
+  // collections — can import it directly.
+  const facade = daemonClient;
   const transportRef = useRef<Transport | null>(null);
   // Pending reconnect schedule. Cleared on user-initiated transitions
   // (reset / pair / unpair) and on provider unmount.

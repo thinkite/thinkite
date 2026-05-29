@@ -2,7 +2,7 @@ import { KeyboardChatLegendList } from "@legendapp/list/keyboard-chat";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import type { ImageAttachment } from "@sidecodeapp/protocol";
 import { useHeaderHeight } from "expo-router/react-navigation";
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 import { type LayoutChangeEvent, View, useColorScheme } from "react-native";
 import {
   KeyboardStickyView,
@@ -22,7 +22,6 @@ import { TextBlock } from "@/components/transcript/text-block";
 import { ToolBlock } from "@/components/transcript/tool-block";
 import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
 import { useDaemonClient } from "@/lib/daemon-client-context";
-import { consumePendingPrompt } from "@/lib/submission-store";
 import type { RenderBlock } from "@/lib/transcript-blocks";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -36,10 +35,9 @@ type ChatPanelProps = {
   cwd: string | undefined;
   blocks: RenderBlock[];
   isRunning: boolean;
-  /** Current picker selection — InputBar is fully controlled. Parent
-   *  derives from useSessions cache for resume sessions (with
-   *  useSetSessionSelection mutation on change) or local state for
-   *  pre-creation new-session flow. */
+  /** Current picker selection — InputBar is fully controlled. The parent
+   *  (SessionDetailScreen) derives it from the session's collection row
+   *  (filtered live query) and commits picks via useSetSessionSelection. */
   selection?: ModelSelection;
   /** Called on user pick; parent commits however it likes (optimistic
    *  cache mutation, local setter, etc.). */
@@ -236,42 +234,11 @@ export function ChatPanel({
     });
   }, [client, cliSessionId]);
 
-  // First-send-after-create flow. The new-session screen stashed
-  // `{ text, cwd }` in the submission store before navigating; we
-  // consume + send here. Critical timing: this effect must run AFTER
-  // `useLiveSession` has finished its initial subscribe, so the
-  // daemon's live fanout callback is already registered before
-  // sendPrompt runs (otherwise the synthesized user_message +
-  // turn_started events fall into the cursor race window).
-  //
-  // ChatPanel only mounts in the parent's `ready` branch — i.e. after
-  // `isInitialLoading` flips false, i.e. after subscribe resolved. So
-  // ChatPanel mount = race window closed. The previous version sat in
-  // SessionDetailScreen and had to gate on `isInitialLoading` in its
-  // deps; here that gate is structural — no dep needed.
-  //
-  // sentInitialRef ensures exactly-once even if `client` identity
-  // churns mid-mount; `consumePendingPrompt` clears its Map entry on
-  // first read so a subsequent ChatPanel remount (different session)
-  // also won't double-fire.
-  const sentInitialRef = useRef(false);
-  useEffect(() => {
-    if (sentInitialRef.current) return;
-    const pending = consumePendingPrompt(cliSessionId);
-    if (!pending) return;
-    sentInitialRef.current = true;
-    void client
-      .sendPrompt({
-        sessionId: cliSessionId,
-        text: pending.text,
-        cwd: pending.cwd,
-        images: pending.images,
-        model: pending.model,
-      })
-      .catch((err) => {
-        console.error("initial sendPrompt failed", err);
-      });
-  }, [client, cliSessionId]);
+  // No first-send-after-create effect here anymore: the new-session
+  // screen fires the first sendPrompt itself via `createSession` (the
+  // daemon seeds an empty settled snapshot for the new query, so that
+  // pre-subscribe send is race-free — see index.tsx). ChatPanel only
+  // owns subsequent in-session sends (rawSend above).
 
   return (
     <>
