@@ -1,8 +1,11 @@
-import type { TimelineItem, TurnUsage } from "@sidecodeapp/protocol";
+import type { TimelineItem } from "@sidecodeapp/protocol";
 import type { Collection } from "@tanstack/db";
 import { createCollection } from "@tanstack/react-db";
-import { useSyncExternalStore } from "react";
 import type { DaemonClient } from "@/lib/daemon-client";
+import {
+  clearSessionActivity,
+  patchSessionActivity,
+} from "@/lib/session-activity";
 
 /**
  * Augmented item type stored inside the collection. `_order` is an
@@ -33,31 +36,12 @@ import type { DaemonClient } from "@/lib/daemon-client";
 export type OrderedTimelineItem = TimelineItem & { _order: number };
 
 /**
- * Per-session ephemeral state that lives next to the transcript
- * collection but doesn't fit as a row inside it. The collection holds
- * TimelineItems (chat content); these three fields are turn-machine
- * status that the UI displays but isn't "an item."
+ * Per-session turn-machine state (isRunning / lastError / latestUsage) no
+ * longer lives here — it's a separate `localOnly` collection in
+ * `@/lib/session-activity`. This sync handler is its writer: it routes the
+ * subscription's turn_* / initialUsage into it via patchSessionActivity,
+ * and clears it on cleanup. Consumers read it via `useSessionActivity`.
  *
- * Driven by the same sync handler that drives the collection — both
- * update from one Subscription callback. Exposed to React via
- * `useSessionMeta(cliSessionId)` (useSyncExternalStore wrapper below).
- *
- * Lives only while the collection lives (factory map). Cleared on the
- * collection's sync-handler cleanup (gcTime expiry).
- */
-export interface SessionMeta {
-  isRunning: boolean;
-  lastError: string | null;
-  latestUsage: TurnUsage | null;
-}
-
-const EMPTY_META: SessionMeta = {
-  isRunning: false,
-  lastError: null,
-  latestUsage: null,
-};
-
-/**
  * Module-level per-session collection cache. Implements the
  * maintainer-blessed pattern from TanStack/db#652:
  *   - One collection per cliSessionId, keyed in a Map
@@ -81,24 +65,7 @@ const EMPTY_META: SessionMeta = {
  * is removed entirely.
  */
 const collections = new Map<string, Collection<OrderedTimelineItem, string>>();
-const metas = new Map<string, SessionMeta>();
-const metaListeners = new Map<string, Set<() => void>>();
 const GC_TIME_MS = 60_000;
-
-function emitMetaChange(cliSessionId: string): void {
-  const listeners = metaListeners.get(cliSessionId);
-  if (listeners === undefined) return;
-  for (const cb of listeners) cb();
-}
-
-function updateMeta(
-  cliSessionId: string,
-  patch: Partial<SessionMeta>,
-): void {
-  const current = metas.get(cliSessionId) ?? EMPTY_META;
-  metas.set(cliSessionId, { ...current, ...patch });
-  emitMetaChange(cliSessionId);
-}
 
 export interface TranscriptCollectionDeps {
   client: DaemonClient;
@@ -110,10 +77,6 @@ export function getTranscriptCollection(
 ): Collection<OrderedTimelineItem, string> {
   const cached = collections.get(cliSessionId);
   if (cached !== undefined) return cached;
-
-  // Seed meta so consumers reading via useSessionMeta before the
-  // first turn fires get a stable EMPTY_META reference (not undefined).
-  metas.set(cliSessionId, EMPTY_META);
 
   const collection = createCollection<OrderedTimelineItem, string>({
     id: `transcript-${cliSessionId}`,
@@ -178,10 +141,13 @@ export function getTranscriptCollection(
                 break;
               }
               case "turn_started":
-                updateMeta(cliSessionId, { isRunning: true, lastError: null });
+                patchSessionActivity(cliSessionId, {
+                  isRunning: true,
+                  lastError: null,
+                });
                 break;
               case "turn_completed":
-                updateMeta(cliSessionId, {
+                patchSessionActivity(cliSessionId, {
                   isRunning: false,
                   ...(delta.usage !== undefined
                     ? { latestUsage: delta.usage }
@@ -189,13 +155,13 @@ export function getTranscriptCollection(
                 });
                 break;
               case "turn_failed":
-                updateMeta(cliSessionId, {
+                patchSessionActivity(cliSessionId, {
                   isRunning: false,
                   lastError: delta.error,
                 });
                 break;
               case "turn_canceled":
-                updateMeta(cliSessionId, { isRunning: false });
+                patchSessionActivity(cliSessionId, { isRunning: false });
                 break;
               case "compact_started":
               case "compact_applied":
@@ -224,7 +190,7 @@ export function getTranscriptCollection(
               commit();
             }
             if (initialUsage !== undefined) {
-              updateMeta(cliSessionId, { latestUsage: initialUsage });
+              patchSessionActivity(cliSessionId, { latestUsage: initialUsage });
             }
             if (!hasMarkedReady) {
               markReady();
@@ -235,12 +201,12 @@ export function getTranscriptCollection(
 
         // Cleanup runs when the collection's gcTime expires (no active
         // subscribers for ≥60s). Unsub from the facade — daemon stops
-        // fanning events for this session to us. Clear our meta state
-        // so a future re-create starts fresh.
+        // fanning events for this session to us. Drop the activity row so
+        // a left session never shows stale "running" (and a future
+        // re-create starts fresh).
         return () => {
           void sub.unsubscribe();
-          metas.delete(cliSessionId);
-          metaListeners.delete(cliSessionId);
+          clearSessionActivity(cliSessionId);
         };
       },
     },
@@ -261,35 +227,4 @@ export function getTranscriptCollection(
 
   collections.set(cliSessionId, collection);
   return collection;
-}
-
-/**
- * React hook for the per-session turn-machine state (isRunning /
- * lastError / latestUsage). Uses `useSyncExternalStore` because the
- * state lives in a module-level Map driven by the collection's sync
- * handler — not React state — and useSyncExternalStore is the
- * canonical pattern for binding external mutable stores to React.
- *
- * Stable EMPTY_META is returned when the session has no entry (= the
- * collection is gc'd or never existed). useSyncExternalStore requires
- * the snapshot function to return a stable reference for unchanged
- * data; sharing one EMPTY_META singleton across all "no entry" reads
- * satisfies that.
- */
-export function useSessionMeta(cliSessionId: string): SessionMeta {
-  return useSyncExternalStore(
-    (callback) => {
-      let listeners = metaListeners.get(cliSessionId);
-      if (listeners === undefined) {
-        listeners = new Set();
-        metaListeners.set(cliSessionId, listeners);
-      }
-      listeners.add(callback);
-      return () => {
-        listeners?.delete(callback);
-      };
-    },
-    () => metas.get(cliSessionId) ?? EMPTY_META,
-    () => EMPTY_META,
-  );
 }
