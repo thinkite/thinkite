@@ -537,6 +537,16 @@ describe("ensureSessionLoop — turn lifecycle from SDK envelopes", () => {
     } as unknown as SDKMessage;
   }
 
+  function errorResultEnvelope(errors: string[]): SDKMessage {
+    return {
+      type: "result",
+      subtype: "error_during_execution",
+      uuid: "env-result-err",
+      session_id: "s",
+      errors,
+    } as unknown as SDKMessage;
+  }
+
   it("SDK `result` envelope → turn_completed with usage parsed", async () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
@@ -592,6 +602,33 @@ describe("ensureSessionLoop — turn lifecycle from SDK envelopes", () => {
       cacheReadInputTokens: undefined,
       cacheCreationInputTokens: undefined,
     });
+  });
+
+  it("error `result` envelope → turn_failed with errors joined", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([errorResultEnvelope(["boom"])]),
+    });
+    expect(payloads(runtime)).toEqual([{ kind: "turn_failed", error: "boom" }]);
+  });
+
+  it("interrupted turn's error `result` is swallowed (no turn_failed)", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    // The interrupt RPC sets this before query.interrupt(); the SDK then
+    // ends the turn with error_during_execution, which must NOT become a
+    // turn_failed (the router already emitted turn_canceled).
+    runtime.interrupted = true;
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        errorResultEnvelope([
+          "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null",
+        ]),
+      ]),
+    });
+    expect(payloads(runtime).map((p) => p.kind)).not.toContain("turn_failed");
+    expect(runtime.interrupted).toBe(false);
   });
 });
 

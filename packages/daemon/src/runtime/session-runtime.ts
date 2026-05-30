@@ -109,6 +109,15 @@ export class SessionRuntime<T> {
    *  for sessions whose most recent turn was tool-only or that haven't
    *  completed a turn yet on this runtime. */
   latestUsage: TurnUsage | null = null;
+  /** Set by the interrupt RPC (router) right before `query.interrupt()`.
+   *  On interrupt the SDK ends the in-flight turn with an
+   *  `error_during_execution` result envelope; this flag tells
+   *  handleResultEnvelope (and the loop's catch) to treat that as a user
+   *  cancel — the router already emitted `turn_canceled` — instead of
+   *  surfacing a spurious `turn_failed`. Consumed (reset) when that
+   *  terminal envelope / throw is handled, on the next prompt, and on
+   *  loop exit, so it never leaks into a later turn. */
+  interrupted = false;
 
   private readonly bufferCap: number;
   private readonly buffer: RuntimeEvent<T>[] = [];

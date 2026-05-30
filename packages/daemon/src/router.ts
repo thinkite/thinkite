@@ -854,12 +854,18 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         // unsubscribe-orphan policy.
         if (runtime?.query) {
           try {
+            // Mark BEFORE interrupt() (synchronously, before the await) so
+            // the in-flight turn's terminal envelope is in scope when it
+            // drains: the SDK ends an interrupted turn with an
+            // `error_during_execution` result, which handleResultEnvelope
+            // would otherwise surface as a spurious turn_failed. The flag
+            // makes it recognize the cancel instead.
+            runtime.interrupted = true;
             await runtime.query.interrupt();
             // Emit turn_canceled directly into the runtime so all
-            // subscribers see the cancel even if the SDK doesn't fire its
-            // own terminal envelope — turn_completed/turn_failed should
-            // still arrive when the in-flight turn drains, but iOS gets
-            // a fast UX signal here.
+            // subscribers see the cancel immediately. The SDK's subsequent
+            // error_during_execution result is swallowed (interrupted
+            // flag), so the cancel isn't doubled by a turn_failed.
             runtime.addEvent({ kind: "turn_canceled" });
           } catch (err) {
             ctx.send({

@@ -239,11 +239,15 @@ export function ensureSessionLoop(
       }
     } catch (err) {
       // Surface the SDK error as a `turn_failed` so iOS can render it
-      // instead of seeing an unexplained gap in the stream.
-      runtime.addEvent({
-        kind: "turn_failed",
-        error: err instanceof Error ? err.message : String(err),
-      });
+      // instead of seeing an unexplained gap in the stream — unless the
+      // user interrupted (some SDK paths throw rather than yielding an
+      // error result; the router already emitted turn_canceled).
+      if (!runtime.interrupted) {
+        runtime.addEvent({
+          kind: "turn_failed",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     } finally {
       runtime.query = null;
       runtime.inputChannel = null;
@@ -258,6 +262,7 @@ export function ensureSessionLoop(
       runtime.settled = null;
       runtime.settledCursor = 0;
       runtime.latestUsage = null;
+      runtime.interrupted = false;
     }
   })();
   runtime.loopPromise = loopPromise;
@@ -297,6 +302,10 @@ export function pushPrompt(
       `pushPrompt: session ${runtime.sessionId} has no active loop — call ensureSessionLoop first`,
     );
   }
+  // A fresh turn starts — clear any interrupt flag left over from a prior
+  // turn whose terminal envelope never arrived, so it can't suppress this
+  // turn's genuine turn_failed.
+  runtime.interrupted = false;
   const userMsgUuid = randomUUID();
   runtime.addEvent({
     kind: "append",
@@ -524,6 +533,11 @@ function handleResultEnvelope(
   msg: SDKMessage,
 ): void {
   const r = msg as unknown as Record<string, unknown>;
+  // Consume the interrupt flag: this terminal envelope belongs to the turn
+  // the user just interrupted. Reset regardless of subtype so a stale flag
+  // can't leak into a later turn (e.g. if the interrupt raced a success).
+  const wasInterrupted = runtime.interrupted;
+  runtime.interrupted = false;
   const rawUsage = r.usage as Record<string, unknown> | undefined;
   const usage = rawUsage
     ? {
@@ -546,8 +560,12 @@ function handleResultEnvelope(
     if (usage !== undefined) runtime.latestUsage = usage;
     return;
   }
-  // Any non-"success" subtype is an error variant. Pull the
-  // `errors: string[]` payload; fall back to the subtype name if absent.
+  // Any non-"success" subtype is an error variant. But if the user
+  // interrupted this turn, the SDK ends it with `error_during_execution`
+  // — that's the cancel's terminal envelope, not a real failure (the
+  // router already emitted turn_canceled). Swallow it.
+  if (wasInterrupted) return;
+  // Pull the `errors: string[]` payload; fall back to the subtype name.
   const errors = Array.isArray(r.errors)
     ? (r.errors as unknown[]).filter((e): e is string => typeof e === "string")
     : [];
