@@ -1,3 +1,4 @@
+import type { TimelineItem } from "@sidecodeapp/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { type RuntimeQueryHandle, SessionRuntime } from "./session-runtime.js";
 
@@ -157,5 +158,36 @@ describe("SessionRuntime", () => {
     expect(seen).toEqual([1]); // reentrant event NOT delivered to this cb
     expect(r.currentCursor).toBe(2); // but it IS in the buffer
     expect(r.oldestCursor).toBe(1);
+  });
+
+  it("continuous fold: addEvent applies foldDelta + tracks settledCursor, only once settled is seeded", () => {
+    // Trivial reducer (appends a marker per event) — exercises the addEvent
+    // wiring: the `settled !== null` guard + the settledCursor advance, not
+    // fold logic (that's fold.test.ts).
+    const r = new SessionRuntime<string>("s1", {
+      foldDelta: (settled, delta) => {
+        settled.push({
+          type: "user_message",
+          uuid: delta,
+          text: delta,
+        } as unknown as TimelineItem);
+        return settled;
+      },
+    });
+
+    // Null until seeded → addEvent does NOT fold.
+    r.addEvent("a");
+    expect(r.settled).toBeNull();
+
+    // Seed (mirrors the create-mode [] seed / subscribe lazy-init) → folding
+    // resumes and settledCursor tracks the folded event.
+    r.settled = [];
+    const e = r.addEvent("b");
+    expect(r.settled).toHaveLength(1);
+    expect(r.settledCursor).toBe(e.cursor);
+
+    r.addEvent("c");
+    expect(r.settled).toHaveLength(2);
+    expect(r.settledCursor).toBe(r.currentCursor);
   });
 });

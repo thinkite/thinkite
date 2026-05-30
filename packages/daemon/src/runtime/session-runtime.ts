@@ -77,9 +77,18 @@ export interface RuntimeEvent<T> {
 
 export type Subscriber<T> = (event: RuntimeEvent<T>) => void;
 
-export interface SessionRuntimeOptions {
+export interface SessionRuntimeOptions<T> {
   /** Max events retained in the ring. Oldest evicted on overflow. */
   bufferCap?: number;
+  /**
+   * Continuous-fold reducer. When set, `addEvent` applies each delta to
+   * the in-memory `settled` snapshot (if non-null), keeping it current so
+   * the cold path serves a complete snapshot with `settledCursor ==
+   * currentCursor` — no per-turn JSONL re-read. Production wires
+   * `foldEventDelta` (messages/fold.ts), which mirrors the iOS reducer.
+   * Left unset in tests that don't exercise the fold.
+   */
+  foldDelta?: (settled: TimelineItem[], delta: T) => TimelineItem[];
 }
 
 export class SessionRuntime<T> {
@@ -91,17 +100,21 @@ export class SessionRuntime<T> {
   /** Promise that resolves when F2's consumer loop exits (graceful close, error, or natural end-of-iterator). Null when no loop is active. F3's daemon shutdown awaits this per runtime. */
   loopPromise: Promise<void> | null = null;
 
-  /** In-memory normalized snapshot of the JSONL. Refreshed by run-query
-   *  at every turn boundary (after `result` envelope) so cold-path
-   *  subscribes can serve directly from memory. Null until the first
-   *  refresh — router's cold path falls back to deps.getMessages until
-   *  populated. Imports TimelineItem from protocol because that's the
-   *  one shape we ever stash here; keeping it as `unknown` would force
-   *  every caller to cast. */
+  /** In-memory normalized snapshot of the transcript, so cold-path
+   *  subscribes serve directly from memory. Maintained by CONTINUOUS FOLD:
+   *  `addEvent` applies each delta via `foldDelta` (mirrors the iOS
+   *  reducer + normalize.ts), so settled stays current with zero JSONL
+   *  re-reads — no dependency on the SDK's async flush timing. Null until
+   *  seeded: the create-mode `[]` seed (run-query) for sessions we drive,
+   *  or the router's cold-path `deps.getMessages` lazy-init for resumed /
+   *  Desktop-mirror sessions; folding resumes once non-null. Imports
+   *  TimelineItem from protocol because that's the one shape we stash. */
   settled: TimelineItem[] | null = null;
-  /** Cursor that `settled` corresponds to — i.e. settled reflects state
-   *  through cursor=settledCursor. Replay (settledCursor, currentCursor]
-   *  from the ring buffer to reconstruct state from settled to live. */
+  /** Cursor that `settled` corresponds to. With continuous fold this
+   *  tracks `currentCursor` (settled reflects every event so far), so the
+   *  cold-path replay window (settledCursor, currentCursor] is empty —
+   *  settled IS the full snapshot. (Set to currentCursor on each fold; set
+   *  by the router's lazy-init read for the no-fold seed case.) */
   settledCursor = 0;
   /** Latest turn usage stats (input tokens / cache tokens). Updated
    *  live whenever a `turn_completed` event is added with usage AND
@@ -123,10 +136,15 @@ export class SessionRuntime<T> {
   private readonly buffer: RuntimeEvent<T>[] = [];
   private readonly subscribers = new Set<Subscriber<T>>();
   private nextCursor = 1;
+  private readonly foldDelta?: (
+    settled: TimelineItem[],
+    delta: T,
+  ) => TimelineItem[];
 
-  constructor(sessionId: string, options: SessionRuntimeOptions = {}) {
+  constructor(sessionId: string, options: SessionRuntimeOptions<T> = {}) {
     this.sessionId = sessionId;
     this.bufferCap = options.bufferCap ?? 500;
+    this.foldDelta = options.foldDelta;
   }
 
   /** Cursor of the oldest event still in the buffer, or null if empty. */
@@ -164,6 +182,17 @@ export class SessionRuntime<T> {
     this.buffer.push(event);
     if (this.buffer.length > this.bufferCap) {
       this.buffer.shift();
+    }
+    // Continuous fold: keep `settled` current (settledCursor == this event)
+    // so the cold path serves a complete in-memory snapshot with an empty
+    // replay window — no per-turn JSONL re-read. Only folds once `settled`
+    // is initialized (the create-mode `[]` seed, or the subscribe lazy-init
+    // JSONL read); a null `settled` means "no snapshot yet — the next
+    // subscribe seeds it from disk", and folding resumes after that. The
+    // buffer above is untouched, so warm-reconnect replay is unaffected.
+    if (this.settled !== null && this.foldDelta !== undefined) {
+      this.settled = this.foldDelta(this.settled, payload);
+      this.settledCursor = event.cursor;
     }
     for (const cb of this.subscribers) {
       cb(event);

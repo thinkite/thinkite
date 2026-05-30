@@ -11,6 +11,7 @@ import { GitWatcherRegistry } from "./git-watch.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
+import { foldEventDelta } from "./messages/fold.js";
 import { extractLatestUsage, normalize } from "./messages/normalize.js";
 import { createPairOffer } from "./pairing.js";
 import { createCommandHandler } from "./router.js";
@@ -79,7 +80,12 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
 
   // Lazy-populated by slice G's router when it sees its first sendPrompt.
   // Drained on shutdown via daemon.stop() → runtimeManager.shutdown().
-  const runtimeManager = new SessionRuntimeManager<EventDelta>();
+  // `foldDelta` wires the continuous-fold reducer so each runtime keeps its
+  // in-memory `settled` snapshot current as events fan out (no per-turn
+  // JSONL re-read — see messages/fold.ts).
+  const runtimeManager = new SessionRuntimeManager<EventDelta>({
+    foldDelta: foldEventDelta,
+  });
   // Set in daemon.stop() before runtimeManager.shutdown(). Router gates
   // sendPrompt behind it (see RouterDeps.isShuttingDown rationale).
   let shuttingDown = false;

@@ -15,9 +15,9 @@ import {
 
 export class SessionRuntimeManager<T> {
   private readonly runtimes = new Map<string, SessionRuntime<T>>();
-  private readonly defaultOptions: SessionRuntimeOptions;
+  private readonly defaultOptions: SessionRuntimeOptions<T>;
 
-  constructor(defaults: SessionRuntimeOptions = {}) {
+  constructor(defaults: SessionRuntimeOptions<T> = {}) {
     this.defaultOptions = defaults;
   }
 
@@ -35,7 +35,7 @@ export class SessionRuntimeManager<T> {
    */
   getOrCreate(
     sessionId: string,
-    options?: SessionRuntimeOptions,
+    options?: SessionRuntimeOptions<T>,
   ): SessionRuntime<T> {
     const existing = this.runtimes.get(sessionId);
     if (existing !== undefined) return existing;
