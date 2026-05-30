@@ -8,6 +8,8 @@ import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { listDesktopSessions } from "./desktop/sessions.js";
 import { GitWatcherRegistry } from "./git-watch.js";
+import { BridgeService } from "./bridge/bridge-service.js";
+import { OAuthRefreshManager } from "./bridge/oauth-refresh.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
@@ -58,6 +60,13 @@ export interface Daemon {
    * tests can inspect it.
    */
   readonly runtimeManager: SessionRuntimeManager<EventDelta>;
+  /**
+   * CCR bridge mirror service (slice M1). Owns the OAuthRefreshManager + all
+   * live BridgeTransports. Surfaced so the M1.5 spike (and future RPC wiring
+   * in M4) can `attach` sessions, and so daemon.stop() drains it. Empty in
+   * normal operation until a session is bridged.
+   */
+  readonly bridgeService: BridgeService;
 }
 
 /**
@@ -85,6 +94,15 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // JSONL re-read — see messages/fold.ts).
   const runtimeManager = new SessionRuntimeManager<EventDelta>({
     foldDelta: foldEventDelta,
+  });
+  // CCR bridge mirror service (slice M1). One OAuthRefreshManager (the
+  // keychain token is process-global) feeds every bridge; BridgeService
+  // ref-counts its proactive timer to live only while ≥1 bridge is attached.
+  // Drained in daemon.stop() AFTER runtimeManager.shutdown() so no late
+  // forwardToBridge write races the transport close.
+  const bridgeService = new BridgeService({
+    oauth: new OAuthRefreshManager(),
+    log: (message) => console.log(`[sidecode] ${message}`),
   });
   // Set in daemon.stop() before runtimeManager.shutdown(). Router gates
   // sendPrompt behind it (see RouterDeps.isShuttingDown rationale).
@@ -210,6 +228,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       return { encoded };
     },
     runtimeManager,
+    bridgeService,
     async stop() {
       // Flip the gate FIRST so any inflight subscribe / sendPrompt RPC
       // racing with shutdown gets rejected before it can spawn a runtime
@@ -222,6 +241,11 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       // bin/sidecode.ts's outer 10s forceExit guards against catastrophic
       // hangs from there.
       await runtimeManager.shutdown(5000);
+      // Close all CCR bridge mirrors + stop the OAuth refresh timer AFTER
+      // the queries are drained — so no in-flight forwardToBridge write
+      // races a transport close. Synchronous (just handle.close() per
+      // bridge + clearTimeout); no await needed.
+      bridgeService.shutdown();
       // Release fs.watch handles + cached SimpleGit instances; safe to
       // call before or after webrtc.stop(), no interaction with peers.
       gitWatchers.disposeAll();

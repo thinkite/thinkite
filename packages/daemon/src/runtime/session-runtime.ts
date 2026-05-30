@@ -69,6 +69,37 @@ export interface RuntimeInputChannel {
   end(): void;
 }
 
+/**
+ * Structural slot for the CCR bridge mirror (BridgeTransport, slice M1).
+ * The query loop forwards each raw SDKMessage here in parallel with the
+ * enriched EventDelta fan-out, so a bridged session streams to claude.ai
+ * without SessionRuntime importing the SDK or the @alpha `/bridge` types.
+ *
+ * `write` takes `unknown` (same SDK-decoupling rationale as
+ * `RuntimeInputChannel.push`) — BridgeTransport holds the typed SDKMessage
+ * internally. Lifecycle is owned by BridgeTransport, NOT the query loop:
+ * the loop's finally clears query/inputChannel/loopPromise but deliberately
+ * leaves `bridge` intact, so a bridge outlives an idle (lazy) query — the
+ * multiplex invariant from project_sidecode_ccr_architecture.
+ */
+export interface RuntimeBridge {
+  /** Forward one raw SDKMessage to the cloud mirror (non-result frames). */
+  write(msg: unknown): void;
+  /** Signal turn completion (claude.ai stops its "working" spinner). */
+  sendResult(): void;
+  /**
+   * Report the session's busy/idle state to the CCR worker endpoint so
+   * claude.ai shows it as running vs idle. `"running"` on turn start,
+   * `"idle"` on turn end. (`"requires_action"` is for permission prompts —
+   * deferred until M2 wires the permission round-trip.) Empirically REQUIRED:
+   * without it a bridged session never enters `running` on claude.ai
+   * (verified in M1.5 spike — see project_sidecode_ccr_architecture).
+   */
+  reportState(state: "idle" | "running" | "requires_action"): void;
+  /** Tear down the bridge transport. */
+  close(): void;
+}
+
 export interface RuntimeEvent<T> {
   /** Monotonically increasing per-runtime; assigned by addEvent. */
   cursor: number;
@@ -99,6 +130,13 @@ export class SessionRuntime<T> {
   inputChannel: RuntimeInputChannel | null = null;
   /** Promise that resolves when F2's consumer loop exits (graceful close, error, or natural end-of-iterator). Null when no loop is active. F3's daemon shutdown awaits this per runtime. */
   loopPromise: Promise<void> | null = null;
+
+  /** CCR bridge mirror slot (slice M1). Null = pure session (WebRTC only).
+   *  Set by BridgeTransport.attach, cleared by its detach — NOT by the query
+   *  loop's finally (a bridge must outlive an idle lazy query). When non-null,
+   *  the consumer loop forwards each raw SDKMessage here, and pushPrompt
+   *  mirrors the user prompt — see run-query's `forwardToBridge`. */
+  bridge: RuntimeBridge | null = null;
 
   /** In-memory normalized snapshot of the transcript, so cold-path
    *  subscribes serve directly from memory. Maintained by CONTINUOUS FOLD:

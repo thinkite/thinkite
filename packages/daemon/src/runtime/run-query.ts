@@ -233,6 +233,10 @@ export function ensureSessionLoop(
         // SDK message is pulled. No async work here anymore — the
         // turn-boundary JSONL re-read is gone (continuous fold replaced it).
         handleSdkMessage(runtime, state, msg);
+        // Parallel derivation: fork the SAME raw SDKMessage to the CCR
+        // bridge mirror (no-op for pure WebRTC sessions). Pillar path
+        // (enriched → WebRTC) runs first; the mirror is best-effort.
+        forwardToBridge(runtime, msg);
       }
     } catch (err) {
       // Surface the SDK error as a `turn_failed` so iOS can render it
@@ -321,7 +325,31 @@ export function pushPrompt(
     },
   });
   runtime.addEvent({ kind: "turn_started" });
-  channel.push(buildUserMessage(runtime.sessionId, text, userMsgUuid, images));
+  const userMessage = buildUserMessage(
+    runtime.sessionId,
+    text,
+    userMsgUuid,
+    images,
+  );
+  channel.push(userMessage);
+  // Mirror the user prompt to the CCR bridge as well. The SDK iterator
+  // never echoes user prompts back (only assistant + tool_result envelopes
+  // — see this fn's docstring), so without this the cloud transcript would
+  // show assistant replies with no preceding question. Same SDKUserMessage
+  // object we feed the local query → local and cloud agree on the prompt.
+  // No-op + error-isolated for pure (non-bridged) sessions via forwardToBridge.
+  forwardToBridge(runtime, userMessage);
+  // Report running at prompt-submit — the PRIMARY/earliest report, matching
+  // Claude Code's onUserPrompt ("mark running when the user submits a prompt
+  // … before the first assistant token", remoteBridgeCore.ts). Makes claude.ai
+  // show the session busy the instant the prompt lands, not ~200-800ms later
+  // at the first model frame. forwardToBridge re-asserts running on that first
+  // frame (deduped no-op). Error-isolated + null-bridge-safe.
+  try {
+    runtime.bridge?.reportState("running");
+  } catch {
+    // best-effort — never let a state report break prompt submission.
+  }
 }
 
 function buildUserMessage(
@@ -363,6 +391,89 @@ function buildUserMessage(
     uuid,
     session_id: sessionId,
   } as unknown as SDKUserMessage;
+}
+
+// ─── CCR bridge mirror (slice M1 write-out) ─────────────────────────────
+
+/**
+ * Mirror one raw SDKMessage to the CCR bridge, if this runtime is bridged.
+ *
+ * Parallel derivation to handleSdkMessage's enriched EventDelta fan-out:
+ * the SAME query() stream forks into (a) enriched → WebRTC and (b) raw →
+ * bridge → claude.ai. One tap, two sinks — no conversion between them.
+ *
+ * Forwarding is an ALLOWLIST that mirrors Claude Code's own
+ * `isEligibleBridgeMessage` (claude-code-source bridge/bridgeMessaging.ts) —
+ * "the server only wants user/assistant turns and slash-command system
+ * events; everything else (tool_result, progress, etc.) is internal REPL
+ * chatter":
+ *   - `stream_event` → write       (live token streaming; the server fans
+ *                                    these out to viewers but does NOT
+ *                                    persist them — ephemeral by design.
+ *                                    Desktop doesn't send deltas, but the
+ *                                    transport accepts them — ccr-stream spike)
+ *   - `assistant`    → write       (whole message; persisted server-side)
+ *   - `user`         → write       (the prompt + tool_results; persisted)
+ *   - `system` w/ `subtype:"local_command"` → write (slash-command echo, so
+ *                                    claude.ai shows locally-run /commands.
+ *                                    Other system subtypes — init / status /
+ *                                    compact_boundary — are NOT forwarded:
+ *                                    they're local lifecycle, not transcript.
+ *                                    NOTE sidecode's headless query loop
+ *                                    doesn't currently emit local_command
+ *                                    frames — handled for source-parity +
+ *                                    forward-compat, not because we produce
+ *                                    them yet.)
+ *   - `result`       → sendResult()(turn boundary — claude.ai stops its
+ *                                    "working" spinner. NEVER write() the
+ *                                    result frame: sendResult already emits
+ *                                    one, writing it too would duplicate it
+ *                                    and the cloud UI spins — the gotcha
+ *                                    from spikes/ccr-perm)
+ *   - everything else (compact_boundary, other system subtypes, hooks) →
+ *     IGNORED. Compaction is explicitly excluded by Desktop too
+ *     (isCompactSummary / compact_boundary are local-only, not cloud
+ *     transcript) — this is permanent, not a TODO.
+ *
+ * Bridge errors are SWALLOWED: a flaky CCR transport must degrade ONLY the
+ * mirror, never the query loop or the WebRTC fan-out (the pillar path).
+ */
+function forwardToBridge(
+  runtime: SessionRuntime<EventDelta>,
+  msg: SDKMessage,
+): void {
+  const bridge = runtime.bridge;
+  if (bridge === null) return;
+  try {
+    const m = msg as { type?: unknown; subtype?: unknown };
+    if (m.type === "result") {
+      // Turn end: stop the spinner (sendResult) AND mark the session idle.
+      // The matching `reportState("running")` fires in pushPrompt at turn
+      // start. Without the idle report claude.ai would keep showing the
+      // session as running after the turn finishes.
+      bridge.sendResult();
+      bridge.reportState("idle");
+    } else if (
+      m.type === "stream_event" ||
+      m.type === "assistant" ||
+      m.type === "user" ||
+      (m.type === "system" && m.subtype === "local_command")
+    ) {
+      // First model-originated frame of a turn marks it running, matching
+      // Claude Code's writeSdkMessages→startTurn (remoteBridgeCore.ts). This
+      // is the SECOND running report (pushPrompt already reported running at
+      // prompt-submit for responsiveness); reportState dedupes so the repeat
+      // is a no-op. `user` frames (tool_results) also pass through here but
+      // the session is already running by then — still a deduped no-op.
+      if (m.type === "stream_event" || m.type === "assistant") {
+        bridge.reportState("running");
+      }
+      bridge.write(msg);
+    }
+    // else: compact_boundary / other system subtypes / hooks — not mirrored.
+  } catch {
+    // Best-effort mirror — isolate transport failures from the pillar path.
+  }
 }
 
 // ─── SDK message dispatch ───────────────────────────────────────────────

@@ -37,6 +37,42 @@ function payloads(runtime: SessionRuntime<EventDelta>): EventDelta[] {
   return events.map((e) => e.payload);
 }
 
+/**
+ * Fake CCR bridge that records what the query loop forwards. `writes` holds
+ * the raw SDKMessages passed to `write`; `sendResultCalls` counts
+ * `sendResult`. `throwOnWrite` simulates a flaky transport to prove the
+ * mirror's failures are isolated from the pillar (query loop / WebRTC) path.
+ */
+function fakeBridge(opts: { throwOnWrite?: boolean } = {}) {
+  const writes: SDKMessage[] = [];
+  const states: string[] = []; // raw reportState calls (pre-dedup)
+  let sendResultCalls = 0;
+  let closeCalls = 0;
+  return {
+    writes,
+    states,
+    get sendResultCalls() {
+      return sendResultCalls;
+    },
+    get closeCalls() {
+      return closeCalls;
+    },
+    write(msg: unknown) {
+      if (opts.throwOnWrite) throw new Error("bridge transport down");
+      writes.push(msg as SDKMessage);
+    },
+    sendResult() {
+      sendResultCalls++;
+    },
+    reportState(state: string) {
+      states.push(state);
+    },
+    close() {
+      closeCalls++;
+    },
+  };
+}
+
 // ─── Stream event scaffolding ────────────────────────────────────────
 
 function messageStart(messageId: string): SDKMessage {
@@ -668,6 +704,200 @@ describe("ensureSessionLoop — turn lifecycle from SDK envelopes", () => {
     });
     expect(payloads(runtime).map((p) => p.kind)).not.toContain("turn_failed");
     expect(runtime.interrupted).toBe(false);
+  });
+});
+
+describe("ensureSessionLoop — CCR bridge mirror (M1 write-out)", () => {
+  function resultEnvelope(): SDKMessage {
+    return {
+      type: "result",
+      subtype: "success",
+      uuid: "env-result",
+      session_id: "s",
+      result: "ok",
+    } as unknown as SDKMessage;
+  }
+
+  it("forwards stream_event / assistant / user via write, result via sendResult", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const bridge = fakeBridge();
+    runtime.bridge = bridge;
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        messageStart("msg_1"),
+        contentBlockStartText(0),
+        contentBlockDeltaText(0, "hi"),
+        assistantEnvelope([{ id: "tu_1", name: "Bash", input: { command: "ls" } }]),
+        userToolResult("tu_1", "out"),
+        resultEnvelope(),
+      ]),
+    });
+    // result is NOT in writes (it goes to sendResult); everything else is.
+    const types = bridge.writes.map((m) => (m as { type: string }).type);
+    expect(types).toEqual([
+      "stream_event", // message_start
+      "stream_event", // content_block_start
+      "stream_event", // content_block_delta
+      "assistant",
+      "user",
+    ]);
+    expect(bridge.sendResultCalls).toBe(1);
+    // running reported on the first model frame (message_start stream_event),
+    // idle reported on result. (fakeBridge records raw calls; dedup is tested
+    // in BridgeTransport.) The running fires once here because forwardToBridge
+    // only reports running on stream_event/assistant — and the first one is
+    // message_start.
+    expect(bridge.states[0]).toBe("running");
+    expect(bridge.states.at(-1)).toBe("idle");
+  });
+
+  it("reports running on the first model frame (stream_event/assistant), idle on result", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const bridge = fakeBridge();
+    runtime.bridge = bridge;
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        assistantEnvelope([{ id: "tu_1", name: "Bash", input: { command: "ls" } }]),
+        userToolResult("tu_1", "out"),
+        resultEnvelope(),
+      ]),
+    });
+    // assistant → running; user → (no state, already running); result → idle.
+    expect(bridge.states).toEqual(["running", "idle"]);
+  });
+
+  it("pushPrompt reports running at prompt-submit (before any model frame)", () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const bridge = fakeBridge();
+    runtime.bridge = bridge;
+    const factory = ((_params: unknown) => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {}
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(),
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    ensureSessionLoop(runtime, { mode: "resume", queryFactory: factory });
+    pushPrompt(runtime, "hi");
+    // running reported synchronously at submit — matches Claude Code onUserPrompt.
+    expect(bridge.states).toEqual(["running"]);
+  });
+
+  it("does NOT write the result frame (only sendResult — avoids the double-result spinner gotcha)", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const bridge = fakeBridge();
+    runtime.bridge = bridge;
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([resultEnvelope()]),
+    });
+    expect(bridge.writes).toHaveLength(0);
+    expect(bridge.sendResultCalls).toBe(1);
+  });
+
+  it("ignores status / compact_boundary system frames (allowlist, not denylist)", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const bridge = fakeBridge();
+    runtime.bridge = bridge;
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        statusMsg("compacting"),
+        compactBoundaryEnvelope("b-1", {
+          trigger: "manual",
+          pre_tokens: 10,
+          post_tokens: 1,
+        }),
+      ]),
+    });
+    expect(bridge.writes).toHaveLength(0);
+    expect(bridge.sendResultCalls).toBe(0);
+  });
+
+  it("forwards system/local_command (slash-command echo — source parity with isEligibleBridgeMessage)", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const bridge = fakeBridge();
+    runtime.bridge = bridge;
+    const localCommand = {
+      type: "system",
+      subtype: "local_command",
+      uuid: "env-localcmd",
+      session_id: "s",
+    } as unknown as SDKMessage;
+    // A non-local_command system frame in the same run must NOT forward.
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([localCommand, statusMsg("compacting")]),
+    });
+    expect(bridge.writes).toHaveLength(1);
+    expect((bridge.writes[0] as { subtype: string }).subtype).toBe(
+      "local_command",
+    );
+  });
+
+  it("isolates bridge.write failures from the pillar path (query loop + EventDelta fan-out keep working)", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    runtime.bridge = fakeBridge({ throwOnWrite: true });
+    // A throwing bridge must NOT surface as turn_failed nor stop processing.
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        messageStart("msg_1"),
+        contentBlockStartText(0),
+        contentBlockDeltaText(0, "Hello"),
+        messageStop(),
+      ]),
+    });
+    // The enriched EventDelta fan-out (the pillar) is unaffected.
+    expect(payloads(runtime)).toEqual([
+      {
+        kind: "append",
+        item: { type: "assistant_message", uuid: "msg_1:0", text: "" },
+      },
+      { kind: "patch_text", uuid: "msg_1:0", deltaText: "Hello" },
+    ]);
+  });
+
+  it("pure (non-bridged) session: null bridge is a no-op (no crash)", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    expect(runtime.bridge).toBeNull();
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([resultEnvelope()]),
+    });
+    expect(payloads(runtime)).toEqual([
+      { kind: "turn_completed", usage: undefined },
+    ]);
+  });
+
+  it("pushPrompt mirrors the user prompt to the bridge (SDK never echoes it)", () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const bridge = fakeBridge();
+    runtime.bridge = bridge;
+    const factory = ((_params: unknown) => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {}
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(),
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    ensureSessionLoop(runtime, { mode: "resume", queryFactory: factory });
+    pushPrompt(runtime, "what is 2+2?", undefined, "u-uuid-1");
+    expect(bridge.writes).toHaveLength(1);
+    const mirrored = bridge.writes[0] as {
+      type: string;
+      uuid: string;
+      message: { role: string; content: Array<{ type: string; text?: string }> };
+    };
+    expect(mirrored.type).toBe("user");
+    expect(mirrored.uuid).toBe("u-uuid-1");
+    expect(mirrored.message.role).toBe("user");
+    expect(mirrored.message.content[0]).toEqual({
+      type: "text",
+      text: "what is 2+2?",
+    });
   });
 });
 
