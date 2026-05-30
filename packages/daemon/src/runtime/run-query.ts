@@ -292,6 +292,7 @@ export function pushPrompt(
   runtime: SessionRuntime<EventDelta>,
   text: string,
   images?: readonly ImageAttachment[],
+  userMessageUuid?: string,
 ): void {
   const channel = runtime.inputChannel;
   if (channel === null) {
@@ -303,7 +304,13 @@ export function pushPrompt(
   // turn whose terminal envelope never arrived, so it can't suppress this
   // turn's genuine turn_failed.
   runtime.interrupted = false;
-  const userMsgUuid = randomUUID();
+  // Prefer the client-supplied uuid: iOS optimistically inserts the bubble
+  // under it, and reusing it here (for both the synthesized append AND the
+  // SDKUserMessage below) makes the live append, the JSONL row, and the
+  // optimistic insert all share one id — the client dedupes by key, no
+  // double bubble. Falls back to a fresh uuid when the client didn't send
+  // one (new-session first send: no optimistic insert to reconcile).
+  const userMsgUuid = userMessageUuid ?? randomUUID();
   runtime.addEvent({
     kind: "append",
     item: {

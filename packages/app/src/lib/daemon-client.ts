@@ -653,6 +653,7 @@ export class Transport {
     cwd?: string;
     images?: ImageAttachment[];
     model?: string;
+    userMessageUuid?: string;
   }): Promise<void> {
     const requestId = Crypto.randomUUID();
     const frame: { type: string; requestId: string } & Record<string, unknown> =
@@ -667,6 +668,9 @@ export class Transport {
       frame.images = opts.images;
     }
     if (opts.model !== undefined) frame.model = opts.model;
+    if (opts.userMessageUuid !== undefined) {
+      frame.userMessageUuid = opts.userMessageUuid;
+    }
     await this.request(frame);
   }
 
@@ -1256,6 +1260,7 @@ export class DaemonClient {
     cwd?: string;
     images?: ImageAttachment[];
     model?: string;
+    userMessageUuid?: string;
   }): Promise<void> {
     const t = await this.readyPromise;
     return t.sendPrompt(opts);

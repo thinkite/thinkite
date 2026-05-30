@@ -635,7 +635,10 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           });
           // pushPrompt emits turn_started synchronously before the SDK
           // even sees the message — iOS flips the spinner immediately.
-          pushPrompt(runtime, cmd.text, cmd.images);
+          // Forward the client-supplied user_message uuid (when present) so
+          // the synthesized append reuses it and the client's optimistic
+          // bubble dedupes by key.
+          pushPrompt(runtime, cmd.text, cmd.images, cmd.userMessageUuid);
 
           ctx.send({
             type: "sendPrompt.response",

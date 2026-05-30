@@ -1,6 +1,7 @@
 import { KeyboardChatLegendList } from "@legendapp/list/keyboard-chat";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import type { ImageAttachment } from "@sidecodeapp/protocol";
+import * as Crypto from "expo-crypto";
 import { useHeaderHeight } from "expo-router/react-navigation";
 import { useCallback, useLayoutEffect, useRef } from "react";
 import { type LayoutChangeEvent, View, useColorScheme } from "react-native";
@@ -23,6 +24,7 @@ import { ToolBlock } from "@/components/transcript/tool-block";
 import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 import type { RenderBlock } from "@/lib/transcript-blocks";
+import { sendUserMessage } from "@/lib/transcript-collection-factory";
 import { LinearGradient } from "expo-linear-gradient";
 
 // Animatable wrapper for `LinearGradient` — module-level so the wrapped
@@ -192,34 +194,34 @@ export function ChatPanel({
     [reportInset],
   );
 
-  // Raw sendPrompt — invoked for non-slash text AND for whitelisted
+  // Raw send — invoked for non-slash text AND for whitelisted
   // passthrough commands (/init, /review, /compact). Intercept-handling
   // commands (/clear, /model) never reach here — `useSlashCommandHandler`
   // dispatches them locally instead. See the hook's file header.
   const rawSend = useCallback(
     (text: string, images?: ImageAttachment[]) => {
-      // cwd is required for the SDK's project-key resolution on
-      // `--resume`. For sessions opened from the list, cwd is plumbed
-      // through route params; deeplink / direct nav (V0.5+) will need
-      // a fallback fetch.
+      // Optimistic in-session send: `sendUserMessage` inserts the bubble
+      // into this session's transcript collection synchronously (instant
+      // paint) and fires the sendPrompt under a client-generated uuid; the
+      // daemon's synthesized append reuses that uuid so the synced row
+      // dedupes against this optimistic insert by key. See sendUserMessage.
       //
-      // `model` is still attached on every send so the daemon's
-      // ensureSessionLoop has it as SDK initial option on first spawn
-      // (or after a daemon-restart respawn). Mid-session apply is
-      // owned by setSessionSelection — sendPrompt only seeds.
-      void client
-        .sendPrompt({
-          sessionId: cliSessionId,
-          text,
-          cwd,
-          images,
-          model: selection?.model,
-        })
-        .catch((err) => {
-          console.error("sendPrompt failed", err);
-        });
+      // cwd is forwarded for the SDK's project-key resolution on `--resume`
+      // (plumbed through route params); `model` rides along so a
+      // daemon-restart respawn inherits the picker selection (mid-session
+      // apply is owned by setSessionSelection — send only seeds).
+      void sendUserMessage({
+        cliSessionId,
+        userMessageUuid: Crypto.randomUUID(),
+        text,
+        cwd,
+        images,
+        model: selection?.model,
+      }).isPersisted.promise.catch((err) => {
+        console.error("sendPrompt failed", err);
+      });
     },
-    [client, cliSessionId, cwd, selection],
+    [cliSessionId, cwd, selection],
   );
 
   const onSend = useSlashCommandHandler({

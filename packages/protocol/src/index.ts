@@ -886,6 +886,16 @@ export const sendPromptCommand = z.object({
   cwd: z.string().optional(),
   images: z.array(imageAttachment).optional(),
   model: z.string().optional(),
+  /** Client-supplied uuid for the user_message this prompt creates. When
+   *  present, the daemon uses it as BOTH the synthesized `user_message`
+   *  append uuid AND the SDKUserMessage uuid (so the JSONL persists the
+   *  same id). This lets the client optimistically insert the bubble under
+   *  this uuid before sending, then dedupe against the daemon's synthesized
+   *  append by key — no flicker, no double bubble. Omitted on the
+   *  new-session first send (no optimistic insert there — the bubble rides
+   *  in on the synthesized append's buffer replay), where the daemon falls
+   *  back to a fresh uuid. */
+  userMessageUuid: z.string().optional(),
 });
 
 export const sendPromptResponse = z.object({

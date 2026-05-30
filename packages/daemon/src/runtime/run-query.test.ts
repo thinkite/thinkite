@@ -513,6 +513,45 @@ describe("pushPrompt", () => {
     expect(typeof first.item.uuid).toBe("string");
     expect(out[1]).toEqual({ kind: "turn_started" });
   });
+
+  it("reuses a client-supplied userMessageUuid for the synthesized append", () => {
+    // iOS optimistically inserts the bubble under this uuid; the daemon
+    // must reuse it (not mint its own) so the synced append dedupes against
+    // the optimistic insert by key — no double bubble.
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const factory = ((_params: unknown) => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {}
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(),
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    ensureSessionLoop(runtime, { mode: "resume", queryFactory: factory });
+    pushPrompt(runtime, "hi", undefined, "client-uuid-123");
+    const first = payloads(runtime)[0];
+    if (first?.kind !== "append" || first.item.type !== "user_message") {
+      throw new Error("expected user_message append");
+    }
+    expect(first.item.uuid).toBe("client-uuid-123");
+  });
+
+  it("mints a fresh uuid when no userMessageUuid is supplied (new-session path)", () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const factory = ((_params: unknown) => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {}
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(),
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    ensureSessionLoop(runtime, { mode: "resume", queryFactory: factory });
+    pushPrompt(runtime, "hi");
+    const first = payloads(runtime)[0];
+    if (first?.kind !== "append" || first.item.type !== "user_message") {
+      throw new Error("expected user_message append");
+    }
+    expect(first.item.uuid).toMatch(/^[0-9a-f-]{36}$/);
+  });
 });
 
 describe("ensureSessionLoop — turn lifecycle from SDK envelopes", () => {

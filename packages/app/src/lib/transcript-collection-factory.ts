@@ -1,7 +1,7 @@
-import type { TimelineItem } from "@sidecodeapp/protocol";
-import type { Collection } from "@tanstack/db";
+import type { ImageAttachment, TimelineItem } from "@sidecodeapp/protocol";
+import { type Collection, createOptimisticAction } from "@tanstack/db";
 import { createCollection } from "@tanstack/react-db";
-import type { DaemonClient } from "@/lib/daemon-client";
+import { type DaemonClient, daemonClient } from "@/lib/daemon-client";
 import {
   clearSessionActivity,
   patchSessionActivity,
@@ -105,10 +105,28 @@ export function getTranscriptCollection(
                 // — first event after a cold-path settled[] ingest gets
                 // _order = settled.length; subsequent _order increments
                 // by 1 per append.
+                //
+                // Optimistic reconcile: when the client optimistically
+                // inserted this user_message (same uuid) before sending,
+                // the row is already present — reuse its `_order` rather
+                // than coll.size, so the synced row keeps the slot the
+                // optimistic bubble took and can't collide with the
+                // assistant reply that follows. Still an `insert`: the row
+                // lives only in the transaction overlay, not the synced
+                // store, so the daemon's append is what populates synced;
+                // the overlay then drops onto it by key, no flicker.
+                const key =
+                  delta.item.type === "tool_call"
+                    ? delta.item.callId
+                    : delta.item.uuid;
+                const existing = coll.get(key);
                 begin();
                 write({
                   type: "insert",
-                  value: { ...delta.item, _order: coll.size },
+                  value: {
+                    ...delta.item,
+                    _order: existing?._order ?? coll.size,
+                  },
                 });
                 commit();
                 break;
@@ -228,3 +246,66 @@ export function getTranscriptCollection(
   collections.set(cliSessionId, collection);
   return collection;
 }
+
+interface SendMessageVars {
+  cliSessionId: string;
+  /** Client-generated uuid for this user_message. The optimistic insert
+   *  and the daemon's synthesized append both key off it → one bubble. */
+  userMessageUuid: string;
+  text: string;
+  cwd?: string;
+  images?: ImageAttachment[];
+  model?: string;
+}
+
+/**
+ * Optimistic in-session send (follow-up messages only — the new-session
+ * first send goes through `createSession`, whose synthesized append rides
+ * in on buffer replay with no optimistic insert).
+ *
+ * `onMutate` inserts the user_message bubble into the session's transcript
+ * collection synchronously, so it paints the instant the user hits send —
+ * no waiting on the daemon round-trip. `mutationFn` fires the sendPrompt
+ * carrying the SAME `userMessageUuid`; the daemon reuses it for both the
+ * synthesized `user_message` append and the SDKUserMessage, so the live
+ * append, the JSONL row, and this optimistic insert all share one key.
+ *
+ * Reconciliation (why no flicker, no double bubble): the daemon emits the
+ * synthesized append synchronously in `pushPrompt` and fans it out on the
+ * subscribe stream BEFORE the sendPrompt RPC ack (the handler sends the ack
+ * after pushPrompt returns). Frames are ordered on the DataChannel, so the
+ * sync handler writes the row into the collection's synced store before
+ * this `mutationFn` resolves. When the optimistic transaction then settles,
+ * the overlay drops onto an already-present synced row (same key) — seamless.
+ * No `utils.refetch()` (that's the query-collection path); the transcript is
+ * a pure sync collection fed by the subscribe stream.
+ *
+ * On sendPrompt failure the action auto-rolls-back the optimistic insert.
+ *
+ * Uses the module-level `daemonClient` singleton (mirrors `createSession`),
+ * so it can be a module const rather than a per-client factory.
+ */
+export const sendUserMessage = createOptimisticAction<SendMessageVars>({
+  onMutate: ({ cliSessionId, userMessageUuid, text, images }) => {
+    const coll = getTranscriptCollection(cliSessionId, { client: daemonClient });
+    coll.insert({
+      type: "user_message",
+      uuid: userMessageUuid,
+      text,
+      images: images && images.length > 0 ? images : undefined,
+      // Append at the tail — lands after existing bubbles, before the
+      // assistant reply (which arrives with a higher _order).
+      _order: coll.size,
+    });
+  },
+  mutationFn: async ({ cliSessionId, userMessageUuid, text, cwd, images, model }) => {
+    await daemonClient.sendPrompt({
+      sessionId: cliSessionId,
+      text,
+      cwd,
+      images,
+      model,
+      userMessageUuid,
+    });
+  },
+});
