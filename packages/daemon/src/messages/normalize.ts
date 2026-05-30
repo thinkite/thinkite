@@ -39,6 +39,29 @@ import {
  * input strings — Edit diffs the snippet old→new, Write diffs empty→content
  * (so every Write renders as a green all-add new-file diff).
  */
+
+/**
+ * Synthetic user-role markers Claude Code writes into the JSONL that must
+ * NOT render as user prose. A whole `user` message whose text is exactly
+ * one of these is dropped on cold-read so the transcript matches the live
+ * stream (which never emits them — the daemon doesn't synthesize them).
+ *
+ * V0 scope: ONLY the interrupt markers. These are the only ones a
+ * sidecode-driven session actually produces (we bypass permissions, so the
+ * CANCEL/REJECT members of the CLI's `SYNTHETIC_MESSAGES` never fire). The
+ * broader synthetic-content family — `<command-name>` / `<local-command-*>`
+ * slash echoes, `<bash-*>` blocks, `<system-reminder>` (often inline, needs
+ * stripping not dropping) — is tracked in sidecodeapp/sidecode#12.
+ *
+ * Mirrors the CLI's INTERRUPT_MESSAGE / INTERRUPT_MESSAGE_FOR_TOOL_USE
+ * constants (utils/messages.ts). Exact-text match: the interrupt markers
+ * are written as a single text block with no other content.
+ */
+const DROPPED_SYNTHETIC_USER_TEXTS = new Set<string>([
+  "[Request interrupted by user]",
+  "[Request interrupted by user for tool use]",
+]);
+
 export function normalize(messages: readonly SessionMessage[]): TimelineItem[] {
   const out: TimelineItem[] = [];
   const pendingByCallId = new Map<string, ToolCallItem>();
@@ -59,7 +82,7 @@ export function normalize(messages: readonly SessionMessage[]): TimelineItem[] {
     if (sdkMsg.type === "user") {
       // user.content is `string | ContentBlock[]`. Plain string → single user_message.
       if (typeof content === "string") {
-        if (content.length > 0) {
+        if (content.length > 0 && !DROPPED_SYNTHETIC_USER_TEXTS.has(content)) {
           out.push({ type: "user_message", uuid: sdkMsg.uuid, text: content });
         }
         continue;
@@ -115,14 +138,20 @@ export function normalize(messages: readonly SessionMessage[]): TimelineItem[] {
           attachOutputToDetail(target.detail, outputText);
         }
       }
+      // Multiple text blocks in one envelope are rare but happen with
+      // CLI-synth messages. Join with paragraph spacing to stay visually
+      // distinct in markdown rendering.
+      const joinedText = texts.join("\n\n");
+      // Drop a pure interrupt marker (single text block, no images). Keep
+      // anything carrying images — markers never do, so this is defensive.
+      if (images.length === 0 && DROPPED_SYNTHETIC_USER_TEXTS.has(joinedText)) {
+        continue;
+      }
       if (texts.length > 0 || images.length > 0) {
         out.push({
           type: "user_message",
           uuid: sdkMsg.uuid,
-          // Multiple text blocks in one envelope are rare but happen with
-          // CLI-synth messages. Join with paragraph spacing to stay
-          // visually distinct in markdown rendering.
-          text: texts.join("\n\n"),
+          text: joinedText,
           images: images.length > 0 ? images : undefined,
         });
       }

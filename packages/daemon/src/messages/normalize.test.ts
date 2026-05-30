@@ -31,6 +31,22 @@ describe("normalize", () => {
     ]);
   });
 
+  it("drops interrupt markers (string + text-block forms), keeps real messages", () => {
+    // The CLI writes these synthetic markers into the JSONL on interrupt;
+    // the live stream never emits them, so dropping on cold-read keeps the
+    // transcript consistent. Both content shapes the SDK may surface.
+    const out = normalize([
+      userMsg("u-1", "[Request interrupted by user]"),
+      userMsg("u-2", [
+        { type: "text", text: "[Request interrupted by user for tool use]" },
+      ]),
+      userMsg("u-3", "real follow-up"),
+    ]);
+    expect(out).toEqual([
+      { type: "user_message", uuid: "u-3", text: "real follow-up" },
+    ]);
+  });
+
   it("emits assistant_message for text blocks; ignores thinking blocks", () => {
     const out = normalize([
       assistantMsg("a-1", [
