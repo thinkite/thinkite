@@ -362,6 +362,79 @@ describe("BridgeService — control routing (M2.4)", () => {
       "setModel:s1:claude-sonnet-4-6",
     ]);
   });
+
+  it("auto-attaches onSetPermissionMode stub returning V0 refuse verdict whenever bidirectional", async () => {
+    // V0 fixes bypassPermissions (project_no_plan_mode_v0). The stub beats the
+    // SDK's generic "callback not registered" auto-error by giving claude.ai
+    // a sidecode-specific reason. Static — no router, no per-session state.
+    const t = fakeTransport();
+    let capturedInbound:
+      | {
+          onSetPermissionMode?: (
+            mode: unknown,
+          ) => { ok: true } | { ok: false; error: string };
+        }
+      | undefined;
+    const attachSpy = vi.fn(
+      async (params: {
+        inbound?: {
+          onSetPermissionMode?: (
+            mode: unknown,
+          ) => { ok: true } | { ok: false; error: string };
+        };
+      }) => {
+        capturedInbound = params.inbound;
+        return t;
+      },
+    );
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      // Any one caller handler suffices to flip bidirectional — that's when
+      // the stub is attached. Using onInterrupt here, but the stub is
+      // independent of WHICH caller handler triggered bidirectional mode.
+      onInterrupt: () => {},
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
+
+    expect(typeof capturedInbound?.onSetPermissionMode).toBe("function");
+    const verdict = capturedInbound?.onSetPermissionMode?.("plan");
+    expect(verdict?.ok).toBe(false);
+    // Refuse for ANY mode (acceptEdits / default / plan / bypassPermissions
+    // all refused — V0 locks bypass; only revisit when plan / approval UI lands).
+    expect(capturedInbound?.onSetPermissionMode?.("default")?.ok).toBe(false);
+    expect(capturedInbound?.onSetPermissionMode?.("acceptEdits")?.ok).toBe(
+      false,
+    );
+    if (verdict?.ok === false) {
+      // ASCII-only error per repo convention; mention bypassPermissions so the
+      // user understands WHY without reading sidecode source.
+      expect(verdict.error).toMatch(/bypassPermissions/);
+      expect(verdict.error).not.toMatch(/[一-鿿]/); // no CJK
+    }
+  });
+
+  it("does NOT auto-attach onSetPermissionMode in pure mirror mode (no caller handlers)", async () => {
+    // The stub is bundled into the bag, not bolted on independently — so when
+    // hasInbound is false (M1 pure mirror) the bag is undefined and the SDK
+    // sees no onSetPermissionMode at all. Pure mirror has no read channel
+    // anyway, so claude.ai can't reach the worker with set_permission_mode.
+    const t = fakeTransport();
+    let captured: { inbound?: unknown } | undefined;
+    const attachSpy = vi.fn(async (params: { inbound?: unknown }) => {
+      captured = params;
+      return t;
+    });
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      // No caller handlers → hasInbound false → no bag.
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
+    expect(captured?.inbound).toBeUndefined();
+  });
 });
 
 describe("BridgeService.detach", () => {

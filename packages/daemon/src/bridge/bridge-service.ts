@@ -36,7 +36,23 @@
 import type { InboundPrompt } from "../runtime/run-query.js";
 import { extractInboundPrompt } from "../runtime/run-query.js";
 import type { SessionRuntime } from "../runtime/session-runtime.js";
-import { BridgeTransport, type TokenSource } from "./bridge-transport.js";
+import {
+  BridgeTransport,
+  type PermissionModeVerdict,
+  type TokenSource,
+} from "./bridge-transport.js";
+
+/** V0 verdict for any set_permission_mode control_request from claude.ai.
+ *  sidecode V0 fixes `bypassPermissions` (project_no_plan_mode_v0 +
+ *  feedback_no_hook_permission_interception) — no plan / acceptEdits /
+ *  default mode toggle. Returning an explicit refuse beats the SDK's
+ *  generic "callback not registered" fallback: the user sees WHY their
+ *  mode change didn't take. Revisit when V0.5+ adds plan / approval UI. */
+const V0_PERMISSION_MODE_VERDICT: PermissionModeVerdict = {
+  ok: false,
+  error:
+    "sidecode V0 runs with bypassPermissions; remote permission-mode changes are not supported.",
+};
 
 /** The subset of OAuthRefreshManager BridgeService drives. Injectable so
  *  tests pass a fake (no keychain, no timers). Production = the real manager,
@@ -177,16 +193,23 @@ export class BridgeService {
     // refreshed. start() is idempotent — safe to call on every attach.
     this.oauth.start();
 
-    // When ANY inbound handler is wired (prompt routing M2.2, interrupt M2.4,
-    // setModel M2.4), build the inbound bag so the transport opens bidirectional
-    // (outboundOnly:false). Each member is included only if its corresponding
-    // router was provided — partial wiring is allowed (e.g. mirror + interrupt
-    // but no prompt routing, though no real config does that today). Omit ALL
-    // handlers → `inbound` stays undefined → the transport stays outboundOnly
-    // (M1 pure mirror).
+    // When ANY caller-supplied inbound handler is wired (prompt routing M2.2,
+    // interrupt M2.4, setModel M2.4), build the inbound bag so the transport
+    // opens bidirectional (outboundOnly:false). Each member is included only
+    // if its corresponding router was provided — partial wiring is allowed
+    // (e.g. mirror + interrupt but no prompt routing, though no real config
+    // does that today). Omit ALL handlers → `inbound` stays undefined → the
+    // transport stays outboundOnly (M1 pure mirror).
     //
     // The transport already try/catches each handler, so a router throw can't
     // kill the SSE read loop — we still keep the handlers thin and synchronous.
+    //
+    // NOTE on onSetPermissionMode: this is a STATIC stub the service always
+    // attaches when the transport is bidirectional. It is NOT a router the
+    // caller supplies — V0 has nothing to route (bypassPermissions is fixed).
+    // It does NOT participate in the `hasInbound` decision: a daemon that
+    // wires zero real routers still gets a pure mirror, not a bidirectional
+    // transport that only refuses permission-mode changes.
     const promptRoute = this.onInboundPrompt;
     const interruptRoute = this.onInterrupt;
     const setModelRoute = this.onSetModel;
@@ -215,6 +238,11 @@ export class BridgeService {
                   setModelRoute(sessionId, model),
               }
             : {}),
+          // Static refuse — no router, no per-session state. Always present
+          // when bidirectional so claude.ai gets a sidecode-specific error
+          // instead of the SDK's generic "callback not registered" fallback.
+          onSetPermissionMode: (): PermissionModeVerdict =>
+            V0_PERMISSION_MODE_VERDICT,
         }
       : undefined;
 

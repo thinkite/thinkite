@@ -390,6 +390,66 @@ describe("BridgeTransport.attach — inbound (M2 read-in)", () => {
     expect(captured?.onInboundMessage).toBeDefined();
     expect(captured?.onInterrupt).toBeUndefined();
     expect(captured?.onSetModel).toBeUndefined();
+    expect(captured?.onSetPermissionMode).toBeUndefined();
+  });
+
+  it("wires onSetPermissionMode and forwards the verdict from the caller's handler", async () => {
+    const fake = fakeHandle({ connected: true });
+    let captured: AttachBridgeSessionOptions | undefined;
+    const deps = happyDeps(fake.handle);
+    deps.attachBridgeSession = vi.fn(
+      async (opts: AttachBridgeSessionOptions) => {
+        captured = opts;
+        return fake.handle;
+      },
+    );
+    const onSetPermissionMode = vi.fn(() => ({
+      ok: false as const,
+      error: "test-refuse",
+    }));
+    await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      inbound: { onSetPermissionMode },
+      deps,
+    });
+    expect(captured?.outboundOnly).toBe(false);
+    expect(captured?.onSetPermissionMode).toBeDefined();
+    // The wrapper preserves the caller's verdict verbatim.
+    const verdict = captured?.onSetPermissionMode?.("plan" as never);
+    expect(verdict).toEqual({ ok: false, error: "test-refuse" });
+    expect(onSetPermissionMode).toHaveBeenCalledWith("plan");
+  });
+
+  it("a throwing onSetPermissionMode is wrapped to a generic error verdict (server never hangs)", async () => {
+    const fake = fakeHandle({ connected: true });
+    let captured: AttachBridgeSessionOptions | undefined;
+    const deps = happyDeps(fake.handle);
+    deps.attachBridgeSession = vi.fn(
+      async (opts: AttachBridgeSessionOptions) => {
+        captured = opts;
+        return fake.handle;
+      },
+    );
+    await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      inbound: {
+        onSetPermissionMode: () => {
+          throw new Error("boom-perm-mode");
+        },
+      },
+      deps,
+    });
+    // Must return a value (NOT throw) — the SDK forwards the verdict as the
+    // control_response; throwing would leave the server hanging on the request.
+    const verdict = captured?.onSetPermissionMode?.("plan" as never);
+    expect(verdict).toEqual({
+      ok: false,
+      error: "set_permission_mode handler threw",
+    });
   });
 
   it("a throwing inbound handler is swallowed (never propagates into the SSE loop)", async () => {

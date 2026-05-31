@@ -35,6 +35,8 @@
  * typed error) — that's the caller's concern, not the pillar path's.
  */
 
+import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
+
 import type { RuntimeBridge } from "../runtime/session-runtime.js";
 import {
   type AttachBridgeSessionOptions,
@@ -45,6 +47,10 @@ import {
   fetchRemoteCredentials,
   isCredentialsFailure,
 } from "./sdk-adapter.js";
+
+/** Verdict returned to claude.ai for a set_permission_mode control_request.
+ *  Mirrors the SDK's `onSetPermissionMode` return type. */
+export type PermissionModeVerdict = { ok: true } | { ok: false; error: string };
 
 /**
  * Inbound (read-in) handlers — the M2 bidirectional surface. Supplied by the
@@ -74,6 +80,21 @@ export interface BridgeInboundHandlers {
    * `undefined` = reset to default.
    */
   onSetModel?: (model: string | undefined) => void;
+  /**
+   * claude.ai changed the permission-mode selector. Return a verdict so the
+   * SDK can send an accurate control_response (success vs error). Omitting
+   * this handler is NOT silent: the SDK's bridgeMessaging.handleServerControlRequest
+   * (see claude-code-source) returns a generic `"set_permission_mode is not
+   * supported in this context (onSetPermissionMode callback not registered)"`
+   * error instead of false-success — fine semantically but unhelpful to the
+   * user on claude.ai. V0 wires a stub that returns a sidecode-specific
+   * reason ("bypassPermissions is fixed for V0"), and the SDK forwards it.
+   *
+   * Synchronous to match the SDK signature exactly. A throw here is wrapped
+   * by the transport into `{ok:false, error}` so the SDK never sees an
+   * exception — same isolation as the other inbound handlers.
+   */
+  onSetPermissionMode?: (mode: PermissionMode) => PermissionModeVerdict;
 }
 
 /** Minimal token source — the OAuthRefreshManager satisfies this. Injected
@@ -272,6 +293,23 @@ export class BridgeTransport implements RuntimeBridge {
           handler(model);
         } catch {
           // swallow — see onInboundMessage.
+        }
+      };
+    }
+    if (inbound?.onSetPermissionMode !== undefined) {
+      const handler = inbound.onSetPermissionMode;
+      attachOpts.onSetPermissionMode = (mode) => {
+        // Unlike the other inbound handlers, this one MUST return a verdict
+        // (the SDK forwards it as the control_response). Catch a throw and
+        // turn it into a generic error verdict so the SDK still gets a
+        // value-shaped reply — the server otherwise hangs on the request.
+        try {
+          return handler(mode);
+        } catch {
+          return {
+            ok: false,
+            error: "set_permission_mode handler threw",
+          };
         }
       };
     }
