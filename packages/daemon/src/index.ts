@@ -103,6 +103,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // forwardToBridge write races the transport close.
   const bridgeService = new BridgeService({
     oauth: new OAuthRefreshManager(),
+    home,
     log: (message) => console.log(`[sidecode] ${message}`),
     // M2.2 read-in: a claude.ai-typed prompt → drive this session's local
     // turn. The reply streams back via M1's write-out tap; reusing the

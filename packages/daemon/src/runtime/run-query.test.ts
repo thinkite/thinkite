@@ -52,6 +52,7 @@ function fakeBridge(opts: { throwOnWrite?: boolean } = {}) {
   const states: string[] = []; // raw reportState calls (pre-dedup)
   let sendResultCalls = 0;
   let closeCalls = 0;
+  let checkpointCalls = 0;
   return {
     writes,
     states,
@@ -60,6 +61,9 @@ function fakeBridge(opts: { throwOnWrite?: boolean } = {}) {
     },
     get closeCalls() {
       return closeCalls;
+    },
+    get checkpointCalls() {
+      return checkpointCalls;
     },
     write(msg: unknown) {
       if (opts.throwOnWrite) throw new Error("bridge transport down");
@@ -70,6 +74,9 @@ function fakeBridge(opts: { throwOnWrite?: boolean } = {}) {
     },
     reportState(state: string) {
       states.push(state);
+    },
+    checkpoint() {
+      checkpointCalls++;
     },
     close() {
       closeCalls++;
@@ -774,6 +781,24 @@ describe("ensureSessionLoop — CCR bridge mirror (M1 write-out)", () => {
     });
     // assistant → running; user → (no state, already running); result → idle.
     expect(bridge.states).toEqual(["running", "idle"]);
+  });
+
+  it("M3.1 — fires bridge.checkpoint() exactly once per turn-complete (result envelope)", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const bridge = fakeBridge();
+    runtime.bridge = bridge;
+    await ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        assistantEnvelope([{ id: "tu_1", name: "Bash", input: {} }]),
+        userToolResult("tu_1", "ok"),
+        resultEnvelope(),
+      ]),
+    });
+    // One checkpoint per result envelope. Stream-events / user / assistant
+    // frames must NOT trigger an extra checkpoint (those would mis-advance
+    // the seq past an unfinished turn on multi-prompt back-pressure).
+    expect(bridge.checkpointCalls).toBe(1);
   });
 
   it("pushPrompt reports running at prompt-submit (before any model frame)", () => {

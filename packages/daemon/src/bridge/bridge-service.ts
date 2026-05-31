@@ -37,6 +37,11 @@ import type { InboundPrompt } from "../runtime/run-query.js";
 import { extractInboundPrompt } from "../runtime/run-query.js";
 import type { SessionRuntime } from "../runtime/session-runtime.js";
 import {
+  clearBridgeWorkerState,
+  updateBridgeSequenceNum,
+  writeBridgeWorkerState,
+} from "../sidecode-sessions.js";
+import {
   BridgeTransport,
   type PermissionModeVerdict,
   type TokenSource,
@@ -90,6 +95,11 @@ export interface BridgeAttachableRuntime {
 export interface BridgeServiceOptions {
   /** The daemon's OAuthRefreshManager (token source + proactive timer). */
   oauth: OAuthManager;
+  /** Sidecode home dir — the persistence root (`<home>/sessions/...`)
+   *  passed through to writeBridgeWorkerState / updateBridgeSequenceNum
+   *  / clearBridgeWorkerState. M3.1 made the service persistence-aware;
+   *  pre-M3.1 callers passed nothing and the service was stateless. */
+  home: string;
   /** Optional logger for attach failures / close codes. */
   log?: (message: string) => void;
   /**
@@ -128,10 +138,19 @@ export interface BridgeServiceOptions {
   onSetModel?: (sessionId: string, model: string | undefined) => void;
   /** Test seam: override BridgeTransport.attach. */
   attachTransport?: typeof BridgeTransport.attach;
+  /** Test seams: override the persistence helpers so unit tests don't
+   *  touch real disk. Production uses the real sidecode-sessions module
+   *  via `home`; these accept the same (home, cliSessionId, ...) tail. */
+  persist?: {
+    writeBridgeWorkerState?: typeof writeBridgeWorkerState;
+    updateBridgeSequenceNum?: typeof updateBridgeSequenceNum;
+    clearBridgeWorkerState?: typeof clearBridgeWorkerState;
+  };
 }
 
 export class BridgeService {
   private readonly oauth: OAuthManager;
+  private readonly home: string;
   private readonly log: (message: string) => void;
   private readonly attachTransport: typeof BridgeTransport.attach;
   private readonly onInboundPrompt?: (
@@ -143,17 +162,27 @@ export class BridgeService {
     sessionId: string,
     model: string | undefined,
   ) => void;
+  private readonly writeBridgeWorkerState: typeof writeBridgeWorkerState;
+  private readonly updateBridgeSequenceNum: typeof updateBridgeSequenceNum;
+  private readonly clearBridgeWorkerState: typeof clearBridgeWorkerState;
   /** sessionId → live mirror. The service is the source of truth for close. */
   private readonly transports = new Map<string, BridgeTransport>();
   private stopped = false;
 
   constructor(options: BridgeServiceOptions) {
     this.oauth = options.oauth;
+    this.home = options.home;
     this.log = options.log ?? (() => {});
     this.attachTransport = options.attachTransport ?? BridgeTransport.attach;
     this.onInboundPrompt = options.onInboundPrompt;
     this.onInterrupt = options.onInterrupt;
     this.onSetModel = options.onSetModel;
+    this.writeBridgeWorkerState =
+      options.persist?.writeBridgeWorkerState ?? writeBridgeWorkerState;
+    this.updateBridgeSequenceNum =
+      options.persist?.updateBridgeSequenceNum ?? updateBridgeSequenceNum;
+    this.clearBridgeWorkerState =
+      options.persist?.clearBridgeWorkerState ?? clearBridgeWorkerState;
   }
 
   /** Number of live mirrors (for tests / introspection). */
@@ -256,6 +285,16 @@ export class BridgeService {
         ...(request.tags !== undefined ? { tags: request.tags } : {}),
         ...(request.baseUrl !== undefined ? { baseUrl: request.baseUrl } : {}),
         ...(inbound !== undefined ? { inbound } : {}),
+        // M3.1 at-least-once checkpoint — write the SSE high-water mark
+        // through to sidecode metadata each time a turn completes (the tap
+        // in forwardToBridge fires `bridge.checkpoint?.()` on result). The
+        // closure captures `sessionId` so the cliSessionId routing stays
+        // here in the service, not leaking into the transport. Closure
+        // intentionally captures `this.updateBridgeSequenceNum` (not the
+        // bare import) so the test seam carries through.
+        persistSequenceNum: (seq) => {
+          this.updateBridgeSequenceNum(this.home, sessionId, seq);
+        },
         onClose: (code) => {
           // M1: log + forget so the slot frees and a future attach can retry.
           // M3 replaces this with reconnect (re-fetchCredentials +
@@ -276,6 +315,29 @@ export class BridgeService {
 
     this.transports.set(sessionId, transport);
     runtime.bridge = transport;
+    // M3.1 — record the cse_ mapping + initial seq=0 + backfilled=false in
+    // sidecode metadata. M3.4 startup re-attach reads this back to know which
+    // sessions to revive (any session with `bridge` present is bridged).
+    // backfilled=false is the create-bridged default; M3.3 upgrade flow flips
+    // it to true via markBridgeBackfilled after the historical flush. We
+    // ALWAYS overwrite on attach — re-attach (epoch bump) resets the seq
+    // basis, so a stale higher value from a prior session would now point
+    // past the server's actual position.
+    //
+    // No-op + log when metadata is missing (writeBridgeWorkerState returns
+    // undefined): means the caller attached a bridge to a session that was
+    // never registered locally, which is a programmer bug rather than user
+    // state we should fabricate.
+    const persisted = this.writeBridgeWorkerState(this.home, sessionId, {
+      cseSessionId: transport.cseSessionId,
+      lastSSESequenceNum: 0,
+      backfilled: false,
+    });
+    if (persisted === undefined) {
+      this.log(
+        `[bridge] session ${sessionId} attached but no sidecode metadata to persist worker state — restart re-attach won't find it`,
+      );
+    }
     this.log(
       `[bridge] session ${sessionId} mirroring to ${transport.cseSessionId}`,
     );
@@ -286,6 +348,14 @@ export class BridgeService {
    * Close + forget the mirror for `sessionId`. No-op if none. Clears
    * `runtime.bridge` so the query loop stops forwarding. Stops the OAuth
    * timer when the last bridge is gone.
+   *
+   * M3.1 — also clears the persisted bridge worker state. This is the
+   * EXPLICIT-tear-down path; M3.4 startup re-attach uses presence of
+   * `bridge` in metadata as the "revive me" signal, so clearing here
+   * means "user/caller intentionally unbridged this session, don't auto-
+   * restore on next daemon start". `onClose` (transport died for non-
+   * teardown reasons — 4090 epoch, 4091 init, 401 jwt — see M3.5) goes
+   * through `forget` only, leaving the worker state intact for restart.
    */
   detach(sessionId: string, runtime: BridgeAttachableRuntime): void {
     const transport = this.transports.get(sessionId);
@@ -296,6 +366,15 @@ export class BridgeService {
       // close() is best-effort.
     }
     this.forget(sessionId, runtime);
+    try {
+      this.clearBridgeWorkerState(this.home, sessionId);
+    } catch (err) {
+      this.log(
+        `[bridge] clearBridgeWorkerState failed for ${sessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /**

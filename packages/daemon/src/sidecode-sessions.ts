@@ -80,6 +80,54 @@ export interface SidecodeSessionMetadata {
    *  point. Desktop's behavior with `effort` ≠ supportedEffortLevels
    *  is their own concern (they don't cross-validate either). */
   effort: "xhigh";
+  /** CCR bridge worker state — present iff this session is currently
+   *  bridged to a cloud cse_ session. Drives M3.4 startup re-attach:
+   *  daemon boot → scan sessions → any with `bridge` present → re-attach
+   *  with `initialSequenceNum = bridge.lastSSESequenceNum` → server
+   *  replays seq > N (EXCLUSIVE — no double-execute). See
+   *  project_sidecode_ccr_architecture "Restart re-attach" for the
+   *  semantic proof from spike ccr-reattach. */
+  bridge?: BridgeWorkerState;
+}
+
+/**
+ * Mirror of the SDK's per-worker checkpoint state, persisted alongside
+ * sidecode session metadata so M3.4 startup re-attach has everything
+ * it needs without round-tripping the cloud.
+ *
+ * Why on `SidecodeSessionMetadata` (one JSON file per session) and not a
+ * separate `bridges/` dir: the lifecycle is per-session anyway (one bridge
+ * per local session), and atomic tmp+rename already gives us crash safety.
+ * Avoids a second persistence path.
+ *
+ * The `claudeSessionId` (local SDK session uuid) IS the parent
+ * `cliSessionId` — no need to duplicate it inside this nested object.
+ */
+export interface BridgeWorkerState {
+  /** `cse_*` cloud session id from `createCodeSession`. Stable for the
+   *  lifetime of the bridged session — every re-attach reuses it
+   *  (`fetchRemoteCredentials(cse)` bumps epoch but the id stays). */
+  cseSessionId: string;
+  /** High-water mark of the SSE sequence number we've FULLY PROCESSED.
+   *  Checkpointed after each turn completes (in forwardToBridge's result
+   *  branch, via `runtime.bridge.checkpoint()`). On re-attach we pass
+   *  this to `attachBridgeSession({initialSequenceNum})` and the server
+   *  replays only seq > this value (EXCLUSIVE), giving at-least-once
+   *  delivery across daemon crashes.
+   *
+   *  V0 single-in-flight assumption: we don't track per-prompt seq; we
+   *  just snapshot `handle.getSequenceNum()` at each turn-complete.
+   *  Multi-prompt back-pressure (prompt #2 arrives while prompt #1 is
+   *  processing) would mis-checkpoint past #2 → on crash, #2 is lost.
+   *  Acceptable at V0 scale (typical UX is type-wait-type); revisit if
+   *  power users hit it. */
+  lastSSESequenceNum: number;
+  /** Has the historical-message backfill been done for this bridge?
+   *  Set to false at create-bridged (no history to flush); set to true
+   *  by M3.3 upgrade (after `getSessionMessages → write(historical) →
+   *  flush`). Re-attach checks this — only fresh upgrade needs backfill;
+   *  re-attach of an already-backfilled bridge skips it. */
+  backfilled: boolean;
 }
 
 /**
@@ -173,7 +221,9 @@ export function listSidecodeSessions(
     const path = join(dir, name);
     let parsed: SidecodeSessionMetadata;
     try {
-      parsed = JSON.parse(readFileSync(path, "utf8")) as SidecodeSessionMetadata;
+      parsed = JSON.parse(
+        readFileSync(path, "utf8"),
+      ) as SidecodeSessionMetadata;
     } catch {
       continue;
     }
@@ -326,4 +376,108 @@ export function updateSidecodeSessionSelection(
   };
   writeSidecodeSession(home, merged);
   return merged;
+}
+
+/**
+ * Atomically attach (or replace) a session's bridge worker state.
+ *
+ * Called by `BridgeService.attach` after `BridgeTransport.attach` returns
+ * a connected handle — at that point the cse_ id is known and we record
+ * the mapping (cliSessionId ↔ cseSessionId) so daemon-restart-time
+ * re-attach (M3.4) can find every bridged session by scanning sidecode
+ * metadata, NOT by querying the cloud.
+ *
+ * Caller is responsible for ensuring the metadata file already exists
+ * (sidecode V0 always creates the metadata when the session is created;
+ * upgrade flow M3.3 will hit pre-existing metadata too). Returns the
+ * merged metadata, or `undefined` if the metadata file wasn't there —
+ * the bridge would be live without a persisted record, callers should
+ * treat this as a bug rather than retry.
+ */
+export function writeBridgeWorkerState(
+  home: string,
+  cliSessionId: string,
+  state: BridgeWorkerState,
+): SidecodeSessionMetadata | undefined {
+  const existing = readSidecodeSession(home, cliSessionId);
+  if (!existing) return undefined;
+  const merged: SidecodeSessionMetadata = { ...existing, bridge: { ...state } };
+  writeSidecodeSession(home, merged);
+  return merged;
+}
+
+/**
+ * Atomically advance the SSE sequence-number high-water mark for a
+ * session's bridge worker state. Called at every turn-complete from
+ * `forwardToBridge`'s result branch (via `runtime.bridge.checkpoint()`).
+ *
+ * No-op (returns `undefined`) when the metadata file is missing or
+ * `bridge` is absent — pure (non-bridged) sessions trigger no-op via
+ * `runtime.bridge?.checkpoint()` upstream and shouldn't reach here, but
+ * we guard defensively so a torn-down bridge that races a final turn
+ * doesn't fault.
+ *
+ * Hot-path concern (V0 single-digit sessions, low rate): atomic
+ * tmp+rename is cheap (~ms) and we only fire on result envelopes (one
+ * per turn), not per stream-event delta. If this ever shows up in flame
+ * graphs, batch via debounced write — keep eager for now.
+ */
+export function updateBridgeSequenceNum(
+  home: string,
+  cliSessionId: string,
+  lastSSESequenceNum: number,
+): SidecodeSessionMetadata | undefined {
+  const existing = readSidecodeSession(home, cliSessionId);
+  if (!existing?.bridge) return undefined;
+  // Never let the checkpoint move BACKWARDS (a stale callback firing
+  // after detach could regress us). The SDK's SSE counter is monotonic,
+  // so any non-monotonic write is by definition a bug worth dropping.
+  if (lastSSESequenceNum <= existing.bridge.lastSSESequenceNum) return existing;
+  const merged: SidecodeSessionMetadata = {
+    ...existing,
+    bridge: { ...existing.bridge, lastSSESequenceNum },
+  };
+  writeSidecodeSession(home, merged);
+  return merged;
+}
+
+/**
+ * Atomically mark a session's bridge as backfilled. Called by M3.3
+ * upgrade flow after `getSessionMessages → write(historical) → flush`
+ * completes. No-op when the metadata file is missing or `bridge` is
+ * absent. Idempotent.
+ */
+export function markBridgeBackfilled(
+  home: string,
+  cliSessionId: string,
+): SidecodeSessionMetadata | undefined {
+  const existing = readSidecodeSession(home, cliSessionId);
+  if (!existing?.bridge) return undefined;
+  if (existing.bridge.backfilled) return existing;
+  const merged: SidecodeSessionMetadata = {
+    ...existing,
+    bridge: { ...existing.bridge, backfilled: true },
+  };
+  writeSidecodeSession(home, merged);
+  return merged;
+}
+
+/**
+ * Atomically remove the `bridge` field from a session's metadata. Called
+ * by `BridgeService.detach` on clean tear-down so M3.4 startup re-attach
+ * doesn't try to re-attach sessions the user explicitly unbridged.
+ *
+ * Does NOT touch the rest of the metadata — the session itself remains
+ * (pure-session continuation is fine; the cloud transcript persists
+ * server-side regardless). No-op when missing or already-absent.
+ */
+export function clearBridgeWorkerState(
+  home: string,
+  cliSessionId: string,
+): SidecodeSessionMetadata | undefined {
+  const existing = readSidecodeSession(home, cliSessionId);
+  if (!existing?.bridge) return existing;
+  const { bridge: _, ...rest } = existing;
+  writeSidecodeSession(home, rest);
+  return rest;
 }

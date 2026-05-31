@@ -150,6 +150,13 @@ export interface BridgeAttachParams {
   /** Fired when the transport dies permanently (401 jwt expired / 4090 epoch
    *  superseded / 4091 init fail / 403·404 perma). M3 wires reconnect here. */
   onClose?: (code: number | undefined) => void;
+  /** M3.1 at-least-once checkpoint: invoked by `checkpoint()` with the
+   *  current SSE high-water-mark seq. Service supplies a closure that
+   *  writes through to sidecode-sessions metadata so M3.4 startup
+   *  re-attach can resume with `initialSequenceNum = saved seq`.
+   *  Synchronous on the hot path (the persistence layer's tmp+rename
+   *  is already sync); a throw is swallowed by the caller's try/catch. */
+  persistSequenceNum?: (seq: number) => void;
   /** Override host (staging/local). Default = adapter's ANTHROPIC_API_BASE. */
   baseUrl?: string;
   /** Max ms to wait for isConnected() after attach. Default 10s. */
@@ -178,6 +185,7 @@ export class BridgeTransport implements RuntimeBridge {
   /** The cse_* cloud session id (claude.ai/code/<cseSessionId>). */
   readonly cseSessionId: string;
   private readonly handle: BridgeSessionHandle;
+  private readonly persistSequenceNum?: (seq: number) => void;
   private closed = false;
   /** Last state forwarded to the worker — for local dedup so repeated
    *  running/idle reports collapse (Claude Code reports running at BOTH
@@ -186,9 +194,14 @@ export class BridgeTransport implements RuntimeBridge {
   private lastReportedState: "idle" | "running" | "requires_action" | null =
     null;
 
-  private constructor(cseSessionId: string, handle: BridgeSessionHandle) {
+  private constructor(
+    cseSessionId: string,
+    handle: BridgeSessionHandle,
+    persistSequenceNum: ((seq: number) => void) | undefined,
+  ) {
     this.cseSessionId = cseSessionId;
     this.handle = handle;
+    this.persistSequenceNum = persistSequenceNum;
   }
 
   /**
@@ -339,7 +352,7 @@ export class BridgeTransport implements RuntimeBridge {
       );
     }
 
-    return new BridgeTransport(cseSessionId, handle);
+    return new BridgeTransport(cseSessionId, handle, params.persistSequenceNum);
   }
 
   // ─── RuntimeBridge ──────────────────────────────────────────────────────
@@ -389,6 +402,31 @@ export class BridgeTransport implements RuntimeBridge {
    *  in outbound-only mode — verify writes via events readback, not this. */
   getSequenceNum(): number {
     return this.handle.getSequenceNum();
+  }
+
+  /**
+   * M3.1 checkpoint — write the current SSE high-water mark through to
+   * persisted bridge worker state, so M3.4 startup re-attach can resume
+   * the SSE stream with `initialSequenceNum = saved` and the server
+   * replays only seq > saved (EXCLUSIVE → at-least-once, no double-execute).
+   *
+   * Called from forwardToBridge's `result` branch (one fire per
+   * turn-complete). No-op when closed (a stale tap fire post-close
+   * mustn't write a state that out-survives the bridge) or when no
+   * persist callback was wired (test/spike attaches without one).
+   *
+   * Errors from persistSequenceNum are SWALLOWED — checkpoint is
+   * best-effort. A failed write means the next restart re-processes
+   * one extra turn, which is the at-least-once contract anyway.
+   */
+  checkpoint(): void {
+    if (this.closed) return;
+    if (this.persistSequenceNum === undefined) return;
+    try {
+      this.persistSequenceNum(this.handle.getSequenceNum());
+    } catch {
+      // Best-effort — see docstring.
+    }
   }
 
   get isConnected(): boolean {

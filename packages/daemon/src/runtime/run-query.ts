@@ -541,6 +541,16 @@ function forwardToBridge(
       // session as running after the turn finishes.
       bridge.sendResult();
       bridge.reportState("idle");
+      // M3.1 checkpoint — snapshot the SSE high-water mark to persisted
+      // bridge worker state so a daemon restart (M3.4) can resume the SSE
+      // stream with `initialSequenceNum = saved` and the server replays
+      // only seq > saved (EXCLUSIVE) — at-least-once delivery, no
+      // double-execution. Single-in-flight assumption documented on
+      // BridgeWorkerState.lastSSESequenceNum: V0 doesn't track per-prompt
+      // seq, so multi-prompt back-pressure could mis-checkpoint past an
+      // unfinished prompt. Acceptable at V0 scale. Optional method (some
+      // RuntimeBridge impls are simple test fakes).
+      bridge.checkpoint?.();
     } else if (
       m.type === "stream_event" ||
       m.type === "assistant" ||

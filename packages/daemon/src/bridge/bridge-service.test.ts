@@ -72,11 +72,22 @@ function serviceWith(
   );
   const service = new BridgeService({
     oauth,
+    home: "/test-home",
+    persist: STUB_PERSIST,
     attachTransport:
       attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
   });
   return { service, oauth, getOnClose: () => onClose, attachSpy };
 }
+
+/** No-op persistence stubs — most tests don't care about the M3.1
+ *  worker-state writes; the M3.1-specific tests below pass their own
+ *  spies via the `persist` option. */
+const STUB_PERSIST = {
+  writeBridgeWorkerState: () => undefined,
+  updateBridgeSequenceNum: () => undefined,
+  clearBridgeWorkerState: () => undefined,
+};
 
 function runtime(): BridgeAttachableRuntime {
   return { bridge: null };
@@ -127,6 +138,8 @@ describe("BridgeService.attach", () => {
       throw new Error("create_failed");
     });
     const service = new BridgeService({
+      home: "/test-home",
+      persist: STUB_PERSIST,
       oauth,
       attachTransport:
         attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
@@ -167,6 +180,8 @@ describe("BridgeService — inbound prompt routing (M2.2)", () => {
       },
     );
     const service = new BridgeService({
+      home: "/test-home",
+      persist: STUB_PERSIST,
       oauth: fakeOAuth(),
       onInboundPrompt: (sessionId, prompt) =>
         routed.push({ sessionId, text: prompt.text, uuid: prompt.uuid }),
@@ -206,6 +221,8 @@ describe("BridgeService — inbound prompt routing (M2.2)", () => {
       },
     );
     const service = new BridgeService({
+      home: "/test-home",
+      persist: STUB_PERSIST,
       oauth: fakeOAuth(),
       onInboundPrompt: (sessionId, prompt) =>
         routed.push({ sessionId, prompt }),
@@ -234,6 +251,8 @@ describe("BridgeService — inbound prompt routing (M2.2)", () => {
       return t;
     });
     const service = new BridgeService({
+      home: "/test-home",
+      persist: STUB_PERSIST,
       oauth: fakeOAuth(),
       // No onInboundPrompt, no onInterrupt, no onSetModel.
       attachTransport:
@@ -262,6 +281,8 @@ describe("BridgeService — control routing (M2.4)", () => {
       },
     );
     const service = new BridgeService({
+      home: "/test-home",
+      persist: STUB_PERSIST,
       oauth: fakeOAuth(),
       // ONLY onInterrupt — no prompt routing, no setModel.
       onInterrupt: (sessionId) => interrupts.push(sessionId),
@@ -295,6 +316,8 @@ describe("BridgeService — control routing (M2.4)", () => {
       },
     );
     const service = new BridgeService({
+      home: "/test-home",
+      persist: STUB_PERSIST,
       oauth: fakeOAuth(),
       onSetModel: (sessionId, model) => models.push({ sessionId, model }),
       attachTransport:
@@ -336,6 +359,8 @@ describe("BridgeService — control routing (M2.4)", () => {
       },
     );
     const service = new BridgeService({
+      home: "/test-home",
+      persist: STUB_PERSIST,
       oauth: fakeOAuth(),
       onInboundPrompt: (sid, p) => seen.push(`prompt:${sid}:${p.text}`),
       onInterrupt: (sid) => seen.push(`interrupt:${sid}`),
@@ -388,6 +413,8 @@ describe("BridgeService — control routing (M2.4)", () => {
       },
     );
     const service = new BridgeService({
+      home: "/test-home",
+      persist: STUB_PERSIST,
       oauth: fakeOAuth(),
       // Any one caller handler suffices to flip bidirectional — that's when
       // the stub is attached. Using onInterrupt here, but the stub is
@@ -427,6 +454,8 @@ describe("BridgeService — control routing (M2.4)", () => {
       return t;
     });
     const service = new BridgeService({
+      home: "/test-home",
+      persist: STUB_PERSIST,
       oauth: fakeOAuth(),
       // No caller handlers → hasInbound false → no bag.
       attachTransport:
@@ -465,6 +494,8 @@ describe("BridgeService.detach", () => {
     const queue = [t1, t2];
     const attachSpy = vi.fn(async () => queue.shift());
     const service = new BridgeService({
+      home: "/test-home",
+      persist: STUB_PERSIST,
       oauth,
       attachTransport:
         attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
@@ -508,6 +539,8 @@ describe("BridgeService.shutdown", () => {
     const queue = [t1, t2];
     const attachSpy = vi.fn(async () => queue.shift());
     const service = new BridgeService({
+      home: "/test-home",
+      persist: STUB_PERSIST,
       oauth,
       attachTransport:
         attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
@@ -524,5 +557,136 @@ describe("BridgeService.shutdown", () => {
     // stop() called: once when map emptied during shutdown loop is NOT how it
     // works (shutdown clears then stops once) — assert at least the final stop.
     expect(oauth.stops).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("BridgeService — M3.1 worker-state persistence", () => {
+  it("attach writes initial bridge worker state {cseSessionId, lastSSESequenceNum:0, backfilled:false}", async () => {
+    const t = fakeTransport("cse_42");
+    const persist = {
+      writeBridgeWorkerState: vi.fn(() => undefined),
+      updateBridgeSequenceNum: vi.fn(() => undefined),
+      clearBridgeWorkerState: vi.fn(() => undefined),
+    };
+    const service = new BridgeService({
+      home: "/test-home",
+      oauth: fakeOAuth(),
+      persist,
+      attachTransport: vi.fn(
+        async () => t,
+      ) as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    await service.attach("local-sess-1", runtime(), { title: "T", cwd: "/w" });
+    expect(persist.writeBridgeWorkerState).toHaveBeenCalledWith(
+      "/test-home",
+      "local-sess-1",
+      { cseSessionId: "cse_42", lastSSESequenceNum: 0, backfilled: false },
+    );
+  });
+
+  it("attach passes a persistSequenceNum closure that routes through updateBridgeSequenceNum", async () => {
+    const t = fakeTransport();
+    let captured: { persistSequenceNum?: (seq: number) => void } | undefined;
+    const attachSpy = vi.fn(async (params: typeof captured) => {
+      captured = params;
+      return t;
+    });
+    const persist = {
+      writeBridgeWorkerState: vi.fn(() => undefined),
+      updateBridgeSequenceNum: vi.fn(() => undefined),
+      clearBridgeWorkerState: vi.fn(() => undefined),
+    };
+    const service = new BridgeService({
+      home: "/h",
+      oauth: fakeOAuth(),
+      persist,
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    await service.attach("sess-A", runtime(), { title: "T", cwd: "/w" });
+    expect(typeof captured?.persistSequenceNum).toBe("function");
+    // Invoke as if BridgeTransport.checkpoint did → updateBridgeSequenceNum
+    // gets the right (home, cliSessionId, seq) triple. This is the routing
+    // proof: home + sessionId are closed over correctly per-attach.
+    captured?.persistSequenceNum?.(7);
+    expect(persist.updateBridgeSequenceNum).toHaveBeenCalledWith(
+      "/h",
+      "sess-A",
+      7,
+    );
+  });
+
+  it("detach clears the bridge worker state (explicit unbridge intent)", async () => {
+    const t = fakeTransport();
+    const persist = {
+      writeBridgeWorkerState: vi.fn(() => undefined),
+      updateBridgeSequenceNum: vi.fn(() => undefined),
+      clearBridgeWorkerState: vi.fn(() => undefined),
+    };
+    const service = new BridgeService({
+      home: "/h",
+      oauth: fakeOAuth(),
+      persist,
+      attachTransport: vi.fn(
+        async () => t,
+      ) as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    const rt = runtime();
+    await service.attach("s1", rt, { title: "T", cwd: "/w" });
+    service.detach("s1", rt);
+    expect(persist.clearBridgeWorkerState).toHaveBeenCalledWith("/h", "s1");
+  });
+
+  it("transport-initiated onClose (4090 epoch / 401 jwt) does NOT clear worker state — M3.4 reattach needs it", async () => {
+    // onClose goes through forget(), not detach(), so worker state must
+    // persist for restart re-attach to find this bridged session.
+    const t = fakeTransport();
+    let onClose: ((code: number | undefined) => void) | undefined;
+    const persist = {
+      writeBridgeWorkerState: vi.fn(() => undefined),
+      updateBridgeSequenceNum: vi.fn(() => undefined),
+      clearBridgeWorkerState: vi.fn(() => undefined),
+    };
+    const service = new BridgeService({
+      home: "/h",
+      oauth: fakeOAuth(),
+      persist,
+      attachTransport: vi.fn(
+        async (params: { onClose?: (code: number | undefined) => void }) => {
+          onClose = params.onClose;
+          return t;
+        },
+      ) as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
+    onClose?.(4090);
+    expect(persist.clearBridgeWorkerState).not.toHaveBeenCalled();
+  });
+
+  it("attach logs (but does not throw) when metadata is missing — writeBridgeWorkerState returns undefined", async () => {
+    const t = fakeTransport();
+    const messages: string[] = [];
+    const persist = {
+      writeBridgeWorkerState: vi.fn(() => undefined), // simulate missing metadata
+      updateBridgeSequenceNum: vi.fn(() => undefined),
+      clearBridgeWorkerState: vi.fn(() => undefined),
+    };
+    const service = new BridgeService({
+      home: "/h",
+      oauth: fakeOAuth(),
+      log: (m) => messages.push(m),
+      persist,
+      attachTransport: vi.fn(
+        async () => t,
+      ) as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    await expect(
+      service.attach("s1", runtime(), { title: "T", cwd: "/w" }),
+    ).resolves.toBe(t);
+    expect(
+      messages.some((m) =>
+        m.includes("no sidecode metadata to persist worker state"),
+      ),
+    ).toBe(true);
   });
 });

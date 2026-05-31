@@ -517,3 +517,68 @@ describe("BridgeTransport.attach — inbound (M2 read-in)", () => {
     await Promise.resolve();
   });
 });
+
+describe("BridgeTransport.checkpoint — M3.1 SSE high-water persist", () => {
+  it("invokes persistSequenceNum with handle.getSequenceNum() each call", async () => {
+    const fake = fakeHandle({ connected: true });
+    const persistSequenceNum = vi.fn();
+    const transport = await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      persistSequenceNum,
+      deps: happyDeps(fake.handle),
+    });
+    // fakeHandle bumps seq on each write — simulate two inbounds.
+    transport.write({ type: "user" });
+    transport.write({ type: "assistant" });
+    transport.checkpoint();
+    expect(persistSequenceNum).toHaveBeenCalledWith(2);
+  });
+
+  it("is a no-op after close (a stale tap fire mustn't write past tear-down)", async () => {
+    const fake = fakeHandle({ connected: true });
+    const persistSequenceNum = vi.fn();
+    const transport = await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      persistSequenceNum,
+      deps: happyDeps(fake.handle),
+    });
+    transport.write({ type: "user" });
+    transport.close();
+    transport.checkpoint();
+    expect(persistSequenceNum).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when no persistSequenceNum callback was supplied (spike attach)", async () => {
+    const fake = fakeHandle({ connected: true });
+    const transport = await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      // no persistSequenceNum — mimics a M1.5 / M2.5 spike attach
+      deps: happyDeps(fake.handle),
+    });
+    transport.write({ type: "user" });
+    expect(() => transport.checkpoint()).not.toThrow();
+  });
+
+  it("swallows persistSequenceNum throw (best-effort, never breaks the tap)", async () => {
+    const fake = fakeHandle({ connected: true });
+    const persistSequenceNum = vi.fn(() => {
+      throw new Error("disk full");
+    });
+    const transport = await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      persistSequenceNum,
+      deps: happyDeps(fake.handle),
+    });
+    transport.write({ type: "user" });
+    expect(() => transport.checkpoint()).not.toThrow();
+    expect(persistSequenceNum).toHaveBeenCalled();
+  });
+});

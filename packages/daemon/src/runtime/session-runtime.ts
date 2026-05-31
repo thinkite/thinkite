@@ -95,6 +95,18 @@ export interface RuntimeBridge {
    * spike — see project_sidecode_ccr_architecture).
    */
   reportState(state: "idle" | "running" | "requires_action"): void;
+  /**
+   * M3.1 checkpoint — snapshot the current SSE high-water mark to
+   * persisted bridge worker state so M3.4 startup re-attach can resume
+   * with `initialSequenceNum = saved` and the server replays only seq >
+   * saved (EXCLUSIVE → at-least-once, no double-execute). Called from
+   * forwardToBridge's `result` branch (one fire per turn-complete).
+   *
+   * Optional on the interface because tests / spike fakes don't need to
+   * implement it; the production BridgeTransport always does. No-op
+   * after close and on transports constructed without a persist callback.
+   */
+  checkpoint?(): void;
   /** Tear down the bridge transport. */
   close(): void;
 }

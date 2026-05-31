@@ -12,11 +12,15 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildNewSidecodeSession,
+  clearBridgeWorkerState,
   listSidecodeSessions,
+  markBridgeBackfilled,
   readSidecodeSession,
   sidecodeSessionPath,
+  updateBridgeSequenceNum,
   updateSidecodeSessionSelection,
   updateSidecodeSessionTitle,
+  writeBridgeWorkerState,
   writeSidecodeSession,
 } from "./sidecode-sessions.js";
 
@@ -414,5 +418,243 @@ describe("updateSidecodeSessionSelection", () => {
     });
     expect(result).toBeUndefined();
     expect(existsSync(sidecodeSessionPath(home, "ghost"))).toBe(false);
+  });
+});
+
+describe("writeBridgeWorkerState (M3.1)", () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "sc-bridge-write-"));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("merges {cseSessionId, lastSSESequenceNum, backfilled} into existing metadata", () => {
+    const initial = buildNewSidecodeSession({
+      cliSessionId: "u",
+      cwd: "/p",
+      firstPrompt: "hi",
+    });
+    writeSidecodeSession(home, initial);
+    const result = writeBridgeWorkerState(home, "u", {
+      cseSessionId: "cse_abc",
+      lastSSESequenceNum: 0,
+      backfilled: false,
+    });
+    expect(result?.bridge).toEqual({
+      cseSessionId: "cse_abc",
+      lastSSESequenceNum: 0,
+      backfilled: false,
+    });
+    const onDisk = readSidecodeSession(home, "u");
+    expect(onDisk?.bridge?.cseSessionId).toBe("cse_abc");
+    // Other fields untouched.
+    expect(onDisk?.title).toBe(initial.title);
+    expect(onDisk?.cwd).toBe("/p");
+  });
+
+  it("overwrites a prior bridge state (re-attach with new cse_ + reset seq)", () => {
+    const initial = buildNewSidecodeSession({
+      cliSessionId: "u",
+      cwd: "/p",
+      firstPrompt: "hi",
+    });
+    writeSidecodeSession(home, {
+      ...initial,
+      bridge: {
+        cseSessionId: "cse_old",
+        lastSSESequenceNum: 42,
+        backfilled: true,
+      },
+    });
+    const result = writeBridgeWorkerState(home, "u", {
+      cseSessionId: "cse_new",
+      lastSSESequenceNum: 0,
+      backfilled: false,
+    });
+    expect(result?.bridge).toEqual({
+      cseSessionId: "cse_new",
+      lastSSESequenceNum: 0,
+      backfilled: false,
+    });
+  });
+
+  it("returns undefined when metadata file is missing (programmer-bug signal, no fabrication)", () => {
+    const result = writeBridgeWorkerState(home, "ghost", {
+      cseSessionId: "cse_x",
+      lastSSESequenceNum: 0,
+      backfilled: false,
+    });
+    expect(result).toBeUndefined();
+    expect(existsSync(sidecodeSessionPath(home, "ghost"))).toBe(false);
+  });
+});
+
+describe("updateBridgeSequenceNum (M3.1 checkpoint)", () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "sc-bridge-seq-"));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const seed = (cliSessionId: string, lastSSESequenceNum: number) => {
+    const base = buildNewSidecodeSession({
+      cliSessionId,
+      cwd: "/p",
+      firstPrompt: "hi",
+    });
+    writeSidecodeSession(home, {
+      ...base,
+      bridge: { cseSessionId: "cse_x", lastSSESequenceNum, backfilled: false },
+    });
+  };
+
+  it("advances the seq when the new value is higher", () => {
+    seed("u", 3);
+    const result = updateBridgeSequenceNum(home, "u", 7);
+    expect(result?.bridge?.lastSSESequenceNum).toBe(7);
+    expect(readSidecodeSession(home, "u")?.bridge?.lastSSESequenceNum).toBe(7);
+  });
+
+  it("never moves backwards (stale-callback guard returns existing unchanged)", () => {
+    seed("u", 10);
+    const result = updateBridgeSequenceNum(home, "u", 5);
+    // The current behavior returns the existing record unchanged when no
+    // advance is warranted — caller can treat as a no-op success.
+    expect(result?.bridge?.lastSSESequenceNum).toBe(10);
+    expect(readSidecodeSession(home, "u")?.bridge?.lastSSESequenceNum).toBe(10);
+  });
+
+  it("treats equal seq as a no-op (no rewrite, no regression)", () => {
+    seed("u", 5);
+    updateBridgeSequenceNum(home, "u", 5);
+    expect(readSidecodeSession(home, "u")?.bridge?.lastSSESequenceNum).toBe(5);
+  });
+
+  it("returns undefined when bridge field is absent (pure session, no checkpoint to advance)", () => {
+    const base = buildNewSidecodeSession({
+      cliSessionId: "p",
+      cwd: "/p",
+      firstPrompt: "hi",
+    });
+    writeSidecodeSession(home, base); // no bridge
+    expect(updateBridgeSequenceNum(home, "p", 5)).toBeUndefined();
+  });
+
+  it("returns undefined when metadata is missing entirely", () => {
+    expect(updateBridgeSequenceNum(home, "ghost", 5)).toBeUndefined();
+  });
+});
+
+describe("markBridgeBackfilled (M3.3 upgrade hook)", () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "sc-bridge-bf-"));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("flips backfilled false → true and persists", () => {
+    const base = buildNewSidecodeSession({
+      cliSessionId: "u",
+      cwd: "/p",
+      firstPrompt: "hi",
+    });
+    writeSidecodeSession(home, {
+      ...base,
+      bridge: {
+        cseSessionId: "cse_x",
+        lastSSESequenceNum: 0,
+        backfilled: false,
+      },
+    });
+    const result = markBridgeBackfilled(home, "u");
+    expect(result?.bridge?.backfilled).toBe(true);
+    expect(readSidecodeSession(home, "u")?.bridge?.backfilled).toBe(true);
+  });
+
+  it("is idempotent (already-backfilled stays true, returns existing)", () => {
+    const base = buildNewSidecodeSession({
+      cliSessionId: "u",
+      cwd: "/p",
+      firstPrompt: "hi",
+    });
+    writeSidecodeSession(home, {
+      ...base,
+      bridge: {
+        cseSessionId: "cse_x",
+        lastSSESequenceNum: 0,
+        backfilled: true,
+      },
+    });
+    const result = markBridgeBackfilled(home, "u");
+    expect(result?.bridge?.backfilled).toBe(true);
+  });
+
+  it("returns undefined when bridge field is absent", () => {
+    const base = buildNewSidecodeSession({
+      cliSessionId: "p",
+      cwd: "/p",
+      firstPrompt: "hi",
+    });
+    writeSidecodeSession(home, base);
+    expect(markBridgeBackfilled(home, "p")).toBeUndefined();
+  });
+});
+
+describe("clearBridgeWorkerState (M3.1 explicit detach)", () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "sc-bridge-clr-"));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("removes the bridge field while leaving all other metadata intact", () => {
+    const base = buildNewSidecodeSession({
+      cliSessionId: "u",
+      cwd: "/p",
+      firstPrompt: "first prompt",
+      now: 1_700_000_000_000,
+    });
+    writeSidecodeSession(home, {
+      ...base,
+      bridge: {
+        cseSessionId: "cse_x",
+        lastSSESequenceNum: 5,
+        backfilled: true,
+      },
+    });
+    const result = clearBridgeWorkerState(home, "u");
+    expect(result?.bridge).toBeUndefined();
+    const onDisk = readSidecodeSession(home, "u");
+    expect(onDisk?.bridge).toBeUndefined();
+    // Other fields preserved — proves we only stripped `bridge`.
+    expect(onDisk?.title).toBe("first prompt");
+    expect(onDisk?.cwd).toBe("/p");
+    expect(onDisk?.createdAt).toBe(1_700_000_000_000);
+  });
+
+  it("no-op when bridge field already absent (returns existing record)", () => {
+    const base = buildNewSidecodeSession({
+      cliSessionId: "p",
+      cwd: "/p",
+      firstPrompt: "hi",
+    });
+    writeSidecodeSession(home, base);
+    const result = clearBridgeWorkerState(home, "p");
+    expect(result?.cliSessionId).toBe("p");
+    expect(result?.bridge).toBeUndefined();
+  });
+
+  it("returns undefined when metadata is missing entirely", () => {
+    // Use a stale closure to avoid TS complaint about undefined branch
+    const result = clearBridgeWorkerState(home, "ghost");
+    expect(result).toBeUndefined();
   });
 });
