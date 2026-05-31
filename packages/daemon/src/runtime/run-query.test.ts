@@ -1,7 +1,11 @@
 import type { Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { EventDelta } from "@sidecodeapp/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { ensureSessionLoop, pushPrompt } from "./run-query.js";
+import {
+  ensureSessionLoop,
+  extractInboundPrompt,
+  pushPrompt,
+} from "./run-query.js";
 import { type RuntimeEvent, SessionRuntime } from "./session-runtime.js";
 
 /**
@@ -728,7 +732,9 @@ describe("ensureSessionLoop — CCR bridge mirror (M1 write-out)", () => {
         messageStart("msg_1"),
         contentBlockStartText(0),
         contentBlockDeltaText(0, "hi"),
-        assistantEnvelope([{ id: "tu_1", name: "Bash", input: { command: "ls" } }]),
+        assistantEnvelope([
+          { id: "tu_1", name: "Bash", input: { command: "ls" } },
+        ]),
         userToolResult("tu_1", "out"),
         resultEnvelope(),
       ]),
@@ -759,7 +765,9 @@ describe("ensureSessionLoop — CCR bridge mirror (M1 write-out)", () => {
     await ensureSessionLoop(runtime, {
       mode: "resume",
       queryFactory: fakeQueryYielding([
-        assistantEnvelope([{ id: "tu_1", name: "Bash", input: { command: "ls" } }]),
+        assistantEnvelope([
+          { id: "tu_1", name: "Bash", input: { command: "ls" } },
+        ]),
         userToolResult("tu_1", "out"),
         resultEnvelope(),
       ]),
@@ -889,7 +897,10 @@ describe("ensureSessionLoop — CCR bridge mirror (M1 write-out)", () => {
     const mirrored = bridge.writes[0] as {
       type: string;
       uuid: string;
-      message: { role: string; content: Array<{ type: string; text?: string }> };
+      message: {
+        role: string;
+        content: Array<{ type: string; text?: string }>;
+      };
     };
     expect(mirrored.type).toBe("user");
     expect(mirrored.uuid).toBe("u-uuid-1");
@@ -898,6 +909,139 @@ describe("ensureSessionLoop — CCR bridge mirror (M1 write-out)", () => {
       type: "text",
       text: "what is 2+2?",
     });
+  });
+});
+
+describe("extractInboundPrompt (M2.2 read-in)", () => {
+  it("extracts text + uuid from a string-content user message", () => {
+    const msg = {
+      type: "user",
+      uuid: "claude-uuid-1",
+      session_id: "cse_x",
+      message: { role: "user", content: "hello from claude.ai" },
+    };
+    expect(extractInboundPrompt(msg)).toEqual({
+      text: "hello from claude.ai",
+      uuid: "claude-uuid-1",
+    });
+  });
+
+  it("concatenates text blocks from array content", () => {
+    const msg = {
+      type: "user",
+      uuid: "u-2",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "part one " },
+          { type: "text", text: "part two" },
+        ],
+      },
+    };
+    expect(extractInboundPrompt(msg)).toEqual({
+      text: "part one part two",
+      uuid: "u-2",
+    });
+  });
+
+  it("maps image blocks to ImageAttachment (reverse of buildUserMessage)", () => {
+    const msg = {
+      type: "user",
+      uuid: "u-3",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: "AAAA" },
+          },
+          { type: "text", text: "what is this?" },
+        ],
+      },
+    };
+    expect(extractInboundPrompt(msg)).toEqual({
+      text: "what is this?",
+      uuid: "u-3",
+      images: [{ mediaType: "image/png", data: "AAAA" }],
+    });
+  });
+
+  it("returns the prompt without uuid when the message has none", () => {
+    const msg = {
+      type: "user",
+      message: { role: "user", content: "no uuid here" },
+    };
+    expect(extractInboundPrompt(msg)).toEqual({ text: "no uuid here" });
+  });
+
+  it("returns null for a non-user message", () => {
+    expect(
+      extractInboundPrompt({ type: "assistant", message: { content: "x" } }),
+    ).toBeNull();
+  });
+
+  it("returns null for an empty user message (no text, no images)", () => {
+    expect(
+      extractInboundPrompt({
+        type: "user",
+        uuid: "u",
+        message: { content: [] },
+      }),
+    ).toBeNull();
+    expect(
+      extractInboundPrompt({ type: "user", message: { content: "" } }),
+    ).toBeNull();
+  });
+
+  it("ignores unknown block types but keeps text/images", () => {
+    const msg = {
+      type: "user",
+      uuid: "u-4",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "t", content: "ignored" },
+          { type: "text", text: "kept" },
+        ],
+      },
+    };
+    expect(extractInboundPrompt(msg)).toEqual({ text: "kept", uuid: "u-4" });
+  });
+
+  it("feeds back into pushPrompt — an inbound prompt drives the local loop with the reused uuid", () => {
+    // The whole 2.2 point: an extracted inbound prompt is just pushPrompt args.
+    // Reusing claude.ai's uuid means the synthesized user_message append (and
+    // its bridge write-back) carry that uuid → dedupe-by-uuid fold.
+    const runtime = new SessionRuntime<EventDelta>("s1");
+    const bridge = fakeBridge();
+    runtime.bridge = bridge;
+    const factory = ((_params: unknown) => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {}
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(),
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+    ensureSessionLoop(runtime, { mode: "resume", queryFactory: factory });
+
+    const prompt = extractInboundPrompt({
+      type: "user",
+      uuid: "claude-uuid-9",
+      message: { role: "user", content: "drive me" },
+    });
+    if (prompt === null) throw new Error("expected a prompt");
+    pushPrompt(runtime, prompt.text, prompt.images, prompt.uuid);
+
+    // Synthesized user_message append reuses the inbound uuid.
+    const first = payloads(runtime)[0];
+    if (first?.kind !== "append" || first.item.type !== "user_message") {
+      throw new Error("expected user_message append");
+    }
+    expect(first.item.uuid).toBe("claude-uuid-9");
+    // The bridge write-back also carries that uuid (folds against claude.ai's).
+    const mirrored = bridge.writes[0] as { type: string; uuid: string };
+    expect(mirrored.type).toBe("user");
+    expect(mirrored.uuid).toBe("claude-uuid-9");
   });
 });
 
@@ -1011,7 +1155,10 @@ describe("ensureSessionLoop — compact lifecycle", () => {
     const runtime = new SessionRuntime<EventDelta>("s1");
     await ensureSessionLoop(runtime, {
       mode: "resume",
-      queryFactory: fakeQueryYielding([statusMsg("requesting"), statusMsg(null)]),
+      queryFactory: fakeQueryYielding([
+        statusMsg("requesting"),
+        statusMsg(null),
+      ]),
     });
     expect(payloads(runtime)).toEqual([]);
   });

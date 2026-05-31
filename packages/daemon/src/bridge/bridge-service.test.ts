@@ -72,9 +72,8 @@ function serviceWith(
   );
   const service = new BridgeService({
     oauth,
-    attachTransport: attachSpy as unknown as typeof import(
-      "./bridge-transport.js"
-    ).BridgeTransport.attach,
+    attachTransport:
+      attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
   });
   return { service, oauth, getOnClose: () => onClose, attachSpy };
 }
@@ -129,9 +128,8 @@ describe("BridgeService.attach", () => {
     });
     const service = new BridgeService({
       oauth,
-      attachTransport: attachSpy as unknown as typeof import(
-        "./bridge-transport.js"
-      ).BridgeTransport.attach,
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
     });
     const rt = runtime();
     await expect(
@@ -149,6 +147,220 @@ describe("BridgeService.attach", () => {
     await expect(
       service.attach("s1", runtime(), { title: "T", cwd: "/w" }),
     ).rejects.toThrow(/shut down/);
+  });
+});
+
+describe("BridgeService — inbound prompt routing (M2.2)", () => {
+  it("wires inbound when onInboundPrompt is set, and routes extracted prompts to it", async () => {
+    const t = fakeTransport();
+    const routed: Array<{ sessionId: string; text: string; uuid?: string }> =
+      [];
+    let capturedInbound:
+      | { onInboundMessage?: (msg: unknown) => void }
+      | undefined;
+    const attachSpy = vi.fn(
+      async (params: {
+        inbound?: { onInboundMessage?: (msg: unknown) => void };
+      }) => {
+        capturedInbound = params.inbound;
+        return t;
+      },
+    );
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      onInboundPrompt: (sessionId, prompt) =>
+        routed.push({ sessionId, text: prompt.text, uuid: prompt.uuid }),
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+
+    await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
+
+    // inbound bag was passed → transport opens bidirectional.
+    expect(capturedInbound).toBeDefined();
+    expect(typeof capturedInbound?.onInboundMessage).toBe("function");
+
+    // A real claude.ai user message → extracted + routed with the session id.
+    capturedInbound?.onInboundMessage?.({
+      type: "user",
+      uuid: "claude-uuid-1",
+      message: { role: "user", content: "hello from cloud" },
+    });
+    expect(routed).toEqual([
+      { sessionId: "s1", text: "hello from cloud", uuid: "claude-uuid-1" },
+    ]);
+  });
+
+  it("drops non-prompt inbound frames (does not call the router)", async () => {
+    const t = fakeTransport();
+    const routed: unknown[] = [];
+    let capturedInbound:
+      | { onInboundMessage?: (msg: unknown) => void }
+      | undefined;
+    const attachSpy = vi.fn(
+      async (params: {
+        inbound?: { onInboundMessage?: (msg: unknown) => void };
+      }) => {
+        capturedInbound = params.inbound;
+        return t;
+      },
+    );
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      onInboundPrompt: (sessionId, prompt) =>
+        routed.push({ sessionId, prompt }),
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
+
+    // assistant frame + empty user → both filtered by extractInboundPrompt.
+    capturedInbound?.onInboundMessage?.({
+      type: "assistant",
+      message: { content: "x" },
+    });
+    capturedInbound?.onInboundMessage?.({
+      type: "user",
+      message: { content: [] },
+    });
+    expect(routed).toEqual([]);
+  });
+
+  it("does NOT wire inbound when ALL handlers are omitted (mirror mode — M1 regression guard)", async () => {
+    const t = fakeTransport();
+    let captured: { inbound?: unknown } | undefined;
+    const attachSpy = vi.fn(async (params: { inbound?: unknown }) => {
+      captured = params;
+      return t;
+    });
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      // No onInboundPrompt, no onInterrupt, no onSetModel.
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
+    // inbound undefined → transport derives outboundOnly:true (pure mirror,
+    // M1 behavior preserved when no caller wires the control surface).
+    expect(captured?.inbound).toBeUndefined();
+  });
+});
+
+describe("BridgeService — control routing (M2.4)", () => {
+  it("wires onInterrupt into the inbound bag and routes with the session id", async () => {
+    const t = fakeTransport();
+    const interrupts: string[] = [];
+    let capturedInbound:
+      | { onInterrupt?: () => void; onInboundMessage?: unknown }
+      | undefined;
+    const attachSpy = vi.fn(
+      async (params: {
+        inbound?: { onInterrupt?: () => void; onInboundMessage?: unknown };
+      }) => {
+        capturedInbound = params.inbound;
+        return t;
+      },
+    );
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      // ONLY onInterrupt — no prompt routing, no setModel.
+      onInterrupt: (sessionId) => interrupts.push(sessionId),
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
+
+    // inbound bag built, contains ONLY onInterrupt (partial wiring is fine).
+    expect(capturedInbound).toBeDefined();
+    expect(typeof capturedInbound?.onInterrupt).toBe("function");
+    expect(capturedInbound?.onInboundMessage).toBeUndefined();
+
+    // SDK fires the handler → routed with the session id.
+    capturedInbound?.onInterrupt?.();
+    expect(interrupts).toEqual(["s1"]);
+  });
+
+  it("wires onSetModel into the inbound bag and routes (session id + model)", async () => {
+    const t = fakeTransport();
+    const models: Array<{ sessionId: string; model: string | undefined }> = [];
+    let capturedInbound:
+      | { onSetModel?: (model: string | undefined) => void }
+      | undefined;
+    const attachSpy = vi.fn(
+      async (params: {
+        inbound?: { onSetModel?: (model: string | undefined) => void };
+      }) => {
+        capturedInbound = params.inbound;
+        return t;
+      },
+    );
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      onSetModel: (sessionId, model) => models.push({ sessionId, model }),
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
+
+    expect(typeof capturedInbound?.onSetModel).toBe("function");
+    capturedInbound?.onSetModel?.("claude-opus-4-8");
+    capturedInbound?.onSetModel?.(undefined); // reset-to-default
+    expect(models).toEqual([
+      { sessionId: "s1", model: "claude-opus-4-8" },
+      { sessionId: "s1", model: undefined },
+    ]);
+  });
+
+  it("composes all three handlers when all are provided", async () => {
+    // Production wiring (index.ts) provides all three together — verify the
+    // bag carries each, and each routes to its respective callback.
+    const t = fakeTransport();
+    const seen: string[] = [];
+    let capturedInbound:
+      | {
+          onInboundMessage?: (msg: unknown) => void;
+          onInterrupt?: () => void;
+          onSetModel?: (model: string | undefined) => void;
+        }
+      | undefined;
+    const attachSpy = vi.fn(
+      async (params: {
+        inbound?: {
+          onInboundMessage?: (msg: unknown) => void;
+          onInterrupt?: () => void;
+          onSetModel?: (model: string | undefined) => void;
+        };
+      }) => {
+        capturedInbound = params.inbound;
+        return t;
+      },
+    );
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      onInboundPrompt: (sid, p) => seen.push(`prompt:${sid}:${p.text}`),
+      onInterrupt: (sid) => seen.push(`interrupt:${sid}`),
+      onSetModel: (sid, m) => seen.push(`setModel:${sid}:${m ?? "null"}`),
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
+
+    expect(typeof capturedInbound?.onInboundMessage).toBe("function");
+    expect(typeof capturedInbound?.onInterrupt).toBe("function");
+    expect(typeof capturedInbound?.onSetModel).toBe("function");
+
+    capturedInbound?.onInboundMessage?.({
+      type: "user",
+      uuid: "u-1",
+      message: { role: "user", content: "hi" },
+    });
+    capturedInbound?.onInterrupt?.();
+    capturedInbound?.onSetModel?.("claude-sonnet-4-6");
+    expect(seen).toEqual([
+      "prompt:s1:hi",
+      "interrupt:s1",
+      "setModel:s1:claude-sonnet-4-6",
+    ]);
   });
 });
 
@@ -181,9 +393,8 @@ describe("BridgeService.detach", () => {
     const attachSpy = vi.fn(async () => queue.shift());
     const service = new BridgeService({
       oauth,
-      attachTransport: attachSpy as unknown as typeof import(
-        "./bridge-transport.js"
-      ).BridgeTransport.attach,
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
     });
     const rt1 = runtime();
     const rt2 = runtime();
@@ -225,9 +436,8 @@ describe("BridgeService.shutdown", () => {
     const attachSpy = vi.fn(async () => queue.shift());
     const service = new BridgeService({
       oauth,
-      attachTransport: attachSpy as unknown as typeof import(
-        "./bridge-transport.js"
-      ).BridgeTransport.attach,
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
     });
     await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
     await service.attach("s2", runtime(), { title: "T", cwd: "/w" });

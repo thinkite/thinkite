@@ -7,10 +7,12 @@
  *     one manager serves every bridge — see project_sidecode_ccr_architecture)
  *   - a `sessionId → BridgeTransport` map of live mirrors
  *
- * Responsibilities (slice M1 = write-out only):
+ * Responsibilities:
  *   - `attach(sessionId, runtime, params)` — open a BridgeTransport for a
  *     session, hang it on `runtime.bridge` so the query loop's forwardToBridge
- *     starts mirroring, and track it here. Starts the OAuth proactive timer
+ *     starts mirroring, and (if inbound handlers were supplied to the ctor)
+ *     wire the inbound bag so claude.ai-initiated prompts / interrupts /
+ *     setModel route into the local session. Starts the OAuth proactive timer
  *     on the first attach (ref-counted).
  *   - `detach(sessionId)` — close + forget one mirror. Stops the OAuth timer
  *     when the last bridge goes away.
@@ -24,15 +26,17 @@
  * (lazy) query (the multiplex invariant). So `runtime.bridge` is a mirror of
  * what this service tracks; the service is the source of truth for closing.
  *
- * M1 scope: no RPC wiring yet (that's M4's create-bridged / upgrade commands).
- * The M1.5 spike calls `attach` directly to prove end-to-end mirroring.
+ * Scope today (M2): the daemon constructs ONE BridgeService with the inbound
+ * handlers wired (see index.ts) — bidirectional from the first attach. RPC
+ * surface for creating bridged sessions / upgrading existing ones to bridged
+ * (the "create-bridged" / "upgrade" iOS commands) is still M4; M1.5 + M2.5
+ * spikes call `attach` directly to prove the transport works end-to-end.
  */
 
+import type { InboundPrompt } from "../runtime/run-query.js";
+import { extractInboundPrompt } from "../runtime/run-query.js";
 import type { SessionRuntime } from "../runtime/session-runtime.js";
-import {
-  BridgeTransport,
-  type TokenSource,
-} from "./bridge-transport.js";
+import { BridgeTransport, type TokenSource } from "./bridge-transport.js";
 
 /** The subset of OAuthRefreshManager BridgeService drives. Injectable so
  *  tests pass a fake (no keychain, no timers). Production = the real manager,
@@ -72,6 +76,40 @@ export interface BridgeServiceOptions {
   oauth: OAuthManager;
   /** Optional logger for attach failures / close codes. */
   log?: (message: string) => void;
+  /**
+   * Route an inbound (claude.ai-typed) prompt into a local turn (slice M2.2).
+   * Given the session id + the extracted prompt, the impl (index.ts) looks up
+   * the runtime, ensures its query loop, and pushPrompt()s — the reply then
+   * streams back via M1's write-out tap. Reusing the inbound uuid makes the
+   * write-back fold against claude.ai's own copy (dedup-by-uuid verified), so
+   * no origin tracking is needed.
+   *
+   * Presence of ANY inbound handler (this, onInterrupt, or onSetModel) flips
+   * every attached transport to BIDIRECTIONAL (the transport derives
+   * outboundOnly:false when `inbound` is passed). Omit ALL → pure mirror (M1):
+   * no inbound handlers, transports stay outboundOnly.
+   */
+  onInboundPrompt?: (sessionId: string, prompt: InboundPrompt) => void;
+  /**
+   * claude.ai pressed stop (slice M2.4). The impl (index.ts) routes this to
+   * the session's `runtime.query.interrupt()`. The SDK has ALREADY auto-sent
+   * the `control_response: success` (verified in claude-code-source
+   * bridgeMessaging.ts `handleServerControlRequest`) — this is a pure
+   * notification, we owe no response.
+   */
+  onInterrupt?: (sessionId: string) => void;
+  /**
+   * claude.ai changed the model selector (slice M2.4). The impl routes this to
+   * `runtime.query.applyFlagSettings({ model })` (apply to the live query) AND
+   * `updateSidecodeSessionSelection` (write metadata — the iOS chip's truth
+   * source is `SessionInfo.model`, NOT the transcript, so the metadata write
+   * is what makes the chip converge on next list-refresh / re-subscribe).
+   * `undefined` = reset to the account default. SDK auto-sends the
+   * control_response: success — we owe no response. No EventDelta is emitted
+   * (claude.ai already learns the model from the `message.model` on the
+   * assistant envelope we mirror; the iOS chip reads metadata, not transcript).
+   */
+  onSetModel?: (sessionId: string, model: string | undefined) => void;
   /** Test seam: override BridgeTransport.attach. */
   attachTransport?: typeof BridgeTransport.attach;
 }
@@ -80,6 +118,15 @@ export class BridgeService {
   private readonly oauth: OAuthManager;
   private readonly log: (message: string) => void;
   private readonly attachTransport: typeof BridgeTransport.attach;
+  private readonly onInboundPrompt?: (
+    sessionId: string,
+    prompt: InboundPrompt,
+  ) => void;
+  private readonly onInterrupt?: (sessionId: string) => void;
+  private readonly onSetModel?: (
+    sessionId: string,
+    model: string | undefined,
+  ) => void;
   /** sessionId → live mirror. The service is the source of truth for close. */
   private readonly transports = new Map<string, BridgeTransport>();
   private stopped = false;
@@ -88,6 +135,9 @@ export class BridgeService {
     this.oauth = options.oauth;
     this.log = options.log ?? (() => {});
     this.attachTransport = options.attachTransport ?? BridgeTransport.attach;
+    this.onInboundPrompt = options.onInboundPrompt;
+    this.onInterrupt = options.onInterrupt;
+    this.onSetModel = options.onSetModel;
   }
 
   /** Number of live mirrors (for tests / introspection). */
@@ -127,6 +177,47 @@ export class BridgeService {
     // refreshed. start() is idempotent — safe to call on every attach.
     this.oauth.start();
 
+    // When ANY inbound handler is wired (prompt routing M2.2, interrupt M2.4,
+    // setModel M2.4), build the inbound bag so the transport opens bidirectional
+    // (outboundOnly:false). Each member is included only if its corresponding
+    // router was provided — partial wiring is allowed (e.g. mirror + interrupt
+    // but no prompt routing, though no real config does that today). Omit ALL
+    // handlers → `inbound` stays undefined → the transport stays outboundOnly
+    // (M1 pure mirror).
+    //
+    // The transport already try/catches each handler, so a router throw can't
+    // kill the SSE read loop — we still keep the handlers thin and synchronous.
+    const promptRoute = this.onInboundPrompt;
+    const interruptRoute = this.onInterrupt;
+    const setModelRoute = this.onSetModel;
+    const hasInbound =
+      promptRoute !== undefined ||
+      interruptRoute !== undefined ||
+      setModelRoute !== undefined;
+    const inbound = hasInbound
+      ? {
+          ...(promptRoute !== undefined
+            ? {
+                onInboundMessage: (msg: unknown) => {
+                  // Non-prompt inbound frames (empty / non-user) are dropped
+                  // here rather than bothering the router.
+                  const prompt = extractInboundPrompt(msg);
+                  if (prompt !== null) promptRoute(sessionId, prompt);
+                },
+              }
+            : {}),
+          ...(interruptRoute !== undefined
+            ? { onInterrupt: () => interruptRoute(sessionId) }
+            : {}),
+          ...(setModelRoute !== undefined
+            ? {
+                onSetModel: (model: string | undefined) =>
+                  setModelRoute(sessionId, model),
+              }
+            : {}),
+        }
+      : undefined;
+
     let transport: BridgeTransport;
     try {
       transport = await this.attachTransport({
@@ -136,6 +227,7 @@ export class BridgeService {
         ...(request.model !== undefined ? { model: request.model } : {}),
         ...(request.tags !== undefined ? { tags: request.tags } : {}),
         ...(request.baseUrl !== undefined ? { baseUrl: request.baseUrl } : {}),
+        ...(inbound !== undefined ? { inbound } : {}),
         onClose: (code) => {
           // M1: log + forget so the slot frees and a future attach can retry.
           // M3 replaces this with reconnect (re-fetchCredentials +

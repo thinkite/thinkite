@@ -184,7 +184,8 @@ export function ensureSessionLoop(
   // thinking). Mid-session changes go through a single
   // `applyFlagSettings({ model })` on the live query — see router's
   // setSessionSelection handler.
-  const modelOption = options.model !== undefined ? { model: options.model } : {};
+  const modelOption =
+    options.model !== undefined ? { model: options.model } : {};
   const sdkOptions =
     options.mode === "create"
       ? {
@@ -391,6 +392,93 @@ function buildUserMessage(
     uuid,
     session_id: sessionId,
   } as unknown as SDKUserMessage;
+}
+
+// ─── CCR bridge read-in (slice M2.2) ────────────────────────────────────
+
+/** A prompt extracted from an inbound (claude.ai-typed) bridge message,
+ *  shaped as the args `pushPrompt` takes. `uuid` is claude.ai's own message
+ *  id — reused verbatim so the local synthesized append, the SDK JSONL row,
+ *  AND the bridge write-back all share ONE id. The write-back then collides
+ *  with claude.ai's own copy on that uuid and folds (server + UI both dedupe
+ *  by uuid — M2.2 dedup-probe verified), so a bridge-originated prompt needs
+ *  NO origin tracking / suppression: it goes through the same pushPrompt path
+ *  as a local/iOS prompt. */
+export interface InboundPrompt {
+  text: string;
+  /** claude.ai's message uuid (reused for dedup-by-uuid fold). */
+  uuid?: string;
+  images?: ImageAttachment[];
+}
+
+/** The inline image MIME types claude.ai vision accepts (mirrors the protocol
+ *  `imageAttachment.mediaType` enum). Narrows the untyped inbound media_type
+ *  string to ImageAttachment["mediaType"] so unsupported types are dropped. */
+function isSupportedMediaType(v: unknown): v is ImageAttachment["mediaType"] {
+  return v === "image/jpeg" || v === "image/png";
+}
+
+/**
+ * Parse an inbound bridge SDKMessage into pushPrompt args, or null if it
+ * isn't a drivable user prompt. The SDK already filters echoes of our own
+ * outbound writes + re-deliveries before onInboundMessage fires, so this
+ * only sees genuinely-new claude.ai prompts — but we still defensively
+ * narrow the shape (it's @alpha untyped at our boundary) and reject
+ * non-user / empty-content frames.
+ *
+ * Content shapes accepted (mirror of buildUserMessage's output):
+ *   - `content: string`              → text
+ *   - `content: [{type:"text",text}, {type:"image",source:{...}}, …]`
+ *       → text blocks concatenated; image blocks mapped to ImageAttachment
+ * Returns null when there's neither text nor an image (nothing to run).
+ */
+export function extractInboundPrompt(msg: unknown): InboundPrompt | null {
+  const m = msg as {
+    type?: unknown;
+    uuid?: unknown;
+    message?: { content?: unknown };
+  };
+  if (m.type !== "user") return null;
+  const content = m.message?.content;
+
+  let text = "";
+  const images: ImageAttachment[] = [];
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    for (const rawBlock of content) {
+      if (typeof rawBlock !== "object" || rawBlock === null) continue;
+      const block = rawBlock as {
+        type?: unknown;
+        text?: unknown;
+        source?: { type?: unknown; media_type?: unknown; data?: unknown };
+      };
+      if (block.type === "text" && typeof block.text === "string") {
+        text += block.text;
+      } else if (
+        block.type === "image" &&
+        block.source?.type === "base64" &&
+        isSupportedMediaType(block.source.media_type) &&
+        typeof block.source.data === "string"
+      ) {
+        // mediaType is narrowed to the protocol enum by the guard above —
+        // unsupported MIME types (claude.ai vision only accepts jpeg/png
+        // inline) are dropped rather than fed to the SDK as a bad string.
+        images.push({
+          mediaType: block.source.media_type,
+          data: block.source.data,
+        });
+      }
+    }
+  }
+
+  if (text.length === 0 && images.length === 0) return null;
+  const uuid = typeof m.uuid === "string" ? m.uuid : undefined;
+  return {
+    text,
+    ...(uuid !== undefined ? { uuid } : {}),
+    ...(images.length > 0 ? { images } : {}),
+  };
 }
 
 // ─── CCR bridge mirror (slice M1 write-out) ─────────────────────────────

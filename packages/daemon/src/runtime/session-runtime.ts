@@ -52,9 +52,7 @@ export interface RuntimeQueryHandle {
    *  Optional in this interface because router tests inject a stub
    *  query without it; production SDK `Query` always has the method
    *  (sdk.d.ts:2178). */
-  applyFlagSettings?(settings: {
-    model?: string | null;
-  }): Promise<void>;
+  applyFlagSettings?(settings: { model?: string | null }): Promise<void>;
 }
 
 /**
@@ -91,9 +89,10 @@ export interface RuntimeBridge {
    * Report the session's busy/idle state to the CCR worker endpoint so
    * claude.ai shows it as running vs idle. `"running"` on turn start,
    * `"idle"` on turn end. (`"requires_action"` is for permission prompts —
-   * deferred until M2 wires the permission round-trip.) Empirically REQUIRED:
-   * without it a bridged session never enters `running` on claude.ai
-   * (verified in M1.5 spike — see project_sidecode_ccr_architecture).
+   * V0 deferred per project_no_plan_mode_v0 / no can_use_tool wiring; revisit
+   * when iOS gains an approval sheet.) Empirically REQUIRED: without it a
+   * bridged session never enters `running` on claude.ai (verified in M1.5
+   * spike — see project_sidecode_ccr_architecture).
    */
   reportState(state: "idle" | "running" | "requires_action"): void;
   /** Tear down the bridge transport. */

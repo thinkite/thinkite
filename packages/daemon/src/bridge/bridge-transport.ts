@@ -2,11 +2,20 @@
  * BridgeTransport — wraps one `attachBridgeSession` handle as a
  * `RuntimeBridge`, the CCR mirror member of a session's multiplex mesh.
  *
- * Slice M1 = WRITE-OUT (mirror to claude.ai, read-only). The transport is
- * opened `outboundOnly: true`: the SSE read stream is NOT opened, inbound
- * prompts from claude.ai don't fire, and any control_request the server
- * sends gets an "outbound-only" error reply (handled inside the SDK). M2
- * flips this to bidirectional. So M1 wires ONLY write / sendResult / close.
+ * Slice M1 = WRITE-OUT (mirror to claude.ai, read-only): opened
+ * `outboundOnly: true`, the SSE read stream is NOT opened and inbound
+ * prompts never fire — only write / sendResult / reportState / close.
+ *
+ * Slice M2 = READ-IN (bidirectional): the caller passes an `inbound` bag of
+ * handlers (onInboundMessage / onInterrupt / onSetModel) and the transport
+ * flips `outboundOnly: false` so the SSE read stream opens. `outboundOnly`
+ * is DERIVED from inbound presence (no handlers → mirror; handlers →
+ * bidirectional), overridable via the explicit `outboundOnly` param. The
+ * SDK already filters echoes of our own outbound writes + re-deliveries
+ * before onInboundMessage fires, so it only sees genuinely-new claude.ai
+ * prompts. Each inbound handler is wrapped so a fault in OUR code can't
+ * propagate into the SDK's SSE read loop (same isolation as the outbound
+ * forwardToBridge try/catch).
  *
  * Lifecycle (the fixed `/bridge` trio + a token preflight — see
  * project_sidecode_ccr_architecture "Call order"):
@@ -28,13 +37,44 @@
 
 import type { RuntimeBridge } from "../runtime/session-runtime.js";
 import {
+  type AttachBridgeSessionOptions,
+  attachBridgeSession,
   type BridgeSessionHandle,
   type CreateCodeSessionParams,
-  attachBridgeSession,
   createCodeSession,
   fetchRemoteCredentials,
   isCredentialsFailure,
 } from "./sdk-adapter.js";
+
+/**
+ * Inbound (read-in) handlers — the M2 bidirectional surface. Supplied by the
+ * caller (BridgeService in 2.2+; a spike in 2.1) and forwarded to the SDK's
+ * attachBridgeSession. Passing this bag flips the transport to bidirectional
+ * (outboundOnly: false) unless `outboundOnly` is set explicitly. Every
+ * handler is invoked from the SDK's SSE read loop, so the transport wraps
+ * each in a try/catch — a fault in OUR handler must not tear down the stream.
+ */
+export interface BridgeInboundHandlers {
+  /**
+   * A genuinely-new user prompt typed on claude.ai. The SDK has already
+   * filtered echoes of our outbound writes AND re-deliveries of prompts we
+   * already forwarded, so this fires only for real remote prompts. M2.2
+   * routes it into the session's pushPrompt path; 2.1 logs only. May be
+   * async (SDK awaits attachment resolution).
+   */
+  onInboundMessage?: (msg: unknown) => void | Promise<void>;
+  /**
+   * claude.ai pressed stop. The SDK has ALREADY auto-replied to the
+   * `interrupt` control_request — this is a pure notification, so the
+   * handler just acts (M2.4 → query.interrupt()). No control_response owed.
+   */
+  onInterrupt?: () => void;
+  /**
+   * claude.ai changed the model selector. M2.4 → applyFlagSettings({model}).
+   * `undefined` = reset to default.
+   */
+  onSetModel?: (model: string | undefined) => void;
+}
 
 /** Minimal token source — the OAuthRefreshManager satisfies this. Injected
  *  so tests don't touch the real keychain. */
@@ -78,6 +118,14 @@ export interface BridgeAttachParams {
   model?: string;
   /** Own-tag for `GET /v1/code/sessions` filtering. Default `["sidecode"]`. */
   tags?: string[];
+  /** Inbound (read-in) handlers — M2 bidirectional. Omit → pure mirror (M1).
+   *  Passing this opens the SSE read stream (see `outboundOnly`). */
+  inbound?: BridgeInboundHandlers;
+  /** Open outbound-only (mirror: no SSE read stream, inbound never fires).
+   *  Default is DERIVED — `inbound === undefined` (mirror when no inbound
+   *  handlers, bidirectional when present). Set explicitly to force a mode
+   *  (e.g. a future privacy "view-only" bridge that still wants no inbound). */
+  outboundOnly?: boolean;
   /** Fired when the transport dies permanently (401 jwt expired / 4090 epoch
    *  superseded / 4091 init fail / 403·404 perma). M3 wires reconnect here. */
   onClose?: (code: number | undefined) => void;
@@ -177,20 +225,57 @@ export class BridgeTransport implements RuntimeBridge {
       );
     }
 
-    // ④ attachBridgeSession(outboundOnly) → handle, then await connect.
+    // ④ attachBridgeSession → handle, then await connect. `outboundOnly` is
+    //    derived from inbound presence (no handlers → mirror; handlers →
+    //    bidirectional), overridable via the explicit param. Each inbound
+    //    handler is wrapped so a fault in OUR code can't tear down the SDK's
+    //    SSE read loop (same isolation as the outbound forwardToBridge).
+    const inbound = params.inbound;
+    const outboundOnly = params.outboundOnly ?? inbound === undefined;
     let closeCode: number | undefined;
-    const handle = await attach({
+    const attachOpts: AttachBridgeSessionOptions = {
       sessionId: cseSessionId,
       apiBaseUrl: creds.api_base_url,
       epoch: creds.worker_epoch,
       ingressToken: creds.worker_jwt,
-      // M1: mirror only — no inbound stream, no control wiring. M2 flips this.
-      outboundOnly: true,
+      outboundOnly,
       onClose: (code) => {
         closeCode = code;
         params.onClose?.(code);
       },
-    });
+    };
+    if (inbound?.onInboundMessage !== undefined) {
+      const handler = inbound.onInboundMessage;
+      attachOpts.onInboundMessage = (msg) => {
+        try {
+          const r = handler(msg);
+          if (r instanceof Promise) r.catch(() => {});
+        } catch {
+          // swallow — an inbound-handler fault must not kill the read stream.
+        }
+      };
+    }
+    if (inbound?.onInterrupt !== undefined) {
+      const handler = inbound.onInterrupt;
+      attachOpts.onInterrupt = () => {
+        try {
+          handler();
+        } catch {
+          // swallow — see onInboundMessage.
+        }
+      };
+    }
+    if (inbound?.onSetModel !== undefined) {
+      const handler = inbound.onSetModel;
+      attachOpts.onSetModel = (model) => {
+        try {
+          handler(model);
+        } catch {
+          // swallow — see onInboundMessage.
+        }
+      };
+    }
+    const handle = await attach(attachOpts);
 
     const timeoutMs = params.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     const pollMs = params.connectPollMs ?? DEFAULT_CONNECT_POLL_MS;

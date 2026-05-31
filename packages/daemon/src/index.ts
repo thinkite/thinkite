@@ -4,12 +4,12 @@ import {
   getSessionMessages,
 } from "@anthropic-ai/claude-agent-sdk";
 import { type EventDelta, PROTOCOL_VERSION } from "@sidecodeapp/protocol";
+import { BridgeService } from "./bridge/bridge-service.js";
+import { OAuthRefreshManager } from "./bridge/oauth-refresh.js";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { listDesktopSessions } from "./desktop/sessions.js";
 import { GitWatcherRegistry } from "./git-watch.js";
-import { BridgeService } from "./bridge/bridge-service.js";
-import { OAuthRefreshManager } from "./bridge/oauth-refresh.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { KnownClients } from "./known-clients.js";
@@ -17,6 +17,7 @@ import { foldEventDelta } from "./messages/fold.js";
 import { extractLatestUsage, normalize } from "./messages/normalize.js";
 import { createPairOffer } from "./pairing.js";
 import { createCommandHandler } from "./router.js";
+import { ensureSessionLoop, pushPrompt } from "./runtime/run-query.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
 import {
   buildNewSidecodeSession,
@@ -103,6 +104,102 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   const bridgeService = new BridgeService({
     oauth: new OAuthRefreshManager(),
     log: (message) => console.log(`[sidecode] ${message}`),
+    // M2.2 read-in: a claude.ai-typed prompt → drive this session's local
+    // turn. The reply streams back via M1's write-out tap; reusing the
+    // inbound uuid makes the synthesized user_message's write-back fold
+    // against claude.ai's own copy (dedup-by-uuid verified — no double
+    // bubble, no origin tracking). Wiring this also flips every attached
+    // transport to bidirectional.
+    onInboundPrompt: (sessionId, prompt) => {
+      const runtime = runtimeManager.get(sessionId);
+      if (runtime === undefined) {
+        // No local runtime for this bridged session. Linking a cse_ to a
+        // local runtime + spawning its loop is M3 (create-bridged / startup
+        // re-attach); until then there's nothing local to drive.
+        console.log(
+          `[sidecode] bridge inbound for session ${sessionId} with no runtime — dropped`,
+        );
+        return;
+      }
+      // Ensure a query loop, then feed the prompt. ensureSessionLoop is
+      // idempotent (no-op if already running) and sets inputChannel
+      // synchronously, so the immediately-following pushPrompt always finds
+      // a live channel. resume mode: a bridged session taking claude.ai
+      // prompts has cloud history; the local create-vs-resume + cwd-from-cse
+      // refinement is M3. pushPrompt is UNCHANGED from the local/iOS path —
+      // bridge / local / iOS prompts share one code path.
+      try {
+        ensureSessionLoop(runtime, { mode: "resume" });
+        pushPrompt(runtime, prompt.text, prompt.images, prompt.uuid);
+      } catch (err) {
+        console.log(
+          `[sidecode] bridge inbound prompt failed for ${sessionId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    },
+    // M2.4 control routing: claude.ai pressed stop. Mirror of router's
+    // `interrupt` RPC handler (router.ts):
+    //   1. Synchronously mark `runtime.interrupted = true` BEFORE the await —
+    //      the SDK ends an interrupted turn with `error_during_execution`,
+    //      which handleResultEnvelope swallows when this flag is set so it
+    //      isn't surfaced as a spurious turn_failed.
+    //   2. await query.interrupt().
+    //   3. addEvent({ kind: "turn_canceled" }) — so WebRTC subscribers see
+    //      the cancel immediately. NOT mirrored to bridge (not in
+    //      forwardToBridge allowlist), which is correct: claude.ai initiated
+    //      the interrupt + SDK already auto-sent control_response:success;
+    //      its spinner closes on the next `result` envelope via sendResult().
+    // Best-effort: no live query → silent no-op (matches router's interrupt
+    // semantics). Errors are logged but never propagate (would crash the
+    // SDK's SSE read loop otherwise; the transport's try/catch is a 2nd net).
+    onInterrupt: async (sessionId) => {
+      const runtime = runtimeManager.get(sessionId);
+      if (!runtime?.query) return;
+      try {
+        runtime.interrupted = true;
+        await runtime.query.interrupt();
+        runtime.addEvent({ kind: "turn_canceled" });
+      } catch (err) {
+        console.log(
+          `[sidecode] bridge interrupt failed for ${sessionId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    },
+    // M2.4 control routing: claude.ai changed the model. Mirror of router's
+    // `setSessionSelection` RPC handler:
+    //   1. apply to the live query via applyFlagSettings({model}) — per
+    //      upstream docs this behaves identically to the dedicated setModel().
+    //   2. persist via updateSidecodeSessionSelection — the iOS model chip
+    //      reads SessionInfo.model (NOT transcript), so persisting is what
+    //      makes the chip converge on next list-refresh / re-subscribe. Live
+    //      cross-client model-change broadcast is deferred to #17 (the
+    //      session control-state channel).
+    //   3. SDK auto-sends control_response:success — we owe no response.
+    // Order matters: apply first, persist second — if apply throws (model
+    // not allowed by the account, etc.), metadata stays untouched so disk
+    // doesn't drift from what the live query actually has. `undefined` model
+    // means reset to default; applyFlagSettings handles it. No EventDelta
+    // is emitted (model is per-turn fact carried on `message.model`, not
+    // per-session state — see issue #17 for the long-term control channel).
+    onSetModel: async (sessionId, model) => {
+      const runtime = runtimeManager.get(sessionId);
+      try {
+        if (runtime?.query?.applyFlagSettings) {
+          await runtime.query.applyFlagSettings({ model });
+        }
+        updateSidecodeSessionSelection(home, sessionId, { model });
+      } catch (err) {
+        console.log(
+          `[sidecode] bridge setModel failed for ${sessionId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    },
   });
   // Set in daemon.stop() before runtimeManager.shutdown(). Router gates
   // sendPrompt behind it (see RouterDeps.isShuttingDown rationale).

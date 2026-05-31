@@ -75,9 +75,7 @@ function fakeHandle(opts: { connected?: boolean } = {}) {
  *  inferred no-arg / non-null signature. */
 function happyDeps(handle: BridgeSessionHandle) {
   return {
-    createCodeSession: vi.fn(
-      async (): Promise<string | null> => "cse_x",
-    ),
+    createCodeSession: vi.fn(async (): Promise<string | null> => "cse_x"),
     fetchRemoteCredentials: vi.fn(
       async (): Promise<RemoteCredentials | CredentialsFailure | null> => CREDS,
     ),
@@ -279,5 +277,183 @@ describe("BridgeTransport — onClose passthrough", () => {
     });
     fireClose?.(401);
     expect(seen).toEqual([401]);
+  });
+});
+
+describe("BridgeTransport.attach — inbound (M2 read-in)", () => {
+  it("passing inbound flips outboundOnly:false and wires onInboundMessage/onInterrupt/onSetModel", async () => {
+    const fake = fakeHandle({ connected: true });
+    let captured: AttachBridgeSessionOptions | undefined;
+    const deps = happyDeps(fake.handle);
+    deps.attachBridgeSession = vi.fn(
+      async (opts: AttachBridgeSessionOptions) => {
+        captured = opts;
+        return fake.handle;
+      },
+    );
+    const seen: string[] = [];
+    const onInboundMessage = vi.fn((m: unknown) => {
+      seen.push(`msg:${JSON.stringify(m)}`);
+    });
+    const onInterrupt = vi.fn(() => {
+      seen.push("interrupt");
+    });
+    const onSetModel = vi.fn((model: string | undefined) => {
+      seen.push(`model:${model}`);
+    });
+
+    await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      inbound: { onInboundMessage, onInterrupt, onSetModel },
+      deps,
+    });
+
+    expect(captured?.outboundOnly).toBe(false);
+    // The SDK invokes the wired handlers → they call through to ours.
+    captured?.onInboundMessage?.({ type: "user" } as never);
+    captured?.onInterrupt?.();
+    captured?.onSetModel?.("claude-opus-4-7");
+    expect(seen).toEqual([
+      'msg:{"type":"user"}',
+      "interrupt",
+      "model:claude-opus-4-7",
+    ]);
+  });
+
+  it("omitting inbound keeps outboundOnly:true (mirror) and wires no inbound handlers", async () => {
+    const fake = fakeHandle({ connected: true });
+    let captured: AttachBridgeSessionOptions | undefined;
+    const deps = happyDeps(fake.handle);
+    deps.attachBridgeSession = vi.fn(
+      async (opts: AttachBridgeSessionOptions) => {
+        captured = opts;
+        return fake.handle;
+      },
+    );
+    await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      deps,
+    });
+    expect(captured?.outboundOnly).toBe(true);
+    expect(captured?.onInboundMessage).toBeUndefined();
+    expect(captured?.onInterrupt).toBeUndefined();
+    expect(captured?.onSetModel).toBeUndefined();
+  });
+
+  it("explicit outboundOnly overrides the inbound-derived default", async () => {
+    const fake = fakeHandle({ connected: true });
+    let captured: AttachBridgeSessionOptions | undefined;
+    const deps = happyDeps(fake.handle);
+    deps.attachBridgeSession = vi.fn(
+      async (opts: AttachBridgeSessionOptions) => {
+        captured = opts;
+        return fake.handle;
+      },
+    );
+    // inbound present but the caller forces mirror — the explicit flag wins.
+    await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      inbound: { onInboundMessage: vi.fn() },
+      outboundOnly: true,
+      deps,
+    });
+    expect(captured?.outboundOnly).toBe(true);
+    // The handler is still forwarded (the SDK ignores inbound in outbound-only
+    // mode; the transport doesn't second-guess the explicit flag).
+    expect(captured?.onInboundMessage).toBeDefined();
+  });
+
+  it("partial inbound (only onInboundMessage) wires just that handler", async () => {
+    const fake = fakeHandle({ connected: true });
+    let captured: AttachBridgeSessionOptions | undefined;
+    const deps = happyDeps(fake.handle);
+    deps.attachBridgeSession = vi.fn(
+      async (opts: AttachBridgeSessionOptions) => {
+        captured = opts;
+        return fake.handle;
+      },
+    );
+    await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      inbound: { onInboundMessage: vi.fn() },
+      deps,
+    });
+    expect(captured?.outboundOnly).toBe(false);
+    expect(captured?.onInboundMessage).toBeDefined();
+    expect(captured?.onInterrupt).toBeUndefined();
+    expect(captured?.onSetModel).toBeUndefined();
+  });
+
+  it("a throwing inbound handler is swallowed (never propagates into the SSE loop)", async () => {
+    const fake = fakeHandle({ connected: true });
+    let captured: AttachBridgeSessionOptions | undefined;
+    const deps = happyDeps(fake.handle);
+    deps.attachBridgeSession = vi.fn(
+      async (opts: AttachBridgeSessionOptions) => {
+        captured = opts;
+        return fake.handle;
+      },
+    );
+    await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      inbound: {
+        onInboundMessage: () => {
+          throw new Error("boom-sync");
+        },
+        onInterrupt: () => {
+          throw new Error("boom-interrupt");
+        },
+        onSetModel: () => {
+          throw new Error("boom-model");
+        },
+      },
+      deps,
+    });
+    // None of these should throw — the transport wraps each handler.
+    expect(() =>
+      captured?.onInboundMessage?.({ type: "user" } as never),
+    ).not.toThrow();
+    expect(() => captured?.onInterrupt?.()).not.toThrow();
+    expect(() => captured?.onSetModel?.("x")).not.toThrow();
+  });
+
+  it("a rejecting async onInboundMessage doesn't surface an unhandled rejection", async () => {
+    const fake = fakeHandle({ connected: true });
+    let captured: AttachBridgeSessionOptions | undefined;
+    const deps = happyDeps(fake.handle);
+    deps.attachBridgeSession = vi.fn(
+      async (opts: AttachBridgeSessionOptions) => {
+        captured = opts;
+        return fake.handle;
+      },
+    );
+    await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      inbound: {
+        onInboundMessage: async () => {
+          throw new Error("boom-async");
+        },
+      },
+      deps,
+    });
+    // The wrapper attaches a .catch to the returned promise → no unhandled
+    // rejection, and the call itself returns void synchronously.
+    expect(() =>
+      captured?.onInboundMessage?.({ type: "user" } as never),
+    ).not.toThrow();
+    // Give the microtask queue a tick to settle the rejected promise.
+    await Promise.resolve();
   });
 });
