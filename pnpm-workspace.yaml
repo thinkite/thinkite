@@ -1,6 +1,7 @@
 packages:
   - "packages/*"
-minimumReleaseAge: 360
+minimumReleaseAgeExclude:
+  - '@anthropic-ai/claude-agent-sdk'
 allowBuilds:
   esbuild: true
   msgpackr-extract: true
