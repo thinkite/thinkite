@@ -162,9 +162,8 @@ export interface SessionRuntimeOptions<T> {
    *
    *  Synchronous fan-out — SessionRuntimeManager wires this to its
    *  daemon-wide listener set, hydrates disk-side static fields (title /
-   *  cwd / createdAt / isArchived / completedTurns / permissionMode),
-   *  and emits a `session_state_changed` envelope to every
-   *  subscribeSessions subscriber. Callback impl must be cheap (no async
+   *  cwd / createdAt / isArchived / permissionMode), and emits a
+   *  `session_state_changed` envelope to every subscribeSessions subscriber. Callback impl must be cheap (no async
    *  work inside) since it runs on every activity edge of every session.
    *  No-op by default so the pure-data-structure contract isn't violated
    *  in tests that don't wire the manager.

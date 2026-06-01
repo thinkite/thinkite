@@ -278,7 +278,6 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
       lastActivityAt: 2_000,
       createdAt: 1_000,
       isArchived: false,
-      completedTurns: 0,
       permissionMode: "bypassPermissions",
     });
   });
@@ -449,112 +448,60 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
     expect(onChange).toHaveBeenCalledOnce();
   });
 
-  // ─── #17.5 turn-complete disk persistence ──────────────────────────
+  // ─── #17.5 lastActivityAt disk persistence ─────────────────────────
 
-  it("#17.5 running → idle persists lastActivityAt + bumps completedTurns to disk", () => {
+  it("#17.5 activity edge advances disk lastActivityAt", () => {
     const m = new SessionRuntimeManager<string>();
     m.setHome(home);
     writeSidecodeSession(
       home,
-      fixtureMeta({
-        cliSessionId: "a",
-        lastActivityAt: 1_000,
-        completedTurns: 5,
-      }),
+      fixtureMeta({ cliSessionId: "a", lastActivityAt: 1_000 }),
     );
     const r = m.getOrCreate("a");
-    r.setActivity("running");
-    r.setActivity("idle");
 
+    r.setActivity("running"); // runtime stamps a fresh lastActivityAt
     const onDisk = readSidecodeSession(home, "a");
-    expect(onDisk?.completedTurns).toBe(6);
     expect(onDisk?.lastActivityAt).toBeGreaterThan(1_000);
   });
 
-  it("#17.5 setModel alone does NOT bump completedTurns (only running → idle triggers persist)", () => {
+  it("#17.5 setModel alone does NOT advance disk lastActivityAt (monotonic guard collapses no-op write)", () => {
     const m = new SessionRuntimeManager<string>();
     m.setHome(home);
     writeSidecodeSession(
       home,
-      fixtureMeta({
-        cliSessionId: "a",
-        lastActivityAt: 1_000,
-        completedTurns: 5,
-      }),
+      fixtureMeta({ cliSessionId: "a", lastActivityAt: 5_000_000_000_000 }),
     );
     const r = m.getOrCreate("a");
-    // Activity stays "idle"; only model changes.
+    // Construction stamped runtime.lastActivityAt to Date.now() (a value
+    // strictly LESS than disk's 5e12). setModel fires onStateChanged but
+    // doesn't touch runtime.lastActivityAt, so the monotonic guard inside
+    // updateSidecodeSessionLastActivity rejects the write (runtime clock
+    // < disk clock → no-op).
     r.setModel("claude-opus-4-7");
 
     const onDisk = readSidecodeSession(home, "a");
-    expect(onDisk?.completedTurns).toBe(5); // unchanged
-    expect(onDisk?.lastActivityAt).toBe(1_000); // unchanged
+    expect(onDisk?.lastActivityAt).toBe(5_000_000_000_000); // unchanged
   });
 
-  it("#17.5 idle → running does NOT persist (not a turn-complete edge)", () => {
+  it("#17.5 fan-out reflects the freshly-persisted lastActivityAt", () => {
     const m = new SessionRuntimeManager<string>();
     m.setHome(home);
     writeSidecodeSession(
       home,
-      fixtureMeta({
-        cliSessionId: "a",
-        lastActivityAt: 1_000,
-        completedTurns: 5,
-      }),
-    );
-    const r = m.getOrCreate("a");
-    r.setActivity("running");
-
-    const onDisk = readSidecodeSession(home, "a");
-    expect(onDisk?.completedTurns).toBe(5);
-    expect(onDisk?.lastActivityAt).toBe(1_000);
-  });
-
-  it("#17.5 fan-out reflects the freshly-persisted completedTurns on turn-complete edge", () => {
-    const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(
-      home,
-      fixtureMeta({
-        cliSessionId: "a",
-        lastActivityAt: 1_000,
-        completedTurns: 5,
-      }),
+      fixtureMeta({ cliSessionId: "a", lastActivityAt: 1_000 }),
     );
     const { listener, onChange } = makeListener();
     m.subscribeSessionStates(listener);
     const r = m.getOrCreate("a");
-    r.setActivity("running"); // 1st fan-out: completedTurns=5, activity=running
-    onChange.mockClear();
+    r.setActivity("running");
 
-    r.setActivity("idle"); // 2nd fan-out should see completedTurns=6
     expect(onChange).toHaveBeenCalledOnce();
     const state = onChange.mock.calls[0]?.[1] as SessionState;
-    expect(state.activity).toBe("idle");
-    expect(state.completedTurns).toBe(6);
+    expect(state.activity).toBe("running");
+    expect(state.lastActivityAt).toBeGreaterThan(1_000);
   });
 
-  it("#17.5 multiple turn-complete edges chain correctly (each bumps by 1)", () => {
-    const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(
-      home,
-      fixtureMeta({
-        cliSessionId: "a",
-        lastActivityAt: 1_000,
-        completedTurns: 0,
-      }),
-    );
-    const r = m.getOrCreate("a");
-    for (let i = 0; i < 3; i++) {
-      r.setActivity("running");
-      r.setActivity("idle");
-    }
-    const onDisk = readSidecodeSession(home, "a");
-    expect(onDisk?.completedTurns).toBe(3);
-  });
-
-  it("#17.5 no-op when home is unset (memory-only manager — V0.5+ unit test posture)", () => {
+  it("#17.5 no-op when home is unset (memory-only manager)", () => {
     const m = new SessionRuntimeManager<string>();
     // No setHome.
     const r = m.getOrCreate("a");
@@ -564,24 +511,5 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
     }).not.toThrow();
     // No disk file to assert against — just confirms the manager doesn't
     // crash trying to read/write metadata that doesn't apply.
-  });
-
-  it("#17.5 delete() cleans up lastSeenActivity edge-detection state", () => {
-    const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(
-      home,
-      fixtureMeta({ cliSessionId: "a", completedTurns: 0 }),
-    );
-    const r = m.getOrCreate("a");
-    r.setActivity("running");
-    m.delete("a");
-    // Re-create — fresh runtime, fresh seed of "idle"; first idle-only
-    // setActivity should NOT trigger turn-complete persist (no prior
-    // "running" state to transition from).
-    const r2 = m.getOrCreate("a");
-    r2.setActivity("idle"); // no-op transition, no fanout
-    const onDisk = readSidecodeSession(home, "a");
-    expect(onDisk?.completedTurns).toBe(0); // never bumped
   });
 });

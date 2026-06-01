@@ -105,9 +105,9 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   });
   // #17 — bind the sidecode home so the manager can read disk metadata
   // for `getAllSessionStates` (subscribeSessions initial snapshot) AND
-  // persist `lastActivityAt` + `completedTurns` on each turn-complete
-  // edge via `updateSidecodeSessionLastActivity`. Tests use a memory-
-  // only manager (no setHome) and skip the persistence path.
+  // persist `lastActivityAt` via `updateSidecodeSessionLastActivity` on
+  // each activity edge. Tests use a memory-only manager (no setHome)
+  // and skip the persistence path.
   runtimeManager.setHome(home);
   // CCR bridge mirror service (slice M1). One OAuthRefreshManager (the
   // keychain token is process-global) feeds every bridge; BridgeService

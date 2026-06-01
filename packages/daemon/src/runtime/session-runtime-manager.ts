@@ -30,7 +30,6 @@ import {
   updateSidecodeSessionLastActivity,
 } from "../sidecode-sessions.js";
 import {
-  type SessionActivity,
   SessionRuntime,
   type SessionRuntimeOptions,
 } from "./session-runtime.js";
@@ -64,13 +63,6 @@ export class SessionRuntimeManager<T> {
    *  a memory-only manager without touching the filesystem. Production
    *  daemon calls `setHome` right after construction in `index.ts`. */
   private home: string | null = null;
-  /** #17 — most recently OBSERVED activity per session (from the runtime
-   *  callback's perspective). Used to detect the running→idle edge for
-   *  turn-complete disk persistence in `notifyStateChanged`. setActivity
-   *  dedupes on its own activity field, so this map's edge-detection
-   *  agrees with "did the runtime just transition" — they never disagree
-   *  in V0. Cleaned up on `delete(sessionId)`. */
-  private readonly lastSeenActivity = new Map<string, SessionActivity>();
 
   constructor(defaults: SessionRuntimeOptions<T> = {}) {
     this.defaultOptions = defaults;
@@ -127,14 +119,11 @@ export class SessionRuntimeManager<T> {
       }
     }
     this.runtimes.set(sessionId, created);
-    // Seed edge-detection state to match the runtime's constructor default.
-    this.lastSeenActivity.set(sessionId, "idle");
     return created;
   }
 
   /** Drop the runtime for `sessionId`. Returns true iff it existed. */
   delete(sessionId: string): boolean {
-    this.lastSeenActivity.delete(sessionId);
     return this.runtimes.delete(sessionId);
   }
 
@@ -183,8 +172,8 @@ export class SessionRuntimeManager<T> {
    * Sources:
    *   - on-disk `<home>/sessions/local_<id>.json` via
    *     `listSidecodeSessions` (the source of truth for static fields
-   *     title / cwd / createdAt / isArchived / completedTurns /
-   *     permissionMode AND the persisted model selection)
+   *     title / cwd / createdAt / isArchived / permissionMode AND the
+   *     persisted model selection)
    *   - in-memory `SessionRuntime` entries (the source of truth for live
    *     activity / lastActivityAt / currentModel)
    *
@@ -220,15 +209,15 @@ export class SessionRuntimeManager<T> {
 
   /**
    * Manager-internal fan-out fired by every SessionRuntime's
-   * `onStateChanged` callback. Three concerns, in order:
+   * `onStateChanged` callback. Two concerns, in order:
    *
-   *   1. Turn-complete disk persistence (running → idle edge) — bumps
-   *      `lastActivityAt` + `completedTurns` in
-   *      `<home>/sessions/local_<id>.json` so daemon restart preserves
-   *      the iOS list sort key + turn count. NO-OP when meta missing
-   *      (Desktop-mirror / pre-first-prompt sidecode session) or when
-   *      this onStateChanged fire isn't a running→idle edge (e.g.
-   *      setModel firing while runtime is idle).
+   *   1. Disk persistence — push the runtime's `lastActivityAt` through
+   *      to `<home>/sessions/local_<id>.json` via
+   *      `updateSidecodeSessionLastActivity`. The helper is monotonic-
+   *      guarded, so this is a no-op disk-write when the runtime didn't
+   *      bump its clock (e.g. setModel fires onStateChanged but doesn't
+   *      touch lastActivityAt). The persisted clock survives daemon
+   *      restart so iOS list sort stays accurate.
    *
    *   2. State fan-out — merge fresh disk meta (possibly updated by
    *      step 1) + runtime live fields via `buildSessionState`, push
@@ -241,38 +230,23 @@ export class SessionRuntimeManager<T> {
    */
   private notifyStateChanged(sessionId: string): void {
     const runtime = this.runtimes.get(sessionId) ?? null;
-    // Re-read disk meta first — both turn-complete persist AND fan-out
-    // need it, so share one syscall.
+    // Re-read disk meta first — both persist AND fan-out need it, so
+    // share one syscall.
     let meta =
       this.home === null
         ? null
         : (readSidecodeSession(this.home, sessionId) ?? null);
 
-    // Turn-complete edge detection: setActivity fired this callback for a
-    // genuine activity transition (it dedupes idle→idle / running→running
-    // before calling onStateChanged), so if prior was "running" and
-    // current is "idle" we just completed a turn. setModel fires this
-    // callback too, but with no activity change — those cases pass through
-    // without bumping completedTurns.
-    const prior = this.lastSeenActivity.get(sessionId);
-    const current: SessionActivity = runtime?.activity ?? "idle";
-    if (current !== prior) {
-      this.lastSeenActivity.set(sessionId, current);
-      if (
-        prior === "running" &&
-        current === "idle" &&
-        this.home !== null &&
-        meta !== null &&
-        runtime !== null
-      ) {
-        const merged = updateSidecodeSessionLastActivity(
-          this.home,
-          sessionId,
-          runtime.lastActivityAt,
-          meta.completedTurns + 1,
-        );
-        if (merged !== undefined) meta = merged;
-      }
+    // Push runtime's lastActivityAt → disk (monotonic-guarded inside
+    // updateSidecodeSessionLastActivity, so model-only / no-op edges
+    // collapse to a read-only path).
+    if (this.home !== null && meta !== null && runtime !== null) {
+      const merged = updateSidecodeSessionLastActivity(
+        this.home,
+        sessionId,
+        runtime.lastActivityAt,
+      );
+      if (merged !== undefined) meta = merged;
     }
 
     if (this.stateListeners.size === 0) return;
@@ -342,7 +316,7 @@ export class SessionRuntimeManager<T> {
  *   - live fields (activity / lastActivityAt / currentModel): runtime
  *     wins; fall back to disk; fall back to a default
  *   - static fields (title / cwd / createdAt / isArchived /
- *     completedTurns / permissionMode): disk only — these are owned by
+ *     permissionMode): disk only — these are owned by
  *     `SidecodeSessionMetadata` and runtime doesn't know them
  *
  * Returns null only when BOTH inputs are null (no source — caller should
@@ -367,7 +341,6 @@ function buildSessionState<T>(
     cwd: meta?.cwd ?? "",
     createdAt: meta?.createdAt ?? fallbackTs,
     isArchived: meta?.isArchived ?? false,
-    completedTurns: meta?.completedTurns ?? 0,
     permissionMode: meta?.permissionMode ?? "bypassPermissions",
   };
 }

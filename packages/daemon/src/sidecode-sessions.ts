@@ -379,44 +379,38 @@ export function updateSidecodeSessionSelection(
 }
 
 /**
- * #17 — atomically advance a session's `lastActivityAt` clock + bump
- * `completedTurns` on disk. Called by SessionRuntimeManager on the
- * running→idle activity edge so a daemon restart (or `disposeQuery`'s
- * idle teardown) preserves the iOS list sort key + turn counter.
+ * #17 — atomically advance a session's `lastActivityAt` clock on disk.
+ * Called by SessionRuntimeManager from `notifyStateChanged` so a daemon
+ * restart preserves the iOS list sort key. Monotonic-guarded: the disk
+ * write is a no-op (returns existing record) when the supplied
+ * `lastActivityAt` doesn't move the clock forward — this is what lets
+ * the manager call the helper on EVERY state-changed callback fire
+ * without needing to distinguish edge types (setModel doesn't bump
+ * `runtime.lastActivityAt`, so its onStateChanged fire is a no-op
+ * disk-write here).
  *
- * No-op (returns `undefined`) when the metadata file is missing — Desktop-
- * mirror sessions live in Desktop's own dir and sidecode never writes
- * there; callers are responsible for checking existence first (V0 only
- * persists for sidecode-owned sessions).
- *
- * Monotonic guard on `lastActivityAt`: never move it backwards (a stale
- * callback firing after a newer turn could regress us). `completedTurns`
- * also guarded — only writes when the new value is strictly greater than
- * what's on disk (defensive against double-fire of the running→idle edge,
- * which the manager already gates against via `lastSeenActivity`).
+ * No-op (returns `undefined`) when the metadata file is missing —
+ * Desktop-mirror sessions live in Desktop's own dir and sidecode never
+ * writes there.
  *
  * Hot-path concern (V0 single-digit sessions × few turns/min): atomic
- * tmp+rename is ~ms and we fire once per turn-complete. Order-of-
- * magnitude headroom; if profile ever shows it hot, batch via debounce.
+ * tmp+rename is ~ms; the monotonic guard collapses redundant writes to
+ * a read-only path. Order-of-magnitude headroom; if profile ever shows
+ * it hot, batch via debounce.
  */
 export function updateSidecodeSessionLastActivity(
   home: string,
   cliSessionId: string,
   lastActivityAt: number,
-  completedTurns: number,
 ): SidecodeSessionMetadata | undefined {
   const existing = readSidecodeSession(home, cliSessionId);
   if (!existing) return undefined;
-  if (
-    lastActivityAt <= existing.lastActivityAt &&
-    completedTurns <= existing.completedTurns
-  ) {
+  if (lastActivityAt <= existing.lastActivityAt) {
     return existing;
   }
   const merged: SidecodeSessionMetadata = {
     ...existing,
-    lastActivityAt: Math.max(lastActivityAt, existing.lastActivityAt),
-    completedTurns: Math.max(completedTurns, existing.completedTurns),
+    lastActivityAt,
   };
   writeSidecodeSession(home, merged);
   return merged;

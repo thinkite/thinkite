@@ -318,8 +318,6 @@ export const sessionState = z.object({
   createdAt: z.number(),
   /** V0 archive UI not exposed but field present for forward compat. */
   isArchived: z.boolean(),
-  /** Running count of completed turns. Increments on every turn_completed. */
-  completedTurns: z.number(),
   /** V0 owned sessions are always `bypassPermissions`. */
   permissionMode: z.enum(["bypassPermissions", "default"]),
 });
@@ -353,7 +351,7 @@ export const subscribeSessionsResponse = z.object({
 /** Server push — a session's state changed. Client overwrites by
  *  `sessionId` (last-write-wins). Fires on every transition: activity
  *  flip, model change, title rename (V0.5+), archive (V0.5+),
- *  completedTurns increment, lastActivityAt bump. */
+ *  lastActivityAt bump. */
 export const sessionStateChangedEvent = z.object({
   type: z.literal("session_state_changed"),
   sessionId: z.string(),
