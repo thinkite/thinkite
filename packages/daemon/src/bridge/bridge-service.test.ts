@@ -185,6 +185,162 @@ describe("BridgeService.attach", () => {
   });
 });
 
+describe("BridgeService.attach with `existing` — M3.4 startup re-attach path", () => {
+  it("threads existingCseSessionId + initialSequenceNum into attachTransport (no createCodeSession path)", async () => {
+    const t = fakeTransport("cse_known");
+    const { service, attachSpy } = serviceWith(t);
+    const rt = runtime();
+
+    await service.attach(
+      "s1",
+      rt,
+      { title: "T", cwd: "/w" },
+      { cseSessionId: "cse_known", lastSSESequenceNum: 42 },
+    );
+
+    expect(attachSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        existingCseSessionId: "cse_known",
+        initialSequenceNum: 42,
+      }),
+    );
+  });
+
+  it("SKIPS writeBridgeWorkerState on re-attach (disk record already correct; backfilled flag must not be reset)", async () => {
+    const t = fakeTransport("cse_known");
+    const writeSpy = vi.fn(() => undefined);
+    const updateSpy = vi.fn(() => undefined);
+    const clearSpy = vi.fn(() => undefined);
+    const oauth = fakeOAuth();
+    const attachSpy = vi.fn(async () => t);
+    const service = new BridgeService({
+      home: "/test-home",
+      oauth,
+      persist: {
+        writeBridgeWorkerState:
+          writeSpy as unknown as typeof writeBridgeWorkerState,
+        updateBridgeSequenceNum:
+          updateSpy as unknown as typeof updateBridgeSequenceNum,
+        clearBridgeWorkerState:
+          clearSpy as unknown as typeof clearBridgeWorkerState,
+      },
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+
+    await service.attach(
+      "s1",
+      runtime(),
+      { title: "T", cwd: "/w" },
+      { cseSessionId: "cse_known", lastSSESequenceNum: 99 },
+    );
+
+    expect(writeSpy).not.toHaveBeenCalled(); // backfilled / cseId / seq preserved
+  });
+
+  it("wires runtime.bridge + records the session in the map + arms proactive timer (re-attach is a full live attach)", async () => {
+    const t = fakeTransport("cse_known", { expiresInSec: 7200 });
+    const setTimerSpy = vi.fn(
+      (_cb: () => void, _ms: number) =>
+        ({ unref: () => {} }) as unknown as ReturnType<typeof setTimeout>,
+    );
+    const oauth = fakeOAuth();
+    const attachSpy = vi.fn(async () => t);
+    const service = new BridgeService({
+      home: "/test-home",
+      oauth,
+      persist: STUB_PERSIST,
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+      setTimer: setTimerSpy as unknown as typeof setTimeout,
+      clearTimer: (() => {}) as unknown as typeof clearTimeout,
+    });
+    const rt = runtime();
+
+    await service.attach(
+      "s1",
+      rt,
+      { title: "T", cwd: "/w" },
+      { cseSessionId: "cse_known", lastSSESequenceNum: 5 },
+    );
+
+    expect(rt.bridge).toBe(t);
+    expect(service.has("s1")).toBe(true);
+    expect(service.size).toBe(1);
+    expect(oauth.starts).toBe(1);
+    expect(setTimerSpy).toHaveBeenCalledOnce(); // proactive timer armed
+  });
+
+  it("still builds the inbound bag — re-attached bridges accept inbound prompts/interrupts the same as fresh ones", async () => {
+    const t = fakeTransport("cse_known");
+    let capturedInbound:
+      | undefined
+      | { onInboundMessage?: unknown; onSetPermissionMode?: unknown };
+    const attachSpy = vi.fn(async (params: { inbound?: unknown }) => {
+      capturedInbound = params.inbound as typeof capturedInbound;
+      return t;
+    });
+    const service = new BridgeService({
+      home: "/test-home",
+      oauth: fakeOAuth(),
+      persist: STUB_PERSIST,
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+      onInboundPrompt: () => {}, // flips hasInbound → bag built
+    });
+
+    await service.attach(
+      "s1",
+      runtime(),
+      { title: "T", cwd: "/w" },
+      { cseSessionId: "cse_known", lastSSESequenceNum: 1 },
+    );
+
+    expect(capturedInbound).toBeDefined();
+    expect(capturedInbound?.onInboundMessage).toBeTypeOf("function");
+    // V0 permission-mode stub also present
+    expect(capturedInbound?.onSetPermissionMode).toBeTypeOf("function");
+  });
+
+  it("on re-attach failure: leaves runtime.bridge untouched, doesn't touch disk, stops the idle timer", async () => {
+    const oauth = fakeOAuth();
+    const writeSpy = vi.fn(() => undefined);
+    const clearSpy = vi.fn(() => undefined);
+    const attachSpy = vi.fn(async () => {
+      throw new Error("reattach_failed");
+    });
+    const service = new BridgeService({
+      home: "/test-home",
+      oauth,
+      persist: {
+        writeBridgeWorkerState:
+          writeSpy as unknown as typeof writeBridgeWorkerState,
+        updateBridgeSequenceNum: (() =>
+          undefined) as unknown as typeof updateBridgeSequenceNum,
+        clearBridgeWorkerState:
+          clearSpy as unknown as typeof clearBridgeWorkerState,
+      },
+      attachTransport:
+        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+    });
+    const rt = runtime();
+
+    await expect(
+      service.attach(
+        "s1",
+        rt,
+        { title: "T", cwd: "/w" },
+        { cseSessionId: "cse_dead", lastSSESequenceNum: 10 },
+      ),
+    ).rejects.toThrow("reattach_failed");
+    expect(rt.bridge).toBeNull();
+    expect(service.has("s1")).toBe(false);
+    expect(writeSpy).not.toHaveBeenCalled(); // no half-write
+    expect(clearSpy).not.toHaveBeenCalled(); // startup orchestrator decides clearing
+    expect(oauth.stops).toBe(1);
+  });
+});
+
 describe("BridgeService — inbound prompt routing (M2.2)", () => {
   it("wires inbound when onInboundPrompt is set, and routes extracted prompts to it", async () => {
     const t = fakeTransport();

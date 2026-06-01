@@ -364,18 +364,27 @@ export class BridgeService {
    * decides how to surface it; `runtime.bridge` is left untouched on failure
    * (no half-wired mirror).
    *
+   * `existing` (M3.4 startup re-attach): when provided, attaches to an
+   * already-known cse_ session instead of calling `createCodeSession` — used
+   * by the startup orchestrator to revive bridges from disk after a daemon
+   * restart. The transport resumes from `lastSSESequenceNum` (exclusive) and
+   * persistence is SKIPPED (worker state on disk is already correct: same
+   * cse_, more-accurate disk seq, `backfilled` flag preserved across boots).
+   * Omit for fresh attaches (create-bridged / M3.3 upgrade paths).
+   *
    * Starts the OAuth proactive timer on the first successful attach.
    */
   async attach(
     sessionId: string,
     runtime: BridgeAttachableRuntime,
     request: BridgeAttachRequest,
+    existing?: { cseSessionId: string; lastSSESequenceNum: number },
   ): Promise<BridgeTransport> {
     if (this.stopped) {
       throw new Error("BridgeService is shut down");
     }
-    const existing = this.sessions.get(sessionId);
-    if (existing !== undefined) return existing.transport;
+    const already = this.sessions.get(sessionId);
+    if (already !== undefined) return already.transport;
 
     // Arm the OAuth proactive timer before the first attach so ensureFresh
     // (called inside BridgeTransport.attach) benefits, and idle bridges stay
@@ -402,6 +411,15 @@ export class BridgeService {
         ...(request.tags !== undefined ? { tags: request.tags } : {}),
         ...(request.baseUrl !== undefined ? { baseUrl: request.baseUrl } : {}),
         ...(inbound !== undefined ? { inbound } : {}),
+        // M3.4 re-attach path: thread existingCseSessionId +
+        // initialSequenceNum so BridgeTransport.attach skips createCodeSession
+        // and resumes the live cse_ from the disk-checkpointed seq.
+        ...(existing !== undefined
+          ? {
+              existingCseSessionId: existing.cseSessionId,
+              initialSequenceNum: existing.lastSSESequenceNum,
+            }
+          : {}),
         persistSequenceNum: (seq) => {
           this.updateBridgeSequenceNum(this.home, sessionId, seq);
         },
@@ -424,36 +442,43 @@ export class BridgeService {
     };
     this.sessions.set(sessionId, session);
     runtime.bridge = transport;
-    // M3.1 — record the cse_ mapping + initial seq=0 + backfilled=false in
-    // sidecode metadata. M3.4 startup re-attach reads this back to know which
-    // sessions to revive (any session with `bridge` present is bridged).
-    // backfilled=false is the create-bridged default; M3.3 upgrade flow flips
-    // it to true via markBridgeBackfilled after the historical flush. We
-    // ALWAYS overwrite on attach — re-attach (epoch bump) resets the seq
-    // basis, so a stale higher value from a prior session would now point
-    // past the server's actual position.
-    //
-    // No-op + log when metadata is missing (writeBridgeWorkerState returns
-    // undefined): means the caller attached a bridge to a session that was
-    // never registered locally, which is a programmer bug rather than user
-    // state we should fabricate.
-    const persisted = this.writeBridgeWorkerState(this.home, sessionId, {
-      cseSessionId: transport.cseSessionId,
-      lastSSESequenceNum: 0,
-      backfilled: false,
-    });
-    if (persisted === undefined) {
-      this.log(
-        `[bridge] session ${sessionId} attached but no sidecode metadata to persist worker state — restart re-attach won't find it`,
-      );
+    if (existing === undefined) {
+      // M3.1 fresh-attach — record the cse_ mapping + initial seq=0 +
+      // backfilled=false in sidecode metadata. M3.4 startup re-attach reads
+      // this back to know which sessions to revive (any session with `bridge`
+      // present is bridged). backfilled=false is the create-bridged default;
+      // M3.3 upgrade flow flips it to true via markBridgeBackfilled after the
+      // historical flush.
+      //
+      // No-op + log when metadata is missing (writeBridgeWorkerState returns
+      // undefined): means the caller attached a bridge to a session that was
+      // never registered locally, which is a programmer bug rather than user
+      // state we should fabricate.
+      const persisted = this.writeBridgeWorkerState(this.home, sessionId, {
+        cseSessionId: transport.cseSessionId,
+        lastSSESequenceNum: 0,
+        backfilled: false,
+      });
+      if (persisted === undefined) {
+        this.log(
+          `[bridge] session ${sessionId} attached but no sidecode metadata to persist worker state — restart re-attach won't find it`,
+        );
+      }
     }
+    // For M3.4 re-attach path: disk worker state is preserved as-is — same
+    // cse_, server replays seq > lastSSESequenceNum on attachBridgeSession,
+    // and the in-flight `persistSequenceNum` callback above advances the
+    // checkpoint naturally as new events stream in. Critically we MUST NOT
+    // overwrite `backfilled` here (re-attach of an already-backfilled bridge
+    // would otherwise re-trigger M3.3's history flush on next upgrade).
+    //
     // M3.5.5 — arm proactive jwt refresh against the freshly-issued
     // expires_in. Refreshes ~30min before expiry so the next reconnect
     // happens on a still-valid transport (PROACTIVE path) rather than
     // waiting for onClose to fire (REACTIVE path).
     this.armProactiveRefresh(sessionId);
     this.log(
-      `[bridge] session ${sessionId} mirroring to ${transport.cseSessionId}`,
+      `[bridge] session ${sessionId} ${existing !== undefined ? "re-attached" : "mirroring"} to ${transport.cseSessionId}`,
     );
     return transport;
   }

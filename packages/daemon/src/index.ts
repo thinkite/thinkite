@@ -6,6 +6,10 @@ import {
 import { type EventDelta, PROTOCOL_VERSION } from "@sidecodeapp/protocol";
 import { BridgeService } from "./bridge/bridge-service.js";
 import { OAuthRefreshManager } from "./bridge/oauth-refresh.js";
+import {
+  reattachBridgedSessions,
+  summarizeReattach,
+} from "./bridge/startup-reattach.js";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { listDesktopSessions } from "./desktop/sessions.js";
@@ -101,8 +105,13 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // ref-counts its proactive timer to live only while ≥1 bridge is attached.
   // Drained in daemon.stop() AFTER runtimeManager.shutdown() so no late
   // forwardToBridge write races the transport close.
+  //
+  // Lifted out so the M3.4 startup-reattach orchestrator below shares the
+  // SAME OAuth instance — the keychain token is process-global, and a
+  // duplicate manager would double-refresh.
+  const oauth = new OAuthRefreshManager();
   const bridgeService = new BridgeService({
-    oauth: new OAuthRefreshManager(),
+    oauth,
     home,
     log: (message) => console.log(`[sidecode] ${message}`),
     // M2.2 read-in: a claude.ai-typed prompt → drive this session's local
@@ -292,6 +301,36 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       ),
   });
   webrtc.start();
+
+  // M3.4 startup re-attach (M3.6 SCOPE — includes archived sessions). Scan
+  // sidecode metadata for any session with a `bridge` field and revive the
+  // BridgeTransport. Fire-and-forget: daemon shouldn't block iOS accept on
+  // a (potentially slow) cloud probe per bridged session. iOS subscribe
+  // doesn't depend on bridge state — a not-yet-re-attached session behaves
+  // like a never-bridged session until the orchestrator catches up; once
+  // attached, the inbound prompt handler above starts driving incoming
+  // claude.ai messages.
+  //
+  // No `await` here: a serial multi-session probe could take several
+  // seconds and we want the WebRTC peer server to start accepting iOS
+  // connections immediately. Errors within a single session don't propagate
+  // out of the orchestrator (each session is independently classified +
+  // logged); the overall promise should not reject under normal conditions.
+  void reattachBridgedSessions({
+    home,
+    runtimeManager,
+    bridgeService,
+    oauth,
+    log: (msg) => console.log(`[sidecode] ${msg}`),
+  })
+    .then((summary) => console.log(`[sidecode] ${summarizeReattach(summary)}`))
+    .catch((err) =>
+      console.log(
+        `[sidecode] [bridge] startup re-attach unexpectedly rejected: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      ),
+    );
 
   // Advertise that we're running so `sidecode pair` (and the menubar) can
   // mint offers without spawning their own daemon. Address fields are
