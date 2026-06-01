@@ -718,6 +718,239 @@ describe("ensureSessionLoop — turn lifecycle from SDK envelopes", () => {
   });
 });
 
+describe("M3.7 idle-teardown wiring", () => {
+  function resultEnvelope(): SDKMessage {
+    return {
+      type: "result",
+      subtype: "success",
+      uuid: "env-result",
+      session_id: "s",
+      duration_ms: 100,
+      duration_api_ms: 80,
+      is_error: false,
+      num_turns: 1,
+      result: "ok",
+      stop_reason: "end_turn",
+      total_cost_usd: 0,
+      modelUsage: {},
+      permission_denials: [],
+    } as unknown as SDKMessage;
+  }
+
+  /** Build a runtime with an injected synchronous timer. The injected
+   *  setTimer captures the callback so tests can fire it manually instead
+   *  of waiting real time. `fire()` invokes the latest captured callback. */
+  function runtimeWithMockedTimer() {
+    let lastCb: (() => void) | undefined;
+    let lastDelay: number | undefined;
+    let cleared = 0;
+    const setTimer = vi.fn(((cb: () => void, ms: number) => {
+      lastCb = cb;
+      lastDelay = ms;
+      return Symbol("h") as unknown as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout);
+    const clearTimer = vi.fn(((_h: ReturnType<typeof setTimeout>) => {
+      cleared++;
+    }) as unknown as typeof clearTimeout);
+    const runtime = new SessionRuntime<EventDelta>("s1", {
+      setTimer: setTimer as unknown as typeof setTimeout,
+      clearTimer: clearTimer as unknown as typeof clearTimeout,
+    });
+    return {
+      runtime,
+      setTimer,
+      get clearCount() {
+        return cleared;
+      },
+      get lastDelay() {
+        return lastDelay;
+      },
+      fire() {
+        if (lastCb === undefined) throw new Error("no timer armed");
+        lastCb();
+      },
+    };
+  }
+
+  it("result envelope stamps lastTurnCompleteAt + arms teardown timer (15min)", async () => {
+    const harness = runtimeWithMockedTimer();
+    const before = Date.now();
+    await ensureSessionLoop(harness.runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([resultEnvelope()]),
+    });
+    expect(harness.runtime.lastTurnCompleteAt).toBeGreaterThanOrEqual(before);
+    expect(harness.lastDelay).toBe(15 * 60_000);
+  });
+
+  it("ensureSessionLoop entry cancels a pending teardown timer (turn-complete then new turn = cancel)", async () => {
+    const harness = runtimeWithMockedTimer();
+    // First turn: result envelope arms the timer.
+    await ensureSessionLoop(harness.runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([resultEnvelope()]),
+    });
+    expect(harness.runtime.hasTeardownTimerArmed).toBe(true);
+    const clearedBefore = harness.clearCount;
+    // Second ensureSessionLoop call (simulating new sendPrompt arriving)
+    // → cancels timer at entry.
+    await ensureSessionLoop(harness.runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([]),
+    });
+    expect(harness.clearCount).toBeGreaterThan(clearedBefore);
+    // Cleared once for "new turn" cancel + once for re-arm-from-empty-loop's
+    // no-op cancelTimer? Actually empty loop doesn't fire result envelope
+    // so timer was canceled and never re-armed.
+    expect(harness.runtime.hasTeardownTimerArmed).toBe(false);
+  });
+
+  it("timer fire disposes the SDK query (nulls slots, calls close)", async () => {
+    const harness = runtimeWithMockedTimer();
+    const closeSpy = vi.fn();
+    const factory = ((_params: unknown) => {
+      // Long-running iterator — only yields the result then waits.
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        yield resultEnvelope();
+        // Stay "open" — finally tests respawn race separately.
+        await new Promise<void>(() => {}); // never resolve
+      }
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: closeSpy,
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+
+    const loop = ensureSessionLoop(harness.runtime, {
+      mode: "resume",
+      queryFactory: factory,
+    });
+    // Yield to microtask so the result envelope is consumed + timer armed.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(harness.runtime.hasTeardownTimerArmed).toBe(true);
+    expect(harness.runtime.query).not.toBeNull();
+
+    // Fire the teardown timer.
+    harness.fire();
+
+    expect(closeSpy).toHaveBeenCalledOnce();
+    expect(harness.runtime.query).toBeNull();
+    expect(harness.runtime.inputChannel).toBeNull();
+    expect(harness.runtime.loopPromise).toBeNull();
+    // Avoid hanging the test on the never-resolve iterator.
+    void loop;
+  });
+
+  it("identity-guarded finally — disposed loop's finally is no-op when a new loop has spawned (no state-trash)", async () => {
+    const runtime = new SessionRuntime<EventDelta>("s1");
+
+    // Spawn loop A with a never-yielding iterator.
+    let queryASignaled = false;
+    const factoryA = ((_p: unknown) => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        // wait for signal to end
+        while (!queryASignaled) {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+      }
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(() => {
+          queryASignaled = true; // disposeQuery → close → iterator ends
+        }),
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+
+    const loopA = ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: factoryA,
+    });
+    const queryA = runtime.query;
+    expect(queryA).not.toBeNull();
+
+    // Synchronously dispose (simulates timer fire mid-loop) — claims slots.
+    runtime.disposeQuery();
+    expect(runtime.query).toBeNull();
+
+    // Immediately spawn loop B — should succeed and own the slots.
+    const loopB = ensureSessionLoop(runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([resultEnvelope()]),
+    });
+    const queryB = runtime.query;
+    expect(queryB).not.toBeNull();
+    expect(queryB).not.toBe(queryA);
+
+    // Wait for loop B to drain (it ends after one envelope).
+    await loopB;
+    // And loop A drains (its `close()` was triggered by disposeQuery).
+    await loopA;
+
+    // KEY ASSERTION: after BOTH loops have drained, loop A's finally MUST
+    // NOT have cleared loop B's state (which finished normally and cleared
+    // itself). runtime should be cleanly post-loopB-completion: all null.
+    expect(runtime.query).toBeNull();
+    expect(runtime.inputChannel).toBeNull();
+    expect(runtime.loopPromise).toBeNull();
+  });
+
+  it("integration: turn-complete → 15min idle → fire → next sendPrompt respawns fresh", async () => {
+    const harness = runtimeWithMockedTimer();
+    let factoryCalls = 0;
+    const factory = ((_p: unknown) => {
+      factoryCalls++;
+      // Each call yields one result envelope + ends.
+      return Object.assign(
+        (async function* () {
+          yield resultEnvelope();
+        })(),
+        {
+          interrupt: vi.fn(async () => {}),
+          close: vi.fn(),
+        },
+      ) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+
+    // Turn 1.
+    await ensureSessionLoop(harness.runtime, {
+      mode: "resume",
+      queryFactory: factory,
+    });
+    expect(factoryCalls).toBe(1);
+    expect(harness.runtime.hasTeardownTimerArmed).toBe(true);
+
+    // Simulate 15min passing → timer fires.
+    harness.fire();
+    expect(harness.runtime.query).toBeNull();
+
+    // Turn 2 (after idle teardown) → fresh spawn.
+    await ensureSessionLoop(harness.runtime, {
+      mode: "resume",
+      queryFactory: factory,
+    });
+    expect(factoryCalls).toBe(2); // new SDK process
+    expect(harness.runtime.hasTeardownTimerArmed).toBe(true); // re-armed
+  });
+
+  it("error result envelope ALSO arms the timer (any terminal envelope counts as turn-complete)", async () => {
+    const harness = runtimeWithMockedTimer();
+    await ensureSessionLoop(harness.runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          uuid: "env-err",
+          session_id: "s",
+          errors: ["boom"],
+        } as unknown as SDKMessage,
+      ]),
+    });
+    // Timer armed (15min) regardless of success vs error subtype.
+    expect(harness.lastDelay).toBe(15 * 60_000);
+  });
+});
+
 describe("ensureSessionLoop — CCR bridge mirror (M1 write-out)", () => {
   function resultEnvelope(): SDKMessage {
     return {

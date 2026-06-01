@@ -160,6 +160,153 @@ describe("SessionRuntime", () => {
     expect(r.oldestCursor).toBe(1);
   });
 
+  // ─── M3.7 idle-teardown ──────────────────────────────────────────────
+
+  it("M3.7 lastTurnCompleteAt initialized to ~now at construction", () => {
+    const before = Date.now();
+    const r = new SessionRuntime<string>("s1");
+    const after = Date.now();
+    expect(r.lastTurnCompleteAt).toBeGreaterThanOrEqual(before);
+    expect(r.lastTurnCompleteAt).toBeLessThanOrEqual(after);
+  });
+
+  it("M3.7 armTeardownTimer schedules the fire callback at the requested delay (via injected setTimer)", () => {
+    let scheduledCb: (() => void) | undefined;
+    let scheduledDelay: number | undefined;
+    const setTimer = vi.fn(((cb: () => void, ms: number) => {
+      scheduledCb = cb;
+      scheduledDelay = ms;
+      return Symbol("h") as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
+    const r = new SessionRuntime<string>("s1", {
+      setTimer: setTimer as unknown as typeof setTimeout,
+      clearTimer: (() => {}) as unknown as typeof clearTimeout,
+    });
+
+    const fired: number[] = [];
+    r.armTeardownTimer(900_000, () => fired.push(Date.now()));
+
+    expect(setTimer).toHaveBeenCalledOnce();
+    expect(scheduledDelay).toBe(900_000);
+    expect(r.hasTeardownTimerArmed).toBe(true);
+    expect(fired).toHaveLength(0);
+
+    scheduledCb?.(); // simulate timer firing
+    expect(fired).toHaveLength(1);
+  });
+
+  it("M3.7 armTeardownTimer twice cancels the prior timer (no double-fire)", () => {
+    const cleared: Array<unknown> = [];
+    const setTimer = vi.fn(
+      (() =>
+        Symbol("h") as unknown as ReturnType<
+          typeof setTimeout
+        >) as unknown as typeof setTimeout,
+    );
+    const clearTimer = vi.fn((h: ReturnType<typeof setTimeout>) => {
+      cleared.push(h);
+    });
+    const r = new SessionRuntime<string>("s1", {
+      setTimer: setTimer as unknown as typeof setTimeout,
+      clearTimer: clearTimer as unknown as typeof clearTimeout,
+    });
+
+    r.armTeardownTimer(1000, () => {});
+    r.armTeardownTimer(2000, () => {}); // re-arm
+    expect(setTimer).toHaveBeenCalledTimes(2);
+    expect(clearTimer).toHaveBeenCalledOnce(); // prior was canceled
+  });
+
+  it("M3.7 cancelTeardownTimer returns true when armed, false when not, and is idempotent", () => {
+    const r = new SessionRuntime<string>("s1", {
+      setTimer: (() =>
+        Symbol("h") as unknown as ReturnType<
+          typeof setTimeout
+        >) as unknown as typeof setTimeout,
+      clearTimer: (() => {}) as unknown as typeof clearTimeout,
+    });
+    expect(r.cancelTeardownTimer()).toBe(false);
+
+    r.armTeardownTimer(1000, () => {});
+    expect(r.hasTeardownTimerArmed).toBe(true);
+    expect(r.cancelTeardownTimer()).toBe(true);
+    expect(r.hasTeardownTimerArmed).toBe(false);
+    expect(r.cancelTeardownTimer()).toBe(false); // idempotent
+  });
+
+  it("M3.7 disposeQuery synchronously nulls query / inputChannel / loopPromise + calls close / end", () => {
+    const r = new SessionRuntime<string>("s1");
+    const closeSpy = vi.fn();
+    const endSpy = vi.fn();
+    const queryStub: RuntimeQueryHandle = {
+      interrupt: async () => {},
+      close: closeSpy,
+    };
+    r.query = queryStub;
+    r.inputChannel = { push: () => {}, end: endSpy };
+    r.loopPromise = Promise.resolve();
+
+    r.disposeQuery();
+
+    // Synchronous nullification
+    expect(r.query).toBeNull();
+    expect(r.inputChannel).toBeNull();
+    expect(r.loopPromise).toBeNull();
+    // SDK signaled to wind down
+    expect(closeSpy).toHaveBeenCalledOnce();
+    expect(endSpy).toHaveBeenCalledOnce();
+  });
+
+  it("M3.7 disposeQuery is a no-op when query already null", () => {
+    const r = new SessionRuntime<string>("s1");
+    expect(() => r.disposeQuery()).not.toThrow();
+    expect(r.query).toBeNull();
+  });
+
+  it("M3.7 disposeQuery PRESERVES bridge / subscribers / settled / latestUsage", () => {
+    const r = new SessionRuntime<string>("s1");
+    r.query = { interrupt: async () => {}, close: () => {} };
+    r.inputChannel = { push: () => {}, end: () => {} };
+    r.loopPromise = Promise.resolve();
+    r.bridge = {
+      write: () => {},
+      sendResult: () => {},
+      reportState: () => {},
+      close: () => {},
+    };
+    r.settled = [];
+    r.settledCursor = 5;
+    r.latestUsage = { inputTokens: 100 };
+    const cb = vi.fn();
+    r.subscribe(cb);
+
+    r.disposeQuery();
+
+    // Only the SDK-process slots cleared. Everything else survives.
+    expect(r.bridge).not.toBeNull();
+    expect(r.settled).not.toBeNull();
+    expect(r.latestUsage).not.toBeNull();
+    expect(r.subscriberCount).toBe(1);
+  });
+
+  it("M3.7 disposeQuery swallows close/end exceptions (best-effort tear-down)", () => {
+    const r = new SessionRuntime<string>("s1");
+    r.query = {
+      interrupt: async () => {},
+      close: () => {
+        throw new Error("close_failed");
+      },
+    };
+    r.inputChannel = {
+      push: () => {},
+      end: () => {
+        throw new Error("end_failed");
+      },
+    };
+    expect(() => r.disposeQuery()).not.toThrow();
+    expect(r.query).toBeNull();
+  });
+
   it("continuous fold: addEvent applies foldDelta + tracks settledCursor, only once settled is seeded", () => {
     // Trivial reducer (appends a marker per event) — exercises the addEvent
     // wiring: the `settled !== null` guard + the settledCursor advance, not

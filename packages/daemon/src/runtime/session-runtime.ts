@@ -131,6 +131,12 @@ export interface SessionRuntimeOptions<T> {
    * Left unset in tests that don't exercise the fold.
    */
   foldDelta?: (settled: TimelineItem[], delta: T) => TimelineItem[];
+  /** Test seams for M3.7 idle-teardown timer — inject mock
+   *  setTimeout/clearTimeout to drive the dispose schedule synchronously
+   *  in tests. Default = real Node timers. Same pattern as
+   *  BridgeService.setTimer / OAuthRefreshManager. */
+  setTimer?: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clearTimer?: (handle: ReturnType<typeof setTimeout>) => void;
 }
 
 export class SessionRuntime<T> {
@@ -181,6 +187,16 @@ export class SessionRuntime<T> {
    *  loop exit, so it never leaks into a later turn. */
   interrupted = false;
 
+  /** M3.7 idle-teardown clock — epoch ms of the most recent turn-complete
+   *  edge (set by run-query's handleResultEnvelope alongside
+   *  bridge.reportState("idle")). Drives both the teardown-timer arm AND
+   *  the structured-log idleDurationMs field on fire.
+   *
+   *  Initialized to construction time so a never-used runtime's clock has
+   *  a sensible value (though dispose can't fire on it: timer is only
+   *  ARMED at the first turn-complete edge). */
+  lastTurnCompleteAt: number = Date.now();
+
   private readonly bufferCap: number;
   private readonly buffer: RuntimeEvent<T>[] = [];
   private readonly subscribers = new Set<Subscriber<T>>();
@@ -190,10 +206,20 @@ export class SessionRuntime<T> {
     delta: T,
   ) => TimelineItem[];
 
+  // M3.7 idle-teardown timer + injection seams (see SessionRuntimeOptions).
+  private teardownTimer?: ReturnType<typeof setTimeout>;
+  private readonly setTimer: (
+    cb: () => void,
+    ms: number,
+  ) => ReturnType<typeof setTimeout>;
+  private readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
+
   constructor(sessionId: string, options: SessionRuntimeOptions<T> = {}) {
     this.sessionId = sessionId;
     this.bufferCap = options.bufferCap ?? 500;
     this.foldDelta = options.foldDelta;
+    this.setTimer = options.setTimer ?? setTimeout;
+    this.clearTimer = options.clearTimer ?? clearTimeout;
   }
 
   /** Cursor of the oldest event still in the buffer, or null if empty. */
@@ -288,5 +314,101 @@ export class SessionRuntime<T> {
    */
   unsubscribe(cb: Subscriber<T>): boolean {
     return this.subscribers.delete(cb);
+  }
+
+  // ─── M3.7 idle-teardown ────────────────────────────────────────────────
+  //
+  // Goal: after a session's query has been idle for N minutes, kill the
+  // ~250MB claude SDK subprocess to free RAM. Runtime SURVIVES (bridge,
+  // subscribers, persisted state all stay) — only the heavyweight subprocess
+  // goes. Next sendPrompt / bridge inbound triggers a fresh respawn via the
+  // existing ensureSessionLoop path (~500ms-1s cold-start cost, mostly
+  // invisible to UX since network RTT dominates).
+  //
+  // Policy: subscriber-presence is NOT a keep-alive signal — iOS watching
+  // a transcript doesn't need the query process (transcript is settled +
+  // historical fold). Bridge presence is NOT a keep-alive signal either —
+  // bridge inbound's ensureSessionLoop call respawns on demand. So the
+  // single dispose predicate is "loopPromise.settled && no new turn for N
+  // min", driven entirely off the turn-complete edge (handleResultEnvelope).
+
+  /**
+   * Arm the idle-teardown timer. Cancels any prior pending timer first so
+   * it's idempotent (a turn-complete edge mid-turn-N-of-many resets the
+   * clock cleanly). When the timer fires, `onFire` runs — caller's
+   * responsibility to invoke `disposeQuery()` + emit any structured logs.
+   *
+   * `.unref()` lets the daemon exit even with a pending timer (same pattern
+   * as BridgeService.armProactiveRefresh). In Node `setTimeout` returns a
+   * Timeout that has .unref(); test-injected timers may not, so guard.
+   */
+  armTeardownTimer(delayMs: number, onFire: () => void): void {
+    this.cancelTeardownTimer();
+    const handle = this.setTimer(onFire, delayMs);
+    if (
+      typeof (handle as unknown as { unref?: () => void }).unref === "function"
+    ) {
+      (handle as unknown as { unref: () => void }).unref();
+    }
+    this.teardownTimer = handle;
+  }
+
+  /**
+   * Cancel the pending teardown timer. Returns `true` iff one was actually
+   * armed (lets callers gate "canceled" logging on the meaningful case —
+   * a no-op cancel during first-ever ensureSessionLoop shouldn't log).
+   */
+  cancelTeardownTimer(): boolean {
+    if (this.teardownTimer === undefined) return false;
+    this.clearTimer(this.teardownTimer);
+    this.teardownTimer = undefined;
+    return true;
+  }
+
+  /** Test/introspection helper: whether the teardown timer is currently armed. */
+  get hasTeardownTimerArmed(): boolean {
+    return this.teardownTimer !== undefined;
+  }
+
+  /**
+   * Synchronous tear-down of the SDK query subprocess. Claims the runtime
+   * slots IMMEDIATELY (so a racing ensureSessionLoop sees `query/inputChannel/
+   * loopPromise === null` and spawns a fresh process) + best-effort closes
+   * the old SDK channel + handle. The OLD consumer loop's finally still
+   * runs eventually (~5s SDK grace period); it's guarded by identity
+   * comparison in run-query so its cleanup is a no-op when we've already
+   * nullified.
+   *
+   * Preserves: `settled` / `latestUsage` (a fast respawn (rare) gets a warm
+   * snapshot; the loop's identity-guarded finally won't trash them as long
+   * as the new loopPromise has taken over). `bridge` is independent of
+   * query lifetime by design (multiplex invariant — see
+   * project_sidecode_ccr_architecture). Subscribers are untouched.
+   *
+   * No-op when `query === null` (already disposed / never spawned).
+   */
+  disposeQuery(): void {
+    const q = this.query;
+    if (q === null) return;
+    const channel = this.inputChannel;
+    // Synchronously claim the slots — ensureSessionLoop called right after
+    // this returns will see null + spawn fresh, not return the dying handle.
+    this.query = null;
+    this.inputChannel = null;
+    this.loopPromise = null;
+    // Best-effort tear-down of the SDK side. `inputChannel.end()` signals
+    // the AsyncMessageInput iterator to stop, then query.close() triggers
+    // the SDK's ~5s grace shutdown. Both wrapped — neither should throw,
+    // but a torn-down channel + reentrant close could surprise us.
+    try {
+      channel?.end();
+    } catch {
+      // best-effort
+    }
+    try {
+      q.close();
+    } catch {
+      // best-effort
+    }
   }
 }

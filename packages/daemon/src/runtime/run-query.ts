@@ -75,6 +75,19 @@ import {
 } from "./async-message-input.js";
 import type { SessionRuntime } from "./session-runtime.js";
 
+/**
+ * M3.7 idle-teardown delay — after a turn completes, wait this long with no
+ * new turn activity before disposing the SDK query subprocess to free the
+ * ~250MB RSS it holds. Runtime survives; next sendPrompt / bridge inbound
+ * triggers a fresh ensureSessionLoop spawn (~500ms-1s cold start).
+ *
+ * 15min picked over Codex's 30min — sidecode's per-user RAM pressure is
+ * higher (claude SDK process ≈ 250MB per session, easily 1+ GB with a few
+ * cycled sessions), and respawn cost is invisible behind first-byte
+ * network RTT. Tune via dogfood logs ([teardown] events) post-M3.7.
+ */
+export const IDLE_TEARDOWN_DELAY_MS = 15 * 60_000;
+
 // ─── Streaming state (per turn — actually per persistent loop) ─────────
 
 interface StreamingState {
@@ -157,6 +170,18 @@ export function ensureSessionLoop(
   runtime: SessionRuntime<EventDelta>,
   options: SessionLoopOptions,
 ): Promise<void> {
+  // M3.7 — cancel any pending idle-teardown timer FIRST, even if we're
+  // about to return the existing loop (idempotent early-return below). A
+  // turn-complete edge from this runtime's previous turn would have armed
+  // a 15min teardown; a new turn starting (this call) means activity, so
+  // cancel. Doing it before the early-return ensures the cancel fires
+  // whether the loop is still alive (mid-idle, between turns) or about to
+  // be respawned (post-dispose).
+  if (runtime.cancelTeardownTimer()) {
+    console.log(
+      `[sidecode] [teardown] canceled session=${runtime.sessionId} reason=new_turn`,
+    );
+  }
   if (runtime.loopPromise) return runtime.loopPromise;
 
   const channel = createAsyncMessageInput<SDKUserMessage>();
@@ -251,20 +276,36 @@ export function ensureSessionLoop(
         });
       }
     } finally {
-      runtime.query = null;
-      runtime.inputChannel = null;
-      runtime.loopPromise = null;
-      // Invalidate the in-memory settled snapshot — turn-boundary
-      // refresh isn't running anymore, so it would go stale. Next
-      // cold-path subscribe re-reads JSONL fresh. Router's lazy-init
-      // path also won't re-memoize until ensureSessionLoop spawns a
-      // new query handle (i.e. another sendPrompt comes in for this
-      // session). See router subscribe handler's `if (runtime.query
-      // !== null)` gate for the matching half of this invariant.
-      runtime.settled = null;
-      runtime.settledCursor = 0;
-      runtime.latestUsage = null;
-      runtime.interrupted = false;
+      // M3.7 identity guard — `disposeQuery()` may have ALREADY claimed
+      // these slots (synchronously nulled query/inputChannel/loopPromise)
+      // and a fresh `ensureSessionLoop` call may have spawned a NEW loop
+      // with a different SDK query handle that now owns
+      // runtime.{query,inputChannel,loopPromise}. In that case, the OLD
+      // loop (this one, draining after disposeQuery's q.close()) MUST
+      // NOT clear the new loop's state. Compare against `q` (the SDK
+      // handle, captured in the outer scope BEFORE the IIFE — chosen
+      // over loopPromise to dodge a TS "used before assigned" cycle);
+      // cleanup ONLY when we still own the slot. Wrapped in a positive
+      // `if` (not `if !== q { return }`) so biome doesn't flag a
+      // return-in-finally — control-flow correctness is preserved
+      // because the try-IIFE doesn't return a value.
+      if (runtime.query === q) {
+        runtime.query = null;
+        runtime.inputChannel = null;
+        runtime.loopPromise = null;
+        // Invalidate the in-memory settled snapshot — turn-boundary
+        // refresh isn't running anymore, so it would go stale. Next
+        // cold-path subscribe re-reads JSONL fresh. Router's lazy-init
+        // path also won't re-memoize until ensureSessionLoop spawns a
+        // new query handle (i.e. another sendPrompt comes in for this
+        // session). See router subscribe handler's `if (runtime.query
+        // !== null)` gate for the matching half of this invariant.
+        runtime.settled = null;
+        runtime.settledCursor = 0;
+        runtime.latestUsage = null;
+        runtime.interrupted = false;
+      }
+      // else: disposed + replaced — new loop owns the slots, skip cleanup.
     }
   })();
   runtime.loopPromise = loopPromise;
@@ -724,6 +765,28 @@ function handleResultEnvelope(
   // can't leak into a later turn (e.g. if the interrupt raced a success).
   const wasInterrupted = runtime.interrupted;
   runtime.interrupted = false;
+  // M3.7 — turn-complete edge (success / error / interrupted, ALL count
+  // as "turn over"). Stamp the clock + arm the idle-teardown timer here,
+  // BEFORE the subtype-based branching, so every terminal envelope
+  // advances M3.7 state uniformly. Pairs with bridge.reportState("idle")
+  // in forwardToBridge (same edge, different consumer; #17 cross-client
+  // broadcast will also subscribe to this clock when it lands).
+  runtime.lastTurnCompleteAt = Date.now();
+  const armedAt = runtime.lastTurnCompleteAt;
+  runtime.armTeardownTimer(IDLE_TEARDOWN_DELAY_MS, () => {
+    // Compute the actual idle duration (≈ delayMs in steady state but
+    // useful if a timer fires late). Read FRESHLY in case a turn-complete
+    // re-armed and somehow this callback still fires — but cancel guards
+    // upstream should prevent that.
+    const idleDurationMs = Date.now() - armedAt;
+    console.log(
+      `[sidecode] [teardown] fired session=${runtime.sessionId} idleDurationMs=${idleDurationMs}`,
+    );
+    runtime.disposeQuery();
+  });
+  console.log(
+    `[sidecode] [teardown] armed session=${runtime.sessionId} delayMs=${IDLE_TEARDOWN_DELAY_MS}`,
+  );
   const rawUsage = r.usage as Record<string, unknown> | undefined;
   const usage = rawUsage
     ? {
