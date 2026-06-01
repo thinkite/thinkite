@@ -477,6 +477,26 @@ export class BridgeService {
     // happens on a still-valid transport (PROACTIVE path) rather than
     // waiting for onClose to fire (REACTIVE path).
     this.armProactiveRefresh(sessionId);
+    // #17 — bring CCR's external_metadata in sync with the user's
+    // last-known model intent on M3.4 STARTUP RE-ATTACH only. Why
+    // gated on `existing !== undefined`:
+    //   - Fresh create-bridged path: `createCodeSession({config:{model}})`
+    //     already plumbed the model into the cse_ session config at
+    //     creation, so CCR's view already matches; reportMetadata here
+    //     would be a redundant write of the same value.
+    //   - Re-attach path: `existingCseSessionId` SKIPS createCodeSession,
+    //     so the cse_'s CCR-side model is whatever was stored at the
+    //     ORIGINAL create. Between then and now the user may have changed
+    //     models via setSessionSelection (persisted to disk meta + applied
+    //     to local query + reportMetadata'd live) — but if that
+    //     reportMetadata happened in a prior daemon session, a restart
+    //     would still see CCR with the original model. This catch-up
+    //     PUT bridges that gap.
+    // Best-effort: BridgeTransport.reportMetadata swallows write errors,
+    // so a flaky CCR transport doesn't fail the attach.
+    if (existing !== undefined && request.model !== undefined) {
+      transport.reportMetadata({ model: request.model });
+    }
     this.log(
       `[bridge] session ${sessionId} ${existing !== undefined ? "re-attached" : "mirroring"} to ${transport.cseSessionId}`,
     );

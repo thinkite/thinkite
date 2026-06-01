@@ -45,6 +45,7 @@ function fakeTransport(
 ) {
   let closeCalls = 0;
   const reconnectCalls: Array<Record<string, unknown>> = [];
+  const reportMetadataCalls: Array<Record<string, unknown>> = [];
   return {
     cseSessionId,
     get closeCalls() {
@@ -53,11 +54,17 @@ function fakeTransport(
     get reconnectCalls() {
       return reconnectCalls;
     },
+    get reportMetadataCalls() {
+      return reportMetadataCalls;
+    },
     close() {
       closeCalls++;
     },
     write() {},
     sendResult() {},
+    reportMetadata(metadata: Record<string, unknown>) {
+      reportMetadataCalls.push(metadata);
+    },
     getSequenceNum: () => 0,
     expiresInSec: opts.expiresInSec ?? 14400, // default 4h, matches server
     async reconnect(o: Record<string, unknown>) {
@@ -71,6 +78,7 @@ function fakeTransport(
   } as unknown as BridgeTransport & {
     closeCalls: number;
     reconnectCalls: Array<Record<string, unknown>>;
+    reportMetadataCalls: Array<Record<string, unknown>>;
   };
 }
 
@@ -338,6 +346,48 @@ describe("BridgeService.attach with `existing` — M3.4 startup re-attach path",
     expect(writeSpy).not.toHaveBeenCalled(); // no half-write
     expect(clearSpy).not.toHaveBeenCalled(); // startup orchestrator decides clearing
     expect(oauth.stops).toBe(1);
+  });
+
+  it("#17 re-attach with `model` PUTs external_metadata to catch CCR up with disk intent", async () => {
+    const t = fakeTransport("cse_known") as ReturnType<typeof fakeTransport>;
+    const { service } = serviceWith(t);
+
+    await service.attach(
+      "s1",
+      runtime(),
+      { title: "T", cwd: "/w", model: "claude-opus-4-7" },
+      { cseSessionId: "cse_known", lastSSESequenceNum: 0 },
+    );
+
+    expect(t.reportMetadataCalls).toEqual([{ model: "claude-opus-4-7" }]);
+  });
+
+  it("#17 re-attach without `model` does NOT call reportMetadata (no intent to assert)", async () => {
+    const t = fakeTransport("cse_known") as ReturnType<typeof fakeTransport>;
+    const { service } = serviceWith(t);
+
+    await service.attach(
+      "s1",
+      runtime(),
+      { title: "T", cwd: "/w" }, // no model
+      { cseSessionId: "cse_known", lastSSESequenceNum: 0 },
+    );
+
+    expect(t.reportMetadataCalls).toEqual([]);
+  });
+
+  it("#17 fresh attach (NOT re-attach) does NOT call reportMetadata (createCodeSession already plumbed model)", async () => {
+    const t = fakeTransport("cse_x") as ReturnType<typeof fakeTransport>;
+    const { service } = serviceWith(t);
+
+    await service.attach(
+      "s1",
+      runtime(),
+      { title: "T", cwd: "/w", model: "claude-opus-4-7" },
+      // No `existing` arg → fresh-attach path
+    );
+
+    expect(t.reportMetadataCalls).toEqual([]);
   });
 });
 
