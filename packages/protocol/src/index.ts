@@ -15,12 +15,12 @@ export {
 export {
   type CommandContext,
   type CommandHandling,
-  SLASH_COMMANDS,
-  type SlashCommandName,
-  type SlashCommandSpec,
   getCommandsForContext,
   isWhitelistedCommand,
   parseSlashCommand,
+  SLASH_COMMANDS,
+  type SlashCommandName,
+  type SlashCommandSpec,
 } from "./slash-commands.js";
 
 // ─── Protocol version ──────────────────────────────────────────────────────
@@ -254,6 +254,119 @@ export const sessionInfo = z.object({
 });
 
 export type SessionInfo = z.infer<typeof sessionInfo>;
+
+// ─── Session control state stream (issue #17) ─────────────────────────────
+//
+// `sessionState` is daemon → iOS's PER-SESSION view-model for the list +
+// detail-header surfaces. Carries both live fields (activity, model,
+// lastActivityAt) that flip during a session's lifecycle AND static
+// fields (title, cwd, ...) that rarely change but iOS still needs.
+//
+// Delivered via the `subscribeSessions` RPC (one daemon-wide stream, NOT
+// per-session) — iOS pairs once, gets `initial: [{sessionId, state}, ...]`
+// for every session the daemon knows about, then receives
+// `session_state_changed` / `session_state_removed` push envelopes for
+// every transition. iOS stores entries in a TanStack DB custom-sync
+// collection; views consume via `useLiveQuery` with declarative
+// `.where()` / `.orderBy()`. See [[project_v0_session_list_design]].
+//
+// Wire policy: LAST-WRITE-WINS, NO cursor. A push always carries the
+// FULL state; client just overwrites. Missing pushes self-heal on the
+// next transition (no replay needed — this is current-state, not an
+// event log). Contrast with `eventDelta` / `eventFrame` which IS cursor-
+// keyed and needs ordered fold (transcript timeline).
+//
+// Coexistence with `sessionInfo` / `listSessions`: V0 ships both during
+// the iOS migration to the new stream. Once iOS switches over,
+// `listSessions` is deleted (see project_v0_session_list_design "协议
+// 同步收口"). `sessionState` is the long-term shape; `sessionInfo` is
+// scheduled for removal.
+
+export const sessionActivity = z.enum(["idle", "running", "requires_action"]);
+export type SessionActivity = z.infer<typeof sessionActivity>;
+
+/**
+ * Full daemon-side view of a session for the iOS list + detail-header
+ * surfaces. Driven by `SessionRuntime.setActivity` / `setModel` (live
+ * fields) + persisted disk metadata (static fields).
+ *
+ * For sessions with a live `SessionRuntime` in the daemon, the values
+ * are the in-memory truth. For sessions that exist only on disk
+ * (sidecode metadata, no runtime yet — e.g. between daemon boot and
+ * first sendPrompt), the values are synthesized from disk metadata
+ * with `activity = "idle"`. iOS doesn't distinguish — both are just
+ * entries in the collection.
+ */
+export const sessionState = z.object({
+  /** "idle" | "running" | "requires_action". `requires_action`
+   *  reserved for V0.5+ permission flow; V0 daemon never emits it. */
+  activity: sessionActivity,
+  /** Raw SDK model key (e.g. `claude-opus-4-7[1m]`). Null when no model
+   *  was committed yet (brand-new session, picker hasn't bootstrapped). */
+  model: z.string().nullable(),
+  /** Epoch ms of the most recent activity transition (start OR end of
+   *  turn). iOS list view sorts by this `desc`. Live updates on every
+   *  push; persisted to disk at turn-complete for restart durability. */
+  lastActivityAt: z.number(),
+  /** Auto-derived (from first prompt) or user-renamed title. */
+  title: z.string(),
+  /** Local working directory the session is rooted in. iOS uses this for
+   *  the detail-screen git status bar (NOT for list rows — see
+   *  project_v0_session_list_design). */
+  cwd: z.string(),
+  /** Epoch ms session creation. Immutable. */
+  createdAt: z.number(),
+  /** V0 archive UI not exposed but field present for forward compat. */
+  isArchived: z.boolean(),
+  /** Running count of completed turns. Increments on every turn_completed. */
+  completedTurns: z.number(),
+  /** V0 owned sessions are always `bypassPermissions`. */
+  permissionMode: z.enum(["bypassPermissions", "default"]),
+});
+export type SessionState = z.infer<typeof sessionState>;
+
+/** Subscribe-once RPC: gets initial snapshot of ALL session states the
+ *  daemon knows about + opens the stream for live `session_state_changed`
+ *  / `session_state_removed` push envelopes. WebRTC channel close →
+ *  implicit unsubscribe via `ctx.onDisconnect` (router-side).
+ *
+ *  iOS calls this once per WebRTC connection (after pair + hello). The
+ *  TanStack DB sync handler is the ONLY consumer; views read via
+ *  `useLiveQuery`. */
+export const subscribeSessionsCommand = z.object({
+  type: z.literal("subscribeSessions"),
+  requestId: z.string(),
+});
+
+export const subscribeSessionsResponse = z.object({
+  type: z.literal("subscribeSessions.response"),
+  requestId: z.string(),
+  /** Full daemon-side snapshot. Empty array on a fresh daemon. */
+  initial: z.array(
+    z.object({
+      sessionId: z.string(),
+      state: sessionState,
+    }),
+  ),
+});
+
+/** Server push — a session's state changed. Client overwrites by
+ *  `sessionId` (last-write-wins). Fires on every transition: activity
+ *  flip, model change, title rename (V0.5+), archive (V0.5+),
+ *  completedTurns increment, lastActivityAt bump. */
+export const sessionStateChangedEvent = z.object({
+  type: z.literal("session_state_changed"),
+  sessionId: z.string(),
+  state: sessionState,
+});
+
+/** Server push — a session was deleted server-side (sidecode delete RPC,
+ *  bridge cse_ delete observed via M3.5 reconnect classifier, etc.).
+ *  Client removes the entry from its collection. */
+export const sessionStateRemovedEvent = z.object({
+  type: z.literal("session_state_removed"),
+  sessionId: z.string(),
+});
 
 // ─── Timeline items (server-normalized message stream) ────────────────────
 //
@@ -1240,6 +1353,7 @@ export const command = z.discriminatedUnion("type", [
   listDirectoryCommand,
   getFilesystemRootsCommand,
   getModelsCommand,
+  subscribeSessionsCommand,
 ]);
 
 export type Command = z.infer<typeof command>;
@@ -1258,6 +1372,7 @@ export const response = z.discriminatedUnion("type", [
   listDirectoryResponse,
   getFilesystemRootsResponse,
   getModelsResponse,
+  subscribeSessionsResponse,
 ]);
 
 export type Response = z.infer<typeof response>;
@@ -1286,6 +1401,7 @@ export const clientFrame = z.discriminatedUnion("type", [
   listDirectoryCommand,
   getFilesystemRootsCommand,
   getModelsCommand,
+  subscribeSessionsCommand,
 ]);
 
 export type ClientFrame = z.infer<typeof clientFrame>;
@@ -1316,6 +1432,9 @@ export const daemonFrame = z.discriminatedUnion("type", [
   listDirectoryResponse,
   getFilesystemRootsResponse,
   getModelsResponse,
+  subscribeSessionsResponse,
+  sessionStateChangedEvent,
+  sessionStateRemovedEvent,
 ]);
 
 export type DaemonFrame = z.infer<typeof daemonFrame>;
