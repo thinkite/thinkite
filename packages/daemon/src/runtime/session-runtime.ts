@@ -119,6 +119,11 @@ export interface RuntimeEvent<T> {
 
 export type Subscriber<T> = (event: RuntimeEvent<T>) => void;
 
+/** Session activity state — CCR's `session_status` enum, mirrored on the
+ *  iOS protocol (issue #17 — cross-client broadcast). V0 emits only `idle |
+ *  running`; `requires_action` is reserved for V0.5+ permission flow. */
+export type SessionActivity = "idle" | "running" | "requires_action";
+
 export interface SessionRuntimeOptions<T> {
   /** Max events retained in the ring. Oldest evicted on overflow. */
   bufferCap?: number;
@@ -137,6 +142,18 @@ export interface SessionRuntimeOptions<T> {
    *  BridgeService.setTimer / OAuthRefreshManager. */
   setTimer?: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (handle: ReturnType<typeof setTimeout>) => void;
+  /** Delay for the idle-teardown timer (ms). Default `15 * 60_000` (matches
+   *  Claude Desktop's empirical policy `0 subs + idle 15min`). Tunable via
+   *  this seam without rebuilding the manager — tests use small values
+   *  (e.g. 100ms) for fast assertions. */
+  teardownDelayMs?: number;
+  /** Optional logger for M3.7 teardown lifecycle events. Default no-op so
+   *  the pure-data-structure contract isn't violated by stray stdout.
+   *  Production = `(msg) => console.log("[sidecode] " + msg)` wired via
+   *  SessionRuntimeManager defaults. Receives pre-formatted messages
+   *  ("[teardown] armed session=..." etc.) without sidecode prefix —
+   *  injector adds it. */
+  log?: (msg: string) => void;
 }
 
 export class SessionRuntime<T> {
@@ -188,14 +205,21 @@ export class SessionRuntime<T> {
   interrupted = false;
 
   /** M3.7 idle-teardown clock — epoch ms of the most recent turn-complete
-   *  edge (set by run-query's handleResultEnvelope alongside
-   *  bridge.reportState("idle")). Drives both the teardown-timer arm AND
-   *  the structured-log idleDurationMs field on fire.
+   *  edge (set by `setActivity("idle")` via run-query's markActivity
+   *  helper, alongside bridge.reportState("idle")). Drives both the
+   *  teardown-timer arm AND the structured-log idleDurationMs field.
    *
    *  Initialized to construction time so a never-used runtime's clock has
    *  a sensible value (though dispose can't fire on it: timer is only
-   *  ARMED at the first turn-complete edge). */
+   *  ARMED at the first turn-complete edge AND when subs.size===0). */
   lastTurnCompleteAt: number = Date.now();
+
+  /** M3.7.4 / #17 current activity state. Mirrors Claude Code's
+   *  bridge.reportState contract (`idle | running | requires_action`).
+   *  Set by `setActivity()` (called from run-query's markActivity at the
+   *  3 reportState edges); also gates the teardown timer (arm only when
+   *  `idle`). Reserved enum value `requires_action` not emitted in V0. */
+  activity: SessionActivity = "idle";
 
   private readonly bufferCap: number;
   private readonly buffer: RuntimeEvent<T>[] = [];
@@ -213,6 +237,8 @@ export class SessionRuntime<T> {
     ms: number,
   ) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
+  private readonly teardownDelayMs: number;
+  private readonly log: (msg: string) => void;
 
   constructor(sessionId: string, options: SessionRuntimeOptions<T> = {}) {
     this.sessionId = sessionId;
@@ -220,6 +246,8 @@ export class SessionRuntime<T> {
     this.foldDelta = options.foldDelta;
     this.setTimer = options.setTimer ?? setTimeout;
     this.clearTimer = options.clearTimer ?? clearTimeout;
+    this.teardownDelayMs = options.teardownDelayMs ?? 15 * 60_000;
+    this.log = options.log ?? (() => {});
   }
 
   /** Cursor of the oldest event still in the buffer, or null if empty. */
@@ -297,12 +325,26 @@ export class SessionRuntime<T> {
       }
     }
     this.subscribers.add(cb);
+    // M3.7.5 — a sub just joined; user is watching. Cancel any pending
+    // teardown timer (set when the LAST sub left, or at turn-complete with
+    // no subs). Idempotent — no-op when nothing was armed. Mirrors Claude
+    // Desktop's policy (`0 subs + idle 15min → teardown`); sub presence
+    // means we MUST keep the query warm for the watcher.
+    if (this.cancelTeardownTimer()) {
+      this.log(
+        `[teardown] canceled session=${this.sessionId} reason=subscribe`,
+      );
+    }
 
     let unsubscribed = false;
     return () => {
       if (unsubscribed) return;
       unsubscribed = true;
       this.subscribers.delete(cb);
+      // M3.7.5 — last sub left + session idle → arm teardown countdown.
+      // No-op if other subs still present, query already null, or activity
+      // is "running" (mid-turn).
+      this.armIfEligibleForTeardown();
     };
   }
 
@@ -313,7 +355,10 @@ export class SessionRuntime<T> {
    * registered through different paths).
    */
   unsubscribe(cb: Subscriber<T>): boolean {
-    return this.subscribers.delete(cb);
+    const removed = this.subscribers.delete(cb);
+    // M3.7.5 — symmetric with the subscribe-returned closure's arm path.
+    if (removed) this.armIfEligibleForTeardown();
+    return removed;
   }
 
   // ─── M3.7 idle-teardown ────────────────────────────────────────────────
@@ -341,16 +386,101 @@ export class SessionRuntime<T> {
    * `.unref()` lets the daemon exit even with a pending timer (same pattern
    * as BridgeService.armProactiveRefresh). In Node `setTimeout` returns a
    * Timeout that has .unref(); test-injected timers may not, so guard.
+   *
+   * On fire: the internal wrapper synchronously clears `teardownTimer`
+   * BEFORE invoking `onFire`, so `hasTeardownTimerArmed` accurately
+   * reports `false` once the timer has truly elapsed (otherwise the
+   * field would dangle pointing at the expired handle).
    */
   armTeardownTimer(delayMs: number, onFire: () => void): void {
     this.cancelTeardownTimer();
-    const handle = this.setTimer(onFire, delayMs);
+    const handle = this.setTimer(() => {
+      // Auto-clear field on fire so post-fire state is clean. cancelTeardownTimer
+      // after fire is a no-op (no field set), preserving idempotency.
+      this.teardownTimer = undefined;
+      onFire();
+    }, delayMs);
     if (
       typeof (handle as unknown as { unref?: () => void }).unref === "function"
     ) {
       (handle as unknown as { unref: () => void }).unref();
     }
     this.teardownTimer = handle;
+  }
+
+  /**
+   * M3.7.4 — update the activity state. Internal dedupe (no-op if same).
+   * Returns the timer-side effects so callers (run-query's markActivity)
+   * can emit structured logs without re-deriving the predicate. Side
+   * effects:
+   *
+   *   - "running" → cancel any pending teardown timer (turn in flight,
+   *     either user-driven via pushPrompt OR autonomous SDK yield via
+   *     forwardToBridge first model frame — both are activity edges)
+   *   - "idle" → stamp `lastTurnCompleteAt = now` + arm teardown timer
+   *     IFF eligible (`subscribers.size === 0 && query !== null`).
+   *     Subscriber-gating matches Claude Desktop's empirical policy:
+   *     watching = keep warm; nobody watching = reclaim after delay.
+   *   - "requires_action" → reserved (V0 never emits); semantically
+   *     close to "running" — cancel teardown.
+   *
+   * Returns `{ changed, armed, canceled }` so caller can decide which
+   * structured logs to emit. `armed`/`canceled` are timer transitions,
+   * NOT subsumed by `changed` (caller still emits "armed/canceled" logs
+   * regardless of activity transition for the bridge/CCR side parity).
+   */
+  setActivity(state: SessionActivity): {
+    changed: boolean;
+    armed: boolean;
+    canceled: boolean;
+  } {
+    const changed = this.activity !== state;
+    this.activity = state;
+    let armed = false;
+    let canceled = false;
+    if (state === "idle") {
+      this.lastTurnCompleteAt = Date.now();
+      armed = this.armIfEligibleForTeardown();
+    } else {
+      // running / requires_action — activity in flight, MUST cancel any
+      // pending teardown to avoid mid-turn dispose.
+      canceled = this.cancelTeardownTimer();
+    }
+    return { changed, armed, canceled };
+  }
+
+  /**
+   * Arm the idle-teardown timer iff ALL eligibility predicates hold:
+   *   1. `activity === "idle"` (not mid-turn)
+   *   2. `subscribers.size === 0` (no iOS watcher to keep warm) — M3.7.5
+   *   3. `query !== null` (something to actually dispose)
+   *
+   * Returns true iff arm succeeded. Used by both `setActivity("idle")`
+   * (turn-complete edge) AND `unsubscribe()` (last-sub-left edge) — same
+   * predicate, two trigger points. Idempotent: re-arming over an
+   * already-armed timer just resets the clock (intentional — most-recent
+   * idle edge wins).
+   *
+   * The fire callback: log + `disposeQuery()`. Reads `lastTurnCompleteAt`
+   * at fire time (not arm time) so the log accurately reports the actual
+   * idle duration — useful when a sub-leave-triggered arm fires long
+   * after the last turn (`idleDurationMs ≈ readingTime + delay`).
+   */
+  private armIfEligibleForTeardown(): boolean {
+    if (this.activity !== "idle") return false;
+    if (this.subscribers.size !== 0) return false;
+    if (this.query === null) return false;
+    this.armTeardownTimer(this.teardownDelayMs, () => {
+      const idleDurationMs = Date.now() - this.lastTurnCompleteAt;
+      this.log(
+        `[teardown] fired session=${this.sessionId} idleDurationMs=${idleDurationMs}`,
+      );
+      this.disposeQuery();
+    });
+    this.log(
+      `[teardown] armed session=${this.sessionId} delayMs=${this.teardownDelayMs}`,
+    );
+    return true;
   }
 
   /**

@@ -96,9 +96,12 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // Drained on shutdown via daemon.stop() → runtimeManager.shutdown().
   // `foldDelta` wires the continuous-fold reducer so each runtime keeps its
   // in-memory `settled` snapshot current as events fan out (no per-turn
-  // JSONL re-read — see messages/fold.ts).
+  // JSONL re-read — see messages/fold.ts). `log` plumbs M3.7 teardown
+  // structured-log events ("[teardown] armed/canceled/fired ...") through
+  // the same `[sidecode]` stdout channel everything else uses.
   const runtimeManager = new SessionRuntimeManager<EventDelta>({
     foldDelta: foldEventDelta,
+    log: (msg) => console.log(`[sidecode] ${msg}`),
   });
   // CCR bridge mirror service (slice M1). One OAuthRefreshManager (the
   // keychain token is process-global) feeds every bridge; BridgeService

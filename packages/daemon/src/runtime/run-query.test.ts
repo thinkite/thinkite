@@ -783,26 +783,77 @@ describe("M3.7 idle-teardown wiring", () => {
     expect(harness.lastDelay).toBe(15 * 60_000);
   });
 
-  it("ensureSessionLoop entry cancels a pending teardown timer (turn-complete then new turn = cancel)", async () => {
+  it("M3.7.4 — pushPrompt cancels a pending teardown timer (turn-complete then user sendPrompt = cancel via markActivity)", async () => {
     const harness = runtimeWithMockedTimer();
     // First turn: result envelope arms the timer.
-    await ensureSessionLoop(harness.runtime, {
+    let secondPushReady = false;
+    const factory = ((_p: unknown) => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        yield resultEnvelope();
+        // Stay open so the loop is alive when we push the next prompt.
+        while (!secondPushReady) {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+      }
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(() => {
+          secondPushReady = true;
+        }),
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+
+    const loop = ensureSessionLoop(harness.runtime, {
       mode: "resume",
-      queryFactory: fakeQueryYielding([resultEnvelope()]),
+      queryFactory: factory,
     });
+    // Wait for the result envelope to be consumed (arms timer via markActivity("idle"))
+    await new Promise((r) => setTimeout(r, 0));
     expect(harness.runtime.hasTeardownTimerArmed).toBe(true);
+    expect(harness.runtime.activity).toBe("idle");
     const clearedBefore = harness.clearCount;
-    // Second ensureSessionLoop call (simulating new sendPrompt arriving)
-    // → cancels timer at entry.
+
+    // User sends a new prompt → pushPrompt fires markActivity("running")
+    // → cancels the armed teardown timer.
+    pushPrompt(harness.runtime, "second turn");
+
+    expect(harness.clearCount).toBeGreaterThan(clearedBefore);
+    expect(harness.runtime.hasTeardownTimerArmed).toBe(false);
+    expect(harness.runtime.activity).toBe("running");
+
+    // Drain — let the loop wind down.
+    secondPushReady = true;
+    harness.runtime.query?.close();
+    await loop;
+  });
+
+  it("M3.7.4 — SDK autonomous yield (forwardToBridge first frame) cancels a pending teardown timer", async () => {
+    // The gap the M3.7.4 helper was designed to close: turn N completes,
+    // timer is armed for 15min, then the SDK autonomously yields a NEW
+    // message_start (scheduled task, hook response, async background work)
+    // BEFORE the next user prompt. Without the cancel in forwardToBridge's
+    // first-model-frame branch, the timer would fire mid-autonomous-turn
+    // and kill live work.
+    const harness = runtimeWithMockedTimer();
     await ensureSessionLoop(harness.runtime, {
       mode: "resume",
-      queryFactory: fakeQueryYielding([]),
+      queryFactory: fakeQueryYielding([
+        // Turn 1: complete → arm timer
+        resultEnvelope(),
+        // Turn 2 (autonomous, no user prompt): first model frame should
+        // cancel the timer via markActivity("running") in forwardToBridge.
+        messageStart("msg_auto"),
+        contentBlockStartText(0),
+        contentBlockDeltaText(0, "autonomous work"),
+        messageStop(),
+      ]),
     });
-    expect(harness.clearCount).toBeGreaterThan(clearedBefore);
-    // Cleared once for "new turn" cancel + once for re-arm-from-empty-loop's
-    // no-op cancelTimer? Actually empty loop doesn't fire result envelope
-    // so timer was canceled and never re-armed.
+    // Final state after autonomous work: NO pending timer (canceled by the
+    // first frame), no result envelope to re-arm it. The runtime is mid-
+    // turn from the SDK's POV (activity = "running") even though we ran
+    // out of mock messages.
     expect(harness.runtime.hasTeardownTimerArmed).toBe(false);
+    expect(harness.runtime.activity).toBe("running");
   });
 
   it("timer fire disposes the SDK query (nulls slots, calls close)", async () => {
@@ -948,6 +999,70 @@ describe("M3.7 idle-teardown wiring", () => {
     });
     // Timer armed (15min) regardless of success vs error subtype.
     expect(harness.lastDelay).toBe(15 * 60_000);
+  });
+
+  // ─── M3.7.5 subscriber gate — Claude Desktop parity ──────────────────
+
+  it("M3.7.5 subscriber present at turn-complete BLOCKS teardown arm (watching = keep warm)", async () => {
+    const harness = runtimeWithMockedTimer();
+    harness.runtime.subscribe(() => {}); // iOS watching
+
+    await ensureSessionLoop(harness.runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([resultEnvelope()]),
+    });
+    // setActivity('idle') runs but armIfEligibleForTeardown gates out on
+    // subs.size > 0 — timer never armed.
+    expect(harness.runtime.hasTeardownTimerArmed).toBe(false);
+    expect(harness.runtime.activity).toBe("idle");
+  });
+
+  it("M3.7.5 sub joining mid-idle cancels armed timer (user came back to look)", async () => {
+    const harness = runtimeWithMockedTimer();
+    await ensureSessionLoop(harness.runtime, {
+      mode: "resume",
+      queryFactory: fakeQueryYielding([resultEnvelope()]),
+    });
+    expect(harness.runtime.hasTeardownTimerArmed).toBe(true);
+
+    // iOS opens session detail screen → subscribes → cancels teardown.
+    harness.runtime.subscribe(() => {});
+    expect(harness.runtime.hasTeardownTimerArmed).toBe(false);
+  });
+
+  it("M3.7.5 sub leaving with idle session ARMS the timer (user closed iOS app)", async () => {
+    const harness = runtimeWithMockedTimer();
+    const unsub = harness.runtime.subscribe(() => {});
+
+    // Long-lived factory: yields the result envelope but the iterator
+    // stays awaiting more messages (production behavior — streaming-input
+    // mode keeps the SDK process alive between turns). This is what makes
+    // `runtime.query` survive the result envelope so the eligibility
+    // predicate at unsubscribe-time sees query !== null.
+    const factory = ((_p: unknown) => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        yield resultEnvelope();
+        await new Promise<void>(() => {}); // hold loop open
+      }
+      return Object.assign(gen(), {
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(),
+      }) as unknown as Query;
+    }) as typeof import("@anthropic-ai/claude-agent-sdk").query;
+
+    const loop = ensureSessionLoop(harness.runtime, {
+      mode: "resume",
+      queryFactory: factory,
+    });
+    // Wait for the result envelope to be consumed (sub-gated, no arm).
+    await new Promise((r) => setTimeout(r, 0));
+    expect(harness.runtime.hasTeardownTimerArmed).toBe(false);
+    expect(harness.runtime.query).not.toBeNull(); // still alive
+
+    // User backgrounds iOS / leaves session → sub drops → arm.
+    unsub();
+    expect(harness.runtime.hasTeardownTimerArmed).toBe(true);
+    void loop; // avoid hanging — never-resolve iterator
   });
 });
 

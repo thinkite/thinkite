@@ -73,20 +73,66 @@ import {
   type AsyncMessageInput,
   createAsyncMessageInput,
 } from "./async-message-input.js";
-import type { SessionRuntime } from "./session-runtime.js";
+import type { SessionActivity, SessionRuntime } from "./session-runtime.js";
 
 /**
- * M3.7 idle-teardown delay — after a turn completes, wait this long with no
- * new turn activity before disposing the SDK query subprocess to free the
+ * M3.7 idle-teardown delay — after a turn completes with no subscribers,
+ * wait this long before disposing the SDK query subprocess to free the
  * ~250MB RSS it holds. Runtime survives; next sendPrompt / bridge inbound
  * triggers a fresh ensureSessionLoop spawn (~500ms-1s cold start).
  *
- * 15min picked over Codex's 30min — sidecode's per-user RAM pressure is
- * higher (claude SDK process ≈ 250MB per session, easily 1+ GB with a few
- * cycled sessions), and respawn cost is invisible behind first-byte
- * network RTT. Tune via dogfood logs ([teardown] events) post-M3.7.
+ * 15min matches Claude Desktop's empirical policy (user-tested 2026-05-31:
+ * `0 subscribers + session idle 15min → teardown`). NOT differentiator on
+ * Desktop's teardown side — sidecode's actual differentiators (per memory
+ * project_sdk_process_pool_v05): lazy spawn (Desktop spawns on
+ * subscribe; we spawn only on prompt) + LRU cap (V0.5+).
+ *
+ * Note: this constant is no longer read by run-query — SessionRuntime
+ * owns the timer internally and honors `teardownDelayMs` option.
+ * Re-exported for tests that want the production-default value.
  */
 export const IDLE_TEARDOWN_DELAY_MS = 15 * 60_000;
+
+/**
+ * M3.7.4 unified activity edge — drives BOTH consumers of the
+ * idle/running boundary from the same 3 source points:
+ *   - `pushPrompt` (user submission, earliest "running")
+ *   - `forwardToBridge` first model frame (stream_event / assistant, the
+ *     second "running" report — matches Claude Code's writeSdkMessages→
+ *     startTurn AND catches SDK autonomous yields like scheduled tasks
+ *     that wake the process without a user prompt)
+ *   - `handleResultEnvelope` (terminal envelope, "idle")
+ *
+ * What it does on each edge:
+ *   - `runtime.setActivity(state)` → updates runtime state, manages the
+ *     M3.7 teardown timer (arm on idle if subs===0; cancel on running)
+ *   - `runtime.bridge?.reportState(state)` → CCR cross-client UI
+ *     (claude.ai's session-list spinner; deduped internally by bridge)
+ *   - (future #17) `runtime.setActivity` will also emit a
+ *     `session_activity` EventDelta to iOS subscribers — only one line to
+ *     add at that time since the helper centralizes the edge already
+ *
+ * Logging: emits `[teardown] armed/canceled` only on actual state
+ * transitions (relies on setActivity's dedupe). `[teardown] fired` is
+ * emitted from inside SessionRuntime's timer callback. Bridge
+ * reportState is error-isolated (a flaky transport must not break the
+ * pillar query loop).
+ */
+function markActivity(
+  runtime: SessionRuntime<EventDelta>,
+  state: SessionActivity,
+): void {
+  runtime.setActivity(state);
+  // CCR side — bridge.reportState dedupes internally on its own state, so
+  // a deduped local setActivity STILL drives a deduped bridge call (the
+  // bridge layer is the source of truth for cloud "did we send this
+  // state change"). Error-isolated + null-bridge-safe.
+  try {
+    runtime.bridge?.reportState(state);
+  } catch {
+    // best-effort — never let a CCR transport hiccup break the pillar path
+  }
+}
 
 // ─── Streaming state (per turn — actually per persistent loop) ─────────
 
@@ -170,18 +216,12 @@ export function ensureSessionLoop(
   runtime: SessionRuntime<EventDelta>,
   options: SessionLoopOptions,
 ): Promise<void> {
-  // M3.7 — cancel any pending idle-teardown timer FIRST, even if we're
-  // about to return the existing loop (idempotent early-return below). A
-  // turn-complete edge from this runtime's previous turn would have armed
-  // a 15min teardown; a new turn starting (this call) means activity, so
-  // cancel. Doing it before the early-return ensures the cancel fires
-  // whether the loop is still alive (mid-idle, between turns) or about to
-  // be respawned (post-dispose).
-  if (runtime.cancelTeardownTimer()) {
-    console.log(
-      `[sidecode] [teardown] canceled session=${runtime.sessionId} reason=new_turn`,
-    );
-  }
+  // M3.7.4 — the explicit teardown-timer cancel that used to live here
+  // (M3.7.2) moved to markActivity("running"), which fires from pushPrompt
+  // (always called right after ensureSessionLoop). Same end-state, but
+  // centralizes the activity-edge logic so SDK autonomous yields (caught
+  // by markActivity in forwardToBridge first-frame branch) ALSO cancel
+  // the timer — the gap that pure ensureSessionLoop-entry-cancel missed.
   if (runtime.loopPromise) return runtime.loopPromise;
 
   const channel = createAsyncMessageInput<SDKUserMessage>();
@@ -381,17 +421,14 @@ export function pushPrompt(
   // object we feed the local query → local and cloud agree on the prompt.
   // No-op + error-isolated for pure (non-bridged) sessions via forwardToBridge.
   forwardToBridge(runtime, userMessage);
-  // Report running at prompt-submit — the PRIMARY/earliest report, matching
-  // Claude Code's onUserPrompt ("mark running when the user submits a prompt
-  // … before the first assistant token", remoteBridgeCore.ts). Makes claude.ai
+  // M3.7.4 unified activity edge — earliest "running" report (matches Claude
+  // Code's onUserPrompt, remoteBridgeCore.ts: "mark running when the user
+  // submits a prompt … before the first assistant token"). Makes claude.ai
   // show the session busy the instant the prompt lands, not ~200-800ms later
-  // at the first model frame. forwardToBridge re-asserts running on that first
-  // frame (deduped no-op). Error-isolated + null-bridge-safe.
-  try {
-    runtime.bridge?.reportState("running");
-  } catch {
-    // best-effort — never let a state report break prompt submission.
-  }
+  // at the first model frame. Also cancels any pending M3.7 teardown timer
+  // (a user prompt = activity). forwardToBridge re-asserts running on first
+  // frame (deduped no-op locally + on bridge).
+  markActivity(runtime, "running");
 }
 
 function buildUserMessage(
@@ -576,12 +613,13 @@ function forwardToBridge(
   try {
     const m = msg as { type?: unknown; subtype?: unknown };
     if (m.type === "result") {
-      // Turn end: stop the spinner (sendResult) AND mark the session idle.
-      // The matching `reportState("running")` fires in pushPrompt at turn
-      // start. Without the idle report claude.ai would keep showing the
-      // session as running after the turn finishes.
+      // Turn end: stop the spinner (sendResult). The idle reportState was
+      // moved out of here in M3.7.4 — it now fires from handleResultEnvelope
+      // via markActivity("idle"), which atomically updates runtime state +
+      // arms the teardown timer + reports CCR. This branch keeps only
+      // bridge-specific concerns (sendResult to stop the spinner +
+      // checkpoint to persist SSE seq for M3.4 restart re-attach).
       bridge.sendResult();
-      bridge.reportState("idle");
       // M3.1 checkpoint — snapshot the SSE high-water mark to persisted
       // bridge worker state so a daemon restart (M3.4) can resume the SSE
       // stream with `initialSequenceNum = saved` and the server replays
@@ -598,15 +636,10 @@ function forwardToBridge(
       m.type === "user" ||
       (m.type === "system" && m.subtype === "local_command")
     ) {
-      // First model-originated frame of a turn marks it running, matching
-      // Claude Code's writeSdkMessages→startTurn (remoteBridgeCore.ts). This
-      // is the SECOND running report (pushPrompt already reported running at
-      // prompt-submit for responsiveness); reportState dedupes so the repeat
-      // is a no-op. `user` frames (tool_results) also pass through here but
-      // the session is already running by then — still a deduped no-op.
-      if (m.type === "stream_event" || m.type === "assistant") {
-        bridge.reportState("running");
-      }
+      // M3.7.4 — activity edge handled in handleSdkMessage (one place,
+      // bridge-independent). forwardToBridge stays purely about CCR mirror:
+      // bridge.reportState was already called from setActivity → markActivity
+      // path (deduped on the bridge layer too). Just write the frame.
       bridge.write(msg);
     }
     // else: compact_boundary / other system subtypes / hooks — not mirrored.
@@ -622,6 +655,23 @@ function handleSdkMessage(
   state: StreamingState,
   msg: SDKMessage,
 ): void {
+  // M3.7.4 activity edge dispatch — must run BEFORE type-specific handlers
+  // AND independently of bridge attach state (so pure non-bridged sessions
+  // also benefit from autonomous-yield cancel). Three triggers:
+  //   - `stream_event` / `assistant` → "running" (first frame of any turn,
+  //     user-driven OR SDK-autonomous: scheduled task, hook response, async
+  //     background work that wakes the SDK process without a user prompt)
+  //   - `result` → "idle" (terminal envelope, every subtype counts: success,
+  //     error_during_execution, error_max_turns, etc.)
+  // setActivity dedupes — only the first running-edge per turn actually
+  // transitions state + cancels timer; subsequent stream_events are no-ops.
+  // `user` (tool_result) / `system` envelopes don't transition activity —
+  // they happen MID-turn when activity is already "running".
+  if (msg.type === "result") {
+    markActivity(runtime, "idle");
+  } else if (msg.type === "stream_event" || msg.type === "assistant") {
+    markActivity(runtime, "running");
+  }
   if (msg.type === "stream_event") {
     handleStreamEvent(runtime, state, msg);
   } else if (msg.type === "assistant") {
@@ -765,28 +815,12 @@ function handleResultEnvelope(
   // can't leak into a later turn (e.g. if the interrupt raced a success).
   const wasInterrupted = runtime.interrupted;
   runtime.interrupted = false;
-  // M3.7 — turn-complete edge (success / error / interrupted, ALL count
-  // as "turn over"). Stamp the clock + arm the idle-teardown timer here,
-  // BEFORE the subtype-based branching, so every terminal envelope
-  // advances M3.7 state uniformly. Pairs with bridge.reportState("idle")
-  // in forwardToBridge (same edge, different consumer; #17 cross-client
-  // broadcast will also subscribe to this clock when it lands).
-  runtime.lastTurnCompleteAt = Date.now();
-  const armedAt = runtime.lastTurnCompleteAt;
-  runtime.armTeardownTimer(IDLE_TEARDOWN_DELAY_MS, () => {
-    // Compute the actual idle duration (≈ delayMs in steady state but
-    // useful if a timer fires late). Read FRESHLY in case a turn-complete
-    // re-armed and somehow this callback still fires — but cancel guards
-    // upstream should prevent that.
-    const idleDurationMs = Date.now() - armedAt;
-    console.log(
-      `[sidecode] [teardown] fired session=${runtime.sessionId} idleDurationMs=${idleDurationMs}`,
-    );
-    runtime.disposeQuery();
-  });
-  console.log(
-    `[sidecode] [teardown] armed session=${runtime.sessionId} delayMs=${IDLE_TEARDOWN_DELAY_MS}`,
-  );
+  // M3.7.4 activity edge — `markActivity("idle")` is now fired from
+  // handleSdkMessage's dispatch (one place, bridge-independent) BEFORE
+  // we reach here. Don't re-call (would be a deduped no-op but reads
+  // confusingly as "two edges per result envelope"). handleResultEnvelope
+  // is now purely about emitting turn_completed / turn_failed deltas +
+  // stashing latestUsage.
   const rawUsage = r.usage as Record<string, unknown> | undefined;
   const usage = rawUsage
     ? {

@@ -289,6 +289,191 @@ describe("SessionRuntime", () => {
     expect(r.subscriberCount).toBe(1);
   });
 
+  // ─── M3.7.4 setActivity + activity field ────────────────────────────
+
+  /** Build a runtime with mock timer + injected log recorder. Returns the
+   *  runtime + log lines + helpers to drive the timer. */
+  function activityHarness() {
+    const logs: string[] = [];
+    let lastCb: (() => void) | undefined;
+    let lastDelay: number | undefined;
+    const setTimer = vi.fn(((cb: () => void, ms: number) => {
+      lastCb = cb;
+      lastDelay = ms;
+      return Symbol("h") as unknown as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout);
+    const runtime = new SessionRuntime<string>("s_act", {
+      setTimer,
+      clearTimer: (() => {}) as unknown as typeof clearTimeout,
+      teardownDelayMs: 900_000,
+      log: (msg) => logs.push(msg),
+    });
+    // Sub a "fake query" so the eligibility predicate sees query !== null.
+    runtime.query = {
+      interrupt: async () => {},
+      close: () => {},
+    };
+    return {
+      runtime,
+      logs,
+      get lastDelay() {
+        return lastDelay;
+      },
+      fire() {
+        if (lastCb === undefined) throw new Error("no timer armed");
+        lastCb();
+      },
+    };
+  }
+
+  it("M3.7.4 activity initialized to 'idle' at construction", () => {
+    const r = new SessionRuntime<string>("s1");
+    expect(r.activity).toBe("idle");
+  });
+
+  it("M3.7.4 setActivity dedupes — same state returns changed=false", () => {
+    const r = new SessionRuntime<string>("s1");
+    const result = r.setActivity("idle"); // already idle
+    expect(result.changed).toBe(false);
+    expect(result.armed).toBe(false);
+    expect(result.canceled).toBe(false);
+  });
+
+  it("M3.7.4 setActivity('running') cancels any pending teardown timer", () => {
+    const h = activityHarness();
+    // Arm via the eligible path: setActivity('idle') with subs=0 + query!=null.
+    h.runtime.setActivity("idle");
+    expect(h.runtime.hasTeardownTimerArmed).toBe(true);
+
+    const result = h.runtime.setActivity("running");
+    expect(result.changed).toBe(true);
+    expect(result.canceled).toBe(true);
+    expect(h.runtime.hasTeardownTimerArmed).toBe(false);
+  });
+
+  it("M3.7.4 setActivity('idle') with subs===0 + query!==null ARMS timer", () => {
+    const h = activityHarness();
+    h.runtime.activity = "running"; // pre-set for clean transition
+    const result = h.runtime.setActivity("idle");
+    expect(result.changed).toBe(true);
+    expect(result.armed).toBe(true);
+    expect(h.runtime.hasTeardownTimerArmed).toBe(true);
+    expect(h.logs.some((l) => l.includes("[teardown] armed"))).toBe(true);
+  });
+
+  // ─── M3.7.5 subscriber gate ──────────────────────────────────────────
+
+  it("M3.7.5 setActivity('idle') with subs > 0 does NOT arm timer (Claude Desktop parity: watching = keep warm)", () => {
+    const h = activityHarness();
+    h.runtime.subscribe(() => {}); // 1 subscriber
+    h.runtime.activity = "running";
+
+    const result = h.runtime.setActivity("idle");
+    expect(result.changed).toBe(true);
+    expect(result.armed).toBe(false); // gated out by sub presence
+    expect(h.runtime.hasTeardownTimerArmed).toBe(false);
+  });
+
+  it("M3.7.5 setActivity('idle') with query===null does NOT arm timer", () => {
+    const h = activityHarness();
+    h.runtime.query = null; // no SDK process to dispose
+    h.runtime.activity = "running";
+    const result = h.runtime.setActivity("idle");
+    expect(result.armed).toBe(false);
+    expect(h.runtime.hasTeardownTimerArmed).toBe(false);
+  });
+
+  it("M3.7.5 subscribe() cancels a pending teardown timer (user came back)", () => {
+    const h = activityHarness();
+    h.runtime.setActivity("idle"); // arm
+    expect(h.runtime.hasTeardownTimerArmed).toBe(true);
+    const beforeLogs = h.logs.length;
+
+    h.runtime.subscribe(() => {});
+    expect(h.runtime.hasTeardownTimerArmed).toBe(false);
+    // Log includes a "canceled reason=subscribe" line
+    const newLogs = h.logs.slice(beforeLogs);
+    expect(
+      newLogs.some(
+        (l) =>
+          l.includes("[teardown] canceled") && l.includes("reason=subscribe"),
+      ),
+    ).toBe(true);
+  });
+
+  it("M3.7.5 unsubscribe() arms teardown timer when last sub leaves + session is idle", () => {
+    const h = activityHarness();
+    const unsub = h.runtime.subscribe(() => {});
+    // setActivity('idle') with sub present → no arm
+    h.runtime.activity = "running";
+    h.runtime.setActivity("idle");
+    expect(h.runtime.hasTeardownTimerArmed).toBe(false);
+
+    // User leaves — sub removed → arm via the eligible path.
+    unsub();
+    expect(h.runtime.hasTeardownTimerArmed).toBe(true);
+  });
+
+  it("M3.7.5 unsubscribe() does NOT arm timer when activity is 'running' (mid-turn protection)", () => {
+    const h = activityHarness();
+    const unsub = h.runtime.subscribe(() => {});
+    h.runtime.activity = "running"; // turn in flight
+
+    unsub();
+    expect(h.runtime.hasTeardownTimerArmed).toBe(false); // never arm mid-turn
+  });
+
+  it("M3.7.5 explicit unsubscribe(cb) is symmetric with closure — arms timer the same way", () => {
+    const h = activityHarness();
+    const cb = vi.fn();
+    h.runtime.subscribe(cb);
+    h.runtime.activity = "running";
+    h.runtime.setActivity("idle");
+    expect(h.runtime.hasTeardownTimerArmed).toBe(false);
+
+    expect(h.runtime.unsubscribe(cb)).toBe(true);
+    expect(h.runtime.hasTeardownTimerArmed).toBe(true);
+  });
+
+  it("M3.7.5 multiple subs — only the LAST unsubscribe arms the timer", () => {
+    const h = activityHarness();
+    const u1 = h.runtime.subscribe(() => {});
+    const u2 = h.runtime.subscribe(() => {});
+    h.runtime.activity = "running";
+    h.runtime.setActivity("idle");
+
+    u1(); // 1 sub left → no arm
+    expect(h.runtime.hasTeardownTimerArmed).toBe(false);
+    u2(); // 0 subs → arm
+    expect(h.runtime.hasTeardownTimerArmed).toBe(true);
+  });
+
+  it("M3.7.5 fire callback uses lastTurnCompleteAt for accurate idleDurationMs (sub-leave-armed timer)", () => {
+    const h = activityHarness();
+    const turnTime = Date.now() - 100; // pretend turn finished 100ms ago
+    h.runtime.lastTurnCompleteAt = turnTime;
+    h.runtime.activity = "idle"; // already idle from earlier turn
+    const unsub = h.runtime.subscribe(() => {});
+    // sub leaving arms timer — but lastTurnCompleteAt should reflect the
+    // earlier turn-complete, not now.
+    unsub();
+    expect(h.runtime.hasTeardownTimerArmed).toBe(true);
+
+    h.fire();
+    // Log includes the idleDurationMs which is now - turnTime ≈ 100ms (with some slop)
+    const fired = h.logs.find((l) => l.includes("[teardown] fired"));
+    expect(fired).toBeDefined();
+    expect(fired).toMatch(/idleDurationMs=\d+/);
+  });
+
+  it("M3.7.5 timer auto-clears `teardownTimer` field on fire (hygiene)", () => {
+    const h = activityHarness();
+    h.runtime.setActivity("idle");
+    expect(h.runtime.hasTeardownTimerArmed).toBe(true);
+    h.fire();
+    expect(h.runtime.hasTeardownTimerArmed).toBe(false);
+  });
+
   it("M3.7 disposeQuery swallows close/end exceptions (best-effort tear-down)", () => {
     const r = new SessionRuntime<string>("s1");
     r.query = {
