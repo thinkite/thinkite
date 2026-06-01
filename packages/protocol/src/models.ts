@@ -1,9 +1,12 @@
 /**
  * Hardcoded per-model display + capability metadata. Single source of truth
  * for "what model strings does sidecode know about, and how should they
- * render in the iOS UI". Loaded by [router.ts] for the `prettyModel`
- * conversion (DesktopSession.model → SessionInfo.modelLabel) and by the
- * `getModels` RPC for the picker.
+ * render in the iOS UI".
+ *
+ * Lives in the protocol package because both sides use it directly —
+ * iOS bundles `MODELS` / `DEFAULT_MODEL` for the picker (no async RPC,
+ * no loading state), and daemon imports `prettyModel` / `MODEL_METADATA`
+ * for label rendering + the runtime default lookup.
  *
  * Why hardcoded instead of fetched from SDK at runtime:
  *   - SDK's `query.supportedModels()` requires spawning a Claude
@@ -14,6 +17,17 @@
  *     historical session files even after Anthropic stops listing them.
  *   - Anthropic ships new Claude models roughly quarterly — a sidecode
  *     release-per-launch cadence is acceptable for this list.
+ *
+ * Why protocol-bundled instead of daemon-owned-via-RPC (history):
+ *   The first design had daemon serve a `getModels` RPC so iOS didn't
+ *   ship its own copy. That decoupling was overkill — daemon + iOS ship
+ *   together in this monorepo on the same release cadence, so the table
+ *   is effectively atomic either way. Moving it here:
+ *     - Eliminates one cold-start RPC roundtrip.
+ *     - Eliminates `useModels()` loading state — the picker is fully
+ *       populated at first render, and `useState` can seed selection
+ *       to `DEFAULT_MODEL` via an init function (no bootstrap useEffect
+ *       reading null on first mount).
  *
  * Update policy on Claude model launches — search `@[MODEL LAUNCH]`:
  *   1. Add a new entry for the new canonical ID (and `[1m]` variant if any)
@@ -31,7 +45,7 @@
 /** Per-model metadata. All fields except `displayName` are optional —
  *  consumers that need richer info (picker UI, usage meter) add fields
  *  as use cases land. */
-export type ModelMetadata = {
+export interface ModelMetadata {
   /** Required. UI-facing label — session list rows, detail header,
    *  picker entries. e.g. `"Opus 4.7 1M"`. */
   displayName: string;
@@ -58,7 +72,7 @@ export type ModelMetadata = {
    *  `used = input_tokens + cache_creation_input_tokens + cache_read_input_tokens`
    *  (output tokens excluded). Filled for ALL entries — even deprecated
    *  ones — so a resume of a deprecated-model session that we ever
-   *  surface in the future has the data ready. Today getModels filters
+   *  surface in the future has the data ready. `MODELS` filters
    *  deprecated out so iOS only sees current entries.
    *
    *  Anthropic context window reference (verify before adding new
@@ -66,7 +80,7 @@ export type ModelMetadata = {
    *  Defaults to 200_000 for current Claude 4.x models; `[1m]` variants
    *  opt into the 1M-context beta. */
   contextWindow?: number;
-};
+}
 
 /**
  * @[MODEL LAUNCH] update this table when Anthropic ships a new Claude.
@@ -149,6 +163,57 @@ export const MODEL_METADATA: Record<string, ModelMetadata> = {
   },
 };
 
+/** Picker-facing model entry. Wire-equivalent shape from when this
+ *  table travelled over the `getModels` RPC; kept as the row shape for
+ *  the iOS picker / list-row label lookup so call sites don't churn
+ *  during the protocol-bundled migration. */
+export interface ModelEntry {
+  /** Raw key as it appears in Desktop session metadata + CLI `--model`
+   *  flag, e.g. `"claude-opus-4-7[1m]"`. */
+  model: string;
+  /** Human-readable label, e.g. `"Opus 4.7 1M"`. */
+  displayName: string;
+  /** Exactly one entry in `MODELS` has this `true`. Picker uses it for
+   *  new-session bootstrap when SessionState.model is null. */
+  isDefault: boolean;
+  /** Optional picker subtitle. */
+  description?: string;
+  /** Context window in tokens. */
+  contextWindow?: number;
+}
+
+/**
+ * Picker-visible models. Filters `MODEL_METADATA` to non-deprecated
+ * entries, preserving source-declaration order (current models first).
+ * The module-load self-check below guarantees `DEFAULT_MODEL` is
+ * present, so this list is always non-empty.
+ */
+export const MODELS: readonly ModelEntry[] = Object.entries(MODEL_METADATA)
+  .filter(([, m]) => !m.deprecated)
+  .map(
+    ([model, m]): ModelEntry => ({
+      model,
+      displayName: m.displayName,
+      isDefault: m.isDefault === true,
+      description: m.description,
+      contextWindow: m.contextWindow,
+    }),
+  );
+
+/**
+ * The current default model — used to seed the new-session picker
+ * selection and as the daemon's runtime default. Always non-null
+ * (module-load self-check enforces exactly one isDefault entry).
+ */
+export const DEFAULT_MODEL: ModelEntry = (() => {
+  const def = MODELS.find((m) => m.isDefault);
+  if (!def) {
+    // Unreachable: the module-load self-check below would have thrown.
+    throw new Error("MODEL_METADATA has no isDefault entry");
+  }
+  return def;
+})();
+
 /**
  * Convert a raw model string (from Desktop metadata or SDK options) into
  * the human-readable label for UI. Unknown models fall through to the raw
@@ -161,24 +226,18 @@ export function prettyModel(raw: string): string {
 }
 
 /**
- * Return the default model's raw key. Throws (via the module-load
- * assertion below) if MODEL_METADATA is misconfigured — so any caller is
- * guaranteed a valid result at runtime.
+ * Return the default model's raw key. Convenience wrapper around
+ * `DEFAULT_MODEL.model` — kept as a function for backwards compatibility
+ * with the older daemon-only `getDefaultModel()` helper signature.
  */
-export function getDefaultModel(): string {
-  const entry = Object.entries(MODEL_METADATA).find(
-    ([, meta]) => meta.isDefault === true,
-  );
-  if (!entry) {
-    // Unreachable: the module-load self-check below would have thrown.
-    throw new Error("MODEL_METADATA has no isDefault entry");
-  }
-  return entry[0];
+export function getDefaultModelId(): string {
+  return DEFAULT_MODEL.model;
 }
 
 // ─── Module-load self-check ──────────────────────────────────────────
 // Runs once at import. Fails fast if the table is misconfigured so
-// daemon startup crashes loudly rather than silently misbehaving.
+// daemon startup (and iOS first render) crashes loudly rather than
+// silently misbehaving.
 (() => {
   const defaults = Object.entries(MODEL_METADATA).filter(
     ([, m]) => m.isDefault === true,

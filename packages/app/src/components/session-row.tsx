@@ -1,5 +1,5 @@
+import { prettyModel } from "@sidecodeapp/protocol";
 import { Pressable, Text, View } from "react-native";
-import { useModels } from "@/hooks/use-models";
 import { formatRelativeTime } from "@/lib/format";
 import type { SessionRow as SessionRowData } from "@/lib/sessions-collection";
 
@@ -15,20 +15,15 @@ export interface SessionRowProps {
  *   - NO cwd line (the detail screen's git status bar owns project context)
  *   - NO project grouping (the parent is a flat FlatList)
  *
- * The model `displayName` is looked up from `useModels()` client-side
- * (cached forever) — saves a daemon-prettifier round-trip and keeps the
- * #17 protocol surface lean. Falls back to the raw model id if the
- * lookup misses (e.g. a model name the daemon serves but isn't in
- * MODEL_METADATA yet).
+ * The model `displayName` is looked up via the bundled `prettyModel`
+ * helper (full MODEL_METADATA table, including deprecated entries so a
+ * historical session that was created on an older model still renders
+ * a friendly label). Falls back to the raw model id if the lookup misses
+ * (e.g. a brand-new model that sidecode hasn't been updated for).
  */
 export function SessionRow({ session, onPress }: SessionRowProps) {
   const title = session.title || "Untitled session";
-  const { data: models } = useModels();
-  const modelLabel = (() => {
-    if (session.model === null) return "";
-    const entry = models?.find((m) => m.model === session.model);
-    return entry?.displayName ?? session.model;
-  })();
+  const modelLabel = session.model ? prettyModel(session.model) : "";
   const isRunning = session.activity === "running";
 
   return (

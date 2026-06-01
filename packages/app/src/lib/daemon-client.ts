@@ -11,7 +11,6 @@ import {
   type ImageAttachment,
   isChunkEnvelope,
   isProtocolCompatible,
-  type ModelEntry,
   PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
   type SessionState,
@@ -146,7 +145,9 @@ type GitStatusCallback = (status: GitStatus) => void;
  *     handle it for V0.5+ forward compat.
  */
 export interface SessionStatesCallbacks {
-  onInitial: (entries: Array<{ sessionId: string; state: SessionState }>) => void;
+  onInitial: (
+    entries: Array<{ sessionId: string; state: SessionState }>,
+  ) => void;
   onChange: (sessionId: string, state: SessionState) => void;
   onRemove: (sessionId: string) => void;
 }
@@ -620,21 +621,6 @@ export class Transport {
       documents?: string;
       recentCwds: { path: string; lastUsedAt: string }[];
     };
-  }
-
-  /**
-   * Bootstrap RPC for the model picker — one call returns daemon's
-   * curated (non-deprecated) model list with display labels +
-   * default marker. Cache lifetime is the daemon lifetime (table is
-   * hardcoded), so callers should set a long staleTime in react-query.
-   */
-  async getModels(): Promise<ModelEntry[]> {
-    const requestId = Crypto.randomUUID();
-    const res = (await this.request({
-      type: "getModels",
-      requestId,
-    })) as { models: ModelEntry[] };
-    return res.models;
   }
 
   /**
@@ -1152,8 +1138,8 @@ export class Subscription {
  *     fire continuously; the `recovered: false` flag on a re-attach
  *     tells the consumer "your collection is stale, rebuild it."
  *
- * Non-subscribe RPCs (`listSessions`, `getModels`, etc.) are thin
- * pass-throughs that `await this.readyPromise` then dispatch to the
+ * Non-subscribe RPCs (`listSessions`, `getFilesystemRoots`, etc.) are
+ * thin pass-throughs that `await this.readyPromise` then dispatch to the
  * current transport. If a transport drops while a pass-through is
  * in-flight, the request rejects with "daemon connection closed" —
  * caller handles via react-query's retry or visible error state, same
@@ -1273,7 +1259,10 @@ export class DaemonClient {
     }
   }
 
-  private async attachSubscription(t: Transport, sub: Subscription): Promise<void> {
+  private async attachSubscription(
+    t: Transport,
+    sub: Subscription,
+  ): Promise<void> {
     if (sub._state === "unsubscribed") return;
     sub._state = "subscribing";
 
@@ -1331,10 +1320,7 @@ export class DaemonClient {
       // Console-warn so dev sees the actual exception. In production
       // this is fine — the next reconnect retry will produce the same
       // warn line, which still beats silent stuck-loading.
-      console.warn(
-        `[sidecode] subscribe(${sub.cliSessionId}) failed:`,
-        err,
-      );
+      console.warn(`[sidecode] subscribe(${sub.cliSessionId}) failed:`, err);
     }
   }
 
@@ -1360,10 +1346,8 @@ export class DaemonClient {
       onSubscribed: (info: SubscriptionAttached) => void;
     },
   ): Subscription {
-    const sub = new Subscription(
-      cliSessionId,
-      callbacks,
-      (s) => this.removeSubscription(s),
+    const sub = new Subscription(cliSessionId, callbacks, (s) =>
+      this.removeSubscription(s),
     );
     this.subs.add(sub);
     if (this.transport !== null) {
@@ -1414,7 +1398,9 @@ export class DaemonClient {
    * has only one consumer so this matters only as a defensive guard;
    * if needed, expose multi-consumer fan-out later).
    */
-  subscribeSessions(callbacks: SessionStatesCallbacks): { unsubscribe: () => void } {
+  subscribeSessions(callbacks: SessionStatesCallbacks): {
+    unsubscribe: () => void;
+  } {
     this.sessionStatesSub = callbacks;
     if (this.transport !== null) {
       void this.attachSessionStatesSub(this.transport, callbacks);
@@ -1451,11 +1437,6 @@ export class DaemonClient {
   }> {
     const t = await this.readyPromise;
     return t.getFilesystemRoots();
-  }
-
-  async getModels(): Promise<ModelEntry[]> {
-    const t = await this.readyPromise;
-    return t.getModels();
   }
 
   async sendPrompt(opts: {

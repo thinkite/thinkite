@@ -8,9 +8,9 @@
  * Use this to:
  *   1. Verify which Claude models your OAuth account can actually use
  *      (1P vs 3P, plan tier, custom envvar overrides, etc.)
- *   2. Capture ground truth for `models-metadata.ts` baseline entries —
- *      paste the relevant `value`/`displayName`/`description`/
- *      `supportedEffortLevels` into the hardcoded table.
+ *   2. Capture ground truth for `packages/protocol/src/models.ts`
+ *      baseline entries — paste the relevant `value`/`displayName`/
+ *      `description`/`supportedEffortLevels` into the hardcoded table.
  *
  * Run from repo root:
  *

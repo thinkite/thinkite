@@ -16,8 +16,9 @@ import { daemonClient } from "@/lib/daemon-client";
  *     row is sidecode-owned.
  *   - `originCwd` is GONE — flat sort by `lastActivityAt` desc, no
  *     project grouping per [[project_v0_session_list_design]].
- *   - `modelLabel` is GONE — computed client-side from `useModels()`
- *     in the row component (lookup is cached forever, pure sync).
+ *   - `modelLabel` is GONE — computed client-side from `prettyModel()`
+ *     in the row component (synchronous lookup against the bundled
+ *     `MODEL_METADATA` table; no async cache to wait on).
  *
  * `activity` / `createdAt` / `permissionMode` are NEW fields surfaced
  * by the #17 stream.

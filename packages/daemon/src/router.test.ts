@@ -2142,30 +2142,6 @@ describe("createCommandHandler — getFilesystemRoots", () => {
   });
 });
 
-describe("createCommandHandler — getModels", () => {
-  it("returns non-deprecated MODEL_METADATA entries with the wire shape", async () => {
-    const handler = createCommandHandler(makeDeps());
-    const { ctx, sent } = makeCtx();
-    await handler(
-      { type: "getModels", requestId: "gm1" } satisfies Command,
-      ctx,
-    );
-    if (sent[0]?.type !== "getModels.response")
-      throw new Error("expected getModels.response");
-    // Daemon owns MODEL_METADATA; we don't pin the exact list here (it
-    // grows every model launch) but we DO pin invariants the iOS picker
-    // depends on: non-empty, exactly one default, no deprecated entries.
-    expect(sent[0].models.length).toBeGreaterThan(0);
-    const defaults = sent[0].models.filter((m) => m.isDefault);
-    expect(defaults).toHaveLength(1);
-    for (const m of sent[0].models) {
-      expect(typeof m.model).toBe("string");
-      expect(typeof m.displayName).toBe("string");
-      expect(typeof m.isDefault).toBe("boolean");
-    }
-  });
-});
-
 describe("createCommandHandler — subscribeSessions (#17)", () => {
   it("returns the manager's initial snapshot on response.initial", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
@@ -2268,14 +2244,13 @@ describe("createCommandHandler — subscribeSessions (#17)", () => {
     );
     const pushed = sent
       .slice(before)
-      .filter(
-        (f): f is { type: "session_state_changed"; state: { model: string } } =>
-          (f as { type?: string }).type === "session_state_changed",
-      );
+      .filter((f) => f.type === "session_state_changed");
     // Should be at least the creation push and one activity-edge push.
     expect(pushed.length).toBeGreaterThanOrEqual(2);
     // EVERY push carries the user's picked model — no null/undefined.
     for (const frame of pushed) {
+      if (frame.type !== "session_state_changed")
+        throw new Error("filter invariant violated");
       expect(frame.state.model).toBe("claude-sonnet-4-6");
     }
   });

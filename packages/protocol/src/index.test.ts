@@ -14,8 +14,6 @@ import {
   event,
   eventDelta,
   eventFrame,
-  getModelsCommand,
-  getModelsResponse,
   helloCommand,
   interruptCommand,
   interruptResponse,
@@ -29,11 +27,11 @@ import {
   pongFrame,
   sendPromptCommand,
   sendPromptResponse,
-  setSessionSelectionCommand,
-  setSessionSelectionResponse,
   serverInfoEvent,
   sessionDivergedEvent,
   sessionInfo,
+  setSessionSelectionCommand,
+  setSessionSelectionResponse,
   subscribeCommand,
   subscribeResponse,
   timelineItem,
@@ -538,7 +536,6 @@ describe("request/response correlation", () => {
       }).type,
     ).toBe("continueOnDesktop.response");
   });
-
 });
 
 describe("hello / server_info wire-version handshake", () => {
@@ -748,59 +745,6 @@ describe("setSessionSelection schemas", () => {
   });
 });
 
-describe("getModels schemas", () => {
-  it("command is a bare request with no params", () => {
-    expect(getModelsCommand.parse({ type: "getModels", requestId: "r1" }).type)
-      .toBe("getModels");
-  });
-
-  it("response accepts a minimal entry (only required fields)", () => {
-    const r = getModelsResponse.parse({
-      type: "getModels.response",
-      requestId: "r1",
-      models: [
-        {
-          model: "claude-haiku-4-5-20251001",
-          displayName: "Haiku 4.5",
-          isDefault: false,
-        },
-      ],
-    });
-    expect(r.models[0].displayName).toBe("Haiku 4.5");
-  });
-
-  it("response accepts an entry with all optional fields populated", () => {
-    const r = getModelsResponse.parse({
-      type: "getModels.response",
-      requestId: "r1",
-      models: [
-        {
-          model: "claude-opus-4-7[1m]",
-          displayName: "Opus 4.7 1M",
-          isDefault: true,
-          description: "Best at agentic coding",
-          contextWindow: 1_000_000,
-        },
-      ],
-    });
-    expect(r.models[0].description).toBe("Best at agentic coding");
-    expect(r.models[0].contextWindow).toBe(1_000_000);
-  });
-
-  it("plumbs through both top-level unions", () => {
-    expect(
-      clientFrame.parse({ type: "getModels", requestId: "r1" }).type,
-    ).toBe("getModels");
-    expect(
-      daemonFrame.parse({
-        type: "getModels.response",
-        requestId: "r1",
-        models: [],
-      }).type,
-    ).toBe("getModels.response");
-  });
-});
-
 // ─── V0 image-attachment / extended-metadata schema additions ─────────────
 //
 // These tests exist mostly as a written contract — they pin down the
@@ -865,8 +809,7 @@ describe("user_message with images", () => {
       text: "see attached",
       images: [{ data: "/9j/...", mediaType: "image/jpeg" }],
     });
-    if (item.type !== "user_message")
-      throw new Error("expected user_message");
+    if (item.type !== "user_message") throw new Error("expected user_message");
     expect(item.images).toHaveLength(1);
     expect(item.images?.[0]?.mediaType).toBe("image/jpeg");
   });

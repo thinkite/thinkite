@@ -9,6 +9,15 @@ export {
   isChunkEnvelope,
 } from "./chunking.js";
 export {
+  DEFAULT_MODEL,
+  getDefaultModelId,
+  MODEL_METADATA,
+  MODELS,
+  type ModelEntry,
+  type ModelMetadata,
+  prettyModel,
+} from "./models.js";
+export {
   dtlsFingerprintTranscript,
   extractDtlsFingerprint,
 } from "./sdp-fingerprint.js";
@@ -920,54 +929,19 @@ export const unsubscribeResponse = z.object({
   requestId: z.string(),
 });
 
-// ─── Model picker — list available Claude models for the iOS picker ──────
+// ─── Model picker ──────────────────────────────────────────────────────
 //
-// Daemon serializes its MODEL_METADATA table (skipping `deprecated`
-// entries) so iOS doesn't have to ship its own copy — daemon owns the
-// source of truth and ships new models as part of each sidecode release.
-// iOS does equality on `model` strings against SessionInfo.model and
-// sendPromptCommand.model.
+// Model list + metadata moved out of the protocol-as-wire schemas and into
+// `./models.ts` as a plain TS constant. Daemon + iOS both import `MODELS`
+// / `DEFAULT_MODEL` / `prettyModel` directly — no more `getModels` RPC,
+// no more `useQuery` loading state on iOS.
 //
-// `effort` deliberately omitted from this schema (and from sendPrompt /
-// setSessionSelection): sidecode V0 trusts Claude's adaptive thinking +
-// per-account `Settings.effortLevel` defaults, doesn't expose a per-
-// session effort knob. Power users tweak via Desktop `/effort` slash
-// command which persists to settings.json; sidecode honors that
-// implicitly by not passing `--effort` on its spawned subprocess.
-
-export const modelEntry = z.object({
-  /** Raw key as it appears in Desktop session metadata + CLI `--model` flag,
-   *  e.g. `"claude-opus-4-7[1m]"`. Mirrors SessionInfo.model so iOS can
-   *  equality-check picker selection against session state. */
-  model: z.string(),
-  /** Human-readable label, e.g. `"Opus 4.7 1M"`. Same value daemon writes
-   *  into SessionInfo.modelLabel. */
-  displayName: z.string(),
-  /** Exactly one entry in a getModels response has this `true`. iOS
-   *  bootstraps the picker selection to this when SessionInfo.model is
-   *  missing (sidecode-created sessions today). */
-  isDefault: z.boolean(),
-  /** Optional picker subtitle. */
-  description: z.string().optional(),
-  /** Context window in tokens. Optional — iOS picker may derive 1M vs 200K
-   *  from the `[1m]` suffix when this is absent. */
-  contextWindow: z.number().optional(),
-});
-export type ModelEntry = z.infer<typeof modelEntry>;
-
-export const getModelsCommand = z.object({
-  type: z.literal("getModels"),
-  requestId: z.string(),
-});
-
-export const getModelsResponse = z.object({
-  type: z.literal("getModels.response"),
-  requestId: z.string(),
-  /** Non-deprecated entries from daemon's MODEL_METADATA table, in source
-   *  order (current models first). Always non-empty — the daemon's
-   *  module-load self-check guarantees at least one isDefault entry. */
-  models: z.array(modelEntry),
-});
+// `effort` deliberately omitted from sendPrompt / setSessionSelection:
+// sidecode V0 trusts Claude's adaptive thinking + per-account
+// `Settings.effortLevel` defaults, doesn't expose a per-session effort
+// knob. Power users tweak via Desktop `/effort` slash command which
+// persists to settings.json; sidecode honors that implicitly by not
+// passing `--effort` on its spawned subprocess.
 
 /**
  * Send a user prompt into a session.
@@ -1350,7 +1324,6 @@ export const command = z.discriminatedUnion("type", [
   unsubscribeGitStatusCommand,
   listDirectoryCommand,
   getFilesystemRootsCommand,
-  getModelsCommand,
   subscribeSessionsCommand,
 ]);
 
@@ -1369,7 +1342,6 @@ export const response = z.discriminatedUnion("type", [
   unsubscribeGitStatusResponse,
   listDirectoryResponse,
   getFilesystemRootsResponse,
-  getModelsResponse,
   subscribeSessionsResponse,
 ]);
 
@@ -1398,7 +1370,6 @@ export const clientFrame = z.discriminatedUnion("type", [
   unsubscribeGitStatusCommand,
   listDirectoryCommand,
   getFilesystemRootsCommand,
-  getModelsCommand,
   subscribeSessionsCommand,
 ]);
 
@@ -1429,7 +1400,6 @@ export const daemonFrame = z.discriminatedUnion("type", [
   gitStatusEvent,
   listDirectoryResponse,
   getFilesystemRootsResponse,
-  getModelsResponse,
   subscribeSessionsResponse,
   sessionStateChangedEvent,
   sessionStateRemovedEvent,

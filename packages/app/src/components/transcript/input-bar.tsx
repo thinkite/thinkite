@@ -1,8 +1,9 @@
 import { type MenuAction, MenuView } from "@react-native-menu/menu";
 import {
   type CommandContext,
-  type ImageAttachment,
   getCommandsForContext,
+  type ImageAttachment,
+  MODELS,
 } from "@sidecodeapp/protocol";
 import { GlassView } from "expo-glass-effect";
 import * as ImageManipulator from "expo-image-manipulator";
@@ -18,7 +19,6 @@ import {
   View,
 } from "react-native";
 import { SlashPanel } from "@/components/transcript/slash-panel";
-import { useModels } from "@/hooks/use-models";
 import { Image } from "@/lib/styled";
 
 /**
@@ -246,8 +246,7 @@ export function InputBar({
     setTextCursor({ start: cursor, end: cursor });
   };
 
-  const { data: models } = useModels();
-  const currentModel = models?.find((m) => m.model === selection?.model);
+  const currentModel = MODELS.find((m) => m.model === selection?.model);
   // Cap is enforced in three places: PHPicker's selectionLimit
   // (per-pick), Camera early-return guard, and MenuView action
   // `disabled`. We DON'T dim the `+` button itself — the menu will
@@ -484,9 +483,9 @@ export function InputBar({
               </MenuView>
               {/* Model picker chip — flat native menu (UIMenu on iOS,
                   PopupMenu on Android). One row per non-deprecated
-                  model from getModels; `state: "on"` on the active row
-                  gives the native ✓. Effort isn't exposed (sidecode
-                  V0 trusts SDK adaptive thinking + per-account
+                  model from the bundled MODELS table; `state: "on"` on
+                  the active row gives the native ✓. Effort isn't exposed
+                  (sidecode V0 trusts SDK adaptive thinking + per-account
                   Settings.effortLevel). */}
               <MenuView
                 // Menu-level title — UIMenu's `title` renders as a
@@ -500,7 +499,7 @@ export function InputBar({
                     ? `Context usage: ${formatTokensK(contextUsage.used)} / ${formatTokensK(contextUsage.max)}`
                     : undefined
                 }
-                actions={(models ?? []).map<MenuAction>((m) => ({
+                actions={MODELS.map<MenuAction>((m) => ({
                   id: m.model,
                   title: m.displayName,
                   state: m.model === selection?.model ? "on" : "off",

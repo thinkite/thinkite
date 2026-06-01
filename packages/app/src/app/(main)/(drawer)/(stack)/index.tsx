@@ -1,8 +1,8 @@
-import type { ImageAttachment } from "@sidecodeapp/protocol";
+import { DEFAULT_MODEL, type ImageAttachment } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import { router, Stack, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
   KeyboardAvoidingView,
@@ -15,7 +15,6 @@ import {
 } from "@/components/transcript/input-bar";
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
-import { useModels } from "@/hooks/use-models";
 import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
 import { createSession } from "@/lib/sessions-collection";
 
@@ -72,14 +71,17 @@ export default function NewSessionScreen() {
   // and no daemon RPC to fire on pick. The chosen model is passed into
   // `createSession` on first send (rawSend below): it seeds both the
   // optimistic collection row and the sendPrompt that creates the session.
-  const { data: models } = useModels();
-  const [selection, setSelection] = useState<ModelSelection | null>(null);
-  useEffect(() => {
-    if (!models || selection !== null) return;
-    const def = models.find((m) => m.isDefault) ?? models[0];
-    if (!def) return;
-    setSelection({ model: def.model });
-  }, [models, selection]);
+  //
+  // Seed with `DEFAULT_MODEL` via useState init function (not a useEffect
+  // bootstrap after a `null` initial state). This guarantees `selection`
+  // is non-null on the FIRST render — there's no window where the user
+  // can tap send while selection is still `null` (which would have
+  // shipped `model: undefined` into the optimistic row, then triggered
+  // the detail screen's "fallback to default" branch and silently
+  // reverted the user's pick).
+  const [selection, setSelection] = useState<ModelSelection>({
+    model: DEFAULT_MODEL.model,
+  });
 
   // Raw send — invoked for non-slash text AND for whitelisted
   // passthrough commands (/init, /review). On new-session only those
@@ -111,7 +113,7 @@ export default function NewSessionScreen() {
         text,
         cwd,
         images,
-        model: selection?.model,
+        model: selection.model,
       }).isPersisted.promise.catch((err) => {
         console.error("create session failed", err);
       });
@@ -198,7 +200,7 @@ export default function NewSessionScreen() {
             <InputBar
               onSend={handleSend}
               isRunning={false}
-              selection={selection ?? undefined}
+              selection={selection}
               onSelectionChange={setSelection}
               slashContext="new-session"
             />

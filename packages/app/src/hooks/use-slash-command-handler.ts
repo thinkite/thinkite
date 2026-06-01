@@ -1,14 +1,14 @@
 import {
   type CommandContext,
   type ImageAttachment,
-  SLASH_COMMANDS,
   isWhitelistedCommand,
+  MODELS,
   parseSlashCommand,
+  SLASH_COMMANDS,
 } from "@sidecodeapp/protocol";
 import * as Burnt from "burnt";
 import { useRouter } from "expo-router";
 import { useCallback } from "react";
-import { useModels } from "./use-models";
 import { useSetSessionSelection } from "./use-set-session-selection";
 
 /**
@@ -37,8 +37,8 @@ import { useSetSessionSelection } from "./use-set-session-selection";
  *                            is the new-session screen; old session
  *                            left in the list, no archive — matches
  *                            Claude Code semantics)
- *      - `/model <id>`     → validate against `useModels()` cache,
- *                            dispatch via `useSetSessionSelection`
+ *      - `/model <id>`     → validate against the bundled `MODELS`
+ *                            table, dispatch via `useSetSessionSelection`
  *                            (same RPC the model chip uses)
  *      - `/model` no arg   → toast hint to tap the chip; opening the
  *                            chip's sheet programmatically would need a
@@ -64,17 +64,14 @@ export function useSlashCommandHandler(
   opts: SlashCommandHandlerOpts,
 ): (text: string, images?: ImageAttachment[]) => boolean | void {
   const router = useRouter();
-  const modelsQuery = useModels();
   // `useSetSessionSelection` requires a string; in new-session context
   // we pass empty (mutation is never fired in that branch, so the
   // sessionId is dead state — but we must call the hook unconditionally
   // to honor rules of hooks).
-  const sessionIdForRpc =
-    opts.context === "in-session" ? opts.sessionId : "";
+  const sessionIdForRpc = opts.context === "in-session" ? opts.sessionId : "";
   const setSelection = useSetSessionSelection(sessionIdForRpc);
 
   const { context, onPassthrough } = opts;
-  const modelsData = modelsQuery.data;
   const selectionMutate = setSelection.mutate;
 
   return useCallback(
@@ -156,8 +153,7 @@ export function useSlashCommandHandler(
             });
             return false;
           }
-          const allowed = modelsData ?? [];
-          const hit = allowed.find((m) => m.model === modelId);
+          const hit = MODELS.find((m) => m.model === modelId);
           if (!hit) {
             // Keep input so user can fix the model id typo.
             Burnt.toast({
@@ -175,6 +171,6 @@ export function useSlashCommandHandler(
         }
       }
     },
-    [context, onPassthrough, router, modelsData, selectionMutate],
+    [context, onPassthrough, router, selectionMutate],
   );
 }

@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL } from "@sidecodeapp/protocol";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { Stack, useLocalSearchParams, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
@@ -6,7 +7,6 @@ import { ActivityIndicator, Text, View } from "react-native";
 import { ChatPanel } from "@/components/transcript/chat-panel";
 import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 import { useContextUsage } from "@/hooks/use-context-usage";
-import { useModels } from "@/hooks/use-models";
 import { useSessionTranscript } from "@/hooks/use-session-transcript";
 import { useSetSessionSelection } from "@/hooks/use-set-session-selection";
 import { sessionStateCollection } from "@/lib/sessions-collection";
@@ -83,20 +83,20 @@ export default function SessionDetailScreen() {
   // Picker selection comes from the row's `model`; useSetSessionSelection
   // updates the collection optimistically on pick + fires the daemon RPC,
   // with automatic rollback on failure. Sessions with no model on disk
-  // fall back to the daemon's default until the user picks.
-  const { data: models } = useModels();
+  // fall back to the bundled `DEFAULT_MODEL` until the user picks. The
+  // fallback is synchronous (DEFAULT_MODEL is a module constant) so
+  // there's no "models loading" race — selection is always defined.
   const setSelection = useSetSessionSelection(cliSessionId);
   const selection = useMemo(() => {
     if (sessionInfo?.model) return { model: sessionInfo.model };
-    const def = models?.find((m) => m.isDefault) ?? models?.[0];
-    if (def) return { model: def.model };
-    return undefined;
-  }, [sessionInfo?.model, models]);
+    return { model: DEFAULT_MODEL.model };
+  }, [sessionInfo?.model]);
 
   // Context-window meter for the model picker chip. Joins the latest
   // turn_completed.usage (from useSessionTranscript) with the selected
-  // model's contextWindow (from useModels). Returns null until both are
-  // ready — InputBar then renders the chip with no fill.
+  // model's contextWindow (from the bundled MODEL_METADATA table).
+  // Returns null when no turn has completed yet — InputBar then renders
+  // the chip with no fill.
   const contextUsage = useContextUsage(session.latestUsage, selection?.model);
 
   return (
