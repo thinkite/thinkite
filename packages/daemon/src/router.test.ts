@@ -2234,6 +2234,52 @@ describe("createCommandHandler — subscribeSessions (#17)", () => {
     expect(sent.length).toBe(before);
   });
 
+  it("#17 sendPrompt create-path emits push frames with the picked model verbatim", async () => {
+    // Repro for "ios picked Sonnet → detail screen shows default Opus".
+    // Verifies the daemon's TWO push frames (createSessionFromPrompt
+    // fanout + pushPrompt's setActivity("running") edge) BOTH carry
+    // `state.model === cmd.model` end-to-end.
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        hasSession: vi.fn().mockResolvedValue(false), // new session → create
+        queryFactory: emptyQueryFactory(),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    // Open the subscribeSessions stream before sending the prompt, so
+    // the fanout listener is attached when createSessionFromPrompt fires.
+    await handler(
+      { type: "subscribeSessions", requestId: "subs-0" } satisfies Command,
+      ctx,
+    );
+    const before = sent.length;
+    await handler(
+      {
+        type: "sendPrompt",
+        requestId: "sp-create",
+        sessionId: "new-id",
+        text: "first prompt",
+        cwd: "/p",
+        model: "claude-sonnet-4-6",
+      },
+      ctx,
+    );
+    const pushed = sent
+      .slice(before)
+      .filter(
+        (f): f is { type: "session_state_changed"; state: { model: string } } =>
+          (f as { type?: string }).type === "session_state_changed",
+      );
+    // Should be at least the creation push and one activity-edge push.
+    expect(pushed.length).toBeGreaterThanOrEqual(2);
+    // EVERY push carries the user's picked model — no null/undefined.
+    for (const frame of pushed) {
+      expect(frame.state.model).toBe("claude-sonnet-4-6");
+    }
+  });
+
   it("re-subscribe on the same peer replaces the previous listener (no double-deliver)", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
     const r = runtimeManager.getOrCreate("S");
