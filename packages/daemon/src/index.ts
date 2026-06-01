@@ -215,7 +215,17 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
         // (otherwise iOS only sees the change after a list refresh).
         // Map undefined → null per the protocol's `model: string | null`.
         if (runtime !== undefined) {
-          runtime.setModel(model ?? null);
+          const changed = runtime.setModel(model ?? null);
+          // #17 — also PUT /worker external_metadata so any OTHER CCR
+          // client (multi-tab claude.ai on the same cse_ session) sees
+          // the new model immediately. The initiating tab will see its
+          // own echo, but reportMetadata is idempotent (same value =
+          // same external_metadata = no visible churn). Gated on
+          // `changed` to skip redundant writes when the inbound matches
+          // the already-current selection.
+          if (changed) {
+            runtime.bridge?.reportMetadata?.({ model: model ?? null });
+          }
         }
         updateSidecodeSessionSelection(home, sessionId, { model });
       } catch (err) {

@@ -583,6 +583,49 @@ describe("BridgeTransport.checkpoint — M3.1 SSE high-water persist", () => {
   });
 });
 
+describe("BridgeTransport.reportMetadata — #17 model broadcast to CCR", () => {
+  it("forwards metadata verbatim to handle.reportMetadata", async () => {
+    const fake = fakeHandle({ connected: true });
+    const t = await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      deps: happyDeps(fake.handle),
+    });
+    t.reportMetadata({ model: "claude-opus-4-7" });
+    expect(fake.handle.reportMetadata).toHaveBeenCalledExactlyOnceWith({
+      model: "claude-opus-4-7",
+    });
+  });
+
+  it("is a no-op after close — stale callbacks must not touch the SDK handle", async () => {
+    const fake = fakeHandle({ connected: true });
+    const t = await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      deps: happyDeps(fake.handle),
+    });
+    t.close();
+    t.reportMetadata({ model: "x" });
+    expect(fake.handle.reportMetadata).not.toHaveBeenCalled();
+  });
+
+  it("swallows handle exceptions — best-effort, mustn't break the RPC response path", async () => {
+    const fake = fakeHandle({ connected: true });
+    fake.handle.reportMetadata = vi.fn(() => {
+      throw new Error("CCR transport flaky");
+    });
+    const t = await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      deps: happyDeps(fake.handle),
+    });
+    expect(() => t.reportMetadata({ model: "x" })).not.toThrow();
+  });
+});
+
 describe("BridgeTransport.reconnect — M3.5.2 transport-level credential swap", () => {
   it("delegates to handle.reconnectTransport with the passed ingress + epoch", async () => {
     const fake = fakeHandle({ connected: true });

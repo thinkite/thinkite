@@ -107,6 +107,23 @@ export interface RuntimeBridge {
    * after close and on transports constructed without a persist callback.
    */
   checkpoint?(): void;
+  /**
+   * #17 — PUT /worker external_metadata so other CCR clients (multi-tab
+   * claude.ai, future server-side viewers) see the latest control-plane
+   * state. Sidecode uses this to broadcast model changes:
+   * setSessionSelection (iOS-driven) and bridge.onSetModel (CCR-driven)
+   * both forward `{ model }` here so any peer reading worker metadata
+   * sees the new value immediately, without waiting for the next
+   * assistant frame's per-turn `message.model` field.
+   *
+   * Caller passes the FULL metadata object — the SDK does PUT semantics
+   * (replace, not merge) per `bridge.d.ts:77`. V0 only sends `{ model }`;
+   * future branch/dir reporting will accumulate via a manager-side bag.
+   *
+   * Optional on the interface (test fakes can skip). Production
+   * BridgeTransport implements; best-effort + no-op after close.
+   */
+  reportMetadata?(metadata: Record<string, unknown>): void;
   /** Tear down the bridge transport. */
   close(): void;
 }

@@ -1261,6 +1261,99 @@ describe("createCommandHandler — setSessionSelection", () => {
     });
   });
 
+  it("#17 setSessionSelection forwards model change to bridge.reportMetadata when bridged", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const reportMetadataMock = vi.fn();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.loopPromise = Promise.resolve();
+    runtime.query = {
+      interrupt: async () => {},
+      close: () => {},
+      applyFlagSettings: vi.fn(async () => {}),
+    };
+    runtime.bridge = {
+      write: () => {},
+      sendResult: () => {},
+      reportState: () => {},
+      reportMetadata: reportMetadataMock,
+      close: () => {},
+    };
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx } = makeCtx();
+    await handler(
+      {
+        type: "setSessionSelection",
+        requestId: "ss-bridge",
+        sessionId: "S",
+        model: "claude-opus-4-7",
+      },
+      ctx,
+    );
+    expect(reportMetadataMock).toHaveBeenCalledExactlyOnceWith({
+      model: "claude-opus-4-7",
+    });
+  });
+
+  it("#17 setSessionSelection does NOT call bridge.reportMetadata when model is a no-op (same value)", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const reportMetadataMock = vi.fn();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.currentModel = "claude-opus-4-7"; // pre-set so setModel returns false
+    runtime.loopPromise = Promise.resolve();
+    runtime.query = {
+      interrupt: async () => {},
+      close: () => {},
+      applyFlagSettings: vi.fn(async () => {}),
+    };
+    runtime.bridge = {
+      write: () => {},
+      sendResult: () => {},
+      reportState: () => {},
+      reportMetadata: reportMetadataMock,
+      close: () => {},
+    };
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx } = makeCtx();
+    await handler(
+      {
+        type: "setSessionSelection",
+        requestId: "ss-noop-bridge",
+        sessionId: "S",
+        model: "claude-opus-4-7", // same as currentModel
+      },
+      ctx,
+    );
+    expect(reportMetadataMock).not.toHaveBeenCalled();
+  });
+
+  it("#17 setSessionSelection with no bridge attached: skips reportMetadata silently", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.loopPromise = Promise.resolve();
+    runtime.query = {
+      interrupt: async () => {},
+      close: () => {},
+      applyFlagSettings: vi.fn(async () => {}),
+    };
+    // bridge stays null — pure session, no CCR mirror.
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "setSessionSelection",
+        requestId: "ss-pure",
+        sessionId: "S",
+        model: "claude-opus-4-7",
+      },
+      ctx,
+    );
+    // No throw, runtime model still updated, response succeeds.
+    expect(runtime.currentModel).toBe("claude-opus-4-7");
+    expect(sent.at(-1)).toMatchObject({
+      type: "setSessionSelection.response",
+    });
+  });
+
   it("#17 setSessionSelection with model=undefined resets runtime.currentModel to null", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
     const runtime = runtimeManager.getOrCreate("S");

@@ -769,7 +769,19 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           // runtime case the disk metadata update below is what carries
           // the selection forward (re-spawn seeds currentModel from it).
           if (runtime !== undefined) {
-            runtime.setModel(cmd.model ?? null);
+            const changed = runtime.setModel(cmd.model ?? null);
+            // #17 — broadcast to CCR via worker external_metadata so a
+            // claude.ai tab opened on the same cse_ session sees the
+            // new model immediately (without waiting for the next
+            // assistant frame's per-turn `message.model`). Gated on
+            // `changed` so a no-op set doesn't trigger a redundant PUT.
+            // Best-effort: bridge-transport swallows write errors so a
+            // flaky CCR transport can't fail this RPC.
+            if (changed) {
+              runtime.bridge?.reportMetadata?.({
+                model: cmd.model ?? null,
+              });
+            }
           }
           // Apply succeeded (or no live runtime). Persist intent. Dep
           // is a silent no-op when the metadata file doesn't exist

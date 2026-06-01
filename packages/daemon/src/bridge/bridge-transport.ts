@@ -440,6 +440,28 @@ export class BridgeTransport implements RuntimeBridge {
     }
   }
 
+  /**
+   * #17 — PUT /worker external_metadata so other CCR clients (multi-tab
+   * claude.ai, future viewers) see the latest control-plane state.
+   * Sidecode uses this for model-change broadcast:
+   * setSessionSelection (iOS) and bridge.onSetModel (CCR inbound) both
+   * forward `{ model }` here so any peer reading worker metadata sees
+   * the new value immediately, not just at the next assistant frame.
+   *
+   * No-op after close (a stale callback firing post-close mustn't write
+   * a state that out-survives the bridge). Best-effort: a metadata
+   * write failure must not break the model-change RPC's response path
+   * — the local query already applied the change.
+   */
+  reportMetadata(metadata: Record<string, unknown>): void {
+    if (this.closed) return;
+    try {
+      this.handle.reportMetadata(metadata);
+    } catch {
+      // best-effort — see docstring.
+    }
+  }
+
   /** Tear down the transport. Idempotent. */
   close(): void {
     if (this.closed) return;
