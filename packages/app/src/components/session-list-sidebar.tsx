@@ -1,10 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { router } from "expo-router";
-import { useMemo } from "react";
 import {
   ActivityIndicator,
+  FlatList,
   Pressable,
-  SectionList,
   Text,
   View,
 } from "react-native";
@@ -12,17 +11,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SessionRow } from "@/components/session-row";
 import { useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { useSessions } from "@/hooks/use-sessions";
-import { projectName } from "@/lib/format";
 import { clearLastUsedCwd } from "@/lib/last-used-cwd";
-import type { SessionInfo } from "@/types/session";
-
-interface ProjectSection {
-  title: string;
-  /** Parent project root used as the section's identity / group key. Forks
-   *  in worktrees fold into the parent's section via this. */
-  originCwd: string;
-  data: SessionInfo[];
-}
+import type { SessionRow as SessionRowData } from "@/lib/sessions-collection";
 
 const Separator = () => <View className="h-px bg-gray-200 dark:bg-gray-800" />;
 
@@ -57,29 +47,6 @@ export function SessionListSidebar({
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
 
-  const sections = useMemo<ProjectSection[]>(() => {
-    if (!sessions) return [];
-    // Group by originCwd so fork sessions in worktrees fold under their
-    // parent project. cwd is the actual run dir (worktree); originCwd is
-    // the parent root — see project_desktop_session_storage memory.
-    const buckets = new Map<string, SessionInfo[]>();
-    for (const s of sessions) {
-      const arr = buckets.get(s.originCwd);
-      if (arr) arr.push(s);
-      else buckets.set(s.originCwd, [s]);
-    }
-    const groups = Array.from(buckets, ([originCwd, data]) => {
-      const mostRecent = Math.max(...data.map((d) => d.lastActivityAt));
-      return { originCwd, data, mostRecent };
-    });
-    groups.sort((a, b) => b.mostRecent - a.mostRecent);
-    return groups.map(({ originCwd, data }) => ({
-      title: projectName(originCwd),
-      originCwd,
-      data,
-    }));
-  }, [sessions]);
-
   // Drawer-style switching uses `router.replace` not `push`: tapping a
   // session in the sidebar should swap the active screen, not accumulate a
   // back stack of session instances. With `push`, switching A → B → A
@@ -88,7 +55,7 @@ export function SessionListSidebar({
   // user gets a back chevron in the UINavigationBar that pops to a session
   // they don't expect to "go back" to.
   const setLastUsedCwd = useSetLastUsedCwd();
-  const handleOpenSession = (session: SessionInfo) => {
+  const handleOpenSession = (session: SessionRowData) => {
     // Record the current focus so the next "New session" defaults to
     // the project the user just opened. Mutation is fire-and-forget;
     // the navigation below shouldn't wait on SecureStore I/O.
@@ -150,7 +117,7 @@ export function SessionListSidebar({
       {/* Session list */}
       <Body
         query={query}
-        sections={sections}
+        sessions={sessions ?? []}
         onOpenSession={handleOpenSession}
       />
 
@@ -250,12 +217,12 @@ export function SessionListSidebar({
 
 function Body({
   query,
-  sections,
+  sessions,
   onOpenSession,
 }: {
   query: ReturnType<typeof useSessions>;
-  sections: ProjectSection[];
-  onOpenSession: (s: SessionInfo) => void;
+  sessions: readonly SessionRowData[];
+  onOpenSession: (s: SessionRowData) => void;
 }) {
   if (query.isLoading) {
     return (
@@ -278,7 +245,7 @@ function Body({
     );
   }
 
-  if (sections.length === 0) {
+  if (sessions.length === 0) {
     return (
       <View className="flex-1 items-center justify-center px-6">
         <Text className="text-center text-sm text-gray-500 dark:text-gray-400">
@@ -288,25 +255,17 @@ function Body({
     );
   }
 
+  // Flat list, recency-first per [[project_v0_session_list_design]]. Sort
+  // already done by useSessions' `orderBy` so the data prop is the
+  // render order.
   return (
-    <SectionList<SessionInfo, ProjectSection>
-      sections={sections}
+    <FlatList<SessionRowData>
+      data={sessions as SessionRowData[]}
       keyExtractor={(item) => item.cliSessionId}
       renderItem={({ item }) => (
         <SessionRow session={item} onPress={onOpenSession} />
       )}
       ItemSeparatorComponent={Separator}
-      renderSectionHeader={({ section }) => (
-        <View className="bg-gray-50 px-4 pt-4 pb-1 dark:bg-gray-950">
-          <Text
-            numberOfLines={1}
-            className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
-          >
-            {section.title}
-          </Text>
-        </View>
-      )}
-      stickySectionHeadersEnabled
       ListFooterComponent={<View className="h-4" />}
     />
   );

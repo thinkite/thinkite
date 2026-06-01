@@ -9,7 +9,7 @@ import { useContextUsage } from "@/hooks/use-context-usage";
 import { useModels } from "@/hooks/use-models";
 import { useSessionTranscript } from "@/hooks/use-session-transcript";
 import { useSetSessionSelection } from "@/hooks/use-set-session-selection";
-import { sessionsCollection } from "@/lib/sessions-collection";
+import { sessionStateCollection } from "@/lib/sessions-collection";
 import { flattenToBlocks } from "@/lib/transcript-blocks";
 
 /**
@@ -74,7 +74,7 @@ export default function SessionDetailScreen() {
   const { data: sessionInfo } = useLiveQuery(
     (q) =>
       q
-        .from({ s: sessionsCollection })
+        .from({ s: sessionStateCollection })
         .where(({ s }) => eq(s.cliSessionId, cliSessionId))
         .findOne(),
     [cliSessionId],

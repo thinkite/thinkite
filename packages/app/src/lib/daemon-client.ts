@@ -14,6 +14,7 @@ import {
   type ModelEntry,
   PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
+  type SessionState,
   type TimelineItem,
   type TurnUsage,
 } from "@sidecodeapp/protocol";
@@ -126,6 +127,31 @@ type EventCallback = (cursor: number, delta: EventDelta) => void;
 type GitStatusCallback = (status: GitStatus) => void;
 
 /**
+ * #17 — push-channel callbacks for the daemon-wide `subscribeSessions`
+ * stream. Singleton per app process (one collection consumes the stream;
+ * see `sessionStateCollection`). Last-write-wins semantics; no cursor /
+ * no replay gap — each reconnect re-delivers `onInitial` with the full
+ * fresh snapshot, so the consumer can truncate-and-reinsert without
+ * worrying about missed deltas.
+ *
+ *   - `onInitial(entries)` — fires once per attach (initial + every
+ *     reconnect). Consumer should treat each call as "ground truth — drop
+ *     anything you have and start over with these entries". V0 daemon's
+ *     `getAllSessionStates` returns a disk + memory union (see
+ *     SessionRuntimeManager).
+ *   - `onChange(sessionId, state)` — server push for a single session's
+ *     state update. Upsert by sessionId.
+ *   - `onRemove(sessionId)` — server push for a deleted session. V0 daemon
+ *     never fires this (no user-driven delete), but consumer should
+ *     handle it for V0.5+ forward compat.
+ */
+export interface SessionStatesCallbacks {
+  onInitial: (entries: Array<{ sessionId: string; state: SessionState }>) => void;
+  onChange: (sessionId: string, state: SessionState) => void;
+  onRemove: (sessionId: string) => void;
+}
+
+/**
  * Max time we wait from "start connecting" to "DataChannel open". Covers:
  * signaling open + roster + (daemon mints offer) + ICE gather + DTLS.
  * On a healthy LAN the whole flow completes in <200ms; the slack is
@@ -163,6 +189,16 @@ export class Transport {
    * watcher state is per-workspace on the daemon, not per-session.
    */
   private readonly gitStatusCallbacks = new Map<string, GitStatusCallback>();
+  /**
+   * #17 — singleton push-channel for daemon-wide `subscribeSessions`.
+   * Not a Map: there's only one session-states stream per transport
+   * (one collection consumes it). Set by `subscribeSessions` after the
+   * RPC response lands; cleared on transport close.
+   */
+  private sessionStatesPush: Pick<
+    SessionStatesCallbacks,
+    "onChange" | "onRemove"
+  > | null = null;
   /**
    * Inbound chunk reassembly buffer. Large daemon frames (e.g. a
    * `subscribe.response` for a long-running session whose settled
@@ -474,6 +510,59 @@ export class Transport {
     if (dir !== undefined) frame.dir = dir;
     const res = (await this.request(frame)) as { sessions: unknown[] };
     return res.sessions;
+  }
+
+  /**
+   * #17 — open the daemon-wide `subscribeSessions` push channel. Awaits
+   * the response (returns `initial` snapshot), and ALSO wires the push
+   * callbacks into the frame router so subsequent `session_state_changed`
+   * / `session_state_removed` envelopes route to `callbacks.onChange` /
+   * `callbacks.onRemove` until transport close.
+   *
+   * Low-level — `DaemonClient.subscribeSessions` wraps this with replay-
+   * on-reconnect semantics so the collection's sync handler doesn't care
+   * which Transport instance is current. Returns an `unsubscribe` thunk
+   * that detaches the push callbacks (V0 doesn't send an explicit
+   * unsubscribe RPC — daemon's listener set is cleaned up via
+   * `ctx.onDisconnect` when the transport closes).
+   */
+  async subscribeSessions(callbacks: {
+    onChange: (sessionId: string, state: SessionState) => void;
+    onRemove: (sessionId: string) => void;
+  }): Promise<{
+    initial: Array<{ sessionId: string; state: SessionState }>;
+    unsubscribe: () => void;
+  }> {
+    const requestId = Crypto.randomUUID();
+    // Install push callbacks BEFORE sending the RPC so a fast daemon
+    // can't fire a session_state_changed envelope between our request
+    // and the response landing (race window otherwise — small, but
+    // unsubscribed deltas would be silently dropped by the router).
+    this.sessionStatesPush = callbacks;
+    try {
+      const res = (await this.request({
+        type: "subscribeSessions",
+        requestId,
+      })) as { initial: Array<{ sessionId: string; state: SessionState }> };
+      return {
+        initial: res.initial,
+        unsubscribe: () => {
+          // Only clear if WE are still the active push consumer (defensive
+          // against a re-subscribe replacing us; matches the identity-
+          // guard pattern used by per-session subscribe).
+          if (this.sessionStatesPush === callbacks) {
+            this.sessionStatesPush = null;
+          }
+        },
+      };
+    } catch (err) {
+      // Roll back the push install on RPC failure so a later subscribeSessions
+      // attempt isn't shadowed by our stale callbacks.
+      if (this.sessionStatesPush === callbacks) {
+        this.sessionStatesPush = null;
+      }
+      throw err;
+    }
   }
 
   /**
@@ -886,6 +975,7 @@ export class Transport {
         delta?: EventDelta;
         cwd?: string;
         status?: GitStatus;
+        state?: SessionState;
       };
       // Server-initiated event frame (no requestId). Routed by sessionId
       // to the subscribed callback. Unknown sessionId → silently drop
@@ -911,6 +1001,25 @@ export class Transport {
         if (cb) cb(frame.status);
         return;
       }
+      // #17 server pushes for subscribeSessions stream. Singleton consumer
+      // (sessionStatesPush) — silently drop when nobody subscribed (e.g.
+      // a stray frame after consumer unsubscribed but before transport
+      // closed).
+      if (
+        frame.type === "session_state_changed" &&
+        typeof frame.sessionId === "string" &&
+        frame.state !== undefined
+      ) {
+        this.sessionStatesPush?.onChange(frame.sessionId, frame.state);
+        return;
+      }
+      if (
+        frame.type === "session_state_removed" &&
+        typeof frame.sessionId === "string"
+      ) {
+        this.sessionStatesPush?.onRemove(frame.sessionId);
+        return;
+      }
       if (!frame.requestId) return;
       const slot = this.pending.get(frame.requestId);
       if (!slot) return;
@@ -931,6 +1040,7 @@ export class Transport {
     this.pending.clear();
     this.eventCallbacks.clear();
     this.gitStatusCallbacks.clear();
+    this.sessionStatesPush = null;
     if (!this.intentionallyClosed) {
       const cb = this.onUnexpectedClose;
       this.onUnexpectedClose = null;
@@ -1065,6 +1175,19 @@ export class DaemonClient {
   private readyPromise: Promise<Transport>;
   private resolveReady!: (t: Transport) => void;
   private readonly subs = new Set<Subscription>();
+  /**
+   * #17 — singleton session-states subscription state. One per app
+   * process: the iOS TanStack DB sessionStateCollection is the only
+   * consumer. Distinct from per-session `subs` because:
+   *   - last-write-wins (no cursor / epoch resume hint needed)
+   *   - reconnect re-delivers full `onInitial` snapshot (consumer
+   *     truncate-and-reinserts) rather than replaying a delta gap
+   *   - only one logical subscription exists, so a Set is overkill
+   * Set by `subscribeSessions(callbacks)`; cleared by the returned
+   * unsubscribe thunk. Survives transport reconnects automatically —
+   * `_attachTransport` re-issues the RPC against the new transport.
+   */
+  private sessionStatesSub: SessionStatesCallbacks | null = null;
 
   constructor() {
     this.readyPromise = new Promise((r) => {
@@ -1079,10 +1202,17 @@ export class DaemonClient {
   _attachTransport(t: Transport): void {
     this.transport = t;
     this.resolveReady(t);
-    // Replay every active subscription. Parallel + isolated — a single
-    // session's subscribe RPC failure must not stall the rest.
+    // Replay every active per-session subscription. Parallel + isolated —
+    // a single session's subscribe RPC failure must not stall the rest.
     for (const sub of this.subs) {
       void this.attachSubscription(t, sub);
+    }
+    // #17 — replay the daemon-wide session-states subscription too. Each
+    // attach re-delivers a fresh `initial` snapshot via onInitial so the
+    // consumer truncates + reinserts — that's the last-write-wins
+    // contract.
+    if (this.sessionStatesSub !== null) {
+      void this.attachSessionStatesSub(t, this.sessionStatesSub);
     }
   }
 
@@ -1104,6 +1234,42 @@ export class DaemonClient {
       // cast sites in attachSubscription. Won't fire if sub is already
       // unsubscribed (idempotent).
       if (sub._state === "subscribed") sub._state = "subscribing";
+    }
+    // #17 sessionStatesSub itself is preserved across reconnect — its
+    // re-attach happens in `_attachTransport`. The transport's
+    // `onTransportClosed` already nulled out `sessionStatesPush`.
+  }
+
+  /**
+   * Re-attach the daemon-wide session-states subscription against `t`.
+   * Calls `subscribeSessions` on the transport, then delivers the
+   * returned `initial` snapshot via `onInitial`. Push frames after the
+   * RPC response route through the transport's `sessionStatesPush`
+   * slot to the wrapped callbacks.
+   *
+   * Bare-bones error handling: a failed re-attach (transport closed
+   * mid-await) is non-fatal — the next `_attachTransport` retries. We
+   * console.warn so dev sees it, mirroring `attachSubscription`.
+   */
+  private async attachSessionStatesSub(
+    t: Transport,
+    sub: SessionStatesCallbacks,
+  ): Promise<void> {
+    try {
+      const { initial } = await t.subscribeSessions({
+        onChange: (sid, state) => {
+          // Re-check identity in case consumer unsubscribed during await.
+          if (this.sessionStatesSub === sub) sub.onChange(sid, state);
+        },
+        onRemove: (sid) => {
+          if (this.sessionStatesSub === sub) sub.onRemove(sid);
+        },
+      });
+      // Final identity guard before delivering the snapshot — consumer
+      // may have unsubscribed while we were awaiting.
+      if (this.sessionStatesSub === sub) sub.onInitial(initial);
+    } catch (err) {
+      console.warn("[sidecode] subscribeSessions attach failed:", err);
     }
   }
 
@@ -1225,6 +1391,44 @@ export class DaemonClient {
   async listSessions(dir?: string): Promise<unknown[]> {
     const t = await this.readyPromise;
     return t.listSessions(dir);
+  }
+
+  /**
+   * #17 — open the daemon-wide session-states stream. Singleton: only
+   * one consumer per app process (the TanStack DB session collection's
+   * sync handler).
+   *
+   * Survives reconnects automatically — `_attachTransport` re-issues the
+   * RPC against the new transport and re-delivers `onInitial` with a
+   * fresh snapshot. The consumer's sync handler treats each `onInitial`
+   * as ground truth (truncate-and-reinsert).
+   *
+   * Returns synchronously; `onInitial` fires later (after the first
+   * RPC response lands). The returned `unsubscribe` thunk both clears
+   * the singleton slot (so a subsequent `subscribeSessions` attaches
+   * cleanly) AND fires the active transport's local unsubscribe (which
+   * detaches its push callbacks).
+   *
+   * Idempotent on the singleton: calling `subscribeSessions` twice
+   * without unsubscribing in between REPLACES the prior consumer (V0
+   * has only one consumer so this matters only as a defensive guard;
+   * if needed, expose multi-consumer fan-out later).
+   */
+  subscribeSessions(callbacks: SessionStatesCallbacks): { unsubscribe: () => void } {
+    this.sessionStatesSub = callbacks;
+    if (this.transport !== null) {
+      void this.attachSessionStatesSub(this.transport, callbacks);
+    }
+    return {
+      unsubscribe: () => {
+        // Only clear if we're still the active sub (defensive against a
+        // late unsubscribe by a stale closure after a subscribeSessions
+        // call replaced us).
+        if (this.sessionStatesSub === callbacks) {
+          this.sessionStatesSub = null;
+        }
+      },
+    };
   }
 
   async listDirectory(

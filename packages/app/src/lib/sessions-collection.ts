@@ -1,82 +1,115 @@
-import type { ImageAttachment } from "@sidecodeapp/protocol";
+import type { ImageAttachment, SessionState } from "@sidecodeapp/protocol";
 import { createOptimisticAction } from "@tanstack/db";
-import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { createCollection } from "@tanstack/react-db";
 import { daemonClient } from "@/lib/daemon-client";
-import { queryClient } from "@/lib/query-client";
-import type { SessionInfo } from "@/types/session";
 
 /**
- * The app's single sessions collection, backed by the `listSessions` RPC.
+ * #17 — iOS row shape for the session-states collection. Wraps the
+ * daemon's `SessionState` payload (live + static fields) with the
+ * client-side `cliSessionId` key used by every list row + URL.
  *
- * A module-level const (not a per-client factory): the `daemonClient` it
- * talks to is itself a module singleton, and there's only ever one
- * sessions collection — so it mirrors the `queryClient` singleton and can
- * be imported directly by any consumer (`useLiveQuery` reads, the
- * mutations below) without threading the client through React context.
+ * Drop-in for the old `SessionInfo`. Differences:
+ *   - `sessionId: "local_<id>"` is GONE — collection key is now
+ *     `cliSessionId` directly. The `local_` prefix was Desktop-mirror
+ *     bookkeeping; V0 only carries sidecode-owned sessions.
+ *   - `origin` is GONE — V0 cuts Desktop view-only sessions, so every
+ *     row is sidecode-owned.
+ *   - `originCwd` is GONE — flat sort by `lastActivityAt` desc, no
+ *     project grouping per [[project_v0_session_list_design]].
+ *   - `modelLabel` is GONE — computed client-side from `useModels()`
+ *     in the row component (lookup is cached forever, pure sync).
  *
- * Why a TanStack DB query collection instead of a plain React Query
- * `useQuery(["sessions"])`: reads come from one place (`useLiveQuery` in
- * `use-sessions.ts`) and writes are direct + optimistic against the same
- * synced store — no `setQueryData` / `invalidateQueries` choreography.
- *
- * Mutations use the idiomatic optimistic APIs. The optimistic state is
- * dropped when persistence resolves, so each one syncs the change back
- * via `utils.refetch()` (or the query collection's auto-refetch) before
- * completing — see the TanStack DB mutations guide:
- *
- *   - model pick (`use-set-session-selection.ts`): `collection.update`
- *     applies the optimistic chip change; the `onUpdate` handler below
- *     fires `setSessionSelection` and query-db auto-refetches to confirm.
- *     Relies on the daemon echoing `model` back in listSessions
- *     (toSessionInfoFromSidecode); without that the refetch would revert
- *     the chip. A throw rolls the optimistic update back automatically.
- *
- *   - new session (`createSession` below): a `createOptimisticAction`
- *     whose `onMutate` inserts a client-built row (instant sidebar entry
- *     with a title) and whose `mutationFn` runs the first `sendPrompt`
- *     (the create on the daemon) then `utils.refetch()`. An action, not an
- *     `onInsert` handler, because creation needs the prompt payload the
- *     SessionInfo row doesn't carry.
- *
- * The low-level `utils.write*` direct-write primitives are intentionally
- * NOT used for these user mutations; they're reserved for folding in
- * server-pushed deltas without a refetch (the future Slice I fs.watch
- * tail), where there's no optimistic transaction to reconcile.
- *
- * `startSync: true` keeps the store warm from app start. The first
- * `listSessions` just pends on the facade's readyPromise until the
- * Provider attaches a transport (and stays pending while unpaired) — no
- * error, the facade blocks RPCs until ready.
+ * `activity` / `createdAt` / `permissionMode` are NEW fields surfaced
+ * by the #17 stream.
  */
-export const sessionsCollection = createCollection(
-  queryCollectionOptions({
-    id: "sessions",
-    queryClient,
-    queryKey: ["sessions"],
-    queryFn: async (): Promise<SessionInfo[]> =>
-      (await daemonClient.listSessions()) as SessionInfo[],
-    getKey: (s: SessionInfo) => s.cliSessionId,
-    startSync: true,
-    onUpdate: async ({ transaction }) => {
-      for (const m of transaction.mutations) {
-        await daemonClient.setSessionSelection({
-          sessionId: m.modified.cliSessionId,
-          model: m.modified.model,
-        });
-      }
+export type SessionRow = SessionState & {
+  cliSessionId: string;
+};
+
+/**
+ * The app's single session-state collection, backed by the daemon's
+ * `subscribeSessions` push stream.
+ *
+ * Sync handler subscribes once per attach. Daemon delivers a fresh
+ * `initial` snapshot on every (re)connect — handler truncates + bulk
+ * inserts. Live `session_state_changed` / `session_state_removed`
+ * push envelopes upsert / delete row-by-row.
+ *
+ * Last-write-wins semantics; no cursor / no replay gap.
+ * `daemonClient.subscribeSessions` survives transport reconnects
+ * transparently (re-issues the RPC + re-delivers onInitial on attach).
+ *
+ * `startSync: true` keeps the collection warm from app start. The first
+ * subscribe blocks on the daemon transport's readyPromise internally —
+ * no `enabled` gate needed.
+ */
+export const sessionStateCollection = createCollection<SessionRow, string>({
+  id: "session-states",
+  getKey: (r) => r.cliSessionId,
+  startSync: true,
+  sync: {
+    sync: ({ begin, write, commit, markReady, truncate, collection: coll }) => {
+      let hasMarkedReady = false;
+
+      const handle = daemonClient.subscribeSessions({
+        onInitial: (entries) => {
+          // Each onInitial fire is ground truth (initial attach + every
+          // reconnect). Truncate first so a row removed from the server
+          // side between connects doesn't linger; then bulk insert.
+          begin();
+          truncate();
+          for (const { sessionId, state } of entries) {
+            write({
+              type: "insert",
+              value: { cliSessionId: sessionId, ...state },
+            });
+          }
+          commit();
+          if (!hasMarkedReady) {
+            markReady();
+            hasMarkedReady = true;
+          }
+        },
+        onChange: (sessionId, state) => {
+          // Upsert: branch on presence to pick the right write op.
+          // TanStack DB's `insert` / `update` are mutually exclusive
+          // (insert throws on existing, update throws on missing).
+          const existing = coll.get(sessionId);
+          begin();
+          if (existing === undefined) {
+            write({
+              type: "insert",
+              value: { cliSessionId: sessionId, ...state },
+            });
+          } else {
+            write({
+              type: "update",
+              value: { cliSessionId: sessionId, ...state },
+            });
+          }
+          commit();
+        },
+        onRemove: (sessionId) => {
+          // V0 daemon never fires this (no user-driven delete), but
+          // wire it for V0.5+ forward compat.
+          if (coll.get(sessionId) === undefined) return;
+          begin();
+          write({ type: "delete", key: sessionId });
+          commit();
+        },
+      });
+      return () => handle.unsubscribe();
     },
-  }),
-);
+  },
+});
 
 const TITLE_MAX_LEN = 200;
 
 /**
  * Client-side mirror of the daemon's `deriveTitleFromFirstPrompt`
- * (sidecode-sessions.ts) — used to label the optimistic row at create
- * time. The daemon derives the same title with the same algorithm and
- * `utils.refetch()` folds it in, so any drift self-heals on reconcile;
- * keeping them identical just avoids a visible title flicker.
+ * (sidecode-sessions.ts). Used to label the optimistic row at create
+ * time; the daemon derives the same title and the #17 push folds it in,
+ * so any drift self-heals on reconcile.
  */
 export function deriveSessionTitle(text: string): string {
   const oneLine = text.replace(/\s+/g, " ").trim();
@@ -96,33 +129,34 @@ interface CreateSessionVars {
  * Optimistic "create a new session" action.
  *
  * `onMutate` inserts a client-built row so the sidebar shows the new
- * session immediately (with a title derived the way the daemon does),
- * instead of after the 30s staleTime. `mutationFn` fires the first
- * `sendPrompt` — which IS the create on the daemon — then
- * `utils.refetch()` folds the canonical row in by cliSessionId.
+ * session immediately. `mutationFn` fires the first `sendPrompt` (which
+ * IS the create on the daemon) — the daemon then emits a
+ * `session_state_changed` envelope which the sync handler folds in,
+ * replacing the optimistic row with the canonical state.
  *
- * An action rather than `collection.insert` + an `onInsert` handler
- * because `onInsert` only receives the SessionInfo row, but creation
- * needs the prompt text/images/cwd/model the row doesn't carry; the
- * action's variables hold that full payload.
+ * No `utils.refetch()` needed — the push channel IS the refetch. The
+ * optimistic state is dropped when mutationFn resolves; the canonical
+ * row from the push is already in the collection by then.
  *
- * The optimistic state is dropped when `mutationFn` returns, so the
- * refetch (after sendPrompt's response — the daemon writes metadata
- * before replying) must land the canonical row first. On reject the
- * optimistic insert rolls back automatically; callers can observe failure
- * via the returned transaction's `isPersisted.promise`.
+ * Optimistic seed values match the daemon's own initial state so the
+ * visible transition on reconcile is minimal: `activity: "running"`
+ * (the prompt just fired), `lastActivityAt: now`,
+ * `permissionMode: "bypassPermissions"` (V0 owned-session default —
+ * see project_no_plan_mode_v0 / sidecode-sessions.ts default).
  */
 export const createSession = createOptimisticAction<CreateSessionVars>({
   onMutate: (vars) => {
-    sessionsCollection.insert({
-      sessionId: `local_${vars.cliSessionId}`,
+    const now = Date.now();
+    sessionStateCollection.insert({
       cliSessionId: vars.cliSessionId,
-      origin: "sidecode-created",
+      activity: "running",
+      model: vars.model ?? null,
+      lastActivityAt: now,
       title: deriveSessionTitle(vars.text),
       cwd: vars.cwd,
-      originCwd: vars.cwd,
-      lastActivityAt: Date.now(),
+      createdAt: now,
       isArchived: false,
+      permissionMode: "bypassPermissions",
     });
   },
   mutationFn: async (vars) => {
@@ -133,6 +167,43 @@ export const createSession = createOptimisticAction<CreateSessionVars>({
       images: vars.images,
       model: vars.model,
     });
-    await sessionsCollection.utils.refetch();
+    // No refetch — daemon's setActivity("running") on this prompt fires
+    // a session_state_changed envelope which the sync handler folds in
+    // by cliSessionId. The optimistic row drops as the canonical lands.
+  },
+});
+
+/**
+ * Pick a new model for an existing session. Optimistic + push-reconcile:
+ *
+ *   1. `onMutate` updates the row's `model` field in the collection so
+ *      the chip and any list row update instantly.
+ *   2. `mutationFn` fires `setSessionSelection` — the daemon applies via
+ *      `applyFlagSettings`, mirrors to `runtime.setModel` (#17 fan-out),
+ *      and persists to disk. The fan-out includes ALL connected peers
+ *      (including this one), so the push delivers the canonical state
+ *      back through the sync handler's `onChange` upsert.
+ *
+ * On rejection the optimistic update rolls back automatically — the
+ * picker chip reverts.
+ */
+export const updateSessionModel = createOptimisticAction<{
+  cliSessionId: string;
+  model: string | undefined;
+}>({
+  onMutate: ({ cliSessionId, model }) => {
+    if (sessionStateCollection.get(cliSessionId) === undefined) return;
+    sessionStateCollection.update(cliSessionId, (draft) => {
+      // Protocol normalizes "no selection" to null. iOS picker passes
+      // `undefined` for "reset to SDK default" — map to null so the
+      // optimistic draft has the same shape the push will deliver.
+      draft.model = model ?? null;
+    });
+  },
+  mutationFn: async ({ cliSessionId, model }) => {
+    await daemonClient.setSessionSelection({
+      sessionId: cliSessionId,
+      model,
+    });
   },
 });
