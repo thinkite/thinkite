@@ -54,6 +54,14 @@ export const sessionStateCollection = createCollection<SessionRow, string>({
 
       const handle = daemonClient.subscribeSessions({
         onInitial: (entries) => {
+          // [sidecode/model-bug] LOG C — daemon's initial snapshot. If
+          // the just-created session's model is null here but rawSend
+          // sent Sonnet, the daemon's push path dropped it (or this
+          // snapshot races BEFORE the create on a hot-reload reconnect).
+          console.log(
+            "[sidecode/model-bug] C onInitial",
+            entries.map((e) => ({ sid: e.sessionId, model: e.state.model })),
+          );
           // Each onInitial fire is ground truth (initial attach + every
           // reconnect). Truncate first so a row removed from the server
           // side between connects doesn't linger; then bulk insert.
@@ -72,6 +80,16 @@ export const sessionStateCollection = createCollection<SessionRow, string>({
           }
         },
         onChange: (sessionId, state) => {
+          // [sidecode/model-bug] LOG D — every daemon-pushed state delta.
+          // On create-path daemon emits 2 pushes (createSessionFromPrompt
+          // fanout + setActivity edge); both should carry the picked
+          // model. If model is null here but A logged Sonnet, the bug
+          // is on the daemon push path.
+          console.log("[sidecode/model-bug] D onChange", {
+            sid: sessionId,
+            model: state.model,
+            activity: state.activity,
+          });
           // Upsert: branch on presence to pick the right write op.
           // TanStack DB's `insert` / `update` are mutually exclusive
           // (insert throws on existing, update throws on missing).
@@ -148,6 +166,14 @@ interface CreateSessionVars {
 export const createSession = createOptimisticAction<CreateSessionVars>({
   onMutate: (vars) => {
     const now = Date.now();
+    // [sidecode/model-bug] LOG B — what model is the optimistic row
+    // seeded with? If this is null but A logged Sonnet, the model
+    // somehow dropped between rawSend and createSession's invocation.
+    console.log("[sidecode/model-bug] B onMutate", {
+      sid: vars.cliSessionId,
+      varsModel: vars.model,
+      writingModel: vars.model ?? null,
+    });
     sessionStateCollection.insert({
       cliSessionId: vars.cliSessionId,
       activity: "running",

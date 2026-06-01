@@ -92,6 +92,21 @@ export default function SessionDetailScreen() {
     return { model: DEFAULT_MODEL.model };
   }, [sessionInfo?.model]);
 
+  // [sidecode/model-bug] LOG E — what the detail screen actually
+  // displays. Fires on every render where sessionInfo or selection
+  // changes. If sessionInfo.model is Sonnet but selection is Opus,
+  // the useMemo is broken. If sessionInfo.model is null/undefined, the
+  // sync push didn't land (or landed with model=null).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: diagnostic
+  useEffect(() => {
+    console.log("[sidecode/model-bug] E detail render", {
+      sid: cliSessionId,
+      sessionInfoModel: sessionInfo?.model,
+      selectionModel: selection.model,
+      hasSessionInfo: sessionInfo !== undefined,
+    });
+  }, [sessionInfo?.model, selection.model]);
+
   // Context-window meter for the model picker chip. Joins the latest
   // turn_completed.usage (from useSessionTranscript) with the selected
   // model's contextWindow (from the bundled MODEL_METADATA table).
