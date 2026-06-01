@@ -582,3 +582,90 @@ describe("BridgeTransport.checkpoint — M3.1 SSE high-water persist", () => {
     expect(persistSequenceNum).toHaveBeenCalled();
   });
 });
+
+describe("BridgeTransport.reconnect — M3.5.2 transport-level credential swap", () => {
+  it("delegates to handle.reconnectTransport with the passed ingress + epoch", async () => {
+    const fake = fakeHandle({ connected: true });
+    const reconnectSpy = vi.fn(async () => {});
+    fake.handle.reconnectTransport = reconnectSpy;
+    const transport = await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      deps: happyDeps(fake.handle),
+    });
+    await transport.reconnect({
+      ingressToken: "new-jwt-7",
+      apiBaseUrl: "https://api.anthropic.com",
+      epoch: 5,
+    });
+    expect(reconnectSpy).toHaveBeenCalledWith({
+      ingressToken: "new-jwt-7",
+      apiBaseUrl: "https://api.anthropic.com",
+      epoch: 5,
+    });
+  });
+
+  it("propagates the underlying handle.reconnectTransport rejection (caller decides retry)", async () => {
+    const fake = fakeHandle({ connected: true });
+    fake.handle.reconnectTransport = vi.fn(async () => {
+      throw new Error("server 5xx");
+    });
+    const transport = await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      deps: happyDeps(fake.handle),
+    });
+    await expect(
+      transport.reconnect({
+        ingressToken: "x",
+        apiBaseUrl: "https://api.anthropic.com",
+        epoch: 1,
+      }),
+    ).rejects.toThrow("server 5xx");
+  });
+
+  it("throws when called after close (reconnecting a torn-down transport is a programmer bug)", async () => {
+    const fake = fakeHandle({ connected: true });
+    const transport = await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      deps: happyDeps(fake.handle),
+    });
+    transport.close();
+    await expect(
+      transport.reconnect({
+        ingressToken: "x",
+        apiBaseUrl: "https://api.anthropic.com",
+        epoch: 1,
+      }),
+    ).rejects.toThrow(/after close/);
+  });
+
+  it("omits epoch when caller doesn't provide it (SDK falls through to registerWorker)", async () => {
+    const fake = fakeHandle({ connected: true });
+    const captured: Array<Record<string, unknown>> = [];
+    fake.handle.reconnectTransport = vi.fn(async (opts) => {
+      captured.push(opts as Record<string, unknown>);
+    });
+    const transport = await BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      deps: happyDeps(fake.handle),
+    });
+    await transport.reconnect({
+      ingressToken: "x",
+      apiBaseUrl: "https://api.anthropic.com",
+    });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toEqual({
+      ingressToken: "x",
+      apiBaseUrl: "https://api.anthropic.com",
+    });
+    // epoch was NOT injected by the wrapper — explicit absence
+    expect("epoch" in (captured[0] ?? {})).toBe(false);
+  });
+});

@@ -173,7 +173,11 @@ function unwrapInner(parsed: unknown): Record<string, unknown> | null {
   if (parsed === null || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
   const wrapped = obj.claudeAiOauth;
-  if (wrapped !== undefined && wrapped !== null && typeof wrapped === "object") {
+  if (
+    wrapped !== undefined &&
+    wrapped !== null &&
+    typeof wrapped === "object"
+  ) {
     return wrapped as Record<string, unknown>;
   }
   return obj;
@@ -211,7 +215,9 @@ export function readCredentials(
       ? inner.scopes.filter((s): s is string => typeof s === "string")
       : [],
     subscriptionType:
-      typeof inner.subscriptionType === "string" ? inner.subscriptionType : null,
+      typeof inner.subscriptionType === "string"
+        ? inner.subscriptionType
+        : null,
     rateLimitTier:
       typeof inner.rateLimitTier === "string" ? inner.rateLimitTier : null,
   };

@@ -25,14 +25,14 @@
 
 import {
   type AttachBridgeSessionOptions,
-  attachBridgeSession as sdkAttachBridgeSession,
   type BridgeSessionHandle,
   type CodeSessionGitContext,
-  createCodeSession as sdkCreateCodeSession,
   type CredentialsFailure,
+  type RemoteCredentials,
+  attachBridgeSession as sdkAttachBridgeSession,
+  createCodeSession as sdkCreateCodeSession,
   fetchRemoteCredentials as sdkFetchRemoteCredentials,
   isCredentialsFailure as sdkIsCredentialsFailure,
-  type RemoteCredentials,
 } from "@anthropic-ai/claude-agent-sdk/bridge";
 
 // Re-export the @alpha types so downstream modules type against the adapter,

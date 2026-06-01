@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { type SecureStore } from "./credentials.js";
-import {
-  OAuthRefreshError,
-  OAuthRefreshManager,
-} from "./oauth-refresh.js";
+import type { SecureStore } from "./credentials.js";
+import { OAuthRefreshError, OAuthRefreshManager } from "./oauth-refresh.js";
 
 const NOW = 1_000_000_000_000; // fixed clock base
 

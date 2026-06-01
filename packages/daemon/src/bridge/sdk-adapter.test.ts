@@ -88,7 +88,12 @@ describe("fetchRemoteCredentials adapter", () => {
 
 describe("pass-through wrappers", () => {
   it("attachBridgeSession forwards the options object verbatim", async () => {
-    const opts = { sessionId: "cse_1", apiBaseUrl: "x", epoch: 1, ingressToken: "j" };
+    const opts = {
+      sessionId: "cse_1",
+      apiBaseUrl: "x",
+      epoch: 1,
+      ingressToken: "j",
+    };
     await attachBridgeSession(opts);
     expect(sdk.attachBridgeSession).toHaveBeenCalledWith(opts);
   });

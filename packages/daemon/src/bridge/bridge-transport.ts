@@ -139,6 +139,24 @@ export interface BridgeAttachParams {
   model?: string;
   /** Own-tag for `GET /v1/code/sessions` filtering. Default `["sidecode"]`. */
   tags?: string[];
+  /**
+   * Reuse an EXISTING cse_ session id instead of calling createCodeSession.
+   * Set this for:
+   *   - M3.5 reactive reconnect after onClose (transport died, cse_ alive)
+   *   - M3.4 startup re-attach (daemon restart, cse_ persisted in metadata)
+   * When provided, `title` / `cwd` / `model` / `tags` are still required for
+   * the BridgeAttachParams shape but only used if a fresh create falls back
+   * (today: never). title/cwd/model live on the server side already.
+   */
+  existingCseSessionId?: string;
+  /**
+   * Seed the SSE stream's resume point. Server replays only seq > N
+   * (EXCLUSIVE), so we get the inbound messages we missed while disconnected
+   * without re-processing already-handled ones (M3.1 at-least-once contract).
+   * Set this when reattaching to an existing cse_ with a saved checkpoint
+   * (M3.4 startup re-attach path). Ignored on fresh create.
+   */
+  initialSequenceNum?: number;
   /** Inbound (read-in) handlers — M2 bidirectional. Omit → pure mirror (M1).
    *  Passing this opens the SSE read stream (see `outboundOnly`). */
   inbound?: BridgeInboundHandlers;
@@ -186,6 +204,11 @@ export class BridgeTransport implements RuntimeBridge {
   readonly cseSessionId: string;
   private readonly handle: BridgeSessionHandle;
   private readonly persistSequenceNum?: (seq: number) => void;
+  /** Server-issued jwt lifetime (seconds). The proactive reconnect timer
+   *  (BridgeService M3.5.5) reads this to schedule its refresh ahead of
+   *  expiry. Updated by `reconnect()` so the next timer arms against the
+   *  new lifetime. ALWAYS reflects the latest issued credentials. */
+  private _expiresInSec: number;
   private closed = false;
   /** Last state forwarded to the worker — for local dedup so repeated
    *  running/idle reports collapse (Claude Code reports running at BOTH
@@ -198,10 +221,20 @@ export class BridgeTransport implements RuntimeBridge {
     cseSessionId: string,
     handle: BridgeSessionHandle,
     persistSequenceNum: ((seq: number) => void) | undefined,
+    expiresInSec: number,
   ) {
     this.cseSessionId = cseSessionId;
     this.handle = handle;
     this.persistSequenceNum = persistSequenceNum;
+    this._expiresInSec = expiresInSec;
+  }
+
+  /** Server-issued jwt lifetime in seconds (= `RemoteCredentials.expires_in`
+   *  from the most recent fetchRemoteCredentials, refreshed on each
+   *  reconnect()). Used by BridgeService to compute the proactive refresh
+   *  timer delay. */
+  get expiresInSec(): number {
+    return this._expiresInSec;
   }
 
   /**
@@ -228,20 +261,29 @@ export class BridgeTransport implements RuntimeBridge {
     }
 
     // ② createCodeSession → cse_*  (null = network/gate, token already ruled out)
-    const createParams: CreateCodeSessionParams = {
-      accessToken,
-      title: params.title,
-      tags: params.tags ?? ["sidecode"],
-      cwd: params.cwd,
-      ...(params.model !== undefined ? { model: params.model } : {}),
-      ...(params.baseUrl !== undefined ? { baseUrl: params.baseUrl } : {}),
-    };
-    const cseSessionId = await create(createParams);
-    if (cseSessionId === null) {
-      throw new BridgeAttachError(
-        "create_failed",
-        "createCodeSession returned null (network or CCR gate — token was preflighted fresh)",
-      );
+    //    UNLESS `existingCseSessionId` is supplied (M3.5 reactive reconnect
+    //    after onClose, M3.4 startup re-attach) — then we skip create and
+    //    proceed straight to fetchRemoteCredentials against the existing id.
+    let cseSessionId: string;
+    if (params.existingCseSessionId !== undefined) {
+      cseSessionId = params.existingCseSessionId;
+    } else {
+      const createParams: CreateCodeSessionParams = {
+        accessToken,
+        title: params.title,
+        tags: params.tags ?? ["sidecode"],
+        cwd: params.cwd,
+        ...(params.model !== undefined ? { model: params.model } : {}),
+        ...(params.baseUrl !== undefined ? { baseUrl: params.baseUrl } : {}),
+      };
+      const created = await create(createParams);
+      if (created === null) {
+        throw new BridgeAttachError(
+          "create_failed",
+          "createCodeSession returned null (network or CCR gate — token was preflighted fresh)",
+        );
+      }
+      cseSessionId = created;
     }
 
     // ③ fetchRemoteCredentials → worker_jwt + epoch
@@ -273,6 +315,12 @@ export class BridgeTransport implements RuntimeBridge {
       epoch: creds.worker_epoch,
       ingressToken: creds.worker_jwt,
       outboundOnly,
+      // M3.4 — when reattaching with a saved seq, seed the SSE stream so the
+      // server replays only seq > N (EXCLUSIVE). Fresh attach omits and the
+      // SDK defaults to 0 (full history from server's side).
+      ...(params.initialSequenceNum !== undefined
+        ? { initialSequenceNum: params.initialSequenceNum }
+        : {}),
       onClose: (code) => {
         closeCode = code;
         params.onClose?.(code);
@@ -352,7 +400,12 @@ export class BridgeTransport implements RuntimeBridge {
       );
     }
 
-    return new BridgeTransport(cseSessionId, handle, params.persistSequenceNum);
+    return new BridgeTransport(
+      cseSessionId,
+      handle,
+      params.persistSequenceNum,
+      creds.expires_in,
+    );
   }
 
   // ─── RuntimeBridge ──────────────────────────────────────────────────────
@@ -426,6 +479,62 @@ export class BridgeTransport implements RuntimeBridge {
       this.persistSequenceNum(this.handle.getSequenceNum());
     } catch {
       // Best-effort — see docstring.
+    }
+  }
+
+  /**
+   * M3.5 reconnect — swap this transport's ingress credentials onto a fresh
+   * worker_jwt + (optionally) bumped epoch. The cse_ session id and the
+   * RuntimeBridge identity stay the same: the SDK rebuilds its SSE +
+   * CCRClient internals against the new auth but the handle reference is
+   * unchanged, so `runtime.bridge` stays valid + downstream taps don't
+   * need re-wiring.
+   *
+   * NO `initialSequenceNum` argument here — `handle.reconnectTransport`
+   * uses the SDK's INTERNAL last-seen seq automatically, so we resume the
+   * SSE stream from exactly where we left off without one extra HTTP
+   * round-trip. (M3.1's persisted `lastSSESequenceNum` is for the
+   * different M3.4 STARTUP re-attach path — fresh `attachBridgeSession`
+   * with `initialSequenceNum=saved`, which needs the value because the
+   * SDK has no prior state to recover from. Don't confuse the two.)
+   *
+   * Two callers in M3.5:
+   *   - PROACTIVE jwt-refresh timer at ~3.5h (M3.5.5) — happy path
+   *   - REACTIVE `onClose` recovery for non-1000 codes (M3.5.4)
+   *
+   * Errors PROPAGATE — unlike `checkpoint()` / `reportState()` (which are
+   * best-effort and swallow), reconnect is the recovery path: a failure
+   * means we genuinely can't reconnect and the caller needs to decide
+   * whether to backoff-retry (M3.5.6) or clear worker state. Service
+   * level handles that classification (M3.5.3); transport just delegates.
+   *
+   * Throws if called after `close()` — reconnecting a torn-down transport
+   * is a programmer bug, not a runtime state to silently absorb.
+   */
+  async reconnect(opts: {
+    ingressToken: string;
+    apiBaseUrl: string;
+    /** Omit to let server call registerWorker; provide when caller has
+     *  already pumped the epoch via `fetchRemoteCredentials`. In M3.5 the
+     *  caller ALWAYS just fetched credentials (that IS the probe — see
+     *  the source-confirmed BridgeService.reconnect classifier table in
+     *  project_sidecode_ccr_architecture), so this is always provided. */
+    epoch?: number;
+    /** Refreshed jwt lifetime (= the same fetchRemoteCredentials's
+     *  `expires_in`). When provided, updates `expiresInSec` so the
+     *  service's next proactive refresh timer arms against the new
+     *  lifetime. Omit if the caller doesn't have it (rare — the same
+     *  fetchRemoteCredentials response that produced `ingressToken` also
+     *  carries `expires_in`, so usually trivially available). */
+    expiresInSec?: number;
+  }): Promise<void> {
+    if (this.closed) {
+      throw new Error("BridgeTransport.reconnect called after close");
+    }
+    const { expiresInSec, ...handleOpts } = opts;
+    await this.handle.reconnectTransport(handleOpts);
+    if (expiresInSec !== undefined) {
+      this._expiresInSec = expiresInSec;
     }
   }
 

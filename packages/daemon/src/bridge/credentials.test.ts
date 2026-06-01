@@ -138,7 +138,12 @@ describe("writeCredentials", () => {
 
   it("keeps a root-level (unwrapped) shape when the existing blob was unwrapped", () => {
     const store = memStore(
-      JSON.stringify({ accessToken: "a", refreshToken: "r", expiresAt: 1, scopes: [] }),
+      JSON.stringify({
+        accessToken: "a",
+        refreshToken: "r",
+        expiresAt: 1,
+        scopes: [],
+      }),
     );
     writeCredentials(
       { accessToken: "a2", refreshToken: "r2", expiresAt: 2, scopes: [] },
