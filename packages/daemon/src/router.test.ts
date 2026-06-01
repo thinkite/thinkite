@@ -51,8 +51,6 @@ function makeDeps(
     getMessages: vi.fn().mockResolvedValue({ items: [] }),
     runtimeManager: new SessionRuntimeManager<EventDelta>(),
     hasSession: vi.fn().mockResolvedValue(true),
-    writeSidecodeSession: vi.fn(),
-    updateSidecodeSessionSelection: vi.fn(),
     isShuttingDown: () => false,
     gitWatchers: new GitWatcherRegistry(),
     epoch: "test-epoch",
@@ -899,12 +897,10 @@ function emptyQueryFactory(): typeof import("@anthropic-ai/claude-agent-sdk").qu
 describe("createCommandHandler — sendPrompt", () => {
   it("resume path: existing session → ensureSessionLoop with mode=resume; turn_started emitted", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
-    const writeMeta = vi.fn();
     const handler = createCommandHandler(
       makeDeps({
         runtimeManager,
         hasSession: vi.fn().mockResolvedValue(true),
-        writeSidecodeSession: writeMeta,
         queryFactory: emptyQueryFactory(),
       }),
     );
@@ -924,7 +920,7 @@ describe("createCommandHandler — sendPrompt", () => {
     });
     // Resume path: NO sidecode metadata written (Desktop / CLI already
     // own the session's local_*.json).
-    expect(writeMeta).not.toHaveBeenCalled();
+    expect(runtimeManager.getMetadata("S")).toBeUndefined();
     // Runtime was created and pushPrompt fired turn_started into the buffer.
     const runtime = runtimeManager.get("S");
     if (!runtime) throw new Error("expected runtime");
@@ -933,12 +929,10 @@ describe("createCommandHandler — sendPrompt", () => {
 
   it("create path: new session + cwd → writes sidecode metadata before spawning query", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
-    const writeMeta = vi.fn();
     const handler = createCommandHandler(
       makeDeps({
         runtimeManager,
         hasSession: vi.fn().mockResolvedValue(false),
-        writeSidecodeSession: writeMeta,
         queryFactory: emptyQueryFactory(),
       }),
     );
@@ -953,10 +947,11 @@ describe("createCommandHandler — sendPrompt", () => {
       },
       ctx,
     );
-    expect(writeMeta).toHaveBeenCalledExactlyOnceWith({
+    expect(runtimeManager.getMetadata("new-uuid")).toMatchObject({
       cliSessionId: "new-uuid",
       cwd: "/Users/me/proj",
-      firstPrompt: "first message",
+      title: "first message",
+      titleSource: "auto",
     });
     expect(sent.at(-1)).toEqual({
       type: "sendPrompt.response",
@@ -966,12 +961,10 @@ describe("createCommandHandler — sendPrompt", () => {
 
   it("create path without cwd → invalid_message error, no runtime spawned", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
-    const writeMeta = vi.fn();
     const handler = createCommandHandler(
       makeDeps({
         runtimeManager,
         hasSession: vi.fn().mockResolvedValue(false),
-        writeSidecodeSession: writeMeta,
         queryFactory: emptyQueryFactory(),
       }),
     );
@@ -992,17 +985,15 @@ describe("createCommandHandler — sendPrompt", () => {
       code: "invalid_message",
       message: expect.stringContaining("cwd is required"),
     });
-    expect(writeMeta).not.toHaveBeenCalled();
+    expect(runtimeManager.getMetadata("new-uuid")).toBeUndefined();
     expect(runtimeManager.has("new-uuid")).toBe(false);
   });
 
   it("rejected during shutdown → error frame, no runtime side-effect", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
-    const writeMeta = vi.fn();
     const handler = createCommandHandler(
       makeDeps({
         runtimeManager,
-        writeSidecodeSession: writeMeta,
         isShuttingDown: () => true,
       }),
     );
@@ -1022,16 +1013,16 @@ describe("createCommandHandler — sendPrompt", () => {
       requestId: "sp-shut",
       message: expect.stringContaining("shutting down"),
     });
-    expect(writeMeta).not.toHaveBeenCalled();
+    expect(runtimeManager.getMetadata("S")).toBeUndefined();
     expect(runtimeManager.has("S")).toBe(false);
   });
 
-  it("create path forwards model into writeSidecodeSession", async () => {
-    const writeMeta = vi.fn();
+  it("create path forwards model into manager-cached metadata", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
     const handler = createCommandHandler(
       makeDeps({
+        runtimeManager,
         hasSession: vi.fn().mockResolvedValue(false),
-        writeSidecodeSession: writeMeta,
         queryFactory: emptyQueryFactory(),
       }),
     );
@@ -1047,20 +1038,20 @@ describe("createCommandHandler — sendPrompt", () => {
       },
       ctx,
     );
-    expect(writeMeta).toHaveBeenCalledExactlyOnceWith({
+    expect(runtimeManager.getMetadata("S")).toMatchObject({
       cliSessionId: "S",
       cwd: "/p",
-      firstPrompt: "hi",
+      title: "hi",
       model: "claude-opus-4-7[1m]",
     });
   });
 
-  it("resume path does NOT call updateSidecodeSessionSelection (setSessionSelection owns that path)", async () => {
-    const updateMeta = vi.fn();
+  it("resume path does NOT modify metadata (setSessionSelection owns that path)", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
     const handler = createCommandHandler(
       makeDeps({
+        runtimeManager,
         hasSession: vi.fn().mockResolvedValue(true),
-        updateSidecodeSessionSelection: updateMeta,
         queryFactory: emptyQueryFactory(),
       }),
     );
@@ -1075,7 +1066,9 @@ describe("createCommandHandler — sendPrompt", () => {
       },
       ctx,
     );
-    expect(updateMeta).not.toHaveBeenCalled();
+    // Resume path: sidecode never wrote metadata for this session in the
+    // first place (Desktop owns it). Manager's cache stays empty.
+    expect(runtimeManager.getMetadata("S")).toBeUndefined();
   });
 
   it("resume path does NOT call applyFlagSettings (setSessionSelection owns runtime apply)", async () => {
@@ -1117,9 +1110,8 @@ describe("createCommandHandler — sendPrompt", () => {
   it("unknown slash command → unsupported error, no hasSession call, no runtime", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
     const hasSession = vi.fn();
-    const writeMeta = vi.fn();
     const handler = createCommandHandler(
-      makeDeps({ runtimeManager, hasSession, writeSidecodeSession: writeMeta }),
+      makeDeps({ runtimeManager, hasSession }),
     );
     const { ctx, sent } = makeCtx();
     await handler(
@@ -1137,11 +1129,11 @@ describe("createCommandHandler — sendPrompt", () => {
       code: "unsupported",
       message: expect.stringContaining("/foo"),
     });
-    // Defense check happens BEFORE hasSession + writeMeta, so neither
-    // is invoked. Important: a misbehaving client can't trigger session
-    // metadata writes by spamming garbage slashes.
+    // Defense check happens BEFORE hasSession + metadata write, so
+    // neither runs. A misbehaving client can't trigger session metadata
+    // writes by spamming garbage slashes.
     expect(hasSession).not.toHaveBeenCalled();
-    expect(writeMeta).not.toHaveBeenCalled();
+    expect(runtimeManager.getMetadata("S")).toBeUndefined();
     expect(runtimeManager.has("S")).toBe(false);
   });
 
@@ -1217,8 +1209,12 @@ describe("createCommandHandler — sendPrompt", () => {
 describe("createCommandHandler — setSessionSelection", () => {
   it("applies model via applyFlagSettings, then writes metadata", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    runtimeManager.createSessionFromPrompt({
+      cliSessionId: "S",
+      cwd: "/p",
+      firstPrompt: "init",
+    });
     const applyFlagMock = vi.fn(async () => {});
-    const updateMeta = vi.fn();
     const runtime = runtimeManager.getOrCreate("S");
     runtime.loopPromise = Promise.resolve();
     runtime.query = {
@@ -1226,12 +1222,7 @@ describe("createCommandHandler — setSessionSelection", () => {
       close: () => {},
       applyFlagSettings: applyFlagMock,
     };
-    const handler = createCommandHandler(
-      makeDeps({
-        runtimeManager,
-        updateSidecodeSessionSelection: updateMeta,
-      }),
-    );
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
     const { ctx, sent } = makeCtx();
     await handler(
       {
@@ -1248,13 +1239,12 @@ describe("createCommandHandler — setSessionSelection", () => {
     expect(applyFlagMock).toHaveBeenCalledExactlyOnceWith({
       model: "claude-opus-4-7[1m]",
     });
-    expect(updateMeta).toHaveBeenCalledExactlyOnceWith({
-      cliSessionId: "S",
-      model: "claude-opus-4-7[1m]",
-    });
-    // #17 — runtime.currentModel must reflect the new selection so the
-    // next state-changed envelope carries it.
+    // Manager-owned: runtime.currentModel mirrored + states cache
+    // updated. (Disk write only happens when manager.home is set, which
+    // it isn't in this test — the in-memory cache update is what we
+    // verify.)
     expect(runtime.currentModel).toBe("claude-opus-4-7[1m]");
+    expect(runtimeManager.getMetadata("S")?.model).toBe("claude-opus-4-7[1m]");
     expect(sent.at(-1)).toMatchObject({
       type: "setSessionSelection.response",
       requestId: "ss-1",
@@ -1263,6 +1253,11 @@ describe("createCommandHandler — setSessionSelection", () => {
 
   it("#17 setSessionSelection forwards model change to bridge.reportMetadata when bridged", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    runtimeManager.createSessionFromPrompt({
+      cliSessionId: "S",
+      cwd: "/p",
+      firstPrompt: "init",
+    });
     const reportMetadataMock = vi.fn();
     const runtime = runtimeManager.getOrCreate("S");
     runtime.loopPromise = Promise.resolve();
@@ -1296,9 +1291,14 @@ describe("createCommandHandler — setSessionSelection", () => {
 
   it("#17 setSessionSelection does NOT call bridge.reportMetadata when model is a no-op (same value)", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    runtimeManager.createSessionFromPrompt({
+      cliSessionId: "S",
+      cwd: "/p",
+      firstPrompt: "init",
+      model: "claude-opus-4-7",
+    });
     const reportMetadataMock = vi.fn();
-    const runtime = runtimeManager.getOrCreate("S");
-    runtime.currentModel = "claude-opus-4-7"; // pre-set so setModel returns false
+    const runtime = runtimeManager.getOrCreate("S"); // currentModel seeded from states
     runtime.loopPromise = Promise.resolve();
     runtime.query = {
       interrupt: async () => {},
@@ -1328,6 +1328,11 @@ describe("createCommandHandler — setSessionSelection", () => {
 
   it("#17 setSessionSelection with no bridge attached: skips reportMetadata silently", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    runtimeManager.createSessionFromPrompt({
+      cliSessionId: "S",
+      cwd: "/p",
+      firstPrompt: "init",
+    });
     const runtime = runtimeManager.getOrCreate("S");
     runtime.loopPromise = Promise.resolve();
     runtime.query = {
@@ -1356,8 +1361,13 @@ describe("createCommandHandler — setSessionSelection", () => {
 
   it("#17 setSessionSelection with model=undefined resets runtime.currentModel to null", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
-    const runtime = runtimeManager.getOrCreate("S");
-    runtime.currentModel = "claude-opus-4-7";
+    runtimeManager.createSessionFromPrompt({
+      cliSessionId: "S",
+      cwd: "/p",
+      firstPrompt: "init",
+      model: "claude-opus-4-7",
+    });
+    const runtime = runtimeManager.getOrCreate("S"); // seeded with claude-opus-4-7
     runtime.loopPromise = Promise.resolve();
     runtime.query = {
       interrupt: async () => {},
@@ -1404,18 +1414,12 @@ describe("createCommandHandler — setSessionSelection", () => {
     });
   });
 
-  it("deferred case: no live runtime → still writes metadata, no apply attempted", async () => {
-    // Desktop-mirror session that the user hasn't sent a prompt into
-    // yet. updateSidecodeSessionSelection dep is a no-op when the file
-    // doesn't exist, so the actual write is best-effort.
-    const updateMeta = vi.fn();
+  it("deferred case: no live runtime + no metadata → response succeeds, no state mutation", async () => {
+    // Session sidecode never created (Desktop-mirror, or just an
+    // unknown id). manager.setModel returns false; nothing to apply or
+    // persist; the response still goes back ok.
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
-    const handler = createCommandHandler(
-      makeDeps({
-        runtimeManager,
-        updateSidecodeSessionSelection: updateMeta,
-      }),
-    );
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
     const { ctx, sent } = makeCtx();
     await handler(
       {
@@ -1426,10 +1430,7 @@ describe("createCommandHandler — setSessionSelection", () => {
       },
       ctx,
     );
-    expect(updateMeta).toHaveBeenCalledExactlyOnceWith({
-      cliSessionId: "S",
-      model: "claude-opus-4-7",
-    });
+    expect(runtimeManager.getMetadata("S")).toBeUndefined();
     expect(sent.at(-1)).toMatchObject({
       type: "setSessionSelection.response",
       requestId: "ss-deferred",
@@ -1438,7 +1439,12 @@ describe("createCommandHandler — setSessionSelection", () => {
 
   it("apply failure: applyFlagSettings throws → error frame, metadata UNTOUCHED", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
-    const updateMeta = vi.fn();
+    runtimeManager.createSessionFromPrompt({
+      cliSessionId: "S",
+      cwd: "/p",
+      firstPrompt: "init",
+      model: "old-model",
+    });
     const runtime = runtimeManager.getOrCreate("S");
     runtime.loopPromise = Promise.resolve();
     runtime.query = {
@@ -1448,12 +1454,7 @@ describe("createCommandHandler — setSessionSelection", () => {
         throw new Error("model not allowed");
       }),
     };
-    const handler = createCommandHandler(
-      makeDeps({
-        runtimeManager,
-        updateSidecodeSessionSelection: updateMeta,
-      }),
-    );
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
     const { ctx, sent } = makeCtx();
     await handler(
       {
@@ -1464,7 +1465,8 @@ describe("createCommandHandler — setSessionSelection", () => {
       },
       ctx,
     );
-    expect(updateMeta).not.toHaveBeenCalled();
+    // applyFlagSettings threw BEFORE manager.setModel — cache unchanged.
+    expect(runtimeManager.getMetadata("S")?.model).toBe("old-model");
     expect(sent.at(-1)).toMatchObject({
       type: "error",
       requestId: "ss-fail",
@@ -1474,10 +1476,8 @@ describe("createCommandHandler — setSessionSelection", () => {
   });
 
   it("rejected during shutdown → error frame, no apply, no metadata write", async () => {
-    const updateMeta = vi.fn();
     const handler = createCommandHandler(
       makeDeps({
-        updateSidecodeSessionSelection: updateMeta,
         isShuttingDown: () => true,
       }),
     );
@@ -1496,7 +1496,6 @@ describe("createCommandHandler — setSessionSelection", () => {
       requestId: "ss-shut",
       message: expect.stringContaining("shutting down"),
     });
-    expect(updateMeta).not.toHaveBeenCalled();
   });
 });
 

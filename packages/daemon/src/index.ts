@@ -23,12 +23,7 @@ import { createPairOffer } from "./pairing.js";
 import { createCommandHandler } from "./router.js";
 import { ensureSessionLoop, pushPrompt } from "./runtime/run-query.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
-import {
-  buildNewSidecodeSession,
-  listSidecodeSessions,
-  updateSidecodeSessionSelection,
-  writeSidecodeSession,
-} from "./sidecode-sessions.js";
+import { listSidecodeSessions } from "./sidecode-sessions.js";
 import { WebRTCPeerServer } from "./webrtc-peer.js";
 
 export interface DaemonOptions {
@@ -192,42 +187,27 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     // `setSessionSelection` RPC handler:
     //   1. apply to the live query via applyFlagSettings({model}) — per
     //      upstream docs this behaves identically to the dedicated setModel().
-    //   2. persist via updateSidecodeSessionSelection — the iOS model chip
-    //      reads SessionInfo.model (NOT transcript), so persisting is what
-    //      makes the chip converge on next list-refresh / re-subscribe. Live
-    //      cross-client model-change broadcast is deferred to #17 (the
-    //      session control-state channel).
-    //   3. SDK auto-sends control_response:success — we owe no response.
-    // Order matters: apply first, persist second — if apply throws (model
-    // not allowed by the account, etc.), metadata stays untouched so disk
-    // doesn't drift from what the live query actually has. `undefined` model
-    // means reset to default; applyFlagSettings handles it. No EventDelta
-    // is emitted (model is per-turn fact carried on `message.model`, not
-    // per-session state — see issue #17 for the long-term control channel).
+    //   2. manager.setModel — updates runtime.currentModel + memory cache +
+    //      disk + #17 fan-out to every iOS subscribeSessions listener.
+    //   3. reportMetadata — PUT /worker external_metadata so any OTHER
+    //      CCR client (multi-tab claude.ai) sees the new model.
+    //   4. SDK auto-sends control_response:success — we owe no response.
+    // Order: apply first, persist second — if apply throws (model not
+    // allowed by the account, etc.), the runtime + disk stay untouched so
+    // nothing drifts from what the live query actually has.
     onSetModel: async (sessionId, model) => {
       const runtime = runtimeManager.get(sessionId);
       try {
         if (runtime?.query?.applyFlagSettings) {
           await runtime.query.applyFlagSettings({ model });
         }
-        // #17 — mirror onto the runtime so a claude.ai-driven model
-        // change broadcasts to every iOS subscribeSessions listener too
-        // (otherwise iOS only sees the change after a list refresh).
-        // Map undefined → null per the protocol's `model: string | null`.
-        if (runtime !== undefined) {
-          const changed = runtime.setModel(model ?? null);
-          // #17 — also PUT /worker external_metadata so any OTHER CCR
-          // client (multi-tab claude.ai on the same cse_ session) sees
-          // the new model immediately. The initiating tab will see its
-          // own echo, but reportMetadata is idempotent (same value =
-          // same external_metadata = no visible churn). Gated on
-          // `changed` to skip redundant writes when the inbound matches
-          // the already-current selection.
-          if (changed) {
-            runtime.bridge?.reportMetadata?.({ model: model ?? null });
-          }
+        const changed = runtimeManager.setModel(sessionId, model);
+        if (changed) {
+          // The initiating tab will see its own echo, but reportMetadata
+          // is idempotent (same value = same external_metadata = no
+          // visible churn).
+          runtime?.bridge?.reportMetadata?.({ model: model ?? null });
         }
-        updateSidecodeSessionSelection(home, sessionId, { model });
       } catch (err) {
         console.log(
           `[sidecode] bridge setModel failed for ${sessionId}: ${
@@ -295,20 +275,6 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       return info !== undefined;
     },
     listSidecodeSessions: (opts) => listSidecodeSessions(home, opts),
-    writeSidecodeSession: ({ cliSessionId, cwd, firstPrompt, model }) => {
-      writeSidecodeSession(
-        home,
-        buildNewSidecodeSession({
-          cliSessionId,
-          cwd,
-          firstPrompt,
-          model,
-        }),
-      );
-    },
-    updateSidecodeSessionSelection: ({ cliSessionId, model }) => {
-      updateSidecodeSessionSelection(home, cliSessionId, { model });
-    },
     isShuttingDown: () => shuttingDown,
     gitWatchers,
     epoch,

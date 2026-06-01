@@ -18,8 +18,6 @@ import {
   readSidecodeSession,
   sidecodeSessionPath,
   updateBridgeSequenceNum,
-  updateSidecodeSessionSelection,
-  updateSidecodeSessionTitle,
   writeBridgeWorkerState,
   writeSidecodeSession,
 } from "./sidecode-sessions.js";
@@ -283,75 +281,6 @@ describe("listSidecodeSessions", () => {
   });
 });
 
-describe("updateSidecodeSessionTitle", () => {
-  let home: string;
-
-  beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), "sidecode-update-title-test-"));
-  });
-
-  afterEach(() => {
-    rmSync(home, { recursive: true, force: true });
-  });
-
-  it("writes a new title with titleSource auto", () => {
-    writeSidecodeSession(
-      home,
-      buildNewSidecodeSession({
-        cliSessionId: "x",
-        cwd: "/p",
-        firstPrompt: "initial",
-        now: 1,
-      }),
-    );
-    const result = updateSidecodeSessionTitle(home, "x", "Renamed");
-    expect(result).toBe("Renamed");
-    const after = readSidecodeSession(home, "x");
-    expect(after?.title).toBe("Renamed");
-    expect(after?.titleSource).toBe("auto");
-  });
-
-  it("preserves other fields on title-only update", () => {
-    const initial = buildNewSidecodeSession({
-      cliSessionId: "x",
-      cwd: "/p",
-      firstPrompt: "first",
-      now: 100,
-    });
-    writeSidecodeSession(home, initial);
-    updateSidecodeSessionTitle(home, "x", "Some title");
-    const after = readSidecodeSession(home, "x");
-    expect(after?.cwd).toBe("/p");
-    expect(after?.createdAt).toBe(100);
-    expect(after?.permissionMode).toBe(initial.permissionMode);
-  });
-
-  it("is a no-op when titleSource is 'user' (lock honored)", () => {
-    const initial = buildNewSidecodeSession({
-      cliSessionId: "x",
-      cwd: "/p",
-      firstPrompt: "initial",
-      now: 1,
-    });
-    writeSidecodeSession(home, {
-      ...initial,
-      title: "User name",
-      titleSource: "user",
-    });
-    const result = updateSidecodeSessionTitle(home, "x", "Auto would clobber");
-    expect(result).toBe("User name");
-    const after = readSidecodeSession(home, "x");
-    expect(after?.title).toBe("User name");
-    expect(after?.titleSource).toBe("user");
-  });
-
-  it("returns '' and writes nothing when metadata doesn't exist", () => {
-    const result = updateSidecodeSessionTitle(home, "ghost", "ignored");
-    expect(result).toBe("");
-    expect(existsSync(sidecodeSessionPath(home, "ghost"))).toBe(false);
-  });
-});
-
 describe("buildNewSidecodeSession — model", () => {
   it("persists model when provided", () => {
     const meta = buildNewSidecodeSession({
@@ -370,54 +299,6 @@ describe("buildNewSidecodeSession — model", () => {
       firstPrompt: "hi",
     });
     expect(meta).not.toHaveProperty("model");
-  });
-});
-
-describe("updateSidecodeSessionSelection", () => {
-  let home: string;
-  beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), "sidecode-sessions-sel-"));
-  });
-  afterEach(() => {
-    if (existsSync(home)) rmSync(home, { recursive: true, force: true });
-  });
-
-  it("writes model into existing metadata", () => {
-    const initial = buildNewSidecodeSession({
-      cliSessionId: "x",
-      cwd: "/p",
-      firstPrompt: "init",
-    });
-    writeSidecodeSession(home, initial);
-    const result = updateSidecodeSessionSelection(home, "x", {
-      model: "claude-opus-4-7[1m]",
-    });
-    expect(result?.model).toBe("claude-opus-4-7[1m]");
-    const onDisk = readSidecodeSession(home, "x");
-    expect(onDisk?.model).toBe("claude-opus-4-7[1m]");
-  });
-
-  it("preserves other fields (title / cwd / createdAt) unchanged", () => {
-    const initial = buildNewSidecodeSession({
-      cliSessionId: "x",
-      cwd: "/p",
-      firstPrompt: "Important task",
-      now: 1_700_000_000_000,
-    });
-    writeSidecodeSession(home, initial);
-    updateSidecodeSessionSelection(home, "x", { model: "m" });
-    const after = readSidecodeSession(home, "x");
-    expect(after?.title).toBe("Important task");
-    expect(after?.cwd).toBe("/p");
-    expect(after?.createdAt).toBe(1_700_000_000_000);
-  });
-
-  it("returns undefined and writes nothing when metadata doesn't exist", () => {
-    const result = updateSidecodeSessionSelection(home, "ghost", {
-      model: "m",
-    });
-    expect(result).toBeUndefined();
-    expect(existsSync(sidecodeSessionPath(home, "ghost"))).toBe(false);
   });
 });
 

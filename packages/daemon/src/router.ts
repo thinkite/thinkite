@@ -89,40 +89,6 @@ export interface RouterDeps {
    */
   hasSession: (cliSessionId: string) => Promise<boolean>;
   /**
-   * Persist sidecode-side metadata for a session sidecode is creating
-   * now. Called from the create-branch of sendPrompt before
-   * ensureSessionLoop spawns the SDK query. `firstPrompt` is the user's
-   * opening message text — daemon snapshots it as the auto-title at this
-   * point so the iOS sidebar has a meaningful label from session
-   * inception (no display-time SDK lookup, no later refresh — see
-   * sidecode-sessions.ts:buildNewSidecodeSession for the rationale).
-   * Tests stub this to a no-op to avoid touching `<home>/sessions/`.
-   */
-  writeSidecodeSession: (input: {
-    cliSessionId: string;
-    cwd: string;
-    firstPrompt: string;
-    /** Picker selection at create time. Persisted into the new local_*.json
-     *  so resume-time bootstrap (iOS picker) sees the original choice
-     *  even before the first follow-up sendPrompt. Undefined when the
-     *  iOS picker hadn't bootstrapped yet — daemon records what it gets. */
-    model?: string;
-  }) => void;
-  /**
-   * Merge an updated picker selection into a sidecode-created session's
-   * on-disk metadata. Called by the `setSessionSelection` handler after
-   * a successful runtime apply. Returns synchronously after the atomic
-   * tmp+rename.
-   *
-   * No-op when the metadata file is missing — Desktop-mirror sessions
-   * live in Desktop's own `claude-code-sessions/` dir and sidecode
-   * never writes there.
-   */
-  updateSidecodeSessionSelection: (input: {
-    cliSessionId: string;
-    model?: string;
-  }) => void;
-  /**
    * Whether the daemon is mid-shutdown. Router gates sendPrompt and
    * subscribe behind this — once shutdown starts, accepting new prompts
    * spawns runtimes that can't be drained cleanly (`manager.shutdown`
@@ -671,22 +637,23 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             return;
           }
 
-          const runtime = deps.runtimeManager.getOrCreate(cmd.sessionId);
           const mode: "create" | "resume" = exists ? "resume" : "create";
 
-          // Persist sidecode metadata on the CREATE path only. Resume-
-          // path metadata updates are owned by the `setSessionSelection`
-          // RPC — pick-time writes after the runtime apply succeeds,
-          // never via sendPrompt. This keeps on-disk model in lockstep
-          // with what the live SDK query actually has.
+          // Persist sidecode metadata on the CREATE path BEFORE
+          // getOrCreate so the runtime's currentModel gets seeded from
+          // the fresh states entry — otherwise the runtime starts with
+          // null and the first notifyStateChanged would regress
+          // states.model back to undefined. Resume-path metadata
+          // updates are owned by the `setSessionSelection` RPC.
           if (mode === "create") {
-            deps.writeSidecodeSession({
+            deps.runtimeManager.createSessionFromPrompt({
               cliSessionId: cmd.sessionId,
               cwd: cmd.cwd as string,
               firstPrompt: cmd.text,
-              model: cmd.model,
+              ...(cmd.model !== undefined ? { model: cmd.model } : {}),
             });
           }
+          const runtime = deps.runtimeManager.getOrCreate(cmd.sessionId);
 
           // Idempotent — second sendPrompt for same session reuses the
           // existing loop. mode/cwd/model are only consulted on the
@@ -756,41 +723,28 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           if (cmd.model !== undefined && runtime?.query?.applyFlagSettings) {
             await runtime.query.applyFlagSettings({ model: cmd.model });
           }
-          // #17 — mirror the picker selection onto the runtime's
-          // `currentModel` so the next state-changed envelope reflects it.
-          // `setModel` fans out via onStateChanged → manager → every
-          // subscribeSessions listener; iOS sees the chip update on
-          // every connected peer (not just the one that initiated). Pass
-          // `cmd.model ?? null` so "unset" (undefined → reset to SDK
-          // default) is mapped to the protocol's `model: string | null`
-          // null sentinel. Done EVEN when no live runtime — getOrCreate
-          // would also work but adding a runtime for a session that's
-          // currently quiescent would be a side effect; for the no-live-
-          // runtime case the disk metadata update below is what carries
-          // the selection forward (re-spawn seeds currentModel from it).
-          if (runtime !== undefined) {
-            const changed = runtime.setModel(cmd.model ?? null);
-            // #17 — broadcast to CCR via worker external_metadata so a
-            // claude.ai tab opened on the same cse_ session sees the
-            // new model immediately (without waiting for the next
-            // assistant frame's per-turn `message.model`). Gated on
-            // `changed` so a no-op set doesn't trigger a redundant PUT.
-            // Best-effort: bridge-transport swallows write errors so a
-            // flaky CCR transport can't fail this RPC.
-            if (changed) {
-              runtime.bridge?.reportMetadata?.({
-                model: cmd.model ?? null,
-              });
-            }
+          // Manager-owned: updates runtime.currentModel (fires
+          // onStateChanged → notifyStateChanged → memory cache + disk
+          // persist + #17 fan-out to every iOS subscriber) AND falls
+          // back to a direct persist+fan-out for sessions without a
+          // live runtime. Returns `changed` so we can gate the CCR
+          // metadata broadcast on actual transitions.
+          const changed = deps.runtimeManager.setModel(
+            cmd.sessionId,
+            cmd.model,
+          );
+          // #17 — broadcast to CCR via worker external_metadata so a
+          // claude.ai tab opened on the same cse_ session sees the new
+          // model immediately (without waiting for the next assistant
+          // frame's per-turn `message.model`). Gated on `changed` so a
+          // no-op set doesn't trigger a redundant PUT. Best-effort:
+          // bridge-transport swallows write errors so a flaky CCR
+          // transport can't fail this RPC.
+          if (changed) {
+            runtime?.bridge?.reportMetadata?.({
+              model: cmd.model ?? null,
+            });
           }
-          // Apply succeeded (or no live runtime). Persist intent. Dep
-          // is a silent no-op when the metadata file doesn't exist
-          // (Desktop-mirror sessions live in Desktop's dir; we never
-          // write there).
-          deps.updateSidecodeSessionSelection({
-            cliSessionId: cmd.sessionId,
-            model: cmd.model,
-          });
           ctx.send({
             type: "setSessionSelection.response",
             requestId: cmd.requestId,

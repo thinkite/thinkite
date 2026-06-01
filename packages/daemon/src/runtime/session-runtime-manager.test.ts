@@ -37,6 +37,18 @@ function fixtureMeta(
   };
 }
 
+/** Write a fixture record to disk + bind manager.home so hydration picks
+ *  it up. Use when tests need an existing session in BOTH disk and the
+ *  manager's in-memory cache. */
+function seedExistingSession(
+  m: SessionRuntimeManager<string>,
+  home: string,
+  meta: SidecodeSessionMetadata,
+): void {
+  writeSidecodeSession(home, meta);
+  m.setHome(home);
+}
+
 /** Build a listener with onChange spy + an inert onRemove. */
 function makeListener(): {
   listener: SessionStateListener;
@@ -255,7 +267,6 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("getAllSessionStates returns disk-only entries when no runtimes exist", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
     writeSidecodeSession(
       home,
       fixtureMeta({
@@ -267,6 +278,7 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
         lastActivityAt: 2_000,
       }),
     );
+    m.setHome(home); // hydrates from disk
     const states = m.getAllSessionStates();
     expect(states).toHaveLength(1);
     expect(states[0]?.sessionId).toBe("abc");
@@ -284,7 +296,6 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("getAllSessionStates merges runtime live fields over disk static", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
     writeSidecodeSession(
       home,
       fixtureMeta({
@@ -295,6 +306,7 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
         lastActivityAt: 1_000,
       }),
     );
+    m.setHome(home);
     const r = m.getOrCreate("abc");
     // Disk seeds currentModel via getOrCreate.
     expect(r.currentModel).toBe("stored-model");
@@ -326,11 +338,11 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("getOrCreate seeds currentModel from disk metadata", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
     writeSidecodeSession(
       home,
       fixtureMeta({ cliSessionId: "seeded", model: "claude-sonnet-4-6" }),
     );
+    m.setHome(home); // hydrate from disk
     const r = m.getOrCreate("seeded");
     expect(r.currentModel).toBe("claude-sonnet-4-6");
   });
@@ -343,8 +355,7 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("subscribeSessionStates returns initial snapshot + listener fires on activity transition", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    seedExistingSession(m, home, fixtureMeta({ cliSessionId: "a" }));
     const { listener, onChange } = makeListener();
     const { initial } = m.subscribeSessionStates(listener);
     expect(initial.map((s) => s.sessionId)).toEqual(["a"]);
@@ -359,8 +370,7 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("subscribeSessionStates unsubscribe stops fan-out", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    seedExistingSession(m, home, fixtureMeta({ cliSessionId: "a" }));
     const { listener, onChange } = makeListener();
     const { unsubscribe } = m.subscribeSessionStates(listener);
 
@@ -376,8 +386,7 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("notifyStateChanged is a no-op when no listeners are attached (zero-cost on inactive)", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    seedExistingSession(m, home, fixtureMeta({ cliSessionId: "a" }));
     const r = m.getOrCreate("a");
     // No subscribers — these calls should not throw or attempt disk reads
     // (smoke-test for the short-circuit path).
@@ -387,8 +396,7 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("setModel fans out a state-changed event via the runtime's onStateChanged callback", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    seedExistingSession(m, home, fixtureMeta({ cliSessionId: "a" }));
     const { listener, onChange } = makeListener();
     m.subscribeSessionStates(listener);
 
@@ -401,8 +409,7 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("multiple listeners all receive the same fan-out", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    seedExistingSession(m, home, fixtureMeta({ cliSessionId: "a" }));
     const l1 = makeListener();
     const l2 = makeListener();
     m.subscribeSessionStates(l1.listener);
@@ -417,8 +424,7 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("listener exception is isolated — sibling listeners still receive the event", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    seedExistingSession(m, home, fixtureMeta({ cliSessionId: "a" }));
     const flaky: SessionStateListener = {
       onChange: () => {
         throw new Error("listener exploded");
@@ -436,8 +442,7 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("getOrCreate wires onStateChanged even when caller passes options without it", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    seedExistingSession(m, home, fixtureMeta({ cliSessionId: "a" }));
     const { listener, onChange } = makeListener();
     m.subscribeSessionStates(listener);
 
@@ -452,8 +457,8 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("#17.5 activity edge advances disk lastActivityAt", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(
+    seedExistingSession(
+      m,
       home,
       fixtureMeta({ cliSessionId: "a", lastActivityAt: 1_000 }),
     );
@@ -466,17 +471,17 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("#17.5 setModel alone does NOT advance disk lastActivityAt (monotonic guard collapses no-op write)", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(
+    seedExistingSession(
+      m,
       home,
       fixtureMeta({ cliSessionId: "a", lastActivityAt: 5_000_000_000_000 }),
     );
     const r = m.getOrCreate("a");
     // Construction stamped runtime.lastActivityAt to Date.now() (a value
     // strictly LESS than disk's 5e12). setModel fires onStateChanged but
-    // doesn't touch runtime.lastActivityAt, so the monotonic guard inside
-    // updateSidecodeSessionLastActivity rejects the write (runtime clock
-    // < disk clock → no-op).
+    // doesn't touch runtime.lastActivityAt, so notifyStateChanged's
+    // monotonic guard rejects the write (runtime clock < cached clock
+    // → no-op).
     r.setModel("claude-opus-4-7");
 
     const onDisk = readSidecodeSession(home, "a");
@@ -485,8 +490,8 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
 
   it("#17.5 fan-out reflects the freshly-persisted lastActivityAt", () => {
     const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    writeSidecodeSession(
+    seedExistingSession(
+      m,
       home,
       fixtureMeta({ cliSessionId: "a", lastActivityAt: 1_000 }),
     );

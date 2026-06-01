@@ -235,42 +235,6 @@ export function listSidecodeSessions(
 }
 
 /**
- * Atomically merge a new `title` into a sidecode session metadata file.
- *
- * Honors the `"user"` titleSource lock: if the on-disk record already has
- * `titleSource === "user"` (set by `/rename`), this is a no-op — user
- * intent always wins over auto-fetched SDK summaries. Otherwise writes
- * `{ ...existing, title, titleSource: "auto" }` via the same atomic
- * tmp+rename as `writeSidecodeSession`.
- *
- * Returns the title that ended up on disk (the new one, or the existing
- * user-set one if locked, or empty when the metadata file is missing).
- *
- * V0 race note: there is no rename UI yet, so the read-then-write
- * sequence here can't be raced by `/rename`. When V0.5+ adds rename,
- * this function still re-reads inside, so a `/rename` write that lands
- * between `readSidecodeSession` and `writeSidecodeSession` will be
- * preserved on the second read here as long as it set `titleSource:
- * "user"` first.
- */
-export function updateSidecodeSessionTitle(
-  home: string,
-  cliSessionId: string,
-  title: string,
-): string {
-  const existing = readSidecodeSession(home, cliSessionId);
-  if (!existing) return "";
-  if (existing.titleSource === "user") return existing.title;
-  const updated: SidecodeSessionMetadata = {
-    ...existing,
-    title,
-    titleSource: "auto",
-  };
-  writeSidecodeSession(home, updated);
-  return title;
-}
-
-/**
  * Maximum stored title length. The full prompt text can be paragraph-sized
  * (an actual `Edit this file: ...\n\n<long context>`) but the title surface
  * on the iOS row is one line — clipping at write time prevents pathological
@@ -349,71 +313,6 @@ export function buildNewSidecodeSession(input: {
     effort: "xhigh",
     ...(input.model !== undefined ? { model: input.model } : {}),
   };
-}
-
-/**
- * Atomically merge a new model into a sidecode session's on-disk
- * metadata. No-op when the metadata file is missing (Desktop-mirror
- * sessions live in Desktop's own dir — caller is responsible for
- * checking with `readSidecodeSession` first before invoking this; we
- * don't fabricate metadata for sessions sidecode didn't create).
- *
- * Pattern mirrors `updateSidecodeSessionTitle` — read-merge-write under
- * the same atomic tmp+rename. `model` may be undefined to leave it
- * unchanged. Returns the merged metadata that ended up on disk, or
- * `undefined` if the file wasn't there.
- */
-export function updateSidecodeSessionSelection(
-  home: string,
-  cliSessionId: string,
-  selection: { model?: string },
-): SidecodeSessionMetadata | undefined {
-  const existing = readSidecodeSession(home, cliSessionId);
-  if (!existing) return undefined;
-  const merged: SidecodeSessionMetadata = {
-    ...existing,
-    ...(selection.model !== undefined ? { model: selection.model } : {}),
-  };
-  writeSidecodeSession(home, merged);
-  return merged;
-}
-
-/**
- * #17 — atomically advance a session's `lastActivityAt` clock on disk.
- * Called by SessionRuntimeManager from `notifyStateChanged` so a daemon
- * restart preserves the iOS list sort key. Monotonic-guarded: the disk
- * write is a no-op (returns existing record) when the supplied
- * `lastActivityAt` doesn't move the clock forward — this is what lets
- * the manager call the helper on EVERY state-changed callback fire
- * without needing to distinguish edge types (setModel doesn't bump
- * `runtime.lastActivityAt`, so its onStateChanged fire is a no-op
- * disk-write here).
- *
- * No-op (returns `undefined`) when the metadata file is missing —
- * Desktop-mirror sessions live in Desktop's own dir and sidecode never
- * writes there.
- *
- * Hot-path concern (V0 single-digit sessions × few turns/min): atomic
- * tmp+rename is ~ms; the monotonic guard collapses redundant writes to
- * a read-only path. Order-of-magnitude headroom; if profile ever shows
- * it hot, batch via debounce.
- */
-export function updateSidecodeSessionLastActivity(
-  home: string,
-  cliSessionId: string,
-  lastActivityAt: number,
-): SidecodeSessionMetadata | undefined {
-  const existing = readSidecodeSession(home, cliSessionId);
-  if (!existing) return undefined;
-  if (lastActivityAt <= existing.lastActivityAt) {
-    return existing;
-  }
-  const merged: SidecodeSessionMetadata = {
-    ...existing,
-    lastActivityAt,
-  };
-  writeSidecodeSession(home, merged);
-  return merged;
 }
 
 /**
