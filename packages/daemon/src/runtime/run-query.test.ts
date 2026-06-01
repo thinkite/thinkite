@@ -772,14 +772,14 @@ describe("M3.7 idle-teardown wiring", () => {
     };
   }
 
-  it("result envelope stamps lastTurnCompleteAt + arms teardown timer (15min)", async () => {
+  it("result envelope stamps lastActivityAt + arms teardown timer (15min)", async () => {
     const harness = runtimeWithMockedTimer();
     const before = Date.now();
     await ensureSessionLoop(harness.runtime, {
       mode: "resume",
       queryFactory: fakeQueryYielding([resultEnvelope()]),
     });
-    expect(harness.runtime.lastTurnCompleteAt).toBeGreaterThanOrEqual(before);
+    expect(harness.runtime.lastActivityAt).toBeGreaterThanOrEqual(before);
     expect(harness.lastDelay).toBe(15 * 60_000);
   });
 

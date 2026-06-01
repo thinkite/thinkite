@@ -103,6 +103,12 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     foldDelta: foldEventDelta,
     log: (msg) => console.log(`[sidecode] ${msg}`),
   });
+  // #17 — bind the sidecode home so the manager can read disk metadata
+  // for `getAllSessionStates` (subscribeSessions initial snapshot) AND
+  // persist `lastActivityAt` + `completedTurns` on each turn-complete
+  // edge via `updateSidecodeSessionLastActivity`. Tests use a memory-
+  // only manager (no setHome) and skip the persistence path.
+  runtimeManager.setHome(home);
   // CCR bridge mirror service (slice M1). One OAuthRefreshManager (the
   // keychain token is process-global) feeds every bridge; BridgeService
   // ref-counts its proactive timer to live only while ≥1 bridge is attached.
@@ -203,6 +209,13 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       try {
         if (runtime?.query?.applyFlagSettings) {
           await runtime.query.applyFlagSettings({ model });
+        }
+        // #17 — mirror onto the runtime so a claude.ai-driven model
+        // change broadcasts to every iOS subscribeSessions listener too
+        // (otherwise iOS only sees the change after a list refresh).
+        // Map undefined → null per the protocol's `model: string | null`.
+        if (runtime !== undefined) {
+          runtime.setModel(model ?? null);
         }
         updateSidecodeSessionSelection(home, sessionId, { model });
       } catch (err) {

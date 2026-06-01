@@ -162,12 +162,12 @@ describe("SessionRuntime", () => {
 
   // ─── M3.7 idle-teardown ──────────────────────────────────────────────
 
-  it("M3.7 lastTurnCompleteAt initialized to ~now at construction", () => {
+  it("M3.7 lastActivityAt initialized to ~now at construction", () => {
     const before = Date.now();
     const r = new SessionRuntime<string>("s1");
     const after = Date.now();
-    expect(r.lastTurnCompleteAt).toBeGreaterThanOrEqual(before);
-    expect(r.lastTurnCompleteAt).toBeLessThanOrEqual(after);
+    expect(r.lastActivityAt).toBeGreaterThanOrEqual(before);
+    expect(r.lastActivityAt).toBeLessThanOrEqual(after);
   });
 
   it("M3.7 armTeardownTimer schedules the fire callback at the requested delay (via injected setTimer)", () => {
@@ -448,13 +448,13 @@ describe("SessionRuntime", () => {
     expect(h.runtime.hasTeardownTimerArmed).toBe(true);
   });
 
-  it("M3.7.5 fire callback uses lastTurnCompleteAt for accurate idleDurationMs (sub-leave-armed timer)", () => {
+  it("M3.7.5 fire callback uses lastActivityAt for accurate idleDurationMs (sub-leave-armed timer)", () => {
     const h = activityHarness();
     const turnTime = Date.now() - 100; // pretend turn finished 100ms ago
-    h.runtime.lastTurnCompleteAt = turnTime;
+    h.runtime.lastActivityAt = turnTime;
     h.runtime.activity = "idle"; // already idle from earlier turn
     const unsub = h.runtime.subscribe(() => {});
-    // sub leaving arms timer — but lastTurnCompleteAt should reflect the
+    // sub leaving arms timer — but lastActivityAt should reflect the
     // earlier turn-complete, not now.
     unsub();
     expect(h.runtime.hasTeardownTimerArmed).toBe(true);
@@ -490,6 +490,82 @@ describe("SessionRuntime", () => {
     };
     expect(() => r.disposeQuery()).not.toThrow();
     expect(r.query).toBeNull();
+  });
+
+  // ─── #17 onStateChanged + setModel + lastActivityAt fan-out ──────────
+
+  it("#17 currentModel initialized to null at construction", () => {
+    const r = new SessionRuntime<string>("s1");
+    expect(r.currentModel).toBeNull();
+  });
+
+  it("#17 setModel updates currentModel + fires onStateChanged on first set", () => {
+    const seen: string[] = [];
+    const r = new SessionRuntime<string>("s1", {
+      onStateChanged: (sid) => seen.push(sid),
+    });
+    const changed = r.setModel("claude-opus-4-7");
+    expect(changed).toBe(true);
+    expect(r.currentModel).toBe("claude-opus-4-7");
+    expect(seen).toEqual(["s1"]);
+  });
+
+  it("#17 setModel dedupes — same value returns false, no callback", () => {
+    const seen: string[] = [];
+    const r = new SessionRuntime<string>("s1", {
+      onStateChanged: (sid) => seen.push(sid),
+    });
+    r.setModel("claude-opus-4-7");
+    const second = r.setModel("claude-opus-4-7");
+    expect(second).toBe(false);
+    expect(seen).toEqual(["s1"]); // only the first call fanned out
+  });
+
+  it("#17 setModel(null) resets to SDK default + fans out", () => {
+    const seen: string[] = [];
+    const r = new SessionRuntime<string>("s1", {
+      onStateChanged: (sid) => seen.push(sid),
+    });
+    r.setModel("claude-opus-4-7");
+    const reset = r.setModel(null);
+    expect(reset).toBe(true);
+    expect(r.currentModel).toBeNull();
+    expect(seen).toEqual(["s1", "s1"]);
+  });
+
+  it("#17 setActivity fires onStateChanged on transition (idle→running, running→idle)", () => {
+    const seen: string[] = [];
+    const r = new SessionRuntime<string>("s1", {
+      onStateChanged: (sid) => seen.push(sid),
+    });
+    r.setActivity("running"); // idle → running
+    r.setActivity("idle"); // running → idle
+    expect(seen).toEqual(["s1", "s1"]);
+  });
+
+  it("#17 setActivity does NOT fire onStateChanged for no-op transitions", () => {
+    const seen: string[] = [];
+    const r = new SessionRuntime<string>("s1", {
+      onStateChanged: (sid) => seen.push(sid),
+    });
+    r.setActivity("idle"); // already idle — no transition
+    expect(seen).toEqual([]);
+  });
+
+  it("#17 setActivity stamps lastActivityAt on BOTH running AND idle edges", () => {
+    const r = new SessionRuntime<string>("s1");
+    const t0 = r.lastActivityAt;
+    // Simulate clock advance — vi fake timers would be cleaner but the
+    // construction-time stamp is captured before this test runs so just
+    // poke real Date.now via a brief sync-busy loop alternative: set
+    // lastActivityAt manually to a known-past value first.
+    r.lastActivityAt = t0 - 1000;
+    r.setActivity("running");
+    const tRunning = r.lastActivityAt;
+    expect(tRunning).toBeGreaterThan(t0 - 1000);
+    r.lastActivityAt = tRunning - 500;
+    r.setActivity("idle");
+    expect(r.lastActivityAt).toBeGreaterThan(tRunning - 500);
   });
 
   it("continuous fold: addEvent applies foldDelta + tracks settledCursor, only once settled is seeded", () => {

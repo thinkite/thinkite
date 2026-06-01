@@ -154,6 +154,22 @@ export interface SessionRuntimeOptions<T> {
    *  ("[teardown] armed session=..." etc.) without sidecode prefix —
    *  injector adds it. */
   log?: (msg: string) => void;
+  /** #17 — fires when a state field iOS subscribers care about changes:
+   *  `activity` (idle ↔ running transition), `currentModel` (mid-session
+   *  swap via router setSessionSelection / bridge onSetModel), and
+   *  `lastActivityAt` (bumped on every setActivity call, both running and
+   *  idle edges so iOS list sort by recency reflects active turns).
+   *
+   *  Synchronous fan-out — SessionRuntimeManager wires this to its
+   *  daemon-wide listener set, hydrates disk-side static fields (title /
+   *  cwd / createdAt / isArchived / completedTurns / permissionMode),
+   *  and emits a `session_state_changed` envelope to every
+   *  subscribeSessions subscriber. Callback impl must be cheap (no async
+   *  work inside) since it runs on every activity edge of every session.
+   *  No-op by default so the pure-data-structure contract isn't violated
+   *  in tests that don't wire the manager.
+   */
+  onStateChanged?: (sessionId: string) => void;
 }
 
 export class SessionRuntime<T> {
@@ -204,15 +220,23 @@ export class SessionRuntime<T> {
    *  loop exit, so it never leaks into a later turn. */
   interrupted = false;
 
-  /** M3.7 idle-teardown clock — epoch ms of the most recent turn-complete
-   *  edge (set by `setActivity("idle")` via run-query's markActivity
-   *  helper, alongside bridge.reportState("idle")). Drives both the
-   *  teardown-timer arm AND the structured-log idleDurationMs field.
+  /** M3.7 idle-teardown clock + #17 iOS list sort key — epoch ms of the
+   *  most recent activity edge (BOTH `running` AND `idle`, set by every
+   *  `setActivity()` call via run-query's markActivity helper).
    *
-   *  Initialized to construction time so a never-used runtime's clock has
-   *  a sensible value (though dispose can't fire on it: timer is only
-   *  ARMED at the first turn-complete edge AND when subs.size===0). */
-  lastTurnCompleteAt: number = Date.now();
+   *  Used by:
+   *    - M3.7 teardown timer's `[teardown] fired idleDurationMs=...` log
+   *      (computed at fire time as `Date.now() - lastActivityAt`); since
+   *      the timer can only arm + fire while activity is `idle` and
+   *      lastActivityAt was just stamped at idle-entry, the field acts as
+   *      the idle-entry timestamp for the teardown path.
+   *    - #17 iOS session list — sorted by `lastActivityAt` desc so the
+   *      session the user just sent a prompt into (running edge) jumps to
+   *      the top immediately, not only after the turn completes.
+   *
+   *  Initialized to construction time so a never-used runtime's clock
+   *  has a sensible value. */
+  lastActivityAt: number = Date.now();
 
   /** M3.7.4 / #17 current activity state. Mirrors Claude Code's
    *  bridge.reportState contract (`idle | running | requires_action`).
@@ -220,6 +244,22 @@ export class SessionRuntime<T> {
    *  3 reportState edges); also gates the teardown timer (arm only when
    *  `idle`). Reserved enum value `requires_action` not emitted in V0. */
   activity: SessionActivity = "idle";
+
+  /** #17 — current model selection for this runtime. `null` = "let SDK
+   *  pick default" (honors the user's account / Desktop `Settings.model`
+   *  per upstream docs). Set by:
+   *    - SessionRuntimeManager.getOrCreate seeding from on-disk
+   *      `SidecodeSessionMetadata.model` at first hydration
+   *    - `setModel()` called from router setSessionSelection / bridge
+   *      onSetModel right after `applyFlagSettings({model})` succeeds
+   *
+   *  Mirrored to iOS via the `session_state_changed.state.model` field so
+   *  the model chip on every client matches the live runtime selection.
+   *  NOT the source of truth for the *next* spawn — `ensureSessionLoop`
+   *  reads its `options.model` from the router's call site, which reads
+   *  from disk metadata. This field is the *live* selection that
+   *  applyFlagSettings has actually applied to the running query. */
+  currentModel: string | null = null;
 
   private readonly bufferCap: number;
   private readonly buffer: RuntimeEvent<T>[] = [];
@@ -239,6 +279,10 @@ export class SessionRuntime<T> {
   private readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
   private readonly teardownDelayMs: number;
   private readonly log: (msg: string) => void;
+  // #17 state-changed callback — fired from setActivity / setModel on
+  // meaningful transitions. Default no-op so the standalone
+  // pure-data-structure contract holds (tests + manager-less callers).
+  private readonly onStateChanged: (sessionId: string) => void;
 
   constructor(sessionId: string, options: SessionRuntimeOptions<T> = {}) {
     this.sessionId = sessionId;
@@ -248,6 +292,7 @@ export class SessionRuntime<T> {
     this.clearTimer = options.clearTimer ?? clearTimeout;
     this.teardownDelayMs = options.teardownDelayMs ?? 15 * 60_000;
     this.log = options.log ?? (() => {});
+    this.onStateChanged = options.onStateChanged ?? (() => {});
   }
 
   /** Cursor of the oldest event still in the buffer, or null if empty. */
@@ -409,25 +454,41 @@ export class SessionRuntime<T> {
   }
 
   /**
-   * M3.7.4 — update the activity state. Internal dedupe (no-op if same).
-   * Returns the timer-side effects so callers (run-query's markActivity)
-   * can emit structured logs without re-deriving the predicate. Side
-   * effects:
+   * M3.7.4 — update the activity state. Internal dedupe on the activity
+   * enum (no-op transition if same). Returns the timer-side effects so
+   * callers (run-query's markActivity) can emit structured logs without
+   * re-deriving the predicate. Side effects:
    *
    *   - "running" → cancel any pending teardown timer (turn in flight,
    *     either user-driven via pushPrompt OR autonomous SDK yield via
    *     forwardToBridge first model frame — both are activity edges)
-   *   - "idle" → stamp `lastTurnCompleteAt = now` + arm teardown timer
-   *     IFF eligible (`subscribers.size === 0 && query !== null`).
-   *     Subscriber-gating matches Claude Desktop's empirical policy:
-   *     watching = keep warm; nobody watching = reclaim after delay.
+   *   - "idle" → arm teardown timer IFF eligible
+   *     (`subscribers.size === 0 && query !== null`). Subscriber-gating
+   *     matches Claude Desktop's empirical policy: watching = keep warm;
+   *     nobody watching = reclaim after delay.
    *   - "requires_action" → reserved (V0 never emits); semantically
    *     close to "running" — cancel teardown.
    *
+   * BOTH edges stamp `lastActivityAt = now` (#17): the iOS list sorts by
+   * this field, so the row should jump to the top as soon as the user
+   * sends a prompt (running edge), not only when the turn completes (idle
+   * edge). For the teardown log's `idleDurationMs` accuracy: the timer
+   * can only arm + fire while activity is `idle`, so the stamp at idle
+   * entry is what gets read at fire time — `delayMs` (15min) is the
+   * dominant term, the running-edge stamp doesn't pollute it.
+   *
+   * #17 onStateChanged callback fires:
+   *   - on activity transition (`changed === true`) — fan-out the new
+   *     `activity` field via SessionStateChanged envelope
+   *   - on every idle-entry re-stamp even when activity already idle (the
+   *     `lastActivityAt` field changed → iOS list sort changes) — V0
+   *     callers never re-emit idle twice for one turn so this branch is
+   *     dormant, but the invariant "callback fires whenever a field iOS
+   *     subscribers see has changed" is preserved.
+   *
    * Returns `{ changed, armed, canceled }` so caller can decide which
    * structured logs to emit. `armed`/`canceled` are timer transitions,
-   * NOT subsumed by `changed` (caller still emits "armed/canceled" logs
-   * regardless of activity transition for the bridge/CCR side parity).
+   * NOT subsumed by `changed`.
    */
   setActivity(state: SessionActivity): {
     changed: boolean;
@@ -436,17 +497,46 @@ export class SessionRuntime<T> {
   } {
     const changed = this.activity !== state;
     this.activity = state;
+    // #17 — BOTH edges stamp lastActivityAt so iOS list sort reflects
+    // user-initiated activity instantly (not waiting for turn complete).
+    this.lastActivityAt = Date.now();
     let armed = false;
     let canceled = false;
     if (state === "idle") {
-      this.lastTurnCompleteAt = Date.now();
       armed = this.armIfEligibleForTeardown();
     } else {
       // running / requires_action — activity in flight, MUST cancel any
       // pending teardown to avoid mid-turn dispose.
       canceled = this.cancelTeardownTimer();
     }
+    // #17 fan-out: only when activity transitioned (avoids spammy idle→idle
+    // notifications). lastActivityAt-only updates without an activity
+    // transition can't happen in V0 (setActivity is always called with the
+    // edge-appropriate enum), so the changed-gate is the right predicate.
+    if (changed) this.onStateChanged(this.sessionId);
     return { changed, armed, canceled };
+  }
+
+  /**
+   * #17 — set the current model selection. No-op (returns false) when the
+   * new value equals the prior one; otherwise updates `currentModel` and
+   * fires `onStateChanged`. Accepts `string | null` (null = "reset to SDK
+   * default", matches the protocol's `model: string | null` field shape
+   * and `setSessionSelection`'s "unset" semantics).
+   *
+   * Does NOT call `applyFlagSettings` — that's the caller's
+   * responsibility, because the apply path differs by trigger (router
+   * uses the live `query.applyFlagSettings` directly; bridge's onSetModel
+   * goes through SessionRuntimeManager hookup). We only update the
+   * in-runtime mirror that iOS state subscribers read.
+   *
+   * Returns true iff a change was observed (caller can gate logs).
+   */
+  setModel(model: string | null): boolean {
+    if (this.currentModel === model) return false;
+    this.currentModel = model;
+    this.onStateChanged(this.sessionId);
+    return true;
   }
 
   /**
@@ -461,17 +551,21 @@ export class SessionRuntime<T> {
    * already-armed timer just resets the clock (intentional — most-recent
    * idle edge wins).
    *
-   * The fire callback: log + `disposeQuery()`. Reads `lastTurnCompleteAt`
-   * at fire time (not arm time) so the log accurately reports the actual
+   * The fire callback: log + `disposeQuery()`. Reads `lastActivityAt` at
+   * fire time (not arm time) so the log accurately reports the actual
    * idle duration — useful when a sub-leave-triggered arm fires long
-   * after the last turn (`idleDurationMs ≈ readingTime + delay`).
+   * after the last turn (`idleDurationMs ≈ readingTime + delay`). Since
+   * setActivity stamps lastActivityAt on BOTH running and idle edges,
+   * but the timer only arms after an idle edge, the stamp at fire time
+   * still corresponds to the idle-entry timestamp — no contamination
+   * from earlier running edges in the same turn.
    */
   private armIfEligibleForTeardown(): boolean {
     if (this.activity !== "idle") return false;
     if (this.subscribers.size !== 0) return false;
     if (this.query === null) return false;
     this.armTeardownTimer(this.teardownDelayMs, () => {
-      const idleDurationMs = Date.now() - this.lastTurnCompleteAt;
+      const idleDurationMs = Date.now() - this.lastActivityAt;
       this.log(
         `[teardown] fired session=${this.sessionId} idleDurationMs=${idleDurationMs}`,
       );

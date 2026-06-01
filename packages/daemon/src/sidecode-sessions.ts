@@ -379,6 +379,50 @@ export function updateSidecodeSessionSelection(
 }
 
 /**
+ * #17 — atomically advance a session's `lastActivityAt` clock + bump
+ * `completedTurns` on disk. Called by SessionRuntimeManager on the
+ * running→idle activity edge so a daemon restart (or `disposeQuery`'s
+ * idle teardown) preserves the iOS list sort key + turn counter.
+ *
+ * No-op (returns `undefined`) when the metadata file is missing — Desktop-
+ * mirror sessions live in Desktop's own dir and sidecode never writes
+ * there; callers are responsible for checking existence first (V0 only
+ * persists for sidecode-owned sessions).
+ *
+ * Monotonic guard on `lastActivityAt`: never move it backwards (a stale
+ * callback firing after a newer turn could regress us). `completedTurns`
+ * also guarded — only writes when the new value is strictly greater than
+ * what's on disk (defensive against double-fire of the running→idle edge,
+ * which the manager already gates against via `lastSeenActivity`).
+ *
+ * Hot-path concern (V0 single-digit sessions × few turns/min): atomic
+ * tmp+rename is ~ms and we fire once per turn-complete. Order-of-
+ * magnitude headroom; if profile ever shows it hot, batch via debounce.
+ */
+export function updateSidecodeSessionLastActivity(
+  home: string,
+  cliSessionId: string,
+  lastActivityAt: number,
+  completedTurns: number,
+): SidecodeSessionMetadata | undefined {
+  const existing = readSidecodeSession(home, cliSessionId);
+  if (!existing) return undefined;
+  if (
+    lastActivityAt <= existing.lastActivityAt &&
+    completedTurns <= existing.completedTurns
+  ) {
+    return existing;
+  }
+  const merged: SidecodeSessionMetadata = {
+    ...existing,
+    lastActivityAt: Math.max(lastActivityAt, existing.lastActivityAt),
+    completedTurns: Math.max(completedTurns, existing.completedTurns),
+  };
+  writeSidecodeSession(home, merged);
+  return merged;
+}
+
+/**
  * Atomically attach (or replace) a session's bridge worker state.
  *
  * Called by `BridgeService.attach` after `BridgeTransport.attach` returns

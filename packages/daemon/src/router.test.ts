@@ -1252,10 +1252,36 @@ describe("createCommandHandler — setSessionSelection", () => {
       cliSessionId: "S",
       model: "claude-opus-4-7[1m]",
     });
+    // #17 — runtime.currentModel must reflect the new selection so the
+    // next state-changed envelope carries it.
+    expect(runtime.currentModel).toBe("claude-opus-4-7[1m]");
     expect(sent.at(-1)).toMatchObject({
       type: "setSessionSelection.response",
       requestId: "ss-1",
     });
+  });
+
+  it("#17 setSessionSelection with model=undefined resets runtime.currentModel to null", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.currentModel = "claude-opus-4-7";
+    runtime.loopPromise = Promise.resolve();
+    runtime.query = {
+      interrupt: async () => {},
+      close: () => {},
+      applyFlagSettings: vi.fn(async () => {}),
+    };
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx } = makeCtx();
+    await handler(
+      {
+        type: "setSessionSelection",
+        requestId: "ss-reset",
+        sessionId: "S",
+      },
+      ctx,
+    );
+    expect(runtime.currentModel).toBeNull();
   });
 
   it("no-op when model is omitted (defensive — iOS shouldn't fire this)", async () => {
@@ -1463,7 +1489,9 @@ describe("createCommandHandler — subscribe with turn-boundary settled cache", 
     runtime.latestUsage = { inputTokens: 100, outputTokens: 50 };
 
     const getMessages = vi.fn();
-    const handler = createCommandHandler(makeDeps({ runtimeManager, getMessages }));
+    const handler = createCommandHandler(
+      makeDeps({ runtimeManager, getMessages }),
+    );
     const { ctx, sent } = makeCtx();
     await handler(
       { type: "subscribe", requestId: "sub-warm-mem", sessionId: "S" },
@@ -1542,7 +1570,9 @@ describe("createCommandHandler — subscribe with turn-boundary settled cache", 
       items: fetched,
       initialUsage: { inputTokens: 7 },
     });
-    const handler = createCommandHandler(makeDeps({ runtimeManager, getMessages }));
+    const handler = createCommandHandler(
+      makeDeps({ runtimeManager, getMessages }),
+    );
 
     // First subscribe — uses fallback.
     const { ctx: ctx1, sent: sent1 } = makeCtx();
@@ -1583,7 +1613,9 @@ describe("createCommandHandler — subscribe with turn-boundary settled cache", 
       items: [{ type: "user_message" as const, uuid: "u-1", text: "old" }],
       initialUsage: undefined,
     });
-    const handler = createCommandHandler(makeDeps({ runtimeManager, getMessages }));
+    const handler = createCommandHandler(
+      makeDeps({ runtimeManager, getMessages }),
+    );
 
     // First subscribe — fetches via getMessages.
     const { ctx: ctx1 } = makeCtx();
@@ -2040,5 +2072,93 @@ describe("createCommandHandler — getModels", () => {
       expect(typeof m.isDefault).toBe("boolean");
     }
   });
+});
 
+describe("createCommandHandler — subscribeSessions (#17)", () => {
+  it("returns the manager's initial snapshot on response.initial", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    // Pre-create a runtime so getAllSessionStates has memory entries.
+    const r = runtimeManager.getOrCreate("seed-1");
+    r.setModel("claude-opus-4-7");
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+
+    await handler(
+      { type: "subscribeSessions", requestId: "subs-1" } satisfies Command,
+      ctx,
+    );
+
+    expect(sent).toHaveLength(1);
+    const r0 = sent[0];
+    if (r0?.type !== "subscribeSessions.response")
+      throw new Error("expected subscribeSessions.response");
+    expect(r0.requestId).toBe("subs-1");
+    expect(r0.initial.map((e) => e.sessionId)).toEqual(["seed-1"]);
+    expect(r0.initial[0]?.state.model).toBe("claude-opus-4-7");
+  });
+
+  it("fans out session_state_changed envelopes when a runtime activity transitions", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const r = runtimeManager.getOrCreate("S");
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribeSessions", requestId: "subs-1" } satisfies Command,
+      ctx,
+    );
+    // Drop the initial response from the assertion target.
+    const before = sent.length;
+
+    r.setActivity("running");
+    r.setActivity("idle");
+
+    const newFrames = sent.slice(before);
+    expect(newFrames).toHaveLength(2);
+    expect(newFrames[0]).toMatchObject({
+      type: "session_state_changed",
+      sessionId: "S",
+    });
+    expect(
+      (newFrames[0] as { state: { activity: string } }).state.activity,
+    ).toBe("running");
+    expect(
+      (newFrames[1] as { state: { activity: string } }).state.activity,
+    ).toBe("idle");
+  });
+
+  it("onDisconnect detaches the listener — no more frames after disconnect", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const r = runtimeManager.getOrCreate("S");
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent, fireDisconnect } = makeCtx();
+    await handler(
+      { type: "subscribeSessions", requestId: "subs-1" } satisfies Command,
+      ctx,
+    );
+    fireDisconnect();
+    const before = sent.length;
+    r.setActivity("running");
+    // No additional frames — listener was removed.
+    expect(sent.length).toBe(before);
+  });
+
+  it("re-subscribe on the same peer replaces the previous listener (no double-deliver)", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const r = runtimeManager.getOrCreate("S");
+    const handler = createCommandHandler(makeDeps({ runtimeManager }));
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribeSessions", requestId: "subs-1" } satisfies Command,
+      ctx,
+    );
+    await handler(
+      { type: "subscribeSessions", requestId: "subs-2" } satisfies Command,
+      ctx,
+    );
+    const before = sent.length;
+    r.setActivity("running");
+    const newFrames = sent.slice(before);
+    // Exactly one fanout — the second subscribe replaced the first.
+    expect(newFrames).toHaveLength(1);
+  });
 });

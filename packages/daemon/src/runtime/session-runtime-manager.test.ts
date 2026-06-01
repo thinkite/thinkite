@@ -1,6 +1,56 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { SessionState } from "@sidecodeapp/protocol";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  readSidecodeSession,
+  type SidecodeSessionMetadata,
+  writeSidecodeSession,
+} from "../sidecode-sessions.js";
 import type { RuntimeQueryHandle } from "./session-runtime.js";
-import { SessionRuntimeManager } from "./session-runtime-manager.js";
+import {
+  SessionRuntimeManager,
+  type SessionStateListener,
+} from "./session-runtime-manager.js";
+
+/** Helper to build a complete sidecode metadata record for fixture writes. */
+function fixtureMeta(
+  partial: Partial<SidecodeSessionMetadata> & { cliSessionId: string },
+): SidecodeSessionMetadata {
+  const now = Date.now();
+  return {
+    sessionId: `local_${partial.cliSessionId}`,
+    cliSessionId: partial.cliSessionId,
+    cwd: partial.cwd ?? "/tmp/x",
+    originCwd: partial.originCwd ?? partial.cwd ?? "/tmp/x",
+    createdAt: partial.createdAt ?? now,
+    lastActivityAt: partial.lastActivityAt ?? now,
+    isArchived: partial.isArchived ?? false,
+    completedTurns: partial.completedTurns ?? 0,
+    title: partial.title ?? "",
+    titleSource: partial.titleSource ?? "auto",
+    permissionMode: partial.permissionMode ?? "bypassPermissions",
+    effort: "xhigh",
+    ...(partial.model !== undefined ? { model: partial.model } : {}),
+    ...(partial.bridge !== undefined ? { bridge: partial.bridge } : {}),
+  };
+}
+
+/** Build a listener with onChange spy + an inert onRemove. */
+function makeListener(): {
+  listener: SessionStateListener;
+  onChange: ReturnType<typeof vi.fn>;
+  onRemove: ReturnType<typeof vi.fn>;
+} {
+  const onChange = vi.fn<(sessionId: string, state: SessionState) => void>();
+  const onRemove = vi.fn<(sessionId: string) => void>();
+  return {
+    listener: { onChange, onRemove },
+    onChange,
+    onRemove,
+  };
+}
 
 function fakeQuery(): RuntimeQueryHandle & {
   closeMock: ReturnType<typeof vi.fn>;
@@ -184,5 +234,354 @@ describe("SessionRuntimeManager.shutdown", () => {
     await expect(m.shutdown(100)).resolves.toBeUndefined();
     expect(q2.closeMock).toHaveBeenCalledOnce();
     expect(m.size()).toBe(0);
+  });
+});
+
+describe("SessionRuntimeManager #17 SessionState fan-out", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "sidecode-manager-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("getAllSessionStates returns [] on a fresh manager with no home", () => {
+    const m = new SessionRuntimeManager<string>();
+    expect(m.getAllSessionStates()).toEqual([]);
+  });
+
+  it("getAllSessionStates returns disk-only entries when no runtimes exist", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(
+      home,
+      fixtureMeta({
+        cliSessionId: "abc",
+        cwd: "/repos/foo",
+        title: "first prompt",
+        model: "claude-opus-4-7",
+        createdAt: 1_000,
+        lastActivityAt: 2_000,
+      }),
+    );
+    const states = m.getAllSessionStates();
+    expect(states).toHaveLength(1);
+    expect(states[0]?.sessionId).toBe("abc");
+    expect(states[0]?.state).toMatchObject({
+      activity: "idle",
+      model: "claude-opus-4-7",
+      title: "first prompt",
+      cwd: "/repos/foo",
+      lastActivityAt: 2_000,
+      createdAt: 1_000,
+      isArchived: false,
+      completedTurns: 0,
+      permissionMode: "bypassPermissions",
+    });
+  });
+
+  it("getAllSessionStates merges runtime live fields over disk static", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(
+      home,
+      fixtureMeta({
+        cliSessionId: "abc",
+        cwd: "/repos/foo",
+        title: "stored title",
+        model: "stored-model",
+        lastActivityAt: 1_000,
+      }),
+    );
+    const r = m.getOrCreate("abc");
+    // Disk seeds currentModel via getOrCreate.
+    expect(r.currentModel).toBe("stored-model");
+    // Simulate a live activity edge.
+    r.setActivity("running");
+
+    const states = m.getAllSessionStates();
+    expect(states[0]?.state.activity).toBe("running");
+    // Runtime's lastActivityAt is more recent than disk's 1_000.
+    expect(states[0]?.state.lastActivityAt).toBeGreaterThan(1_000);
+    // Disk still owns title / cwd.
+    expect(states[0]?.state.title).toBe("stored title");
+    expect(states[0]?.state.cwd).toBe("/repos/foo");
+  });
+
+  it("getAllSessionStates includes runtime-only sessions (no disk metadata yet)", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    m.getOrCreate("memory-only");
+    const states = m.getAllSessionStates();
+    expect(states.map((s) => s.sessionId)).toEqual(["memory-only"]);
+    expect(states[0]?.state).toMatchObject({
+      activity: "idle",
+      title: "",
+      cwd: "",
+      isArchived: false,
+    });
+  });
+
+  it("getOrCreate seeds currentModel from disk metadata", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(
+      home,
+      fixtureMeta({ cliSessionId: "seeded", model: "claude-sonnet-4-6" }),
+    );
+    const r = m.getOrCreate("seeded");
+    expect(r.currentModel).toBe("claude-sonnet-4-6");
+  });
+
+  it("getOrCreate does NOT seed currentModel when home is unset (memory-only manager)", () => {
+    const m = new SessionRuntimeManager<string>();
+    const r = m.getOrCreate("no-home");
+    expect(r.currentModel).toBeNull();
+  });
+
+  it("subscribeSessionStates returns initial snapshot + listener fires on activity transition", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    const { listener, onChange } = makeListener();
+    const { initial } = m.subscribeSessionStates(listener);
+    expect(initial.map((s) => s.sessionId)).toEqual(["a"]);
+
+    const r = m.getOrCreate("a");
+    r.setActivity("running");
+
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onChange.mock.calls[0]?.[0]).toBe("a");
+    expect(onChange.mock.calls[0]?.[1].activity).toBe("running");
+  });
+
+  it("subscribeSessionStates unsubscribe stops fan-out", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    const { listener, onChange } = makeListener();
+    const { unsubscribe } = m.subscribeSessionStates(listener);
+
+    const r = m.getOrCreate("a");
+    r.setActivity("running");
+    expect(onChange).toHaveBeenCalledOnce();
+
+    unsubscribe();
+    r.setActivity("idle");
+    // No additional fires after unsubscribe.
+    expect(onChange).toHaveBeenCalledOnce();
+  });
+
+  it("notifyStateChanged is a no-op when no listeners are attached (zero-cost on inactive)", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    const r = m.getOrCreate("a");
+    // No subscribers — these calls should not throw or attempt disk reads
+    // (smoke-test for the short-circuit path).
+    expect(() => r.setActivity("running")).not.toThrow();
+    expect(() => r.setActivity("idle")).not.toThrow();
+  });
+
+  it("setModel fans out a state-changed event via the runtime's onStateChanged callback", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    const { listener, onChange } = makeListener();
+    m.subscribeSessionStates(listener);
+
+    const r = m.getOrCreate("a");
+    r.setModel("claude-opus-4-7");
+
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onChange.mock.calls[0]?.[1].model).toBe("claude-opus-4-7");
+  });
+
+  it("multiple listeners all receive the same fan-out", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    const l1 = makeListener();
+    const l2 = makeListener();
+    m.subscribeSessionStates(l1.listener);
+    m.subscribeSessionStates(l2.listener);
+
+    const r = m.getOrCreate("a");
+    r.setActivity("running");
+
+    expect(l1.onChange).toHaveBeenCalledOnce();
+    expect(l2.onChange).toHaveBeenCalledOnce();
+  });
+
+  it("listener exception is isolated — sibling listeners still receive the event", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    const flaky: SessionStateListener = {
+      onChange: () => {
+        throw new Error("listener exploded");
+      },
+      onRemove: () => {},
+    };
+    const good = makeListener();
+    m.subscribeSessionStates(flaky);
+    m.subscribeSessionStates(good.listener);
+
+    const r = m.getOrCreate("a");
+    expect(() => r.setActivity("running")).not.toThrow();
+    expect(good.onChange).toHaveBeenCalledOnce();
+  });
+
+  it("getOrCreate wires onStateChanged even when caller passes options without it", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(home, fixtureMeta({ cliSessionId: "a" }));
+    const { listener, onChange } = makeListener();
+    m.subscribeSessionStates(listener);
+
+    // Caller passes unrelated options — manager-wired onStateChanged must
+    // still fire (caller-supplied onStateChanged is always overridden).
+    const r = m.getOrCreate("a", { bufferCap: 10 });
+    r.setActivity("running");
+    expect(onChange).toHaveBeenCalledOnce();
+  });
+
+  // ─── #17.5 turn-complete disk persistence ──────────────────────────
+
+  it("#17.5 running → idle persists lastActivityAt + bumps completedTurns to disk", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(
+      home,
+      fixtureMeta({
+        cliSessionId: "a",
+        lastActivityAt: 1_000,
+        completedTurns: 5,
+      }),
+    );
+    const r = m.getOrCreate("a");
+    r.setActivity("running");
+    r.setActivity("idle");
+
+    const onDisk = readSidecodeSession(home, "a");
+    expect(onDisk?.completedTurns).toBe(6);
+    expect(onDisk?.lastActivityAt).toBeGreaterThan(1_000);
+  });
+
+  it("#17.5 setModel alone does NOT bump completedTurns (only running → idle triggers persist)", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(
+      home,
+      fixtureMeta({
+        cliSessionId: "a",
+        lastActivityAt: 1_000,
+        completedTurns: 5,
+      }),
+    );
+    const r = m.getOrCreate("a");
+    // Activity stays "idle"; only model changes.
+    r.setModel("claude-opus-4-7");
+
+    const onDisk = readSidecodeSession(home, "a");
+    expect(onDisk?.completedTurns).toBe(5); // unchanged
+    expect(onDisk?.lastActivityAt).toBe(1_000); // unchanged
+  });
+
+  it("#17.5 idle → running does NOT persist (not a turn-complete edge)", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(
+      home,
+      fixtureMeta({
+        cliSessionId: "a",
+        lastActivityAt: 1_000,
+        completedTurns: 5,
+      }),
+    );
+    const r = m.getOrCreate("a");
+    r.setActivity("running");
+
+    const onDisk = readSidecodeSession(home, "a");
+    expect(onDisk?.completedTurns).toBe(5);
+    expect(onDisk?.lastActivityAt).toBe(1_000);
+  });
+
+  it("#17.5 fan-out reflects the freshly-persisted completedTurns on turn-complete edge", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(
+      home,
+      fixtureMeta({
+        cliSessionId: "a",
+        lastActivityAt: 1_000,
+        completedTurns: 5,
+      }),
+    );
+    const { listener, onChange } = makeListener();
+    m.subscribeSessionStates(listener);
+    const r = m.getOrCreate("a");
+    r.setActivity("running"); // 1st fan-out: completedTurns=5, activity=running
+    onChange.mockClear();
+
+    r.setActivity("idle"); // 2nd fan-out should see completedTurns=6
+    expect(onChange).toHaveBeenCalledOnce();
+    const state = onChange.mock.calls[0]?.[1] as SessionState;
+    expect(state.activity).toBe("idle");
+    expect(state.completedTurns).toBe(6);
+  });
+
+  it("#17.5 multiple turn-complete edges chain correctly (each bumps by 1)", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(
+      home,
+      fixtureMeta({
+        cliSessionId: "a",
+        lastActivityAt: 1_000,
+        completedTurns: 0,
+      }),
+    );
+    const r = m.getOrCreate("a");
+    for (let i = 0; i < 3; i++) {
+      r.setActivity("running");
+      r.setActivity("idle");
+    }
+    const onDisk = readSidecodeSession(home, "a");
+    expect(onDisk?.completedTurns).toBe(3);
+  });
+
+  it("#17.5 no-op when home is unset (memory-only manager — V0.5+ unit test posture)", () => {
+    const m = new SessionRuntimeManager<string>();
+    // No setHome.
+    const r = m.getOrCreate("a");
+    expect(() => {
+      r.setActivity("running");
+      r.setActivity("idle");
+    }).not.toThrow();
+    // No disk file to assert against — just confirms the manager doesn't
+    // crash trying to read/write metadata that doesn't apply.
+  });
+
+  it("#17.5 delete() cleans up lastSeenActivity edge-detection state", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    writeSidecodeSession(
+      home,
+      fixtureMeta({ cliSessionId: "a", completedTurns: 0 }),
+    );
+    const r = m.getOrCreate("a");
+    r.setActivity("running");
+    m.delete("a");
+    // Re-create — fresh runtime, fresh seed of "idle"; first idle-only
+    // setActivity should NOT trigger turn-complete persist (no prior
+    // "running" state to transition from).
+    const r2 = m.getOrCreate("a");
+    r2.setActivity("idle"); // no-op transition, no fanout
+    const onDisk = readSidecodeSession(home, "a");
+    expect(onDisk?.completedTurns).toBe(0); // never bumped
   });
 });

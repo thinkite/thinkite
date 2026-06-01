@@ -9,9 +9,9 @@ import type {
   TurnUsage,
 } from "@sidecodeapp/protocol";
 import {
-  SLASH_COMMANDS,
   isWhitelistedCommand,
   parseSlashCommand,
+  SLASH_COMMANDS,
 } from "@sidecodeapp/protocol";
 import type { CommandHandler } from "./command.js";
 import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
@@ -177,6 +177,12 @@ export interface RouterDeps {
 // once and namespace everything router-side under "router:".
 
 const SUBS_KEY = "router:subs";
+/** Per-conn slot for the SINGLE active subscribeSessions listener
+ *  (#17 daemon-wide SessionState stream). Different from SUBS_KEY (per-
+ *  session transcript fanout) so the two can't collide. The slot holds the
+ *  unsubscribe-fn directly — there's only one subscribeSessions per peer
+ *  by design (last-write-wins snapshot, no per-session bookkeeping). */
+const SESSION_STATES_SUB_KEY = "router:sessionStatesSub";
 
 /** Per-conn map: sessionId → unsubscribe-fn returned by runtime.subscribe. */
 type SubsMap = Map<string, () => void>;
@@ -230,6 +236,68 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             requestId: cmd.requestId,
             ok: false,
             error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
+      case "subscribeSessions": {
+        // #17 daemon-wide SessionState fan-out. Single subscription per
+        // peer (idempotent re-subscribe drops the prior fanout). The
+        // manager owns disk-read + memory-union under `getAllSessionStates`
+        // — router just forwards initial snapshot + wires the live
+        // listener envelope. No cursor / no replay: SessionState is a
+        // last-write-wins snapshot, the iOS TanStack DB collection
+        // upserts by sessionId and resolves order via useLiveQuery.
+        try {
+          // Drop prior subscribeSessions listener on this peer if any —
+          // a re-subscribe should NOT double-deliver. Same pattern as
+          // the per-session `subscribe` handler does for SubsMap.
+          const previous = ctx.state.get(SESSION_STATES_SUB_KEY) as
+            | (() => void)
+            | undefined;
+          if (previous !== undefined) previous();
+
+          const { initial, unsubscribe } =
+            deps.runtimeManager.subscribeSessionStates({
+              onChange: (sessionId, state) => {
+                ctx.send({
+                  type: "session_state_changed",
+                  sessionId,
+                  state,
+                });
+              },
+              onRemove: (sessionId) => {
+                // V0 never fires this (no user-driven delete) but the
+                // wire path is here for V0.5+ when remove lands.
+                ctx.send({
+                  type: "session_state_removed",
+                  sessionId,
+                });
+              },
+            });
+
+          ctx.state.set(SESSION_STATES_SUB_KEY, unsubscribe);
+          ctx.onDisconnect(unsubscribe);
+
+          // Response goes AFTER the listener is attached but BEFORE any
+          // live frame could be enqueued — frame ordering is monotonic
+          // over the DataChannel, so as long as the response goes out
+          // synchronously after attach the client sees response → events
+          // in correct order. (Compared to the per-session subscribe,
+          // there's no "replay missed cursors" gap here — initial is
+          // already the full snapshot and live events are last-write-
+          // wins, so missing one is recoverable on the next edge.)
+          ctx.send({
+            type: "subscribeSessions.response",
+            requestId: cmd.requestId,
+            initial,
+          });
+        } catch (err) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: err instanceof Error ? err.message : String(err),
           });
         }
         return;
@@ -418,7 +486,8 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             if (runtime.query !== null) {
               runtime.settled = settled;
               runtime.settledCursor = settledCursor;
-              if (initialUsage !== undefined) runtime.latestUsage = initialUsage;
+              if (initialUsage !== undefined)
+                runtime.latestUsage = initialUsage;
             }
           }
           const cursor = runtime.currentCursor;
@@ -686,6 +755,21 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           // setter. Keeping one entrypoint simplifies the test seam.
           if (cmd.model !== undefined && runtime?.query?.applyFlagSettings) {
             await runtime.query.applyFlagSettings({ model: cmd.model });
+          }
+          // #17 — mirror the picker selection onto the runtime's
+          // `currentModel` so the next state-changed envelope reflects it.
+          // `setModel` fans out via onStateChanged → manager → every
+          // subscribeSessions listener; iOS sees the chip update on
+          // every connected peer (not just the one that initiated). Pass
+          // `cmd.model ?? null` so "unset" (undefined → reset to SDK
+          // default) is mapped to the protocol's `model: string | null`
+          // null sentinel. Done EVEN when no live runtime — getOrCreate
+          // would also work but adding a runtime for a session that's
+          // currently quiescent would be a side effect; for the no-live-
+          // runtime case the disk metadata update below is what carries
+          // the selection forward (re-spawn seeds currentModel from it).
+          if (runtime !== undefined) {
+            runtime.setModel(cmd.model ?? null);
           }
           // Apply succeeded (or no live runtime). Persist intent. Dep
           // is a silent no-op when the metadata file doesn't exist
