@@ -37,12 +37,17 @@ import { getTranscriptCollection } from "@/lib/transcript-collection-factory";
  *   - `error` (terminal subscribe failure — none today since the
  *     facade retries forever; field kept for API compat, always null)
  */
-export function useSessionTranscript(cliSessionId: string) {
+export function useSessionTranscript(cliSessionId: string, isNew = false) {
   const { client } = useDaemonClient();
 
+  // `isNew` is only read at first collection creation (the daemon honors
+  // it on first attach only). A cache hit returns the existing collection
+  // and ignores it, so keeping it out of the memo deps is correct — but it
+  // IS listed so the (stable-per-mount) value is captured cleanly without
+  // tripping exhaustive-deps; a re-run just returns the cached collection.
   const collection = useMemo(
-    () => getTranscriptCollection(cliSessionId, { client }),
-    [cliSessionId, client],
+    () => getTranscriptCollection(cliSessionId, { client, isNew }),
+    [cliSessionId, client, isNew],
   );
 
   const { data, isLoading } = useLiveQuery(

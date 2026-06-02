@@ -631,7 +631,7 @@ export class Transport {
   async subscribe(
     sessionId: string,
     onEvent: EventCallback,
-    opts: { sinceCursor?: number; sinceEpoch?: string } = {},
+    opts: { sinceCursor?: number; sinceEpoch?: string; isNew?: boolean } = {},
   ): Promise<{
     settled: TimelineItem[];
     cursor: number;
@@ -661,9 +661,11 @@ export class Transport {
         sessionId: string;
         sinceCursor?: number;
         sinceEpoch?: string;
+        isNew?: boolean;
       } = { type: "subscribe", requestId, sessionId };
       if (opts.sinceCursor !== undefined) frame.sinceCursor = opts.sinceCursor;
       if (opts.sinceEpoch !== undefined) frame.sinceEpoch = opts.sinceEpoch;
+      if (opts.isNew === true) frame.isNew = true;
       res = (await this.request(frame)) as {
         settled: TimelineItem[];
         cursor: number;
@@ -1085,6 +1087,13 @@ export class Subscription {
   /** Transport-level unsubscribe thunk for the current attachment, or
    *  null when no transport is attached. */
   _currentUnsubscribe: (() => Promise<void>) | null = null;
+  /** Brand-new-session flag, captured once at `subscribe()` time from the
+   *  route (`?new=1`). Passed to the daemon ONLY on the first attach
+   *  (when `_cursor` is still null) so it takes the no-disk-scan fast
+   *  path. On any reconnect `_cursor` is set → the resume-hint branch
+   *  wins → the flag is never re-sent, so a session that has since
+   *  acquired a transcript can't be blanked. */
+  _isNew = false;
 
   constructor(
     readonly cliSessionId: string,
@@ -1252,10 +1261,16 @@ export class DaemonClient {
     if (sub._state === "unsubscribed") return;
     sub._state = "subscribing";
 
-    const opts =
+    const opts: { sinceCursor?: number; sinceEpoch?: string; isNew?: boolean } =
       sub._cursor !== null && sub._epoch !== null
         ? { sinceCursor: sub._cursor, sinceEpoch: sub._epoch }
-        : {};
+        : // First attach only (no resume hint yet): forward the brand-new
+          // flag so the daemon skips the JSONL scan. Once any response
+          // lands, `_cursor` is set and the branch above wins on every
+          // reconnect — `isNew` is never re-sent.
+          sub._isNew
+          ? { isNew: true }
+          : {};
 
     try {
       const result = await t.subscribe(
@@ -1331,10 +1346,16 @@ export class DaemonClient {
       onEvent: (delta: EventDelta) => void;
       onSubscribed: (info: SubscriptionAttached) => void;
     },
+    opts?: { isNew?: boolean },
   ): Subscription {
     const sub = new Subscription(cliSessionId, callbacks, (s) =>
       this.removeSubscription(s),
     );
+    // `isNew` is honored only on the first attach (see attachSubscription)
+    // — a brand-new session created on this device, so the daemon serves
+    // the no-disk-scan fast path. Stable for the subscription's lifetime;
+    // reconnects fall through to the resume-hint branch.
+    if (opts?.isNew === true) sub._isNew = true;
     this.subs.add(sub);
     if (this.transport !== null) {
       void this.attachSubscription(this.transport, sub);

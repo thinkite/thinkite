@@ -40,11 +40,23 @@ import { flattenToBlocks } from "@/lib/transcript-blocks";
  * story.
  */
 export default function SessionDetailScreen() {
-  const { cliSessionId, cwd } = useLocalSearchParams<{
+  const {
+    cliSessionId,
+    cwd,
+    new: newFlag,
+  } = useLocalSearchParams<{
     cliSessionId: string;
     cwd?: string;
+    // `?new=1` — set only by the new-session screen's router.replace on a
+    // session it just created. Tells the transcript subscribe to take the
+    // daemon's no-disk-scan fast path (see subscribeCommand.isNew). Safe
+    // not to clear: every navigation here is a `router.replace` that
+    // respecifies params, so re-entering an existing session never
+    // carries it, and cold launch lands on `/` — so a stale `new=1` can't
+    // reach a second collection creation.
+    new?: string;
   }>();
-  const session = useSessionTranscript(cliSessionId);
+  const session = useSessionTranscript(cliSessionId, newFlag === "1");
   const navigation = useNavigation();
 
   // Log turn-failure errors. UI is intentionally absent for V0 —

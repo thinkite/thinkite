@@ -249,6 +249,63 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           const previous = subs.get(sessionId);
           if (previous !== undefined) previous();
 
+          // ─── Brand-new-session fast path (isNew) ─────────────────────
+          //
+          // The client (new-session screen, route-derived) asserts this
+          // session has no JSONL yet and a create-path sendPrompt is
+          // concurrently spinning up the runtime. Serve the in-memory
+          // snapshot SYNCHRONOUSLY and skip getMessages entirely.
+          //
+          // Skipping the await is the whole point. The cold path below
+          // does `await deps.getMessages` — a full ~20-project-key fs
+          // scan for a not-yet-existent session. That await yields, and
+          // during the window the create-path `pushPrompt` advances
+          // `currentCursor` past the synthesized user_message +
+          // turn_started; the cold path then reads `settledCursor =
+          // currentCursor` AFTER the await, so those events land in
+          // neither `settled` (empty JSONL) nor the replay window
+          // (settledCursor, currentCursor] — the new session's first
+          // message never renders. No await on this path → no
+          // interleaving window → the synthesized events are always
+          // delivered: replayed from the ring buffer if pushPrompt
+          // already ran, or fanned out live if it runs after we register.
+          //
+          // `settled` is served from the in-memory snapshot when present
+          // (the create path's ensureSessionLoop seeds `[]` @ cursor 0,
+          // or a turn that completed before this subscribe refreshed it),
+          // else `[]` @ floor 0. recovered:false so the client truncates
+          // and ingests — trivial for an empty/short fresh transcript.
+          //
+          // Gated on sinceCursor===undefined: a reconnect carries a
+          // resume hint and MUST take the warm/cold recovery path, so a
+          // stale isNew can never blank an existing transcript.
+          if (cmd.isNew === true && cmd.sinceCursor === undefined) {
+            const newSettled = runtime.settled ?? [];
+            const newSettledCursor =
+              runtime.settled !== null ? runtime.settledCursor : 0;
+            ctx.send({
+              type: "subscribe.response",
+              requestId: cmd.requestId,
+              sessionId,
+              settled: newSettled,
+              cursor: runtime.currentCursor,
+              epoch: deps.epoch,
+              recovered: false,
+              initialUsage: runtime.latestUsage ?? undefined,
+            });
+            const unsubscribe = runtime.subscribe((event) => {
+              ctx.send({
+                type: "event",
+                sessionId,
+                cursor: event.cursor,
+                delta: event.payload,
+              });
+            }, newSettledCursor);
+            subs.set(sessionId, unsubscribe);
+            ctx.onDisconnect(unsubscribe);
+            return;
+          }
+
           // ─── Warm vs cold path ──────────────────────────────────────
           //
           // Warm path: client passed sinceCursor + sinceEpoch matches

@@ -71,6 +71,13 @@ const GC_TIME_MS = 60_000;
 
 export interface TranscriptCollectionDeps {
   client: DaemonClient;
+  /** Set on the FIRST creation of a brand-new session's collection
+   *  (route-derived, `?new=1`). Forwarded to the daemon subscribe so it
+   *  serves the no-disk-scan fast path — see subscribeCommand.isNew. Only
+   *  consulted at collection-creation time: a cache hit (back-nav within
+   *  gcTime) returns the existing collection and never re-reads this, and
+   *  the daemon honors it only on the first attach. Defaults to false. */
+  isNew?: boolean;
 }
 
 export function getTranscriptCollection(
@@ -106,126 +113,130 @@ export function getTranscriptCollection(
         // ready, we're just refreshing its contents.
         let hasMarkedReady = false;
 
-        const sub = deps.client.subscribe(cliSessionId, {
-          onEvent: (delta) => {
-            switch (delta.kind) {
-              case "append": {
-                // `_order` continues from the collection's current size
-                // — first event after a cold-path settled[] ingest gets
-                // _order = settled.length; subsequent _order increments
-                // by 1 per append.
-                //
-                // Optimistic reconcile: when the client optimistically
-                // inserted this user_message (same uuid) before sending,
-                // the row is already present — reuse its `_order` rather
-                // than coll.size, so the synced row keeps the slot the
-                // optimistic bubble took and can't collide with the
-                // assistant reply that follows. Still an `insert`: the row
-                // lives only in the transaction overlay, not the synced
-                // store, so the daemon's append is what populates synced;
-                // the overlay then drops onto it by key, no flicker.
-                const key =
-                  delta.item.type === "tool_call"
-                    ? delta.item.callId
-                    : delta.item.uuid;
-                const existing = coll.get(key);
-                begin();
-                write({
-                  type: "insert",
-                  value: {
-                    ...delta.item,
-                    _order: existing?._order ?? coll.size,
-                  },
-                });
-                commit();
-                break;
-              }
-              case "patch_text": {
-                const current = coll.get(delta.uuid);
-                if (current?.type !== "assistant_message") return;
-                begin();
-                write({
-                  type: "update",
-                  value: { ...current, text: current.text + delta.deltaText },
-                });
-                commit();
-                break;
-              }
-              case "patch_tool_call": {
-                const current = coll.get(delta.callId);
-                if (current?.type !== "tool_call") return;
-                begin();
-                write({
-                  type: "update",
-                  value: {
-                    ...current,
-                    status: delta.status,
-                    error: delta.error,
-                    detail: delta.detail,
-                  },
-                });
-                commit();
-                break;
-              }
-              case "turn_started":
-                // Clear any stale error from a prior turn. Running-state is
-                // now daemon-pushed via sessionState.activity (#17), not
-                // written here.
-                patchSessionTurnResult(cliSessionId, { lastError: null });
-                break;
-              case "turn_completed":
-                if (delta.usage !== undefined) {
+        const sub = deps.client.subscribe(
+          cliSessionId,
+          {
+            onEvent: (delta) => {
+              switch (delta.kind) {
+                case "append": {
+                  // `_order` continues from the collection's current size
+                  // — first event after a cold-path settled[] ingest gets
+                  // _order = settled.length; subsequent _order increments
+                  // by 1 per append.
+                  //
+                  // Optimistic reconcile: when the client optimistically
+                  // inserted this user_message (same uuid) before sending,
+                  // the row is already present — reuse its `_order` rather
+                  // than coll.size, so the synced row keeps the slot the
+                  // optimistic bubble took and can't collide with the
+                  // assistant reply that follows. Still an `insert`: the row
+                  // lives only in the transaction overlay, not the synced
+                  // store, so the daemon's append is what populates synced;
+                  // the overlay then drops onto it by key, no flicker.
+                  const key =
+                    delta.item.type === "tool_call"
+                      ? delta.item.callId
+                      : delta.item.uuid;
+                  const existing = coll.get(key);
+                  begin();
+                  write({
+                    type: "insert",
+                    value: {
+                      ...delta.item,
+                      _order: existing?._order ?? coll.size,
+                    },
+                  });
+                  commit();
+                  break;
+                }
+                case "patch_text": {
+                  const current = coll.get(delta.uuid);
+                  if (current?.type !== "assistant_message") return;
+                  begin();
+                  write({
+                    type: "update",
+                    value: { ...current, text: current.text + delta.deltaText },
+                  });
+                  commit();
+                  break;
+                }
+                case "patch_tool_call": {
+                  const current = coll.get(delta.callId);
+                  if (current?.type !== "tool_call") return;
+                  begin();
+                  write({
+                    type: "update",
+                    value: {
+                      ...current,
+                      status: delta.status,
+                      error: delta.error,
+                      detail: delta.detail,
+                    },
+                  });
+                  commit();
+                  break;
+                }
+                case "turn_started":
+                  // Clear any stale error from a prior turn. Running-state is
+                  // now daemon-pushed via sessionState.activity (#17), not
+                  // written here.
+                  patchSessionTurnResult(cliSessionId, { lastError: null });
+                  break;
+                case "turn_completed":
+                  if (delta.usage !== undefined) {
+                    patchSessionTurnResult(cliSessionId, {
+                      latestUsage: delta.usage,
+                    });
+                  }
+                  break;
+                case "turn_failed":
                   patchSessionTurnResult(cliSessionId, {
-                    latestUsage: delta.usage,
+                    lastError: delta.error,
+                  });
+                  break;
+                case "turn_canceled":
+                  // Running-state handled by sessionState.activity; nothing
+                  // turn-result to record on a cancel.
+                  break;
+                case "compact_started":
+                case "compact_applied":
+                  // V0.5+ — divider rendering + summary handling.
+                  break;
+              }
+            },
+            onSubscribed: ({ recovered, settled, initialUsage }) => {
+              if (!recovered) {
+                // Cold path — daemon returned a full snapshot. truncate()
+                // is an operation INSIDE a sync transaction (must be
+                // bracketed by begin()/commit()), not a standalone clear.
+                // TanStack DB internally buffers the truncate + the
+                // subsequent inserts in the same transaction so observers
+                // never see a flash of empty content. Works correctly
+                // whether collection was empty (first subscribe) or had
+                // stale items (reconnect with epoch mismatch).
+                begin();
+                truncate();
+                for (let i = 0; i < settled.length; i += 1) {
+                  write({
+                    type: "insert",
+                    value: { ...settled[i], _order: i },
                   });
                 }
-                break;
-              case "turn_failed":
+                commit();
+              }
+              if (initialUsage !== undefined) {
                 patchSessionTurnResult(cliSessionId, {
-                  lastError: delta.error,
-                });
-                break;
-              case "turn_canceled":
-                // Running-state handled by sessionState.activity; nothing
-                // turn-result to record on a cancel.
-                break;
-              case "compact_started":
-              case "compact_applied":
-                // V0.5+ — divider rendering + summary handling.
-                break;
-            }
-          },
-          onSubscribed: ({ recovered, settled, initialUsage }) => {
-            if (!recovered) {
-              // Cold path — daemon returned a full snapshot. truncate()
-              // is an operation INSIDE a sync transaction (must be
-              // bracketed by begin()/commit()), not a standalone clear.
-              // TanStack DB internally buffers the truncate + the
-              // subsequent inserts in the same transaction so observers
-              // never see a flash of empty content. Works correctly
-              // whether collection was empty (first subscribe) or had
-              // stale items (reconnect with epoch mismatch).
-              begin();
-              truncate();
-              for (let i = 0; i < settled.length; i += 1) {
-                write({
-                  type: "insert",
-                  value: { ...settled[i], _order: i },
+                  latestUsage: initialUsage,
                 });
               }
-              commit();
-            }
-            if (initialUsage !== undefined) {
-              patchSessionTurnResult(cliSessionId, {
-                latestUsage: initialUsage,
-              });
-            }
-            if (!hasMarkedReady) {
-              markReady();
-              hasMarkedReady = true;
-            }
+              if (!hasMarkedReady) {
+                markReady();
+                hasMarkedReady = true;
+              }
+            },
           },
-        });
+          { isNew: deps.isNew },
+        );
 
         // Cleanup runs when the collection's gcTime expires (no active
         // subscribers for ≥60s). Unsub from the facade — daemon stops

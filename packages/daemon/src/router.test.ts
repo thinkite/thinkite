@@ -265,6 +265,136 @@ describe("createCommandHandler — subscribe / unsubscribe", () => {
     expect(getMessages).not.toHaveBeenCalled();
   });
 
+  it("isNew subscribe replays ring-buffer events without a getMessages scan", async () => {
+    // Brand-new-session fast path: the create-path sendPrompt already ran
+    // (pushed the synthesized user_message + turn_started) before the
+    // detail screen's subscribe arrives. The daemon serves those from the
+    // ring buffer WITHOUT the (expensive, race-prone) JSONL scan.
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.addEvent({
+      kind: "append",
+      item: { type: "user_message", uuid: "u-1", text: "hi" },
+    }); // cursor 1
+    runtime.addEvent({ kind: "turn_started" }); // cursor 2
+
+    // Rejects if the cold path's JSONL scan is reached — proves the fast
+    // path skips the await entirely (no await = no interleaving window).
+    const getMessages = vi
+      .fn()
+      .mockRejectedValue(new Error("getMessages must not run on isNew"));
+    const handler = createCommandHandler(
+      makeDeps({ runtimeManager, getMessages, epoch: "e-new" }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-new", sessionId: "S", isNew: true },
+      ctx,
+    );
+
+    expect(getMessages).not.toHaveBeenCalled();
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.response",
+      requestId: "sub-new",
+      sessionId: "S",
+      epoch: "e-new",
+      recovered: false,
+      cursor: 2,
+      settled: [],
+    });
+    // Replay from floor 0 delivers the synthesized user_message + turn_started.
+    expect(sent).toHaveLength(3);
+    expect(sent[1]).toMatchObject({
+      type: "event",
+      cursor: 1,
+      delta: { kind: "append", item: { type: "user_message", uuid: "u-1" } },
+    });
+    expect(sent[2]).toMatchObject({
+      type: "event",
+      cursor: 2,
+      delta: { kind: "turn_started" },
+    });
+  });
+
+  it("isNew subscribe arriving BEFORE the first prompt still delivers it live", async () => {
+    // The race ordering: the detail screen subscribes (isNew) before the
+    // create-path sendPrompt has pushed anything. The fast path registers
+    // the fanout at cursor 0 synchronously (no await window), so events
+    // pushed afterwards arrive live — none are dropped.
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const getMessages = vi
+      .fn()
+      .mockRejectedValue(new Error("getMessages must not run on isNew"));
+    const handler = createCommandHandler(
+      makeDeps({ runtimeManager, getMessages, epoch: "e-new2" }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "subscribe", requestId: "sub-new2", sessionId: "S", isNew: true },
+      ctx,
+    );
+    expect(getMessages).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.response",
+      recovered: false,
+      cursor: 0,
+      settled: [],
+    });
+
+    // Now the create-path pushPrompt fires — events fan out live.
+    const runtime = runtimeManager.get("S");
+    if (!runtime) throw new Error("expected runtime to exist");
+    runtime.addEvent({
+      kind: "append",
+      item: { type: "user_message", uuid: "u-9", text: "first" },
+    }); // cursor 1
+    runtime.addEvent({ kind: "turn_started" }); // cursor 2
+    expect(sent).toHaveLength(3);
+    expect(sent[1]).toMatchObject({
+      type: "event",
+      cursor: 1,
+      delta: { kind: "append", item: { type: "user_message", uuid: "u-9" } },
+    });
+    expect(sent[2]).toMatchObject({
+      type: "event",
+      cursor: 2,
+      delta: { kind: "turn_started" },
+    });
+  });
+
+  it("isNew is ignored when a resume hint (sinceCursor) is present", async () => {
+    // A reconnect carries sinceCursor; even if a stale isNew rides along,
+    // the warm recovery path must win so an existing transcript is never
+    // blanked by the empty-settled fast path.
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const runtime = runtimeManager.getOrCreate("S");
+    runtime.addEvent({ kind: "turn_started" }); // cursor 1
+    runtime.addEvent({ kind: "turn_completed" }); // cursor 2
+
+    const handler = createCommandHandler(
+      makeDeps({ runtimeManager, epoch: "e-resume" }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "subscribe",
+        requestId: "sub-resume",
+        sessionId: "S",
+        isNew: true,
+        sinceCursor: 1,
+        sinceEpoch: "e-resume",
+      },
+      ctx,
+    );
+    // Warm path wins: recovered:true + replay of cursor 2, NOT the fast path.
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.response",
+      recovered: true,
+      cursor: 2,
+    });
+  });
+
   it("warm-path falls back to cold-path on epoch mismatch", async () => {
     // Simulates daemon restart between iOS sessions: client's stored
     // sinceEpoch is from the OLD process, current daemon has a new

@@ -106,7 +106,12 @@ export default function NewSessionScreen() {
       });
       router.replace({
         pathname: "/session/[cliSessionId]",
-        params: { cliSessionId: newId, cwd },
+        // `new: "1"` flags the detail screen's transcript subscribe to
+        // take the daemon's brand-new-session fast path (skip the JSONL
+        // scan — there's none yet — and dodge the cold-path await race
+        // that drops the synthesized first user_message). Self-clearing:
+        // the next navigation is another router.replace without it.
+        params: { cliSessionId: newId, cwd, new: "1" },
       });
     },
     [cwd, setLastUsedCwd],

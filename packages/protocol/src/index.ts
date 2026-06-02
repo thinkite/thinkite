@@ -832,6 +832,25 @@ export const subscribeCommand = z.object({
    *  subscribe.response on this session. Mismatch (daemon restarted,
    *  ring buffer is fresh) → fallback to cold path automatically. */
   sinceEpoch: z.string().optional(),
+  /** Brand-new-session fast path. The new-session screen sets this on
+   *  the FIRST subscribe of a session it just created (route-derived:
+   *  the `?new=1` param). It tells the daemon "no JSONL exists for this
+   *  session yet, and a create-path sendPrompt is concurrently spinning
+   *  up the runtime" — so the daemon serves the in-memory snapshot
+   *  SYNCHRONOUSLY and skips the (expensive + race-prone) JSONL scan.
+   *
+   *  Why it matters: the cold path's `getMessages` does a full
+   *  ~20-project-key fs scan for a not-yet-existent session. That await
+   *  yields, and the concurrent create-path `pushPrompt` advances the
+   *  runtime cursor past the synthesized `user_message` / `turn_started`
+   *  during the window — they then land in neither `settled` (empty
+   *  JSONL) nor the replay window, so the new session's first message
+   *  never renders. No await on this path → no interleaving window.
+   *
+   *  Only honored when `sinceCursor` is absent (first subscribe). A
+   *  reconnect carries a resume hint and takes the warm/cold path, so a
+   *  stale flag can never blank an existing transcript. */
+  isNew: z.boolean().optional(),
 });
 
 export const subscribeResponse = z.object({
