@@ -22,12 +22,18 @@ import {
 } from "react-native";
 import { SlashPanel } from "@/components/transcript/slash-panel";
 import { useContextUsage } from "@/hooks/use-context-usage";
+import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
+import { useDaemonClient } from "@/lib/daemon-client-context";
 import { useSessionTurnResult } from "@/lib/session-turn-result";
 import {
   sessionStateCollection,
   updateSessionModel,
 } from "@/lib/sessions-collection";
 import { Image } from "@/lib/styled";
+
+/** Stable no-op passthrough for the (theoretical) no-`onSend` case, so the
+ *  internal slash-handler's callback identity doesn't churn per render. */
+const NOOP_SEND = () => {};
 
 /**
  * Local-only id so the pill row can have stable React keys + a cheap
@@ -124,17 +130,22 @@ async function compressToAttachment(
  * Chat input bar — pill-shaped GlassView with optional attachment
  * pill row + text input + action row (plus | spacer | mic | send).
  *
- * Self-sourcing: pass `cliSessionId` and InputBar derives the model
- * picker / context meter / running state from that session's collections
- * (or holds a local draft model when `cliSessionId` is null — the
- * new-session screen). Parents drill no data props; the picked model
- * leaves via `onSend`'s `model` arg. See the prop docs below.
+ * Self-sourcing: pass `cliSessionId` and InputBar derives EVERYTHING it
+ * can from it — the model picker / context meter / running state (from the
+ * session's collections, or a local draft when `cliSessionId` is null =
+ * new-session), the slash-command context + interception (internal
+ * `useSlashCommandHandler`, context derived from cliSessionId presence),
+ * and interrupt (`daemonClient.interrupt(cliSessionId)`). The ONLY prop is
+ * `onSend` — the screen-specific "what does sending mean here" action
+ * (new-session: createSession + navigate; detail: optimistic sendPrompt),
+ * which InputBar can't own (routing / pre-create cwd are screen state).
+ * `onSend` receives only REAL sends — slash commands are intercepted
+ * internally and never reach it.
  *
  * The send button has three states:
- *   - `arrow.up` (active): user has text OR attached images, tap →
- *     onSend(text, images, model)
+ *   - `arrow.up` (active): user has text OR attached images, tap → onSend
  *   - `waveform` (idle):   empty composer, tap is a no-op (voice slot, V0.5+)
- *   - `stop.fill` (running): turn is in flight, tap → onInterrupt
+ *   - `stop.fill` (running): turn is in flight, tap → interrupt (internal)
  *
  * Attachment flow: `+` button opens a native attachment menu (Camera
  * / Photos via `@react-native-menu/menu` — NOT @expo/ui/community/menu,
@@ -153,45 +164,38 @@ async function compressToAttachment(
 export function InputBar({
   cliSessionId,
   onSend,
-  onInterrupt,
-  slashContext,
 }: {
   /** The session this composer drives, or `null` on the new-session
-   *  screen (no session exists yet). InputBar is self-sourcing:
+   *  screen (no session exists yet). The single source InputBar derives
+   *  everything from:
    *    - non-null → model + running state from the #17
    *      `sessionStateCollection` row, context meter from the
-   *      transcript-fed `sessionTurnResultCollection` (latestUsage). No
-   *      data props to drill.
-   *    - null → the picker holds a LOCAL draft model (seeded to
-   *      DEFAULT_MODEL); not running; no context meter. The draft pick
-   *      rides out on `onSend`'s `model` arg so the create flow can seed
-   *      the new session with it. */
+   *      transcript-fed `sessionTurnResultCollection` (latestUsage),
+   *      slash context = "in-session", interrupt = interrupt(cliSessionId).
+   *    - null → local draft model (seeded DEFAULT_MODEL); not running; no
+   *      context meter; slash context = "new-session"; no interrupt. The
+   *      draft pick rides out on `onSend`'s `model` arg. */
   cliSessionId: string | null;
-  /** Fired on tap-to-send. `images` carries the compressed base64
-   *  payloads ready for daemon's sendPrompt (local DraftAttachment ids
-   *  stripped); `model` is the current picker selection — the parent
-   *  forwards it into `createSession` (new-session) / `sendPrompt`
-   *  (resume seed). Send is gated by hasText OR images.length > 0 so an
-   *  images-only message is also valid (Claude vision accepts that).
+  /** Fired ONLY on a real (non-slash) send — slash commands are
+   *  intercepted internally and never reach here. `images` carries the
+   *  compressed base64 payloads (local DraftAttachment ids stripped);
+   *  `model` is the current picker selection — the parent forwards it into
+   *  `createSession` (new-session) / `sendPrompt` (resume seed). Send is
+   *  gated by hasText OR images.length > 0 so an images-only message is
+   *  valid (Claude vision accepts that).
    *
-   *  Return `false` to keep the input — used by slash-command rejection
-   *  paths (unknown command, wrong screen, invalid arg). Any other
-   *  return (void / true / Promise) clears the input as usual. */
+   *  This is the one prop InputBar can't self-source: "what sending means
+   *  here" is screen-specific orchestration (new-session: createSession +
+   *  router.replace to the new session, using the cwd picked on that
+   *  screen; detail: optimistic sendUserMessage). Return `false` is
+   *  unused by callers today but kept in the type for symmetry. */
   onSend?: (
     text: string,
     images: ImageAttachment[] | undefined,
     model: string,
   ) => boolean | void;
-  onInterrupt?: () => void;
-  /** Screen the InputBar is mounted in. Drives the slash-command
-   *  picker's visibility + filter. Omit to disable the picker entirely
-   *  (e.g. dev pages that don't want slash UX). The picker filters its
-   *  rows via `getCommandsForContext(slashContext)` and parents are
-   *  expected to also wrap onSend with the matching `useSlashCommand
-   *  Handler({ context: slashContext, ... })` — both pieces use the
-   *  same `@sidecodeapp/protocol` source of truth. */
-  slashContext?: CommandContext;
 }) {
+  const { client } = useDaemonClient();
   const [text, setText] = useState("");
   const [images, setImages] = useState<DraftAttachment[]>([]);
 
@@ -229,6 +233,25 @@ export function InputBar({
     if (cliSessionId) updateSessionModel({ cliSessionId, model: m });
     else setDraftModel(m);
   };
+
+  // ─── Slash-command interception (internal) ──────────────────────────
+  // Context is derived 1:1 from cliSessionId presence; the handler wraps
+  // `onSend` so slash commands (/clear, /model) are intercepted +
+  // dispatched here and never reach `onSend` (only real sends do). Tap-to-
+  // send calls `handleSend`, not `onSend` directly.
+  const slashContext: CommandContext = cliSessionId
+    ? "in-session"
+    : "new-session";
+  const handleSend = useSlashCommandHandler(
+    cliSessionId
+      ? {
+          context: "in-session",
+          sessionId: cliSessionId,
+          onPassthrough: onSend ?? NOOP_SEND,
+        }
+      : { context: "new-session", onPassthrough: onSend ?? NOOP_SEND },
+  );
+
   // Tracks the TextInput's text cursor / selection range. Powers the
   // cursor-aware slash trigger: panel opens only when the segment from
   // start-of-text up to the cursor starts with `/` and has no space.
@@ -245,19 +268,18 @@ export function InputBar({
   // need to memoize.
   const beforeCursor = text.slice(0, textCursor.start);
   const isCommandMode =
-    slashContext !== undefined &&
-    beforeCursor.startsWith("/") &&
-    !beforeCursor.includes(" ");
+    beforeCursor.startsWith("/") && !beforeCursor.includes(" ");
   const commandPrefix = isCommandMode ? beforeCursor.slice(1) : "";
   // Filter the context's allowed commands by the live prefix. Memoize
   // since the filter result drives a list render — stable identity
   // helps the panel skip work when only `text` after a space changes.
-  const filteredCommands = useMemo(() => {
-    if (slashContext === undefined) return [];
-    return getCommandsForContext(slashContext).filter((c) =>
-      c.name.startsWith(commandPrefix),
-    );
-  }, [slashContext, commandPrefix]);
+  const filteredCommands = useMemo(
+    () =>
+      getCommandsForContext(slashContext).filter((c) =>
+        c.name.startsWith(commandPrefix),
+      ),
+    [slashContext, commandPrefix],
+  );
 
   // IDE-style replace on pick: swap ONLY the command-name segment (from
   // `/` through the first space, or to end of text if no space), keep
@@ -338,7 +360,13 @@ export function InputBar({
 
   const handlePress = () => {
     if (isRunning) {
-      onInterrupt?.();
+      // Interrupt the in-flight turn (only a session that exists can be
+      // running). Best-effort — interrupt is idempotent daemon-side.
+      if (cliSessionId) {
+        void client.interrupt(cliSessionId).catch((err) => {
+          console.error("interrupt failed", err);
+        });
+      }
       return;
     }
     if (!canSend) return;
@@ -348,17 +376,15 @@ export function InputBar({
       images.length > 0
         ? images.map(({ data, mediaType }) => ({ data, mediaType }))
         : undefined;
-    // `model` rides out so the parent can seed createSession (new-session)
-    // / sendPrompt (resume respawn-inherit) — InputBar owns the picker
-    // selection now, so this is how it reaches the send call. Mid-session
-    // model APPLY is still owned by `updateSessionModel` at pick time
-    // (onPickModel); this arg is only the seed value.
-    // `onSend` may return `false` to signal "rejected, keep input"
-    // (used by `useSlashCommandHandler` when a slash command isn't
-    // whitelisted, isn't available on this screen, or has an invalid
-    // arg — user typically wants to fix a typo rather than retype).
-    // Anything else (void / true / Promise) = "consumed, clear input".
-    const result = onSend?.(text, payload, model);
+    // `model` rides out so `onSend` can seed createSession (new-session)
+    // / sendPrompt (resume respawn-inherit). Mid-session model APPLY is
+    // owned by `updateSessionModel` at pick time (onPickModel); this arg
+    // is only the seed value.
+    // `handleSend` (internal slash pipeline) returns `false` to signal
+    // "rejected, keep input" (slash command not whitelisted / wrong
+    // screen / invalid arg). Anything else = "consumed, clear input".
+    // Real (non-slash) sends pass through to `onSend`.
+    const result = handleSend(text, payload, model);
     if (result === false) return;
     setText("");
     setImages([]);

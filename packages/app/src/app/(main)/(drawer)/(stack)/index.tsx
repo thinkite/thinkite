@@ -12,7 +12,6 @@ import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
-import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
 import { createSession } from "@/lib/sessions-collection";
 
 /**
@@ -113,11 +112,6 @@ export default function NewSessionScreen() {
     [cwd, setLastUsedCwd],
   );
 
-  const handleSend = useSlashCommandHandler({
-    context: "new-session",
-    onPassthrough: rawSend,
-  });
-
   const openDrawer = useCallback(() => {
     navigation.dispatch(DrawerActions.openDrawer());
   }, [navigation]);
@@ -185,11 +179,7 @@ export default function NewSessionScreen() {
               onPress={openCwdPicker}
               showChanges={false}
             />
-            <InputBar
-              cliSessionId={null}
-              onSend={handleSend}
-              slashContext="new-session"
-            />
+            <InputBar cliSessionId={null} onSend={rawSend} />
           </View>
         </KeyboardAvoidingView>
       </View>

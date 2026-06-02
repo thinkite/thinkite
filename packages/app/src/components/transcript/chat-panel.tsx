@@ -19,8 +19,6 @@ import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
 import { TextBlock } from "@/components/transcript/text-block";
 import { ToolBlock } from "@/components/transcript/tool-block";
-import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
-import { useDaemonClient } from "@/lib/daemon-client-context";
 import type { RenderBlock } from "@/lib/transcript-blocks";
 import { sendUserMessage } from "@/lib/transcript-collection-factory";
 
@@ -94,7 +92,6 @@ type ChatPanelProps = {
 export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
-  const { client } = useDaemonClient();
   const listRef = useRef<LegendListRef>(null);
   const composerRef = useRef<View>(null);
   const isDark = useColorScheme() === "dark";
@@ -169,10 +166,10 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
     [reportInset],
   );
 
-  // Raw send — invoked for non-slash text AND for whitelisted
-  // passthrough commands (/init, /review, /compact). Intercept-handling
-  // commands (/clear, /model) never reach here — `useSlashCommandHandler`
-  // dispatches them locally instead. See the hook's file header.
+  // The "real send" handed to InputBar as `onSend`. InputBar intercepts
+  // slash commands internally (/clear, /model) — only non-slash text +
+  // whitelisted passthrough commands (/init, /review, /compact) reach
+  // here. Interrupt is also owned by InputBar now (it has cliSessionId).
   const rawSend = useCallback(
     (text: string, images: ImageAttachment[] | undefined, model: string) => {
       // Optimistic in-session send: `sendUserMessage` inserts the bubble
@@ -199,18 +196,6 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
     },
     [cliSessionId, cwd],
   );
-
-  const onSend = useSlashCommandHandler({
-    context: "in-session",
-    sessionId: cliSessionId,
-    onPassthrough: rawSend,
-  });
-
-  const onInterrupt = useCallback(() => {
-    void client.interrupt(cliSessionId).catch((err) => {
-      console.error("interrupt failed", err);
-    });
-  }, [client, cliSessionId]);
 
   // No first-send-after-create effect here anymore: the new-session
   // screen fires the first sendPrompt itself via `createSession` (the
@@ -351,12 +336,7 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
       >
         <View ref={composerRef} collapsable={false} onLayout={onComposerLayout}>
           <GitStatusBar cwd={cwd} />
-          <InputBar
-            cliSessionId={cliSessionId}
-            onSend={onSend}
-            onInterrupt={onInterrupt}
-            slashContext="in-session"
-          />
+          <InputBar cliSessionId={cliSessionId} onSend={rawSend} />
         </View>
       </KeyboardStickyView>
     </>
