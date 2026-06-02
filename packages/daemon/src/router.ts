@@ -13,7 +13,6 @@ import {
   SLASH_COMMANDS,
 } from "@sidecodeapp/protocol";
 import type { CommandHandler } from "./command.js";
-import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
 import type { GitWatcherRegistry } from "./git-watch.js";
 import {
   ensureSessionLoop,
@@ -24,7 +23,6 @@ import type { SessionRuntimeManager } from "./runtime/session-runtime-manager.js
 import type { SidecodeSessionMetadata } from "./sidecode-sessions.js";
 
 export interface RouterDeps {
-  continueOnDesktop: (target: ContinueOnDesktopTarget) => Promise<void>;
   /**
    * List sidecode-created sessions from `<home>/sessions/local_*.json`.
    * With `{ cwd }` filter to that project; with `{}` return all. Sync
@@ -177,27 +175,6 @@ function getOrCreateGitSubs(ctx: { state: Map<string, unknown> }): GitSubsMap {
 export function createCommandHandler(deps: RouterDeps): CommandHandler {
   return async (cmd, ctx) => {
     switch (cmd.type) {
-      case "continueOnDesktop": {
-        try {
-          await deps.continueOnDesktop({
-            cliSessionId: cmd.cliSessionId,
-            desktopLocalSessionId: cmd.desktopLocalSessionId,
-          });
-          ctx.send({
-            type: "continueOnDesktop.response",
-            requestId: cmd.requestId,
-            ok: true,
-          });
-        } catch (err) {
-          ctx.send({
-            type: "continueOnDesktop.response",
-            requestId: cmd.requestId,
-            ok: false,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-        return;
-      }
       case "subscribeSessions": {
         // #17 daemon-wide SessionState fan-out. Single subscription per
         // peer (idempotent re-subscribe drops the prior fanout). The

@@ -3,8 +3,6 @@ import {
   approveCommand,
   clientFrame,
   command,
-  continueOnDesktopCommand,
-  continueOnDesktopResponse,
   daemonFrame,
   decodePairOfferPayload,
   deleteSessionCommand,
@@ -373,71 +371,6 @@ describe("request/response correlation", () => {
         requestId: "r",
       }).requestId,
     );
-  });
-
-  it("continueOnDesktop minimal command + ok response", () => {
-    const req = continueOnDesktopCommand.parse({
-      type: "continueOnDesktop",
-      requestId: "r1",
-      cliSessionId: "0a264f0b-d5dc-41a0-b6a9-a2ccc978ab50",
-    });
-    expect(req.cliSessionId).toBe("0a264f0b-d5dc-41a0-b6a9-a2ccc978ab50");
-    expect(req.desktopLocalSessionId).toBeUndefined();
-
-    const ok = continueOnDesktopResponse.parse({
-      type: "continueOnDesktop.response",
-      requestId: "r1",
-      ok: true,
-    });
-    expect(ok.ok).toBe(true);
-    expect(ok.error).toBeUndefined();
-  });
-
-  it("continueOnDesktop accepts optional desktopLocalSessionId", () => {
-    const req = continueOnDesktopCommand.parse({
-      type: "continueOnDesktop",
-      requestId: "r2",
-      cliSessionId: "abc",
-      desktopLocalSessionId: "local_119c4694-f67a-4e16-b99c-140567c682fd",
-    });
-    expect(req.desktopLocalSessionId).toBe(
-      "local_119c4694-f67a-4e16-b99c-140567c682fd",
-    );
-  });
-
-  it("continueOnDesktop response carries error string when ok=false", () => {
-    const res = continueOnDesktopResponse.parse({
-      type: "continueOnDesktop.response",
-      requestId: "r3",
-      ok: false,
-      error: "open exited 1",
-    });
-    expect(res.ok).toBe(false);
-    expect(res.error).toBe("open exited 1");
-  });
-
-  it("continueOnDesktop is included in command + clientFrame + daemonFrame unions", () => {
-    expect(
-      command.parse({
-        type: "continueOnDesktop",
-        requestId: "r",
-        cliSessionId: "abc",
-      }).type,
-    ).toBe("continueOnDesktop");
-    expect(
-      clientFrame.parse({
-        type: "continueOnDesktop",
-        requestId: "r",
-        cliSessionId: "abc",
-      }).type,
-    ).toBe("continueOnDesktop");
-    expect(
-      daemonFrame.parse({
-        type: "continueOnDesktop.response",
-        requestId: "r",
-        ok: true,
-      }).type,
-    ).toBe("continueOnDesktop.response");
   });
 });
 

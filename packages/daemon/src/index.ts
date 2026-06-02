@@ -11,7 +11,6 @@ import {
   summarizeReattach,
 } from "./bridge/startup-reattach.js";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
-import { continueOnDesktop } from "./desktop/continue-on-desktop.js";
 import { GitWatcherRegistry } from "./git-watch.js";
 import { resolveSidecodeHome } from "./home.js";
 import { loadOrCreateIdentity } from "./identity.js";
@@ -233,7 +232,6 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   const epoch = randomUUID();
 
   const commandHandler = createCommandHandler({
-    continueOnDesktop,
     getMessages: async (cliSessionId, cwd) => {
       // `cwd` is a hint only — when undefined we let the SDK scan every
       // project key. Fork sessions in worktrees may have their JSONL at

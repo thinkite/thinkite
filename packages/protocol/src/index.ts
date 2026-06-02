@@ -1016,29 +1016,6 @@ export const deleteSessionResponse = z.object({
   requestId: z.string(),
 });
 
-/**
- * Open a session in Claude Desktop via the `claude://resume` deep link.
- *
- * V0 callers pass only `cliSessionId` (sidecode-created sessions whose Desktop
- * mirror does not yet exist). `desktopLocalSessionId` is reserved for V0.5+
- * "navigate to existing Desktop session" — see project_continue_on_desktop.md
- * for the dedup-via-prefix-strip rationale.
- */
-export const continueOnDesktopCommand = z.object({
-  type: z.literal("continueOnDesktop"),
-  requestId: z.string(),
-  cliSessionId: z.string(),
-  desktopLocalSessionId: z.string().optional(),
-});
-
-export const continueOnDesktopResponse = z.object({
-  type: z.literal("continueOnDesktop.response"),
-  requestId: z.string(),
-  ok: z.boolean(),
-  /** Human-readable error when ok=false (e.g. `open` exited non-zero, Desktop missing). */
-  error: z.string().optional(),
-});
-
 // ─── Git status subscription (workspace info bar) ─────────────────────────
 //
 // Push-based per-cwd live status. Client opens a subscription on a cwd
@@ -1258,7 +1235,6 @@ export const command = z.discriminatedUnion("type", [
   approveCommand,
   stopTaskCommand,
   deleteSessionCommand,
-  continueOnDesktopCommand,
   subscribeGitStatusCommand,
   unsubscribeGitStatusCommand,
   listDirectoryCommand,
@@ -1275,7 +1251,6 @@ export const response = z.discriminatedUnion("type", [
   setSessionSelectionResponse,
   interruptResponse,
   deleteSessionResponse,
-  continueOnDesktopResponse,
   subscribeGitStatusResponse,
   unsubscribeGitStatusResponse,
   listDirectoryResponse,
@@ -1302,7 +1277,6 @@ export const clientFrame = z.discriminatedUnion("type", [
   approveCommand,
   stopTaskCommand,
   deleteSessionCommand,
-  continueOnDesktopCommand,
   subscribeGitStatusCommand,
   unsubscribeGitStatusCommand,
   listDirectoryCommand,
@@ -1330,7 +1304,6 @@ export const daemonFrame = z.discriminatedUnion("type", [
   interruptResponse,
   eventFrame,
   deleteSessionResponse,
-  continueOnDesktopResponse,
   subscribeGitStatusResponse,
   unsubscribeGitStatusResponse,
   gitStatusEvent,
