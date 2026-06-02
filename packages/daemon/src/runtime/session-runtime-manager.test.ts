@@ -517,4 +517,86 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
     // No disk file to assert against — just confirms the manager doesn't
     // crash trying to read/write metadata that doesn't apply.
   });
+
+  // ─── Race: subscribe-creates-runtime BEFORE the create lands meta ────
+  //
+  // Production repro for "iOS picked Sonnet → detail screen reverts to
+  // default Opus". The transcript `subscribe` RPC calls getOrCreate and
+  // builds the runtime (currentModel=null, no meta yet) WHILE sendPrompt's
+  // create path is still awaiting its hasSession check. Then
+  // createSessionFromPrompt lands meta.model=Sonnet, and the first
+  // setActivity("running") edge fires notifyStateChanged — which used to
+  // see currentModel(null) !== prev.model(Sonnet) and REGRESS the
+  // persisted model to undefined. The createSession race-guard mirrors
+  // meta.model onto the pre-existing runtime so the diff is Sonnet===Sonnet.
+
+  it("createSession mirrors model onto a runtime that getOrCreate built first (race guard)", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    // 1. subscribe wins: runtime exists with no model (no meta yet).
+    const r = m.getOrCreate("race-1");
+    expect(r.currentModel).toBeNull();
+    // 2. create lands the picked model.
+    m.createSessionFromPrompt({
+      cliSessionId: "race-1",
+      cwd: "/p",
+      firstPrompt: "你是什么模型",
+      model: "claude-sonnet-4-6",
+    });
+    // Guard fired: the pre-existing runtime's currentModel now mirrors meta.
+    expect(r.currentModel).toBe("claude-sonnet-4-6");
+  });
+
+  it("activity edge after the race does NOT regress the persisted model", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    const { listener, onChange } = makeListener();
+    m.subscribeSessionStates(listener);
+
+    const r = m.getOrCreate("race-2"); // subscribe wins
+    m.createSessionFromPrompt({
+      cliSessionId: "race-2",
+      cwd: "/p",
+      firstPrompt: "hi",
+      model: "claude-sonnet-4-6",
+    });
+    onChange.mockClear(); // ignore the create fan-out; focus on the edge
+
+    r.setActivity("running"); // the edge that used to wipe the model
+
+    // Disk metadata is intact — NOT regressed to undefined.
+    expect(m.getMetadata("race-2")?.model).toBe("claude-sonnet-4-6");
+    expect(readSidecodeSession(home, "race-2")?.model).toBe(
+      "claude-sonnet-4-6",
+    );
+    // The fan-out push carries the picked model, not null.
+    expect(onChange).toHaveBeenCalledOnce();
+    const state = onChange.mock.calls[0]?.[1] as SessionState;
+    expect(state.activity).toBe("running");
+    expect(state.model).toBe("claude-sonnet-4-6");
+  });
+
+  it("non-race order (create before getOrCreate) still seeds + holds the model", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    const { listener, onChange } = makeListener();
+    m.subscribeSessionStates(listener);
+
+    // create lands meta first, THEN getOrCreate (the normal sendPrompt
+    // order when no subscribe raced ahead).
+    m.createSessionFromPrompt({
+      cliSessionId: "ok-1",
+      cwd: "/p",
+      firstPrompt: "hi",
+      model: "claude-sonnet-4-6",
+    });
+    const r = m.getOrCreate("ok-1");
+    expect(r.currentModel).toBe("claude-sonnet-4-6"); // seeded from meta
+    onChange.mockClear();
+
+    r.setActivity("running");
+    expect(m.getMetadata("ok-1")?.model).toBe("claude-sonnet-4-6");
+    const state = onChange.mock.calls[0]?.[1] as SessionState;
+    expect(state.model).toBe("claude-sonnet-4-6");
+  });
 });

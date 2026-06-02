@@ -101,13 +101,6 @@ export default function NewSessionScreen() {
       // to this same cwd even before the daemon records the activity.
       setLastUsedCwd.mutate(cwd);
       const newId = Crypto.randomUUID();
-      // [sidecode/model-bug] LOG A — what model is `selection` at the
-      // moment rawSend fires? If undefined, the picker UI is out of
-      // sync with state.
-      console.log("[sidecode/model-bug] A rawSend", {
-        sessionId: newId,
-        selectionModel: selection.model,
-      });
       // Optimistically create the session: `createSession`'s onMutate
       // inserts the row synchronously (so the sidebar + detail screen show
       // it — with a title — the instant we navigate), and its mutationFn

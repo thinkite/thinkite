@@ -567,16 +567,6 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         return;
       }
       case "sendPrompt": {
-        // [sidecode/model-bug] LOG F — what `cmd.model` did the wire
-        // actually carry from iOS? Correlate against LOG A: if iOS
-        // logged Sonnet but daemon sees null/undefined, the wire
-        // serialization dropped it (zod schema or transport chunking).
-        console.log("[sidecode/model-bug] F sendPrompt cmd", {
-          sid: cmd.sessionId,
-          cmdModel: cmd.model,
-          hasCwd: !!cmd.cwd,
-          textPreview: cmd.text.slice(0, 30),
-        });
         // Reject during shutdown: any new query we spawn now can't be
         // drained cleanly — manager.shutdown() iterates a snapshot.
         if (deps.isShuttingDown()) {

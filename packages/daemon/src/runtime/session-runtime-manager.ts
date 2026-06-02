@@ -175,6 +175,23 @@ export class SessionRuntimeManager<T> {
    */
   createSession(meta: SidecodeSessionMetadata): void {
     this.states.set(meta.cliSessionId, meta);
+    // Race guard: a transcript `subscribe` RPC can call getOrCreate and
+    // build the runtime BEFORE this create lands the metadata (the
+    // detail screen subscribes the instant the new-session screen
+    // navigates, while sendPrompt's create path is still awaiting its
+    // hasSession check). In that order getOrCreate seeded the runtime's
+    // `currentModel` to null (no meta existed yet). If we don't mirror
+    // the freshly-built model onto that pre-existing runtime now, the
+    // first setActivity("running") edge fires notifyStateChanged with
+    // `currentModel(null) !== prev.model(picked)` and REGRESSES the
+    // persisted model back to undefined — the iOS picker silently
+    // reverts to the default. Direct field assignment (not setModel) so
+    // this seeding doesn't emit a spurious change event; the
+    // fanoutStateChanged below carries the correct model out.
+    const runtime = this.runtimes.get(meta.cliSessionId);
+    if (runtime !== undefined && meta.model !== undefined) {
+      runtime.currentModel = meta.model;
+    }
     if (this.home !== null) writeSidecodeSession(this.home, meta);
     this.fanoutStateChanged(meta.cliSessionId);
   }
