@@ -12,6 +12,7 @@ import {
   parseSlashCommand,
   SLASH_COMMANDS,
 } from "@sidecodeapp/protocol";
+import type { BridgeService } from "./bridge/bridge-service.js";
 import type { CommandHandler } from "./command.js";
 import type { GitWatcherRegistry } from "./git-watch.js";
 import {
@@ -67,6 +68,16 @@ export interface RouterDeps {
    * (created in daemon.start, drained on shutdown).
    */
   runtimeManager: SessionRuntimeManager<EventDelta>;
+  /**
+   * Daemon CCR bridge owner. Optional: when absent (no CCR gate / tests),
+   * the `bridgeSession` / `unbridgeSession` commands reply `unsupported` and
+   * `sendPrompt`'s create-bridged path silently falls back to a pure session.
+   * When present, the router drives the three CCR transitions through it:
+   *   - create-bridged: `attach` BEFORE the first prompt (sendPrompt + bridged)
+   *   - upgrade:        idle-gated `upgrade` (attach + history backfill)
+   *   - downgrade:      `unbridge` (detach + best-effort cloud delete)
+   */
+  bridgeService?: BridgeService;
   /**
    * Existence check for a CLI session. Wraps SDK's `getSessionInfo` —
    * undefined ⇒ session JSONL not on disk yet ⇒ sendPrompt's "create"
@@ -637,6 +648,32 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           }
           const runtime = deps.runtimeManager.getOrCreate(cmd.sessionId);
 
+          // Create-bridged: attach the CCR bridge BEFORE the first turn runs,
+          // so turn 1 streams live to claude.ai (no backfill, no seam — the
+          // session has no history yet). Create path only; ignored on resume
+          // (use the `bridgeSession` command to upgrade an existing session).
+          // Best-effort: an attach failure (CCR gate / token / network)
+          // degrades to a pure session rather than failing the send.
+          if (
+            mode === "create" &&
+            cmd.bridged === true &&
+            deps.bridgeService !== undefined
+          ) {
+            try {
+              await deps.bridgeService.attach(cmd.sessionId, runtime, {
+                title: cmd.text,
+                cwd: cmd.cwd as string,
+                ...(cmd.model !== undefined ? { model: cmd.model } : {}),
+              });
+            } catch (err) {
+              console.warn(
+                `[sidecode] create-bridged attach failed for ${cmd.sessionId}; continuing as pure session: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          }
+
           // Idempotent — second sendPrompt for same session reuses the
           // existing loop. mode/cwd/model are only consulted on the
           // FIRST call (when ensureSessionLoop actually spawns the SDK
@@ -729,6 +766,110 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           }
           ctx.send({
             type: "setSessionSelection.response",
+            requestId: cmd.requestId,
+          });
+        } catch (err) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
+      case "bridgeSession": {
+        // CCR upgrade: pure → bridged for an EXISTING session.
+        if (deps.isShuttingDown()) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: "daemon is shutting down",
+          });
+          return;
+        }
+        if (deps.bridgeService === undefined) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "unsupported",
+            message: "CCR bridge is not available on this daemon",
+          });
+          return;
+        }
+        const meta = deps.runtimeManager.getMetadata(cmd.sessionId);
+        if (meta === undefined) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "session_not_found",
+            message: `no sidecode session ${cmd.sessionId}`,
+          });
+          return;
+        }
+        // Lazy runtime shell (no query spawned) — the bridge's drive target +
+        // the idle-gate's activity source. getOrCreate returns the canonical
+        // running runtime when one already exists.
+        const upgradeRuntime = deps.runtimeManager.getOrCreate(cmd.sessionId);
+        // V0 option A: upgrade ONLY at a turn boundary. Reject while running
+        // (iOS also disables the toggle mid-turn — this is the backstop).
+        if (upgradeRuntime.activity === "running") {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "unsupported",
+            message:
+              "cannot upgrade to bridged while a turn is running; retry when idle",
+          });
+          return;
+        }
+        try {
+          await deps.bridgeService.upgrade(cmd.sessionId, upgradeRuntime, {
+            title: meta.title,
+            cwd: meta.cwd,
+            ...(meta.model != null ? { model: meta.model } : {}),
+          });
+          ctx.send({
+            type: "bridgeSession.response",
+            requestId: cmd.requestId,
+          });
+        } catch (err) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
+      case "unbridgeSession": {
+        // CCR downgrade ("make private"): drop the cloud mirror, keep pure.
+        if (deps.isShuttingDown()) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: "daemon is shutting down",
+          });
+          return;
+        }
+        if (deps.bridgeService === undefined) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "unsupported",
+            message: "CCR bridge is not available on this daemon",
+          });
+          return;
+        }
+        try {
+          // Idempotent: unbridge of a not-bridged session is a no-op success.
+          // BridgeService sources the runtime from its own AttachedSession.
+          await deps.bridgeService.unbridge(cmd.sessionId);
+          ctx.send({
+            type: "unbridgeSession.response",
             requestId: cmd.requestId,
           });
         } catch (err) {

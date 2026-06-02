@@ -280,6 +280,11 @@ export const sessionState = z.object({
   isArchived: z.boolean(),
   /** V0 owned sessions are always `bypassPermissions`. */
   permissionMode: z.enum(["bypassPermissions", "default"]),
+  /** True when this session has an active CCR bridge (visible + drivable from
+   *  claude.ai). Daemon-derived from BridgeService worker-state presence; iOS
+   *  shows the bridged badge + the upgrade/downgrade toggle. Optional on the
+   *  wire so a client's optimistic insert can omit it (undefined = pure). */
+  bridged: z.boolean().optional(),
 });
 export type SessionState = z.infer<typeof sessionState>;
 
@@ -951,6 +956,11 @@ export const sendPromptCommand = z.object({
    *  in on the synthesized append's buffer replay), where the daemon falls
    *  back to a fresh uuid. */
   userMessageUuid: z.string().optional(),
+  /** Create-bridged: when the FIRST send of a NEW session sets this, the
+   *  daemon attaches a CCR bridge BEFORE running the first turn — so the whole
+   *  session mirrors live to claude.ai from turn 1 (no backfill, no seam).
+   *  Ignored for an existing session (use `bridgeSession` to upgrade one). */
+  bridged: z.boolean().optional(),
 });
 
 export const sendPromptResponse = z.object({
@@ -995,6 +1005,44 @@ export const interruptCommand = z.object({
 
 export const interruptResponse = z.object({
   type: z.literal("interrupt.response"),
+  requestId: z.string(),
+});
+
+/**
+ * CCR upgrade — bridge an EXISTING pure session so it's visible + drivable
+ * from claude.ai. Daemon does a fresh attach + history backfill (M3.3).
+ *
+ * V0 gate (option A): the daemon REJECTS this with `error{code:"unsupported"}`
+ * if the session is currently `running` — upgrade only at a turn boundary
+ * (idle). iOS should also disable the toggle while running; the reject is the
+ * defensive backstop. Other failures (attach failed / CCR gate / token) reply
+ * `error{code:"internal"}`. iOS rolls back its optimistic bridged flag on error.
+ */
+export const bridgeSessionCommand = z.object({
+  type: z.literal("bridgeSession"),
+  requestId: z.string(),
+  sessionId: z.string(),
+});
+
+export const bridgeSessionResponse = z.object({
+  type: z.literal("bridgeSession.response"),
+  requestId: z.string(),
+});
+
+/**
+ * CCR downgrade ("make private") — drop a bridged session's cloud mirror. The
+ * daemon detaches locally (the session continues as a pure WebRTC session) and
+ * best-effort hard-deletes the cse_ on claude.ai. Idempotent: a session that
+ * isn't bridged is a no-op success.
+ */
+export const unbridgeSessionCommand = z.object({
+  type: z.literal("unbridgeSession"),
+  requestId: z.string(),
+  sessionId: z.string(),
+});
+
+export const unbridgeSessionResponse = z.object({
+  type: z.literal("unbridgeSession.response"),
   requestId: z.string(),
 });
 
@@ -1258,6 +1306,8 @@ export const command = z.discriminatedUnion("type", [
   unsubscribeGitStatusCommand,
   listDirectoryCommand,
   getFilesystemRootsCommand,
+  bridgeSessionCommand,
+  unbridgeSessionCommand,
   subscribeSessionsCommand,
 ]);
 
@@ -1274,6 +1324,8 @@ export const response = z.discriminatedUnion("type", [
   unsubscribeGitStatusResponse,
   listDirectoryResponse,
   getFilesystemRootsResponse,
+  bridgeSessionResponse,
+  unbridgeSessionResponse,
   subscribeSessionsResponse,
 ]);
 
@@ -1300,6 +1352,8 @@ export const clientFrame = z.discriminatedUnion("type", [
   unsubscribeGitStatusCommand,
   listDirectoryCommand,
   getFilesystemRootsCommand,
+  bridgeSessionCommand,
+  unbridgeSessionCommand,
   subscribeSessionsCommand,
 ]);
 
@@ -1321,6 +1375,8 @@ export const daemonFrame = z.discriminatedUnion("type", [
   sendPromptResponse,
   setSessionSelectionResponse,
   interruptResponse,
+  bridgeSessionResponse,
+  unbridgeSessionResponse,
   eventFrame,
   deleteSessionResponse,
   subscribeGitStatusResponse,

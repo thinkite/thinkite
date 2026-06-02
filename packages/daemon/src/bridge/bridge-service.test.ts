@@ -1852,7 +1852,7 @@ describe("unbridge (downgrade — detach then cloud delete)", () => {
     await service.attach("s1", runtime, { title: "t", cwd: "/w" });
     expect(runtime.bridge).toBe(transport);
 
-    await service.unbridge("s1", runtime);
+    await service.unbridge("s1");
 
     expect(transport.closeCalls).toBe(1); // handle closed (detach)
     expect(runtime.bridge).toBe(null); // slot cleared
@@ -1876,7 +1876,7 @@ describe("unbridge (downgrade — detach then cloud delete)", () => {
       ...NO_TIMERS,
     });
 
-    await service.unbridge("nope", { bridge: null });
+    await service.unbridge("nope");
 
     expect(deleteCse).not.toHaveBeenCalled();
   });
@@ -1896,7 +1896,7 @@ describe("unbridge (downgrade — detach then cloud delete)", () => {
     });
 
     await service.attach("s1", runtime, { title: "t", cwd: "/w" });
-    await expect(service.unbridge("s1", runtime)).resolves.toBeUndefined();
+    await expect(service.unbridge("s1")).resolves.toBeUndefined();
 
     expect(transport.closeCalls).toBe(1); // detached regardless
     expect(clearWorker).toHaveBeenCalledWith("/h", "s1");
@@ -1917,7 +1917,7 @@ describe("unbridge (downgrade — detach then cloud delete)", () => {
     });
 
     await service.attach("s1", runtime, { title: "t", cwd: "/w" });
-    await service.unbridge("s1", runtime);
+    await service.unbridge("s1");
 
     expect(transport.closeCalls).toBe(1); // detached
     expect(deleteCse).not.toHaveBeenCalled(); // skipped — no org uuid

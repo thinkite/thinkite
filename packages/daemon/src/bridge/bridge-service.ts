@@ -1035,14 +1035,14 @@ export class BridgeService {
    * claude.ai the user can delete there. Never throws, never blocks the local
    * downgrade on the cloud call.
    */
-  async unbridge(
-    sessionId: string,
-    runtime: BridgeAttachableRuntime,
-  ): Promise<void> {
-    const cseSessionId = this.sessions.get(sessionId)?.transport.cseSessionId;
+  async unbridge(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    const cseSessionId = session?.transport.cseSessionId;
     // Local teardown first — closes the handle (stops heartbeats so no 4090
-    // onClose → no reconnect), forgets the session, clears worker state.
-    this.detach(sessionId, runtime);
+    // onClose → no reconnect), forgets the session, clears worker state. Uses
+    // the AttachedSession's OWN runtime (the one the bridge is wired to), so
+    // the caller doesn't have to thread the right runtime through.
+    if (session !== undefined) this.detach(sessionId, session.runtime);
     if (cseSessionId === undefined) return;
     // Best-effort cloud delete of the now-orphaned cse_.
     try {

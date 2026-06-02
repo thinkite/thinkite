@@ -2003,3 +2003,214 @@ describe("createCommandHandler — subscribeSessions (#17)", () => {
     expect(newFrames).toHaveLength(1);
   });
 });
+
+// ─── CCR upgrade / downgrade (bridgeSession / unbridgeSession / create-bridged) ──
+
+function fakeBridge() {
+  return {
+    attach: vi.fn(async () => ({})),
+    upgrade: vi.fn(async () => ({})),
+    unbridge: vi.fn(async () => {}),
+  };
+}
+type BridgeDep = NonNullable<
+  Parameters<typeof createCommandHandler>[0]["bridgeService"]
+>;
+const asBridge = (b: ReturnType<typeof fakeBridge>): BridgeDep =>
+  b as unknown as BridgeDep;
+
+describe("createCommandHandler — bridgeSession (CCR upgrade)", () => {
+  it("idle session → calls bridgeService.upgrade with the session's metadata + replies response", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    runtimeManager.createSessionFromPrompt({
+      cliSessionId: "s1",
+      cwd: "/w",
+      firstPrompt: "hello there",
+      model: "claude-opus-4-7",
+    });
+    const bridge = fakeBridge();
+    const handler = createCommandHandler(
+      makeDeps({ runtimeManager, bridgeService: asBridge(bridge) }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "bridgeSession",
+        requestId: "br-1",
+        sessionId: "s1",
+      } satisfies Command,
+      ctx,
+    );
+    expect(bridge.upgrade).toHaveBeenCalledWith(
+      "s1",
+      expect.anything(),
+      expect.objectContaining({ cwd: "/w", model: "claude-opus-4-7" }),
+    );
+    expect(sent.at(-1)).toEqual({
+      type: "bridgeSession.response",
+      requestId: "br-1",
+    });
+  });
+
+  it("rejects (unsupported) while a turn is running — does NOT call upgrade", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    runtimeManager.createSessionFromPrompt({
+      cliSessionId: "s1",
+      cwd: "/w",
+      firstPrompt: "hi",
+    });
+    runtimeManager.getOrCreate("s1").setActivity("running");
+    const bridge = fakeBridge();
+    const handler = createCommandHandler(
+      makeDeps({ runtimeManager, bridgeService: asBridge(bridge) }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "bridgeSession",
+        requestId: "br-2",
+        sessionId: "s1",
+      } satisfies Command,
+      ctx,
+    );
+    expect(bridge.upgrade).not.toHaveBeenCalled();
+    expect(sent.at(-1)).toMatchObject({ type: "error", code: "unsupported" });
+  });
+
+  it("replies unsupported when the daemon has no bridgeService", async () => {
+    const handler = createCommandHandler(makeDeps()); // no bridgeService
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "bridgeSession",
+        requestId: "br-3",
+        sessionId: "s1",
+      } satisfies Command,
+      ctx,
+    );
+    expect(sent.at(-1)).toMatchObject({ type: "error", code: "unsupported" });
+  });
+
+  it("replies session_not_found when the session is unknown", async () => {
+    const bridge = fakeBridge();
+    const handler = createCommandHandler(
+      makeDeps({ bridgeService: asBridge(bridge) }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "bridgeSession",
+        requestId: "br-4",
+        sessionId: "ghost",
+      } satisfies Command,
+      ctx,
+    );
+    expect(bridge.upgrade).not.toHaveBeenCalled();
+    expect(sent.at(-1)).toMatchObject({
+      type: "error",
+      code: "session_not_found",
+    });
+  });
+});
+
+describe("createCommandHandler — unbridgeSession (CCR downgrade)", () => {
+  it("calls bridgeService.unbridge + replies response", async () => {
+    const bridge = fakeBridge();
+    const handler = createCommandHandler(
+      makeDeps({ bridgeService: asBridge(bridge) }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "unbridgeSession",
+        requestId: "un-1",
+        sessionId: "s1",
+      } satisfies Command,
+      ctx,
+    );
+    expect(bridge.unbridge).toHaveBeenCalledWith("s1");
+    expect(sent.at(-1)).toEqual({
+      type: "unbridgeSession.response",
+      requestId: "un-1",
+    });
+  });
+
+  it("replies unsupported when the daemon has no bridgeService", async () => {
+    const handler = createCommandHandler(makeDeps());
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "unbridgeSession",
+        requestId: "un-2",
+        sessionId: "s1",
+      } satisfies Command,
+      ctx,
+    );
+    expect(sent.at(-1)).toMatchObject({ type: "error", code: "unsupported" });
+  });
+});
+
+describe("createCommandHandler — create-bridged (sendPrompt + bridged)", () => {
+  it("create path with bridged:true → attaches the bridge before the turn", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const bridge = fakeBridge();
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        hasSession: vi.fn().mockResolvedValue(false),
+        queryFactory: emptyQueryFactory(),
+        bridgeService: asBridge(bridge),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "sendPrompt",
+        requestId: "cb-1",
+        sessionId: "new-b",
+        text: "first message",
+        cwd: "/w",
+        bridged: true,
+      } satisfies Command,
+      ctx,
+    );
+    expect(bridge.attach).toHaveBeenCalledWith(
+      "new-b",
+      expect.anything(),
+      expect.objectContaining({ title: "first message", cwd: "/w" }),
+    );
+    expect(sent.at(-1)).toEqual({
+      type: "sendPrompt.response",
+      requestId: "cb-1",
+    });
+  });
+
+  it("does NOT attach a bridge on the resume path even with bridged:true", async () => {
+    const runtimeManager = new SessionRuntimeManager<EventDelta>();
+    const bridge = fakeBridge();
+    const handler = createCommandHandler(
+      makeDeps({
+        runtimeManager,
+        hasSession: vi.fn().mockResolvedValue(true), // resume
+        queryFactory: emptyQueryFactory(),
+        bridgeService: asBridge(bridge),
+      }),
+    );
+    const { ctx, sent } = makeCtx();
+    await handler(
+      {
+        type: "sendPrompt",
+        requestId: "cb-2",
+        sessionId: "existing",
+        text: "hi",
+        bridged: true,
+      } satisfies Command,
+      ctx,
+    );
+    expect(bridge.attach).not.toHaveBeenCalled();
+    expect(sent.at(-1)).toEqual({
+      type: "sendPrompt.response",
+      requestId: "cb-2",
+    });
+  });
+});

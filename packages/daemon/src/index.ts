@@ -21,7 +21,11 @@ import { createPairOffer } from "./pairing.js";
 import { createCommandHandler } from "./router.js";
 import { ensureSessionLoop, pushPrompt } from "./runtime/run-query.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
-import { listSidecodeSessions } from "./sidecode-sessions.js";
+import {
+  clearBridgeWorkerState,
+  listSidecodeSessions,
+  writeBridgeWorkerState,
+} from "./sidecode-sessions.js";
 import { WebRTCPeerServer } from "./webrtc-peer.js";
 
 export interface DaemonOptions {
@@ -116,6 +120,33 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     oauth,
     home,
     log: (message) => console.log(`[sidecode] ${message}`),
+    // M3.3 upgrade backfill source — a session's prior history as raw
+    // SDKMessages (user/assistant only; system/result are live-only
+    // envelopes) to flush to the cloud transcript when a pure session is
+    // upgraded to bridged.
+    readHistory: async (cliSessionId, cwd) => {
+      const msgs = await getSessionMessages(
+        cliSessionId,
+        cwd === undefined ? undefined : { dir: cwd },
+      );
+      return msgs.filter((m) => m.type === "user" || m.type === "assistant");
+    },
+    // Mirror every bridge worker-state write/clear into the manager cache so
+    // the iOS-facing `bridged` flag converges live — BridgeService writes the
+    // metadata `bridge` subtree directly, outside the manager's
+    // persistMetadata, so the cache would otherwise stay stale.
+    persist: {
+      writeBridgeWorkerState: (h, sid, ws) => {
+        const result = writeBridgeWorkerState(h, sid, ws);
+        runtimeManager.notifyBridgeChanged(sid);
+        return result;
+      },
+      clearBridgeWorkerState: (h, sid) => {
+        const result = clearBridgeWorkerState(h, sid);
+        runtimeManager.notifyBridgeChanged(sid);
+        return result;
+      },
+    },
     // M2.2 read-in: a claude.ai-typed prompt → drive this session's local
     // turn. The reply streams back via M1's write-out tap; reusing the
     // inbound uuid makes the synthesized user_message's write-back fold
@@ -266,6 +297,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       };
     },
     runtimeManager,
+    bridgeService,
     hasSession: async (cliSessionId) => {
       const info = await getSessionInfo(cliSessionId);
       return info !== undefined;

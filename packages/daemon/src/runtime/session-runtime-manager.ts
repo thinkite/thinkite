@@ -309,6 +309,34 @@ export class SessionRuntimeManager<T> {
     return [...this.states.values()];
   }
 
+  /**
+   * Refresh the cached `bridge` subtree from disk + fan out the updated public
+   * state. BridgeService writes/clears the worker-state `bridge` field on the
+   * session's metadata file DIRECTLY (outside persistMetadata), so the manager
+   * cache — the truth source for the iOS-facing `bridged` flag — would
+   * otherwise stay stale until the next persistMetadata. Wire this to fire
+   * after every bridge attach/detach (index.ts wraps the persist seam) so the
+   * `bridged` flag converges live for connected iOS clients.
+   *
+   * Off the hot path (rare user / boot / recovery action) → the disk re-read
+   * is acceptable. No cache entry (attach raced ahead of metadata creation) →
+   * still fan out (buildPublicState falls back to runtime); the next
+   * persistMetadata reconciles the bridge field.
+   */
+  notifyBridgeChanged(sessionId: string): void {
+    const cached = this.states.get(sessionId);
+    if (cached !== undefined && this.home !== null) {
+      const disk = readSidecodeSession(this.home, sessionId);
+      if (disk?.bridge !== undefined) {
+        this.states.set(sessionId, { ...cached, bridge: disk.bridge });
+      } else if (cached.bridge !== undefined) {
+        const { bridge: _dropped, ...rest } = cached;
+        this.states.set(sessionId, rest as SidecodeSessionMetadata);
+      }
+    }
+    this.fanoutStateChanged(sessionId);
+  }
+
   // ─── #17 fan-out ───────────────────────────────────────────────────
 
   /**
@@ -484,6 +512,10 @@ export class SessionRuntimeManager<T> {
       createdAt: meta?.createdAt ?? fallbackTs,
       isArchived: meta?.isArchived ?? false,
       permissionMode: meta?.permissionMode ?? "bypassPermissions",
+      // Derived from worker-state presence (BridgeService writes/clears the
+      // `bridge` subtree on attach/detach). Kept fresh in the cache by
+      // persistMetadata's disk-merge + notifyBridgeChanged on bridge changes.
+      bridged: meta?.bridge !== undefined,
     };
   }
 
