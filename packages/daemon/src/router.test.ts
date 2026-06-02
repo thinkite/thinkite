@@ -1014,9 +1014,9 @@ describe("createCommandHandler — setSessionSelection", () => {
   });
 
   it("deferred case: no live runtime + no metadata → response succeeds, no state mutation", async () => {
-    // Session sidecode never created (Desktop-mirror, or just an
-    // unknown id). manager.setModel returns false; nothing to apply or
-    // persist; the response still goes back ok.
+    // Session sidecode never created (an unknown / not-yet-created id).
+    // manager.setModel returns false; nothing to apply or persist; the
+    // response still goes back ok.
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
     const handler = createCommandHandler(makeDeps({ runtimeManager }));
     const { ctx, sent } = makeCtx();
@@ -1162,9 +1162,9 @@ describe("createCommandHandler — subscribe with turn-boundary settled cache", 
   // is populated (because run-query did an in-iterator refresh at the
   // last turn boundary), cold-path subscribe must serve from memory
   // WITHOUT calling deps.getMessages. When settled is null (fresh
-  // runtime or Desktop-mirror read-only session), the lazy-init
-  // fallback uses deps.getMessages AND memoizes the result for next
-  // time.
+  // runtime, or a resumed session whose runtime was torn down), the
+  // lazy-init fallback uses deps.getMessages AND memoizes the result for
+  // next time.
   it("cold path uses runtime.settled when populated; no JSONL re-read", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
     const runtime = runtimeManager.getOrCreate("S");
@@ -1291,13 +1291,13 @@ describe("createCommandHandler — subscribe with turn-boundary settled cache", 
     });
   });
 
-  it("does NOT memoize when runtime.query is null (Desktop-mirror / inactive)", async () => {
-    // Desktop-mirror sessions: SDK loop runs in Desktop, not in our
-    // daemon. runtime.query stays null forever. Without the memo
-    // gate, the first subscribe would cache the JSONL snapshot and
-    // serve it forever — even as Desktop continues writing new
-    // messages. With the gate: each cold-path subscribe re-reads
-    // JSONL so subsequent fresh subscribes see updated content.
+  it("does NOT memoize when runtime.query is null (inactive / torn-down loop)", async () => {
+    // A runtime whose SDK loop has exited (idle teardown / daemon
+    // restart) keeps runtime.query null. Without the memo gate, the
+    // first subscribe would cache the JSONL snapshot and serve it
+    // forever — even after a later sendPrompt spawns a new loop that
+    // appends messages. With the gate: each cold-path subscribe
+    // re-reads JSONL so subsequent fresh subscribes see updated content.
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
     runtimeManager.getOrCreate("S"); // query stays null
     const getMessages = vi.fn().mockResolvedValue({
@@ -1631,7 +1631,6 @@ describe("createCommandHandler — getFilesystemRoots", () => {
       isArchived: false,
       title: "t",
       titleSource: "auto",
-      completedTurns: 0,
       permissionMode: "bypassPermissions",
       effort: "xhigh",
       ...over,

@@ -225,8 +225,8 @@ export class SessionRuntimeManager<T> {
    *
    * The runtime's onStateChanged handler will fire and trigger
    * notifyStateChanged → persistMetadata for live sessions. For
-   * sessions WITHOUT a live runtime (Desktop-mirror, future), we
-   * persist directly + fan out manually.
+   * sessions WITHOUT a live runtime (a model picked before the first
+   * prompt spawns the loop), we persist directly + fan out manually.
    */
   setModel(sessionId: string, model: string | undefined): boolean {
     const prev = this.states.get(sessionId);

@@ -45,8 +45,6 @@ export interface SidecodeSessionMetadata {
   /** Epoch ms; updated on each turn (V0 just sets equal to createdAt at write). */
   lastActivityAt: number;
   isArchived: boolean;
-  /** Cumulative turn count; V0 starts at 0 and doesn't yet bump on each turn. */
-  completedTurns: number;
   /**
    * Display title — derived from the user's first prompt at session
    * creation (`buildNewSidecodeSession` → `deriveTitleFromFirstPrompt`)
@@ -302,7 +300,6 @@ export function buildNewSidecodeSession(input: {
     createdAt: now,
     lastActivityAt: now,
     isArchived: false,
-    completedTurns: 0,
     title: deriveTitleFromFirstPrompt(input.firstPrompt),
     titleSource: "auto",
     // V0 uses bypassPermissions — no in-app permission prompts yet (see

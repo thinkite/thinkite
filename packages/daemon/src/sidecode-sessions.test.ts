@@ -37,7 +37,6 @@ describe("buildNewSidecodeSession", () => {
     expect(meta.createdAt).toBe(1_700_000_000_000);
     expect(meta.lastActivityAt).toBe(1_700_000_000_000);
     expect(meta.isArchived).toBe(false);
-    expect(meta.completedTurns).toBe(0);
     expect(meta.title).toBe("Refactor the auth module");
     expect(meta.titleSource).toBe("auto");
     expect(meta.permissionMode).toBe("bypassPermissions");

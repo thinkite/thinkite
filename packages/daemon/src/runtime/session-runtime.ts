@@ -210,9 +210,9 @@ export class SessionRuntime<T> {
    *  reducer + normalize.ts), so settled stays current with zero JSONL
    *  re-reads — no dependency on the SDK's async flush timing. Null until
    *  seeded: the create-mode `[]` seed (run-query) for sessions we drive,
-   *  or the router's cold-path `deps.getMessages` lazy-init for resumed /
-   *  Desktop-mirror sessions; folding resumes once non-null. Imports
-   *  TimelineItem from protocol because that's the one shape we stash. */
+   *  or the router's cold-path `deps.getMessages` lazy-init for resumed
+   *  sessions; folding resumes once non-null. Imports TimelineItem from
+   *  protocol because that's the one shape we stash. */
   settled: TimelineItem[] | null = null;
   /** Cursor that `settled` corresponds to. With continuous fold this
    *  tracks `currentCursor` (settled reflects every event so far), so the

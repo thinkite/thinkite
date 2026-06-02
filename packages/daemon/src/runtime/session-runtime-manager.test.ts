@@ -27,7 +27,6 @@ function fixtureMeta(
     createdAt: partial.createdAt ?? now,
     lastActivityAt: partial.lastActivityAt ?? now,
     isArchived: partial.isArchived ?? false,
-    completedTurns: partial.completedTurns ?? 0,
     title: partial.title ?? "",
     titleSource: partial.titleSource ?? "auto",
     permissionMode: partial.permissionMode ?? "bypassPermissions",

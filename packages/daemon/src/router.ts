@@ -337,8 +337,9 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           //   (B) **JSONL fallback** (the lazy-init path). Used when:
           //       - First subscribe for a session before its first
           //         turn completes (settled still null)
-          //       - Desktop-mirror read-only sessions (no SDK loop
-          //         in this daemon → settled never populates)
+          //       - A resumed session whose runtime was torn down (idle
+          //         teardown / daemon restart) so settled hasn't been
+          //         repopulated yet
           //       This path has the old race window (await JSONL read
           //       while events may land in the buffer); kept for
           //       compatibility but transparently displaced by path A
@@ -362,18 +363,17 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             // Memoize ONLY when an SDK loop is currently running for
             // this session — turn-boundary refresh (run-query.ts) is
             // what keeps the memo current, and that path only fires
-            // while query is non-null. Without this gate, Desktop-
-            // mirror sessions (SDK loop runs in Desktop, not here)
-            // would memoize once and then serve stale data forever
-            // since nothing in this daemon process invalidates it.
-            // Same for previously-owned sessions whose SDK loop has
-            // exited — settled would be stale.
+            // while query is non-null. Without this gate, a session
+            // whose SDK loop has exited (idle teardown / daemon restart,
+            // settled cleared) would memoize once and then serve stale
+            // data forever since nothing in this daemon process
+            // invalidates it.
             //
-            // Cost of NOT memoizing: every cold-path subscribe for
-            // Desktop-mirror sessions re-reads JSONL (~30ms local SSD).
-            // Acceptable because: (a) back-nav within gcTime hits the
-            // cached collection without re-subscribing at all, (b)
-            // post-gcTime re-mounts are rare in real usage.
+            // Cost of NOT memoizing: every cold-path subscribe (query
+            // null) re-reads JSONL (~30ms local SSD). Acceptable because:
+            // (a) back-nav within gcTime hits the cached collection
+            // without re-subscribing at all, (b) post-gcTime re-mounts
+            // are rare in real usage.
             if (runtime.query !== null) {
               runtime.settled = settled;
               runtime.settledCursor = settledCursor;
@@ -627,8 +627,8 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         // onError handler. Realistic trigger: model not allowed by
         // the user's account.
         //
-        // Deferred case: no live runtime (Desktop-mirror session that
-        // user hasn't sent a prompt into yet). Skip the apply step
+        // Deferred case: no live runtime (a session the user picked a
+        // model for before sending the first prompt). Skip the apply step
         // but still update metadata — the value gets picked up as SDK
         // initial option on the first sendPrompt via ensureSessionLoop.
         if (deps.isShuttingDown()) {

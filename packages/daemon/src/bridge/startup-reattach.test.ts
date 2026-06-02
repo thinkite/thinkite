@@ -51,7 +51,6 @@ function meta(
     createdAt: 1,
     lastActivityAt: 1,
     isArchived: opts.isArchived ?? false,
-    completedTurns: 0,
     title: opts.title ?? `title-${cliSessionId}`,
     titleSource: "auto",
     permissionMode: "bypassPermissions",
