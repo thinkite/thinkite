@@ -175,23 +175,15 @@ export class SessionRuntimeManager<T> {
    */
   createSession(meta: SidecodeSessionMetadata): void {
     this.states.set(meta.cliSessionId, meta);
-    // Race guard: a transcript `subscribe` RPC can call getOrCreate and
-    // build the runtime BEFORE this create lands the metadata (the
-    // detail screen subscribes the instant the new-session screen
-    // navigates, while sendPrompt's create path is still awaiting its
-    // hasSession check). In that order getOrCreate seeded the runtime's
-    // `currentModel` to null (no meta existed yet). If we don't mirror
-    // the freshly-built model onto that pre-existing runtime now, the
-    // first setActivity("running") edge fires notifyStateChanged with
-    // `currentModel(null) !== prev.model(picked)` and REGRESSES the
-    // persisted model back to undefined — the iOS picker silently
-    // reverts to the default. Direct field assignment (not setModel) so
-    // this seeding doesn't emit a spurious change event; the
-    // fanoutStateChanged below carries the correct model out.
-    const runtime = this.runtimes.get(meta.cliSessionId);
-    if (runtime !== undefined && meta.model !== undefined) {
-      runtime.currentModel = meta.model;
-    }
+    // No model race-guard needed: even when a transcript `subscribe`
+    // built the runtime BEFORE this create lands the metadata (so
+    // getOrCreate seeded `currentModel` to null), the model still
+    // surfaces correctly. notifyStateChanged no longer diffs/persists
+    // model on activity edges (so the stale null can't regress
+    // states.model), and buildPublicState's `currentModel ?? meta.model`
+    // fallback serves the picked model in every fan-out. states.model
+    // (set above) is the authoritative source; the runtime mirror is
+    // best-effort.
     if (this.home !== null) writeSidecodeSession(this.home, meta);
     this.fanoutStateChanged(meta.cliSessionId);
   }
@@ -223,10 +215,11 @@ export class SessionRuntimeManager<T> {
    *   - bridge.onSetModel (claude.ai picker via CCR control message)
    *   - V0.5+ slash commands / programmatic updates
    *
-   * The runtime's onStateChanged handler will fire and trigger
-   * notifyStateChanged → persistMetadata for live sessions. For
-   * sessions WITHOUT a live runtime (a model picked before the first
-   * prompt spawns the loop), we persist directly + fan out manually.
+   * Model persistence + fan-out are OWNED HERE (notifyStateChanged no
+   * longer diffs/persists model — see its comment). The live runtime's
+   * `currentModel` is mirrored with a DIRECT field set (matching
+   * getOrCreate's seed) rather than `runtime.setModel`, so the runtime's
+   * onStateChanged doesn't double up with the explicit fan-out below.
    */
   setModel(sessionId: string, model: string | undefined): boolean {
     const prev = this.states.get(sessionId);
@@ -235,17 +228,14 @@ export class SessionRuntimeManager<T> {
     const nextModel = model ?? null;
     if (prevModel === nextModel) return false;
 
+    // Mirror onto the live runtime (if any) so buildPublicState + the
+    // SDK-side read reflect the pick immediately. Direct assignment, no
+    // onStateChanged — the persist + fan-out are explicit below and cover
+    // both the live and no-runtime (model picked pre-first-prompt) cases.
     const runtime = this.runtimes.get(sessionId);
-    if (runtime !== undefined) {
-      // setModel fires onStateChanged → notifyStateChanged → persist.
-      // notifyStateChanged compares runtime.currentModel against
-      // states.model and persists the delta + fans out.
-      runtime.setModel(nextModel);
-    } else {
-      // No live runtime: persist + fan out manually.
-      this.persistMetadata(sessionId, { model });
-      this.fanoutStateChanged(sessionId);
-    }
+    if (runtime !== undefined) runtime.currentModel = nextModel;
+    this.persistMetadata(sessionId, { model });
+    this.fanoutStateChanged(sessionId);
     return true;
   }
 
@@ -397,9 +387,22 @@ export class SessionRuntimeManager<T> {
       return;
     }
 
-    // Detect deltas. setActivity always stamps lastActivityAt so a
-    // genuine activity transition shows up here. setModel updates
-    // runtime.currentModel; we mirror to states.model.
+    // This fires on activity transitions (setActivity stamps a fresh
+    // lastActivityAt) and on runtime.setModel. We persist ONLY
+    // lastActivityAt here — model is deliberately NOT diffed/persisted.
+    //
+    // Why model is excluded: model persistence is owned by `setModel`
+    // (and the initial value by `createSession`), which write
+    // states.model explicitly. `runtime.currentModel` is just a mirror,
+    // and it can be stale-null when a transcript `subscribe` built the
+    // runtime before the create landed the metadata (getOrCreate had no
+    // meta to seed from). If we diffed it here, the first
+    // setActivity("running") edge would see currentModel(null) !==
+    // states.model(picked) and REGRESS the persisted model to undefined.
+    // buildPublicState's `runtime.currentModel ?? meta.model` fallback
+    // already serves the right model in the fan-out, so dropping the
+    // diff removes the regression class entirely (this is what let the
+    // old createSession race-guard go away).
     //
     // Monotonic guard on lastActivityAt: only advance forward, never
     // regress. Defends against (a) clock adjustments / NTP rollback,
@@ -407,16 +410,10 @@ export class SessionRuntimeManager<T> {
     // older than a disk-loaded value (e.g. a session that hadn't seen
     // a turn in a long time but was hydrated with a recent disk
     // timestamp from before the daemon restart).
-    const patch: Partial<Omit<SidecodeSessionMetadata, "bridge">> = {};
     if (runtime.lastActivityAt > prev.lastActivityAt) {
-      patch.lastActivityAt = runtime.lastActivityAt;
-    }
-    const prevModel = prev.model ?? null;
-    if (runtime.currentModel !== prevModel) {
-      patch.model = runtime.currentModel ?? undefined;
-    }
-    if (Object.keys(patch).length > 0) {
-      this.persistMetadata(sessionId, patch);
+      this.persistMetadata(sessionId, {
+        lastActivityAt: runtime.lastActivityAt,
+      });
     }
 
     if (this.stateListeners.size === 0) return;

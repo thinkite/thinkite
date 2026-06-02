@@ -522,29 +522,13 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
   // Production repro for "iOS picked Sonnet → detail screen reverts to
   // default Opus". The transcript `subscribe` RPC calls getOrCreate and
   // builds the runtime (currentModel=null, no meta yet) WHILE sendPrompt's
-  // create path is still awaiting its hasSession check. Then
-  // createSessionFromPrompt lands meta.model=Sonnet, and the first
-  // setActivity("running") edge fires notifyStateChanged — which used to
-  // see currentModel(null) !== prev.model(Sonnet) and REGRESS the
-  // persisted model to undefined. The createSession race-guard mirrors
-  // meta.model onto the pre-existing runtime so the diff is Sonnet===Sonnet.
-
-  it("createSession mirrors model onto a runtime that getOrCreate built first (race guard)", () => {
-    const m = new SessionRuntimeManager<string>();
-    m.setHome(home);
-    // 1. subscribe wins: runtime exists with no model (no meta yet).
-    const r = m.getOrCreate("race-1");
-    expect(r.currentModel).toBeNull();
-    // 2. create lands the picked model.
-    m.createSessionFromPrompt({
-      cliSessionId: "race-1",
-      cwd: "/p",
-      firstPrompt: "你是什么模型",
-      model: "claude-sonnet-4-6",
-    });
-    // Guard fired: the pre-existing runtime's currentModel now mirrors meta.
-    expect(r.currentModel).toBe("claude-sonnet-4-6");
-  });
+  // create path is still awaiting its hasSession check; createSessionFromPrompt
+  // then lands meta.model=Sonnet. The runtime mirror stays stale-null — and
+  // that is FINE: there's no race-guard anymore. Two invariants keep the
+  // model correct: notifyStateChanged no longer diffs/persists model on the
+  // setActivity("running") edge (so the stale null can't regress
+  // states.model), and buildPublicState falls back to meta.model when
+  // currentModel is null (so every fan-out carries the picked model).
 
   it("activity edge after the race does NOT regress the persisted model", () => {
     const m = new SessionRuntimeManager<string>();
@@ -559,6 +543,10 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
       firstPrompt: "hi",
       model: "claude-sonnet-4-6",
     });
+    // No race-guard: createSession does NOT mirror onto the pre-existing
+    // runtime, so the mirror stays stale-null. The model survives anyway
+    // (asserted below) via states + buildPublicState's fallback.
+    expect(r.currentModel).toBeNull();
     onChange.mockClear(); // ignore the create fan-out; focus on the edge
 
     r.setActivity("running"); // the edge that used to wipe the model
@@ -597,5 +585,67 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
     expect(m.getMetadata("ok-1")?.model).toBe("claude-sonnet-4-6");
     const state = onChange.mock.calls[0]?.[1] as SessionState;
     expect(state.model).toBe("claude-sonnet-4-6");
+  });
+
+  // ─── B: manager.setModel owns model persistence + fan-out ───────────
+  //
+  // notifyStateChanged no longer persists model, so manager.setModel
+  // writes states.model + disk explicitly and fans out exactly once
+  // (the live runtime's currentModel is mirrored with a direct field
+  // set — no onStateChanged, so no double fan-out).
+
+  it("setModel persists the model to disk + fans out once (live runtime)", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    const { listener, onChange } = makeListener();
+    m.subscribeSessionStates(listener);
+    m.createSessionFromPrompt({
+      cliSessionId: "sm-1",
+      cwd: "/p",
+      firstPrompt: "hi",
+      model: "claude-sonnet-4-6",
+    });
+    const r = m.getOrCreate("sm-1");
+    onChange.mockClear();
+
+    const changed = m.setModel("sm-1", "claude-opus-4-7");
+
+    expect(changed).toBe(true);
+    expect(r.currentModel).toBe("claude-opus-4-7"); // mirror updated
+    expect(m.getMetadata("sm-1")?.model).toBe("claude-opus-4-7");
+    expect(readSidecodeSession(home, "sm-1")?.model).toBe("claude-opus-4-7");
+    // Exactly one fan-out — direct mirror set, no extra onStateChanged.
+    expect(onChange).toHaveBeenCalledOnce();
+    expect((onChange.mock.calls[0]?.[1] as SessionState).model).toBe(
+      "claude-opus-4-7",
+    );
+  });
+
+  it("setModel reset-to-default after the race still fans out (no stale-null gap)", () => {
+    const m = new SessionRuntimeManager<string>();
+    m.setHome(home);
+    const { listener, onChange } = makeListener();
+    m.subscribeSessionStates(listener);
+
+    const r = m.getOrCreate("sm-2"); // subscribe wins → currentModel null
+    m.createSessionFromPrompt({
+      cliSessionId: "sm-2",
+      cwd: "/p",
+      firstPrompt: "hi",
+      model: "claude-sonnet-4-6",
+    });
+    expect(r.currentModel).toBeNull(); // stale mirror (no guard)
+    onChange.mockClear();
+
+    // Reset to SDK default: states.model is Sonnet, the runtime mirror is
+    // already null. A direct field set + explicit fan-out covers this —
+    // routing through runtime.setModel(null) would dedupe (null===null)
+    // and swallow the fan-out, leaving iOS stale.
+    const changed = m.setModel("sm-2", undefined);
+
+    expect(changed).toBe(true);
+    expect(m.getMetadata("sm-2")?.model).toBeUndefined();
+    expect(onChange).toHaveBeenCalledOnce();
+    expect((onChange.mock.calls[0]?.[1] as SessionState).model).toBeNull();
   });
 });
