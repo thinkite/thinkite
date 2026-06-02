@@ -3,9 +3,9 @@ import { type Collection, createOptimisticAction } from "@tanstack/db";
 import { createCollection } from "@tanstack/react-db";
 import { type DaemonClient, daemonClient } from "@/lib/daemon-client";
 import {
-  clearSessionActivity,
-  patchSessionActivity,
-} from "@/lib/session-activity";
+  clearSessionTurnResult,
+  patchSessionTurnResult,
+} from "@/lib/session-turn-result";
 
 /**
  * Augmented item type stored inside the collection. `_order` is an
@@ -36,11 +36,13 @@ import {
 export type OrderedTimelineItem = TimelineItem & { _order: number };
 
 /**
- * Per-session turn-machine state (isRunning / lastError / latestUsage) no
- * longer lives here — it's a separate `localOnly` collection in
- * `@/lib/session-activity`. This sync handler is its writer: it routes the
- * subscription's turn_* / initialUsage into it via patchSessionActivity,
- * and clears it on cleanup. Consumers read it via `useSessionActivity`.
+ * Per-session latest-turn result (lastError / latestUsage) lives in a
+ * separate `localOnly` collection in `@/lib/session-turn-result`. This
+ * sync handler is its writer: it routes the subscription's turn_* /
+ * initialUsage into it via patchSessionTurnResult, and clears it on
+ * cleanup. Consumers read it via `useSessionTurnResult`.
+ * (Running-state moved to the daemon-pushed `sessionState.activity` — #17
+ * — so no client `isRunning` is written here anymore.)
  *
  * Module-level per-session collection cache. Implements the
  * maintainer-blessed pattern from TanStack/db#652:
@@ -89,7 +91,14 @@ export function getTranscriptCollection(
     compare: (a, b) => a._order - b._order,
     gcTime: GC_TIME_MS,
     sync: {
-      sync: ({ begin, write, commit, markReady, truncate, collection: coll }) => {
+      sync: ({
+        begin,
+        write,
+        commit,
+        markReady,
+        truncate,
+        collection: coll,
+      }) => {
         // markReady() must be called exactly once per sync handler
         // lifetime to unblock useLiveQuery's isLoading. Subsequent
         // onSubscribed firings (e.g. on transport reconnect) re-ingest
@@ -159,27 +168,26 @@ export function getTranscriptCollection(
                 break;
               }
               case "turn_started":
-                patchSessionActivity(cliSessionId, {
-                  isRunning: true,
-                  lastError: null,
-                });
+                // Clear any stale error from a prior turn. Running-state is
+                // now daemon-pushed via sessionState.activity (#17), not
+                // written here.
+                patchSessionTurnResult(cliSessionId, { lastError: null });
                 break;
               case "turn_completed":
-                patchSessionActivity(cliSessionId, {
-                  isRunning: false,
-                  ...(delta.usage !== undefined
-                    ? { latestUsage: delta.usage }
-                    : {}),
-                });
+                if (delta.usage !== undefined) {
+                  patchSessionTurnResult(cliSessionId, {
+                    latestUsage: delta.usage,
+                  });
+                }
                 break;
               case "turn_failed":
-                patchSessionActivity(cliSessionId, {
-                  isRunning: false,
+                patchSessionTurnResult(cliSessionId, {
                   lastError: delta.error,
                 });
                 break;
               case "turn_canceled":
-                patchSessionActivity(cliSessionId, { isRunning: false });
+                // Running-state handled by sessionState.activity; nothing
+                // turn-result to record on a cancel.
                 break;
               case "compact_started":
               case "compact_applied":
@@ -208,7 +216,9 @@ export function getTranscriptCollection(
               commit();
             }
             if (initialUsage !== undefined) {
-              patchSessionActivity(cliSessionId, { latestUsage: initialUsage });
+              patchSessionTurnResult(cliSessionId, {
+                latestUsage: initialUsage,
+              });
             }
             if (!hasMarkedReady) {
               markReady();
@@ -219,12 +229,11 @@ export function getTranscriptCollection(
 
         // Cleanup runs when the collection's gcTime expires (no active
         // subscribers for ≥60s). Unsub from the facade — daemon stops
-        // fanning events for this session to us. Drop the activity row so
-        // a left session never shows stale "running" (and a future
-        // re-create starts fresh).
+        // fanning events for this session to us. Drop the turn-result row
+        // so a future re-create starts fresh (stale usage never lingers).
         return () => {
           void sub.unsubscribe();
-          clearSessionActivity(cliSessionId);
+          clearSessionTurnResult(cliSessionId);
         };
       },
     },
@@ -287,7 +296,9 @@ interface SendMessageVars {
  */
 export const sendUserMessage = createOptimisticAction<SendMessageVars>({
   onMutate: ({ cliSessionId, userMessageUuid, text, images }) => {
-    const coll = getTranscriptCollection(cliSessionId, { client: daemonClient });
+    const coll = getTranscriptCollection(cliSessionId, {
+      client: daemonClient,
+    });
     coll.insert({
       type: "user_message",
       uuid: userMessageUuid,
@@ -298,7 +309,14 @@ export const sendUserMessage = createOptimisticAction<SendMessageVars>({
       _order: coll.size,
     });
   },
-  mutationFn: async ({ cliSessionId, userMessageUuid, text, cwd, images, model }) => {
+  mutationFn: async ({
+    cliSessionId,
+    userMessageUuid,
+    text,
+    cwd,
+    images,
+    model,
+  }) => {
     await daemonClient.sendPrompt({
       sessionId: cliSessionId,
       text,

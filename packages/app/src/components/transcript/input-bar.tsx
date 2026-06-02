@@ -22,7 +22,7 @@ import {
 } from "react-native";
 import { SlashPanel } from "@/components/transcript/slash-panel";
 import { useContextUsage } from "@/hooks/use-context-usage";
-import { useSessionActivity } from "@/lib/session-activity";
+import { useSessionTurnResult } from "@/lib/session-turn-result";
 import {
   sessionStateCollection,
   updateSessionModel,
@@ -158,13 +158,14 @@ export function InputBar({
 }: {
   /** The session this composer drives, or `null` on the new-session
    *  screen (no session exists yet). InputBar is self-sourcing:
-   *    - non-null → model / running state / context meter are all
-   *      DERIVED from this session's collections (sessionStateCollection
-   *      + sessionActivityCollection). No data props to drill.
+   *    - non-null → model + running state from the #17
+   *      `sessionStateCollection` row, context meter from the
+   *      transcript-fed `sessionTurnResultCollection` (latestUsage). No
+   *      data props to drill.
    *    - null → the picker holds a LOCAL draft model (seeded to
-   *      DEFAULT_MODEL); isRunning is false; no context meter. The draft
-   *      pick rides out on `onSend`'s `model` arg so the create flow can
-   *      seed the new session with it. */
+   *      DEFAULT_MODEL); not running; no context meter. The draft pick
+   *      rides out on `onSend`'s `model` arg so the create flow can seed
+   *      the new session with it. */
   cliSessionId: string | null;
   /** Fired on tap-to-send. `images` carries the compressed base64
    *  payloads ready for daemon's sendPrompt (local DraftAttachment ids
@@ -195,12 +196,13 @@ export function InputBar({
   const [images, setImages] = useState<DraftAttachment[]>([]);
 
   // ─── Self-sourced session state ─────────────────────────────────────
-  // Detail (cliSessionId non-null): derive the picker model from the
-  // session's #17 collection row, running-state + context usage from the
-  // transcript-fed sessionActivityCollection. New-session (null): local
-  // draft model, no running, no meter. A picked model commits via
-  // `updateSessionModel` (optimistic + RPC) when a session exists, else
-  // just updates the draft (which leaves on `onSend`'s model arg).
+  // Detail (cliSessionId non-null): derive the picker model + running
+  // state from the session's #17 sessionStateCollection row, and the
+  // context meter from the transcript-fed sessionTurnResultCollection
+  // (latestUsage). New-session (null): local draft model, not running, no
+  // meter. A picked model commits via `updateSessionModel` (optimistic +
+  // RPC) when a session exists, else just updates the draft (which leaves
+  // on `onSend`'s model arg).
   const [draftModel, setDraftModel] = useState(DEFAULT_MODEL.model);
   const { data: sessionRow } = useLiveQuery(
     (q) =>
@@ -212,13 +214,15 @@ export function InputBar({
         : null,
     [cliSessionId],
   );
-  const activity = useSessionActivity(cliSessionId);
+  const turnResult = useSessionTurnResult(cliSessionId);
   const model = cliSessionId
     ? (sessionRow?.model ?? DEFAULT_MODEL.model)
     : draftModel;
-  const isRunning = cliSessionId ? activity.isRunning : false;
+  // Running-state is daemon-authoritative (#17 sessionState.activity), not
+  // a separate client signal anymore.
+  const isRunning = cliSessionId ? sessionRow?.activity === "running" : false;
   const contextUsage = useContextUsage(
-    cliSessionId ? activity.latestUsage : null,
+    cliSessionId ? turnResult.latestUsage : null,
     model,
   );
   const onPickModel = (m: string) => {
