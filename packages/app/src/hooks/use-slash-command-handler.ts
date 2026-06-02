@@ -9,16 +9,18 @@ import {
 import * as Burnt from "burnt";
 import { useRouter } from "expo-router";
 import { useCallback } from "react";
-import { useSetSessionSelection } from "./use-set-session-selection";
+import { updateSessionModel } from "@/lib/sessions-collection";
 
 /**
  * Shared pre-send slash-command pipeline used by both the new-session
  * screen and the in-session ChatPanel. Returns a single function with
- * the same `(text, images?)` shape as `<InputBar onSend>`, so parents
- * can drop it in front of their existing sendPrompt logic without
- * rewriting their data flow:
+ * the same `(text, images, model)` shape as `<InputBar onSend>`, so
+ * parents can drop it in front of their existing sendPrompt logic without
+ * rewriting their data flow. `model` (the picker selection, supplied by
+ * InputBar) is forwarded verbatim to `onPassthrough` so the parent's send
+ * call can seed it:
  *
- *     const rawSend = useCallback((text, imgs) => { ... }, [...]);
+ *     const rawSend = useCallback((text, imgs, model) => { ... }, [...]);
  *     const onSend = useSlashCommandHandler({
  *       context: "in-session",
  *       sessionId: cliSessionId,
@@ -38,8 +40,8 @@ import { useSetSessionSelection } from "./use-set-session-selection";
  *                            left in the list, no archive — matches
  *                            Claude Code semantics)
  *      - `/model <id>`     → validate against the bundled `MODELS`
- *                            table, dispatch via `useSetSessionSelection`
- *                            (same RPC the model chip uses)
+ *                            table, dispatch via `updateSessionModel`
+ *                            (same optimistic action the model chip uses)
  *      - `/model` no arg   → toast hint to tap the chip; opening the
  *                            chip's sheet programmatically would need a
  *                            new imperative API on InputBar, deferred
@@ -51,36 +53,43 @@ import { useSetSessionSelection } from "./use-set-session-selection";
 export type SlashCommandHandlerOpts =
   | {
       context: "new-session";
-      onPassthrough: (text: string, images?: ImageAttachment[]) => void;
+      onPassthrough: (
+        text: string,
+        images: ImageAttachment[] | undefined,
+        model: string,
+      ) => void;
     }
   | {
       context: "in-session";
-      /** Required to dispatch `/model` to setSessionSelection. */
+      /** Required to dispatch `/model` via updateSessionModel. */
       sessionId: string;
-      onPassthrough: (text: string, images?: ImageAttachment[]) => void;
+      onPassthrough: (
+        text: string,
+        images: ImageAttachment[] | undefined,
+        model: string,
+      ) => void;
     };
 
 export function useSlashCommandHandler(
   opts: SlashCommandHandlerOpts,
-): (text: string, images?: ImageAttachment[]) => boolean | void {
+): (
+  text: string,
+  images: ImageAttachment[] | undefined,
+  model: string,
+) => boolean | void {
   const router = useRouter();
-  // `useSetSessionSelection` requires a string; in new-session context
-  // we pass empty (mutation is never fired in that branch, so the
-  // sessionId is dead state — but we must call the hook unconditionally
-  // to honor rules of hooks).
-  const sessionIdForRpc = opts.context === "in-session" ? opts.sessionId : "";
-  const setSelection = useSetSessionSelection(sessionIdForRpc);
-
   const { context, onPassthrough } = opts;
-  const selectionMutate = setSelection.mutate;
+  // `/model <id>` dispatches against this session; new-session has no
+  // session id (the command is unreachable there — step 3 rejects it).
+  const sessionId = opts.context === "in-session" ? opts.sessionId : null;
 
   return useCallback(
-    (text: string, images?: ImageAttachment[]) => {
+    (text: string, images: ImageAttachment[] | undefined, model: string) => {
       const parsed = parseSlashCommand(text);
 
       // 1. Not a slash command → passthrough (covers most messages).
       if (!parsed) {
-        onPassthrough(text, images);
+        onPassthrough(text, images, model);
         return;
       }
 
@@ -121,7 +130,7 @@ export function useSlashCommandHandler(
       // 4. Passthrough → let parent's sendPrompt handle the literal text.
       //    Input clears on the parent's normal "send happened" semantics.
       if (spec.handling === "passthrough") {
-        onPassthrough(text, images);
+        onPassthrough(text, images, model);
         return;
       }
 
@@ -139,8 +148,8 @@ export function useSlashCommandHandler(
         case "model": {
           // /model lives in in-session only (enforced by step 3), but
           // TypeScript can't narrow opts to the in-session arm via
-          // spec.contexts. Re-check the union tag for the RPC dispatch.
-          if (context !== "in-session") {
+          // spec.contexts. Re-check via the derived sessionId.
+          if (sessionId === null) {
             return false;
           }
           const modelId = parsed.args.trim();
@@ -164,13 +173,13 @@ export function useSlashCommandHandler(
             });
             return false;
           }
-          // Successful intercept — model switch dispatched, clear input
-          // (no implicit `return false`).
-          selectionMutate({ model: modelId });
+          // Successful intercept — model switch dispatched (optimistic +
+          // RPC via the same action the chip uses), clear input.
+          updateSessionModel({ cliSessionId: sessionId, model: modelId });
           return;
         }
       }
     },
-    [context, onPassthrough, router, selectionMutate],
+    [context, onPassthrough, router, sessionId],
   );
 }

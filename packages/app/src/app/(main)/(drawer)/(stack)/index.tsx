@@ -1,18 +1,15 @@
-import { DEFAULT_MODEL, type ImageAttachment } from "@sidecodeapp/protocol";
+import type { ImageAttachment } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import { router, Stack, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
   KeyboardAvoidingView,
   KeyboardController,
 } from "react-native-keyboard-controller";
 import { GitStatusBar } from "@/components/transcript/git-status-bar";
-import {
-  InputBar,
-  type ModelSelection,
-} from "@/components/transcript/input-bar";
+import { InputBar } from "@/components/transcript/input-bar";
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
@@ -67,21 +64,10 @@ export default function NewSessionScreen() {
   const cwd = lastUsedCwd ?? roots?.recentCwds[0]?.path ?? undefined;
   const setLastUsedCwd = useSetLastUsedCwd();
 
-  // Picker state lives locally here — there's no session row yet to mutate
-  // and no daemon RPC to fire on pick. The chosen model is passed into
-  // `createSession` on first send (rawSend below): it seeds both the
-  // optimistic collection row and the sendPrompt that creates the session.
-  //
-  // Seed with `DEFAULT_MODEL` via useState init function (not a useEffect
-  // bootstrap after a `null` initial state). This guarantees `selection`
-  // is non-null on the FIRST render — there's no window where the user
-  // can tap send while selection is still `null` (which would have
-  // shipped `model: undefined` into the optimistic row, then triggered
-  // the detail screen's "fallback to default" branch and silently
-  // reverted the user's pick).
-  const [selection, setSelection] = useState<ModelSelection>({
-    model: DEFAULT_MODEL.model,
-  });
+  // The model picker lives INSIDE InputBar now (cliSessionId={null} =
+  // draft mode: InputBar holds a local draft model seeded to
+  // DEFAULT_MODEL). The chosen model arrives back via `rawSend`'s `model`
+  // arg at send time and seeds `createSession`. No selection state here.
 
   // Raw send — invoked for non-slash text AND for whitelisted
   // passthrough commands (/init, /review). On new-session only those
@@ -89,7 +75,7 @@ export default function NewSessionScreen() {
   // in the new-session picker so the slash hook never dispatches
   // /clear or /model from here.
   const rawSend = useCallback(
-    (text: string, images?: ImageAttachment[]) => {
+    (text: string, images: ImageAttachment[] | undefined, model: string) => {
       if (cwd === undefined) {
         // Placeholder state — user hasn't picked and there's no
         // recent history to fall back on. InputBar.canSend already
@@ -108,12 +94,14 @@ export default function NewSessionScreen() {
       // seeds an empty settled snapshot for the freshly-created query, so
       // this sendPrompt firing before the detail screen subscribes is
       // race-free. sendPrompt failure rolls the optimistic row back.
+      // `model` comes from InputBar's draft picker (the only place the
+      // pre-create selection lives).
       createSession({
         cliSessionId: newId,
         text,
         cwd,
         images,
-        model: selection.model,
+        model,
       }).isPersisted.promise.catch((err) => {
         console.error("create session failed", err);
       });
@@ -122,7 +110,7 @@ export default function NewSessionScreen() {
         params: { cliSessionId: newId, cwd },
       });
     },
-    [cwd, setLastUsedCwd, selection],
+    [cwd, setLastUsedCwd],
   );
 
   const handleSend = useSlashCommandHandler({
@@ -198,10 +186,8 @@ export default function NewSessionScreen() {
               showChanges={false}
             />
             <InputBar
+              cliSessionId={null}
               onSend={handleSend}
-              isRunning={false}
-              selection={selection}
-              onSelectionChange={setSelection}
               slashContext="new-session"
             />
           </View>

@@ -1,4 +1,3 @@
-import { DEFAULT_MODEL } from "@sidecodeapp/protocol";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { Stack, useLocalSearchParams, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
@@ -6,9 +5,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { ChatPanel } from "@/components/transcript/chat-panel";
 import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
-import { useContextUsage } from "@/hooks/use-context-usage";
 import { useSessionTranscript } from "@/hooks/use-session-transcript";
-import { useSetSessionSelection } from "@/hooks/use-set-session-selection";
 import { sessionStateCollection } from "@/lib/sessions-collection";
 import { flattenToBlocks } from "@/lib/transcript-blocks";
 
@@ -67,11 +64,13 @@ export default function SessionDetailScreen() {
   const blocks = useMemo(() => flattenToBlocks(session.items), [session.items]);
 
   // Read THIS session's row from the collection with a filtered live query
-  // (findOne on cliSessionId) — not the whole list. Drives the header
-  // title and the picker's current model. The row is present at mount
-  // because the new-session screen inserts it optimistically before
-  // navigating (resume sessions already have it from the #17
-  // subscribeSessions snapshot).
+  // (findOne on cliSessionId) — just for the header title. The model
+  // picker / context meter / running state are owned by InputBar now (it
+  // self-sources from `cliSessionId`), so this screen no longer derives
+  // selection or contextUsage. The row is present at mount because the
+  // new-session screen inserts it optimistically before navigating
+  // (resume sessions already have it from the #17 subscribeSessions
+  // snapshot).
   const { data: sessionInfo } = useLiveQuery(
     (q) =>
       q
@@ -80,25 +79,6 @@ export default function SessionDetailScreen() {
         .findOne(),
     [cliSessionId],
   );
-
-  // Picker selection comes from the row's `model`; useSetSessionSelection
-  // updates the collection optimistically on pick + fires the daemon RPC,
-  // with automatic rollback on failure. Sessions with no model on disk
-  // fall back to the bundled `DEFAULT_MODEL` until the user picks. The
-  // fallback is synchronous (DEFAULT_MODEL is a module constant) so
-  // there's no "models loading" race — selection is always defined.
-  const setSelection = useSetSessionSelection(cliSessionId);
-  const selection = useMemo(() => {
-    if (sessionInfo?.model) return { model: sessionInfo.model };
-    return { model: DEFAULT_MODEL.model };
-  }, [sessionInfo?.model]);
-
-  // Context-window meter for the model picker chip. Joins the latest
-  // turn_completed.usage (from useSessionTranscript) with the selected
-  // model's contextWindow (from the bundled MODEL_METADATA table).
-  // Returns null when no turn has completed yet — InputBar then renders
-  // the chip with no fill.
-  const contextUsage = useContextUsage(session.latestUsage, selection?.model);
 
   return (
     <>
@@ -128,15 +108,7 @@ export default function SessionDetailScreen() {
               </Text>
             </View>
           ) : (
-            <ChatPanel
-              cliSessionId={cliSessionId}
-              cwd={cwd}
-              blocks={blocks}
-              isRunning={session.isRunning}
-              selection={selection}
-              onSelectionChange={setSelection.mutate}
-              contextUsage={contextUsage ?? undefined}
-            />
+            <ChatPanel cliSessionId={cliSessionId} cwd={cwd} blocks={blocks} />
           )}
         </View>
       </ToolCallSheetProvider>

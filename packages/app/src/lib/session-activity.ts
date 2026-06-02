@@ -88,15 +88,20 @@ const EMPTY: SessionActivity = { cliSessionId: "", ...DEFAULTS };
 /**
  * Reactive read of one session's live turn state. Returns DEFAULTS when no
  * row exists yet (session never started a turn this session, or its row
- * was cleared). Drop-in replacement for the old `useSessionMeta`.
+ * was cleared) OR when `cliSessionId` is null (the new-session screen has
+ * no session — the query is disabled and DEFAULTS stands in).
  */
-export function useSessionActivity(cliSessionId: string): SessionActivity {
+export function useSessionActivity(
+  cliSessionId: string | null,
+): SessionActivity {
   const { data } = useLiveQuery(
     (q) =>
-      q
-        .from({ a: sessionActivityCollection })
-        .where(({ a }) => eq(a.cliSessionId, cliSessionId))
-        .findOne(),
+      cliSessionId
+        ? q
+            .from({ a: sessionActivityCollection })
+            .where(({ a }) => eq(a.cliSessionId, cliSessionId))
+            .findOne()
+        : null,
     [cliSessionId],
   );
   return data ?? EMPTY;

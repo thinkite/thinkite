@@ -1,10 +1,12 @@
 import { type MenuAction, MenuView } from "@react-native-menu/menu";
 import {
   type CommandContext,
+  DEFAULT_MODEL,
   getCommandsForContext,
   type ImageAttachment,
   MODELS,
 } from "@sidecodeapp/protocol";
+import { eq, useLiveQuery } from "@tanstack/react-db";
 import { GlassView } from "expo-glass-effect";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
@@ -19,6 +21,12 @@ import {
   View,
 } from "react-native";
 import { SlashPanel } from "@/components/transcript/slash-panel";
+import { useContextUsage } from "@/hooks/use-context-usage";
+import { useSessionActivity } from "@/lib/session-activity";
+import {
+  sessionStateCollection,
+  updateSessionModel,
+} from "@/lib/sessions-collection";
 import { Image } from "@/lib/styled";
 
 /**
@@ -85,20 +93,6 @@ const JPEG_QUALITY = 0.85;
  *  Photos tap, not by re-tapping `+` repeatedly. Tune in one spot. */
 const MAX_TOTAL_IMAGES = 8;
 
-/** Single source-of-truth for what the picker has committed to. Bundled
- *  as one object so we can extend (e.g. `permissionMode`) without
- *  thrashing call sites.
- *
- *  InputBar is fully controlled — parent screens own the source of
- *  truth and pass it back in via `selection`.
- *
- *  No effort field by design. sidecode V0 trusts the SDK's adaptive
- *  thinking + per-account `Settings.effortLevel`, deliberately doesn't
- *  expose a per-session effort picker. */
-export type ModelSelection = {
-  model: string;
-};
-
 async function compressToAttachment(
   uri: string,
   width: number,
@@ -130,9 +124,15 @@ async function compressToAttachment(
  * Chat input bar — pill-shaped GlassView with optional attachment
  * pill row + text input + action row (plus | spacer | mic | send).
  *
+ * Self-sourcing: pass `cliSessionId` and InputBar derives the model
+ * picker / context meter / running state from that session's collections
+ * (or holds a local draft model when `cliSessionId` is null — the
+ * new-session screen). Parents drill no data props; the picked model
+ * leaves via `onSend`'s `model` arg. See the prop docs below.
+ *
  * The send button has three states:
  *   - `arrow.up` (active): user has text OR attached images, tap →
- *     onSend(text, images?)
+ *     onSend(text, images, model)
  *   - `waveform` (idle):   empty composer, tap is a no-op (voice slot, V0.5+)
  *   - `stop.fill` (running): turn is in flight, tap → onInterrupt
  *
@@ -151,40 +151,37 @@ async function compressToAttachment(
  * provides the fallback fill so the surface stays visible.
  */
 export function InputBar({
+  cliSessionId,
   onSend,
   onInterrupt,
-  isRunning,
-  selection,
-  onSelectionChange,
   slashContext,
-  contextUsage,
 }: {
+  /** The session this composer drives, or `null` on the new-session
+   *  screen (no session exists yet). InputBar is self-sourcing:
+   *    - non-null → model / running state / context meter are all
+   *      DERIVED from this session's collections (sessionStateCollection
+   *      + sessionActivityCollection). No data props to drill.
+   *    - null → the picker holds a LOCAL draft model (seeded to
+   *      DEFAULT_MODEL); isRunning is false; no context meter. The draft
+   *      pick rides out on `onSend`'s `model` arg so the create flow can
+   *      seed the new session with it. */
+  cliSessionId: string | null;
   /** Fired on tap-to-send. `images` carries the compressed base64
-   *  payloads ready for daemon's sendPrompt; the local DraftAttachment
-   *  ids are stripped (parent doesn't need them). Send is gated by
-   *  hasText OR images.length > 0 so an images-only message is also
-   *  valid (Claude vision accepts an image-only user turn).
+   *  payloads ready for daemon's sendPrompt (local DraftAttachment ids
+   *  stripped); `model` is the current picker selection — the parent
+   *  forwards it into `createSession` (new-session) / `sendPrompt`
+   *  (resume seed). Send is gated by hasText OR images.length > 0 so an
+   *  images-only message is also valid (Claude vision accepts that).
    *
    *  Return `false` to keep the input — used by slash-command rejection
    *  paths (unknown command, wrong screen, invalid arg). Any other
    *  return (void / true / Promise) clears the input as usual. */
-  onSend?: (text: string, images?: ImageAttachment[]) => boolean | void;
+  onSend?: (
+    text: string,
+    images: ImageAttachment[] | undefined,
+    model: string,
+  ) => boolean | void;
   onInterrupt?: () => void;
-  isRunning?: boolean;
-  /** Current model selection. InputBar is a fully controlled picker —
-   *  never holds its own state. Parents are expected to own the source
-   *  of truth:
-   *    - New-session screen: local useState (no session yet to mutate)
-   *    - Session detail: derive from the session's collection row; mutate
-   *      via useSetSessionSelection() (optimistic + RPC + rollback)
-   *  Undefined while picker source data is still loading; menu renders
-   *  empty and chip shows fallback label. */
-  selection?: ModelSelection;
-  /** Called when the user picks a different model in the menu. Parents
-   *  commit the change however they like — optimistic cache mutation,
-   *  local state setter, etc. Omitted = picker is read-only (rarely
-   *  needed). */
-  onSelectionChange?: (next: ModelSelection) => void;
   /** Screen the InputBar is mounted in. Drives the slash-command
    *  picker's visibility + filter. Omit to disable the picker entirely
    *  (e.g. dev pages that don't want slash UX). The picker filters its
@@ -193,16 +190,41 @@ export function InputBar({
    *  Handler({ context: slashContext, ... })` — both pieces use the
    *  same `@sidecodeapp/protocol` source of truth. */
   slashContext?: CommandContext;
-  /** Context-window usage for the meter rendered as a fill on the
-   *  model picker chip's background AND as a header on the menu it
-   *  opens (`Context usage: 145k / 200k`). Omit (new-session screen,
-   *  fresh resume before first turn) → chip renders plain + menu has
-   *  no header. Parent computes via
-   *  `useContextUsage(latestUsage, selection?.model)`. */
-  contextUsage?: { used: number; max: number; percentage: number };
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<DraftAttachment[]>([]);
+
+  // ─── Self-sourced session state ─────────────────────────────────────
+  // Detail (cliSessionId non-null): derive the picker model from the
+  // session's #17 collection row, running-state + context usage from the
+  // transcript-fed sessionActivityCollection. New-session (null): local
+  // draft model, no running, no meter. A picked model commits via
+  // `updateSessionModel` (optimistic + RPC) when a session exists, else
+  // just updates the draft (which leaves on `onSend`'s model arg).
+  const [draftModel, setDraftModel] = useState(DEFAULT_MODEL.model);
+  const { data: sessionRow } = useLiveQuery(
+    (q) =>
+      cliSessionId
+        ? q
+            .from({ s: sessionStateCollection })
+            .where(({ s }) => eq(s.cliSessionId, cliSessionId))
+            .findOne()
+        : null,
+    [cliSessionId],
+  );
+  const activity = useSessionActivity(cliSessionId);
+  const model = cliSessionId
+    ? (sessionRow?.model ?? DEFAULT_MODEL.model)
+    : draftModel;
+  const isRunning = cliSessionId ? activity.isRunning : false;
+  const contextUsage = useContextUsage(
+    cliSessionId ? activity.latestUsage : null,
+    model,
+  );
+  const onPickModel = (m: string) => {
+    if (cliSessionId) updateSessionModel({ cliSessionId, model: m });
+    else setDraftModel(m);
+  };
   // Tracks the TextInput's text cursor / selection range. Powers the
   // cursor-aware slash trigger: panel opens only when the segment from
   // start-of-text up to the cursor starts with `/` and has no space.
@@ -246,7 +268,7 @@ export function InputBar({
     setTextCursor({ start: cursor, end: cursor });
   };
 
-  const currentModel = MODELS.find((m) => m.model === selection?.model);
+  const currentModel = MODELS.find((m) => m.model === model);
   // Cap is enforced in three places: PHPicker's selectionLimit
   // (per-pick), Camera early-return guard, and MenuView action
   // `disabled`. We DON'T dim the `+` button itself — the menu will
@@ -322,17 +344,17 @@ export function InputBar({
       images.length > 0
         ? images.map(({ data, mediaType }) => ({ data, mediaType }))
         : undefined;
-    // selection no longer dragged through onSend — pick-time RPC owns
-    // runtime apply via `setSessionSelection`. sendPrompt at the parent
-    // can still read the current selection from its own source of truth
-    // (useSessions for resume, local state for new-session) when seeding
-    // initial query options.
+    // `model` rides out so the parent can seed createSession (new-session)
+    // / sendPrompt (resume respawn-inherit) — InputBar owns the picker
+    // selection now, so this is how it reaches the send call. Mid-session
+    // model APPLY is still owned by `updateSessionModel` at pick time
+    // (onPickModel); this arg is only the seed value.
     // `onSend` may return `false` to signal "rejected, keep input"
     // (used by `useSlashCommandHandler` when a slash command isn't
     // whitelisted, isn't available on this screen, or has an invalid
     // arg — user typically wants to fix a typo rather than retype).
     // Anything else (void / true / Promise) = "consumed, clear input".
-    const result = onSend?.(text, payload);
+    const result = onSend?.(text, payload, model);
     if (result === false) return;
     setText("");
     setImages([]);
@@ -502,10 +524,10 @@ export function InputBar({
                 actions={MODELS.map<MenuAction>((m) => ({
                   id: m.model,
                   title: m.displayName,
-                  state: m.model === selection?.model ? "on" : "off",
+                  state: m.model === model ? "on" : "off",
                 }))}
                 onPressAction={({ nativeEvent: { event } }) => {
-                  onSelectionChange?.({ model: event });
+                  onPickModel(event);
                 }}
               >
                 {/* Context meter — fills the chip background left→right

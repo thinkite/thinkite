@@ -2,9 +2,10 @@ import { KeyboardChatLegendList } from "@legendapp/list/keyboard-chat";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import type { ImageAttachment } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
+import { LinearGradient } from "expo-linear-gradient";
 import { useHeaderHeight } from "expo-router/react-navigation";
 import { useCallback, useLayoutEffect, useRef } from "react";
-import { type LayoutChangeEvent, View, useColorScheme } from "react-native";
+import { type LayoutChangeEvent, useColorScheme, View } from "react-native";
 import {
   KeyboardStickyView,
   useReanimatedKeyboardAnimation,
@@ -15,17 +16,13 @@ import Reanimated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GitStatusBar } from "@/components/transcript/git-status-bar";
-import {
-  InputBar,
-  type ModelSelection,
-} from "@/components/transcript/input-bar";
+import { InputBar } from "@/components/transcript/input-bar";
 import { TextBlock } from "@/components/transcript/text-block";
 import { ToolBlock } from "@/components/transcript/tool-block";
 import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 import type { RenderBlock } from "@/lib/transcript-blocks";
 import { sendUserMessage } from "@/lib/transcript-collection-factory";
-import { LinearGradient } from "expo-linear-gradient";
 
 // Animatable wrapper for `LinearGradient` — module-level so the wrapped
 // component identity is stable across renders.
@@ -36,20 +33,6 @@ type ChatPanelProps = {
   cliSessionId: string;
   cwd: string | undefined;
   blocks: RenderBlock[];
-  isRunning: boolean;
-  /** Current picker selection — InputBar is fully controlled. The parent
-   *  (SessionDetailScreen) derives it from the session's collection row
-   *  (filtered live query) and commits picks via useSetSessionSelection. */
-  selection?: ModelSelection;
-  /** Called on user pick; parent commits however it likes (optimistic
-   *  cache mutation, local setter, etc.). */
-  onSelectionChange?: (next: ModelSelection) => void;
-  /** Context-window meter for the model picker. Forwarded as-is to
-   *  InputBar — drives both the chip background fill (percentage) and
-   *  the picker menu's header (`Context usage: 145k / 200k`). Parent
-   *  (SessionDetailScreen) computes via
-   *  `useContextUsage(session.latestUsage, selection?.model)`. */
-  contextUsage?: { used: number; max: number; percentage: number };
 };
 
 /**
@@ -108,15 +91,7 @@ type ChatPanelProps = {
  * for the inset hook state and initialScrollAtEnd that weren't
  * reliable.
  */
-export function ChatPanel({
-  cliSessionId,
-  cwd,
-  blocks,
-  isRunning,
-  selection,
-  onSelectionChange,
-  contextUsage,
-}: ChatPanelProps) {
+export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
   const { client } = useDaemonClient();
@@ -199,7 +174,7 @@ export function ChatPanel({
   // commands (/clear, /model) never reach here — `useSlashCommandHandler`
   // dispatches them locally instead. See the hook's file header.
   const rawSend = useCallback(
-    (text: string, images?: ImageAttachment[]) => {
+    (text: string, images: ImageAttachment[] | undefined, model: string) => {
       // Optimistic in-session send: `sendUserMessage` inserts the bubble
       // into this session's transcript collection synchronously (instant
       // paint) and fires the sendPrompt under a client-generated uuid; the
@@ -207,21 +182,22 @@ export function ChatPanel({
       // dedupes against this optimistic insert by key. See sendUserMessage.
       //
       // cwd is forwarded for the SDK's project-key resolution on `--resume`
-      // (plumbed through route params); `model` rides along so a
-      // daemon-restart respawn inherits the picker selection (mid-session
-      // apply is owned by setSessionSelection — send only seeds).
+      // (plumbed through route params); `model` (InputBar's current picker
+      // selection) rides along so a daemon-restart respawn inherits it —
+      // mid-session apply is owned by updateSessionModel at pick time, this
+      // is only the respawn seed.
       void sendUserMessage({
         cliSessionId,
         userMessageUuid: Crypto.randomUUID(),
         text,
         cwd,
         images,
-        model: selection?.model,
+        model,
       }).isPersisted.promise.catch((err) => {
         console.error("sendPrompt failed", err);
       });
     },
-    [cliSessionId, cwd, selection],
+    [cliSessionId, cwd],
   );
 
   const onSend = useSlashCommandHandler({
@@ -376,13 +352,10 @@ export function ChatPanel({
         <View ref={composerRef} collapsable={false} onLayout={onComposerLayout}>
           <GitStatusBar cwd={cwd} />
           <InputBar
+            cliSessionId={cliSessionId}
             onSend={onSend}
             onInterrupt={onInterrupt}
-            isRunning={isRunning}
-            selection={selection}
-            onSelectionChange={onSelectionChange}
             slashContext="in-session"
-            contextUsage={contextUsage}
           />
         </View>
       </KeyboardStickyView>
