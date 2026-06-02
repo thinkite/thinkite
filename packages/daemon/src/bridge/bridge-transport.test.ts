@@ -712,3 +712,44 @@ describe("BridgeTransport.reconnect — M3.5.2 transport-level credential swap",
     expect("epoch" in (captured[0] ?? {})).toBe(false);
   });
 });
+
+describe("backfill (M3.3 upgrade history flush)", () => {
+  const attachT = (handle: BridgeSessionHandle) =>
+    BridgeTransport.attach({
+      tokens: tokenSource(),
+      title: "t",
+      cwd: "/w",
+      deps: happyDeps(handle),
+    });
+
+  it("writes each message with historical:true, then flushes once", async () => {
+    const fake = fakeHandle();
+    const t = await attachT(fake.handle);
+    await t.backfill([
+      { type: "user", uuid: "u1" },
+      { type: "assistant", uuid: "a1" },
+    ]);
+    expect(fake.writes).toEqual([
+      { type: "user", uuid: "u1", historical: true },
+      { type: "assistant", uuid: "a1", historical: true },
+    ]);
+    expect(vi.mocked(fake.handle.flush)).toHaveBeenCalledOnce();
+  });
+
+  it("flushes even when history is empty (no writes)", async () => {
+    const fake = fakeHandle();
+    const t = await attachT(fake.handle);
+    await t.backfill([]);
+    expect(fake.writes).toEqual([]);
+    expect(vi.mocked(fake.handle.flush)).toHaveBeenCalledOnce();
+  });
+
+  it("is a no-op after close — no writes, no flush", async () => {
+    const fake = fakeHandle();
+    const t = await attachT(fake.handle);
+    t.close();
+    await t.backfill([{ type: "user", uuid: "u1" }]);
+    expect(fake.writes).toEqual([]);
+    expect(vi.mocked(fake.handle.flush)).not.toHaveBeenCalled();
+  });
+});

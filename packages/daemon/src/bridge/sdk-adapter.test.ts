@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the @alpha /bridge subpath so we can assert the adapter forwards the
 // right positional args + defaults without touching the network.
@@ -20,6 +20,7 @@ const {
   DEFAULT_BRIDGE_TIMEOUT_MS,
   attachBridgeSession,
   createCodeSession,
+  deleteCodeSession,
   fetchRemoteCredentials,
   isCredentialsFailure,
 } = await import("./sdk-adapter.js");
@@ -102,5 +103,89 @@ describe("pass-through wrappers", () => {
     const failure = { terminal: true, reason: "untrusted_device" } as const;
     isCredentialsFailure(failure);
     expect(sdk.isCredentialsFailure).toHaveBeenCalledWith(failure);
+  });
+});
+
+describe("deleteCodeSession (raw HTTP, no SDK fn)", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("DELETEs the cse_ with Bearer + version + org headers, NO beta; true on 200", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response("{}", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const ok = await deleteCodeSession({
+      sessionId: "cse_9",
+      accessToken: "tok",
+      organizationUuid: "org_1",
+    });
+    expect(ok).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${ANTHROPIC_API_BASE}/v1/code/sessions/cse_9`);
+    expect(init.method).toBe("DELETE");
+    expect(init.headers).toMatchObject({
+      Authorization: "Bearer tok",
+      "anthropic-version": "2023-06-01",
+      "x-organization-uuid": "org_1",
+    });
+    expect(init.headers).not.toHaveProperty("anthropic-beta");
+  });
+
+  it("treats 404 as success (idempotent — already gone)", async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response("", { status: 404 }),
+    ) as unknown as typeof fetch;
+    await expect(
+      deleteCodeSession({
+        sessionId: "cse_x",
+        accessToken: "t",
+        organizationUuid: "o",
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it("returns false on 500 and never throws on network error", async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response("", { status: 500 }),
+    ) as unknown as typeof fetch;
+    await expect(
+      deleteCodeSession({
+        sessionId: "cse_x",
+        accessToken: "t",
+        organizationUuid: "o",
+      }),
+    ).resolves.toBe(false);
+
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    await expect(
+      deleteCodeSession({
+        sessionId: "cse_x",
+        accessToken: "t",
+        organizationUuid: "o",
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it("honors baseUrl override", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response("{}", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    await deleteCodeSession({
+      sessionId: "cse_1",
+      accessToken: "t",
+      organizationUuid: "o",
+      baseUrl: "http://localhost:8000",
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://localhost:8000/v1/code/sessions/cse_1",
+    );
   });
 });

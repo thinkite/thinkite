@@ -55,6 +55,7 @@ import { extractInboundPrompt } from "../runtime/run-query.js";
 import type { SessionRuntime } from "../runtime/session-runtime.js";
 import {
   clearBridgeWorkerState,
+  markBridgeBackfilled,
   updateBridgeSequenceNum,
   writeBridgeWorkerState,
 } from "../sidecode-sessions.js";
@@ -64,7 +65,12 @@ import {
   type PermissionModeVerdict,
   type TokenSource,
 } from "./bridge-transport.js";
-import { fetchRemoteCredentials, isCredentialsFailure } from "./sdk-adapter.js";
+import { readOrgUUID } from "./credentials.js";
+import {
+  deleteCodeSession,
+  fetchRemoteCredentials,
+  isCredentialsFailure,
+} from "./sdk-adapter.js";
 
 /** V0 verdict for any set_permission_mode control_request from claude.ai.
  *  sidecode V0 fixes `bypassPermissions` (project_no_plan_mode_v0 +
@@ -165,6 +171,7 @@ export interface BridgeServiceOptions {
     writeBridgeWorkerState?: typeof writeBridgeWorkerState;
     updateBridgeSequenceNum?: typeof updateBridgeSequenceNum;
     clearBridgeWorkerState?: typeof clearBridgeWorkerState;
+    markBridgeBackfilled?: typeof markBridgeBackfilled;
   };
   /** Test seams for M3.5 reconnect: SDK call (probe + new creds) and the
    *  proactive jwt timer (mock setTimeout / clearTimeout to drive
@@ -172,7 +179,20 @@ export interface BridgeServiceOptions {
    *  OAuthRefreshManager). */
   sdk?: {
     fetchRemoteCredentials?: typeof fetchRemoteCredentials;
+    /** Test seam: override the raw-HTTP cse_ delete (downgrade/unbridge). */
+    deleteCodeSession?: typeof deleteCodeSession;
   };
+  /** Read the org UUID for the cse_ delete call. Default =
+   *  credentials.readOrgUUID (reads ~/.claude.json). Injectable for tests. */
+  readOrgUUID?: () => string | null;
+  /**
+   * M3.3 upgrade backfill source — read a session's existing history as raw
+   * SDKMessages (user/assistant) to flush to the cloud mirror. index.ts wires
+   * this to `getSessionMessages` + a user/assistant filter; omit (tests / no
+   * backfill) → upgrade attaches without flushing history. Given the
+   * session's cliSessionId + cwd hint.
+   */
+  readHistory?: (cliSessionId: string, cwd: string) => Promise<unknown[]>;
   setTimer?: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (handle: ReturnType<typeof setTimeout>) => void;
   /** Override the proactive-refresh lead (seconds before jwt expiry). Tests
@@ -312,7 +332,14 @@ export class BridgeService {
   private readonly writeBridgeWorkerState: typeof writeBridgeWorkerState;
   private readonly updateBridgeSequenceNum: typeof updateBridgeSequenceNum;
   private readonly clearBridgeWorkerState: typeof clearBridgeWorkerState;
+  private readonly markBridgeBackfilled: typeof markBridgeBackfilled;
   private readonly fetchRemoteCredentials: typeof fetchRemoteCredentials;
+  private readonly deleteCodeSession: typeof deleteCodeSession;
+  private readonly readOrgUUID: () => string | null;
+  private readonly readHistory?: (
+    cliSessionId: string,
+    cwd: string,
+  ) => Promise<unknown[]>;
   private readonly setTimer: (
     cb: () => void,
     ms: number,
@@ -338,8 +365,14 @@ export class BridgeService {
       options.persist?.updateBridgeSequenceNum ?? updateBridgeSequenceNum;
     this.clearBridgeWorkerState =
       options.persist?.clearBridgeWorkerState ?? clearBridgeWorkerState;
+    this.markBridgeBackfilled =
+      options.persist?.markBridgeBackfilled ?? markBridgeBackfilled;
     this.fetchRemoteCredentials =
       options.sdk?.fetchRemoteCredentials ?? fetchRemoteCredentials;
+    this.deleteCodeSession =
+      options.sdk?.deleteCodeSession ?? deleteCodeSession;
+    this.readOrgUUID = options.readOrgUUID ?? readOrgUUID;
+    this.readHistory = options.readHistory;
     this.setTimer = options.setTimer ?? setTimeout;
     this.clearTimer = options.clearTimer ?? clearTimeout;
     this.proactiveRefreshLeadSec =
@@ -501,6 +534,50 @@ export class BridgeService {
     this.log(
       `[bridge] session ${sessionId} ${existing !== undefined ? "re-attached" : "mirroring"} to ${transport.cseSessionId}`,
     );
+    return transport;
+  }
+
+  /**
+   * M3.3 mid-life upgrade (pure → bridged) of an EXISTING session.
+   *
+   * Precondition: the caller (router) gates on the session being IDLE (not
+   * `running`) — V0 option A. Upgrading mid-turn would drop the in-flight
+   * turn's already-streamed messages into a seam between the on-disk backfill
+   * (not yet flushed) and the live tap (only catches post-attach writes); at a
+   * turn boundary the JSONL is complete and there's no in-flight turn, so the
+   * handoff is clean. This method does NOT re-check idle — that's the router's
+   * job; here we assume a boundary.
+   *
+   * Flow: fresh `attach` (createCodeSession + worker state {backfilled:false} +
+   * wire runtime.bridge + arm timers) → read the session's existing history →
+   * `transport.backfill(historical)` → `markBridgeBackfilled`. After this the
+   * live tap (forwardToBridge) mirrors every subsequent turn automatically.
+   *
+   * Backfill is best-effort: a fresh attach that SUCCEEDS but whose backfill
+   * read/flush fails leaves the session BRIDGED but with prior history absent
+   * on claude.ai (live turns still mirror). We log and DON'T mark backfilled.
+   * Attach failure itself propagates (BridgeAttachError) — the caller surfaces
+   * it and the session stays pure.
+   */
+  async upgrade(
+    sessionId: string,
+    runtime: BridgeAttachableRuntime,
+    request: BridgeAttachRequest,
+  ): Promise<BridgeTransport> {
+    const transport = await this.attach(sessionId, runtime, request);
+    if (this.readHistory === undefined) return transport;
+    try {
+      const history = await this.readHistory(sessionId, request.cwd);
+      if (history.length > 0) await transport.backfill(history);
+      // Mark done even for empty history (nothing to flush = backfill complete).
+      this.markBridgeBackfilled(this.home, sessionId);
+    } catch (err) {
+      this.log(
+        `[bridge] upgrade backfill failed for ${sessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        } (session stays bridged; prior history not shown on claude.ai)`,
+      );
+    }
     return transport;
   }
 
@@ -941,6 +1018,59 @@ export class BridgeService {
     this.log(
       `[bridge] session ${sessionId} backoff retry scheduled in ${delayMs}ms (attempt ${idx + 1}/${BACKOFF_LADDER_MS.length})`,
     );
+  }
+
+  /**
+   * Downgrade (bridged → pure / "make private") of an EXISTING bridged session.
+   *
+   * Order matters: `detach` FIRST (closes the handle → no more heartbeats → no
+   * 4090 onClose → no reconnect race; forgets the session; clears worker state
+   * so M3.4 startup re-attach won't revive it), THEN a best-effort
+   * `deleteCodeSession` on the now-orphaned cse_ so it vanishes from claude.ai.
+   *
+   * If the cloud delete fails (network / no org uuid) the local downgrade still
+   * holds: the session continues PURE (local JSONL untouched, runtime + WebRTC
+   * unaffected) and the worker state is already cleared, so the daemon won't
+   * re-bridge it; the cse_ just lingers as a `disconnected` session on
+   * claude.ai the user can delete there. Never throws, never blocks the local
+   * downgrade on the cloud call.
+   */
+  async unbridge(
+    sessionId: string,
+    runtime: BridgeAttachableRuntime,
+  ): Promise<void> {
+    const cseSessionId = this.sessions.get(sessionId)?.transport.cseSessionId;
+    // Local teardown first — closes the handle (stops heartbeats so no 4090
+    // onClose → no reconnect), forgets the session, clears worker state.
+    this.detach(sessionId, runtime);
+    if (cseSessionId === undefined) return;
+    // Best-effort cloud delete of the now-orphaned cse_.
+    try {
+      const organizationUuid = this.readOrgUUID();
+      if (organizationUuid === null) {
+        this.log(
+          `[bridge] unbridge ${sessionId}: no org uuid — cse_ ${cseSessionId} left as disconnected on claude.ai`,
+        );
+        return;
+      }
+      const accessToken = await this.oauth.ensureFresh();
+      const ok = await this.deleteCodeSession({
+        sessionId: cseSessionId,
+        accessToken,
+        organizationUuid,
+      });
+      if (!ok) {
+        this.log(
+          `[bridge] unbridge ${sessionId}: deleteCodeSession failed for ${cseSessionId} (left as disconnected on claude.ai)`,
+        );
+      }
+    } catch (err) {
+      this.log(
+        `[bridge] unbridge ${sessionId}: cloud delete threw for ${cseSessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        } (local downgrade already applied)`,
+      );
+    }
   }
 
   /**

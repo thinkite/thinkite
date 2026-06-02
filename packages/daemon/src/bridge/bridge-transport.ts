@@ -422,6 +422,36 @@ export class BridgeTransport implements RuntimeBridge {
     this.handle.sendResult();
   }
 
+  /**
+   * M3.3 upgrade — flush a session's EXISTING history to the cloud mirror so
+   * an upgraded (pure→bridged) session shows its prior conversation on
+   * claude.ai. Each message is written with `historical: true` (the server
+   * renders these as transcript without re-triggering a turn or a spinner —
+   * so NO sendResult is owed for historical turns), then the write queue is
+   * drained via `flush()` so the caller only records the backfill as done
+   * after delivery actually completes.
+   *
+   * `messages` are raw SDKMessages (e.g. from `getSessionMessages`) already
+   * filtered by the caller to the writable set (user / assistant). Per-write
+   * is best-effort (one malformed message must not abort the whole backfill —
+   * the mirror degrades, never the pillar). `flush()` errors PROPAGATE so the
+   * caller skips `markBridgeBackfilled` on a failed flush. No-op after close.
+   */
+  async backfill(messages: unknown[]): Promise<void> {
+    if (this.closed) return;
+    for (const msg of messages) {
+      try {
+        this.handle.write({
+          ...(msg as Record<string, unknown>),
+          historical: true,
+        } as unknown as Parameters<BridgeSessionHandle["write"]>[0]);
+      } catch {
+        // skip one bad message — mirror degrades, never the pillar/WebRTC path.
+      }
+    }
+    await this.handle.flush();
+  }
+
   /** PUT /worker state — running on turn start, idle on turn end. Required for
    *  claude.ai to show the session as running (M1.5-verified). Deduped: a
    *  repeated state is a no-op (the tap reports running at both prompt-submit

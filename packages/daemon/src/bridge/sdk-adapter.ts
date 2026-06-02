@@ -152,3 +152,59 @@ export function isCredentialsFailure(
 ): value is CredentialsFailure {
   return sdkIsCredentialsFailure(value);
 }
+
+export interface DeleteCodeSessionParams {
+  /** The `cse_*` id to hard-delete. */
+  sessionId: string;
+  accessToken: string;
+  /** From `~/.claude.json` oauthAccount.organizationUuid (credentials.readOrgUUID). */
+  organizationUuid: string;
+  baseUrl?: string;
+  timeoutMs?: number;
+}
+
+/**
+ * `DELETE {baseUrl}/v1/code/sessions/{cseId}` — HARD-delete the cloud cse_
+ * (the "downgrade / make private" teardown). The session vanishes from
+ * claude.ai; the LOCAL `<cliSessionId>.jsonl` is a separate store and is
+ * untouched, so the sidecode session continues as a pure WebRTC session.
+ *
+ * Unlike create/fetch/attach this is NOT an SDK function — the `/bridge`
+ * subpath exposes no delete — so it's a raw HTTP call. Kept here so all CCR
+ * endpoint knowledge (base URL + paths) stays single-sourced. `code`
+ * namespace: Bearer + anthropic-version + x-organization-uuid, NO beta header
+ * (verified — cse_ lifecycle endpoint map, project_sidecode_ccr_architecture).
+ *
+ * Returns `true` when the session is gone — 200 (deleted) OR 404 (already
+ * absent: idempotent). Returns `false` on any other status / network error;
+ * the caller logs and proceeds (the local detach already ran, and the
+ * reconnect classifier independently clears state if the session is truly
+ * gone). Never throws.
+ */
+export async function deleteCodeSession(
+  params: DeleteCodeSessionParams,
+): Promise<boolean> {
+  const base = params.baseUrl ?? ANTHROPIC_API_BASE;
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    params.timeoutMs ?? DEFAULT_BRIDGE_TIMEOUT_MS,
+  );
+  try {
+    const res = await fetch(`${base}/v1/code/sessions/${params.sessionId}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${params.accessToken}`,
+        "anthropic-version": "2023-06-01",
+        "x-organization-uuid": params.organizationUuid,
+      },
+      signal: controller.signal,
+    });
+    // 200 = deleted, 404 = already gone — both mean "no longer exists".
+    return res.ok || res.status === 404;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}

@@ -1715,3 +1715,211 @@ describe("BridgeService — M3.5.7 in-flight reconnect coalescing + stale-transp
     expect(fetchImpl).not.toHaveBeenCalled(); // no reconnect triggered
   });
 });
+
+// ── M3.3 upgrade + downgrade ──────────────────────────────────────────────
+
+/** No-op timers so attach's proactive-refresh arm doesn't leave a real
+ *  setTimeout pending across the test (matches the existing tests' pattern). */
+const NO_TIMERS = {
+  setTimer: (_cb: () => void, _ms: number) =>
+    0 as unknown as ReturnType<typeof setTimeout>,
+  clearTimer: (_h: ReturnType<typeof setTimeout>) => {},
+};
+type AttachOverride =
+  typeof import("./bridge-transport.js").BridgeTransport.attach;
+const asAttach = (fn: unknown): AttachOverride => fn as AttachOverride;
+
+describe("upgrade (M3.3 pure→bridged + backfill)", () => {
+  /** A fake transport that records backfill() calls (the shared fakeTransport
+   *  omits backfill — only upgrade uses it). */
+  function fakeTransportWithBackfill(cseSessionId = "cse_up") {
+    const backfillCalls: unknown[][] = [];
+    let closeCalls = 0;
+    return {
+      cseSessionId,
+      get backfillCalls() {
+        return backfillCalls;
+      },
+      get closeCalls() {
+        return closeCalls;
+      },
+      async backfill(msgs: unknown[]) {
+        backfillCalls.push(msgs);
+      },
+      close() {
+        closeCalls++;
+      },
+      write() {},
+      sendResult() {},
+      reportMetadata() {},
+      getSequenceNum: () => 0,
+      expiresInSec: 14400,
+      async reconnect() {},
+      get isConnected() {
+        return closeCalls === 0;
+      },
+    } as unknown as BridgeTransport & {
+      backfillCalls: unknown[][];
+      closeCalls: number;
+    };
+  }
+
+  it("attaches fresh, backfills the read history, then marks backfilled", async () => {
+    const transport = fakeTransportWithBackfill();
+    const markBackfilled = vi.fn(() => undefined);
+    const readHistory = vi.fn(async () => [{ type: "user", uuid: "u1" }]);
+    const runtime: BridgeAttachableRuntime = { bridge: null };
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      home: "/h",
+      persist: { ...STUB_PERSIST, markBridgeBackfilled: markBackfilled },
+      readHistory,
+      attachTransport: asAttach(vi.fn(async () => transport)),
+      ...NO_TIMERS,
+    });
+
+    const t = await service.upgrade("s1", runtime, { title: "t", cwd: "/w" });
+
+    expect(t).toBe(transport);
+    expect(runtime.bridge).toBe(transport); // attach wired the slot
+    expect(readHistory).toHaveBeenCalledWith("s1", "/w");
+    expect(transport.backfillCalls).toEqual([[{ type: "user", uuid: "u1" }]]);
+    expect(markBackfilled).toHaveBeenCalledWith("/h", "s1");
+  });
+
+  it("marks backfilled even with empty history (no backfill write)", async () => {
+    const transport = fakeTransportWithBackfill();
+    const markBackfilled = vi.fn(() => undefined);
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      home: "/h",
+      persist: { ...STUB_PERSIST, markBridgeBackfilled: markBackfilled },
+      readHistory: vi.fn(async () => []),
+      attachTransport: asAttach(vi.fn(async () => transport)),
+      ...NO_TIMERS,
+    });
+
+    await service.upgrade("s1", { bridge: null }, { title: "t", cwd: "/w" });
+
+    expect(transport.backfillCalls).toEqual([]); // empty → skip the flush write
+    expect(markBackfilled).toHaveBeenCalledWith("/h", "s1");
+  });
+
+  it("does NOT mark backfilled when history read fails (attach still succeeded → bridged)", async () => {
+    const transport = fakeTransportWithBackfill();
+    const markBackfilled = vi.fn(() => undefined);
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      home: "/h",
+      persist: { ...STUB_PERSIST, markBridgeBackfilled: markBackfilled },
+      readHistory: vi.fn(async () => {
+        throw new Error("read failed");
+      }),
+      attachTransport: asAttach(vi.fn(async () => transport)),
+      ...NO_TIMERS,
+    });
+
+    const t = await service.upgrade(
+      "s1",
+      { bridge: null },
+      {
+        title: "t",
+        cwd: "/w",
+      },
+    );
+
+    expect(t).toBe(transport); // attach succeeded → bridged, just not backfilled
+    expect(markBackfilled).not.toHaveBeenCalled();
+  });
+});
+
+describe("unbridge (downgrade — detach then cloud delete)", () => {
+  it("detaches locally (close + clear worker state) then DELETEs the cse_", async () => {
+    const transport = fakeTransport("cse_del");
+    const clearWorker = vi.fn(() => undefined);
+    const deleteCse = vi.fn(async () => true);
+    const runtime: BridgeAttachableRuntime = { bridge: null };
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      home: "/h",
+      persist: { ...STUB_PERSIST, clearBridgeWorkerState: clearWorker },
+      readOrgUUID: () => "org_1",
+      sdk: { deleteCodeSession: deleteCse },
+      attachTransport: asAttach(vi.fn(async () => transport)),
+      ...NO_TIMERS,
+    });
+
+    await service.attach("s1", runtime, { title: "t", cwd: "/w" });
+    expect(runtime.bridge).toBe(transport);
+
+    await service.unbridge("s1", runtime);
+
+    expect(transport.closeCalls).toBe(1); // handle closed (detach)
+    expect(runtime.bridge).toBe(null); // slot cleared
+    expect(clearWorker).toHaveBeenCalledWith("/h", "s1"); // worker state cleared
+    expect(deleteCse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "cse_del",
+        organizationUuid: "org_1",
+      }),
+    );
+  });
+
+  it("no-ops the cloud delete when the session isn't attached", async () => {
+    const deleteCse = vi.fn(async () => true);
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      home: "/h",
+      persist: STUB_PERSIST,
+      readOrgUUID: () => "o",
+      sdk: { deleteCodeSession: deleteCse },
+      ...NO_TIMERS,
+    });
+
+    await service.unbridge("nope", { bridge: null });
+
+    expect(deleteCse).not.toHaveBeenCalled();
+  });
+
+  it("local downgrade still completes when the cloud delete fails (best-effort)", async () => {
+    const transport = fakeTransport("cse_x");
+    const clearWorker = vi.fn(() => undefined);
+    const runtime: BridgeAttachableRuntime = { bridge: null };
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      home: "/h",
+      persist: { ...STUB_PERSIST, clearBridgeWorkerState: clearWorker },
+      readOrgUUID: () => "o",
+      sdk: { deleteCodeSession: vi.fn(async () => false) }, // cloud delete fails
+      attachTransport: asAttach(vi.fn(async () => transport)),
+      ...NO_TIMERS,
+    });
+
+    await service.attach("s1", runtime, { title: "t", cwd: "/w" });
+    await expect(service.unbridge("s1", runtime)).resolves.toBeUndefined();
+
+    expect(transport.closeCalls).toBe(1); // detached regardless
+    expect(clearWorker).toHaveBeenCalledWith("/h", "s1");
+  });
+
+  it("skips the cloud delete when there's no org uuid (still detaches)", async () => {
+    const transport = fakeTransport("cse_x");
+    const deleteCse = vi.fn(async () => true);
+    const runtime: BridgeAttachableRuntime = { bridge: null };
+    const service = new BridgeService({
+      oauth: fakeOAuth(),
+      home: "/h",
+      persist: STUB_PERSIST,
+      readOrgUUID: () => null, // no org uuid
+      sdk: { deleteCodeSession: deleteCse },
+      attachTransport: asAttach(vi.fn(async () => transport)),
+      ...NO_TIMERS,
+    });
+
+    await service.attach("s1", runtime, { title: "t", cwd: "/w" });
+    await service.unbridge("s1", runtime);
+
+    expect(transport.closeCalls).toBe(1); // detached
+    expect(deleteCse).not.toHaveBeenCalled(); // skipped — no org uuid
+  });
+});
