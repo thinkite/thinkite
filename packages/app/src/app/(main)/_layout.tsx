@@ -1,4 +1,5 @@
 import { Stack } from "expo-router";
+import { useColorScheme } from "react-native";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 
 /**
@@ -19,6 +20,7 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  */
 export default function MainLayout() {
   const { isUnpaired } = useDaemonClient();
+  const scheme = useColorScheme() ?? "light";
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Protected guard={isUnpaired}>
@@ -30,7 +32,14 @@ export default function MainLayout() {
         {/* (drawer) is a route group hosting the main app: Drawer with
             custom session-list sidebar, plus the new-session create page
             (index) and session detail. */}
-        <Stack.Screen name="(drawer)" />
+        <Stack.Screen
+          name="(drawer)"
+          options={{
+            contentStyle: {
+              backgroundColor: scheme === "dark" ? "#000000" : "#ffffff",
+            },
+          }}
+        />
         {/* Settings rendered as iOS pageSheet — same physics as the
             tool-detail BottomSheet but as a routable modal (gets a URL,
             supports deep linking). The route is a group

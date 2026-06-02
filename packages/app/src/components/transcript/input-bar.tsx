@@ -423,6 +423,7 @@ export function InputBar({
       )}
       <GlassView
         isInteractive
+        glassEffectStyle="regular"
         style={{
           borderRadius: 24,
           borderCurve: "continuous",
@@ -433,10 +434,9 @@ export function InputBar({
             colorScheme === "dark"
               ? "rgba(28,28,30,0.6)"
               : "rgba(255,255,255,0.6)",
-          overflow: "hidden", // clip attachment delete badges
         }}
       >
-        <View className="py-3 gap-2">
+        <View className="py-3 gap-2 rounded-3xl border-continuous overflow-hidden">
           {/* Attachment pill row — only when there are draft images.
               Horizontal scroll so 8 thumbs fit on narrow screens. The
               X badge sits INSIDE each thumbnail's bounds (not negative

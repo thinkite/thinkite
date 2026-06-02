@@ -3,10 +3,16 @@
 import "@/lib/polyfills";
 import "@/global.css";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { Stack } from "expo-router";
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  Text,
+  useColorScheme,
+  View,
+} from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import {
@@ -44,6 +50,7 @@ export const unstable_settings = {
 };
 
 export default function RootLayout() {
+  const scheme = useColorScheme() ?? "light";
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
@@ -55,9 +62,13 @@ export default function RootLayout() {
                   Uniwind.updateInsets(insets);
                 }}
               >
-                <DaemonGate>
-                  <RootStack />
-                </DaemonGate>
+                <ThemeProvider
+                  value={scheme === "dark" ? DarkTheme : DefaultTheme}
+                >
+                  <DaemonGate>
+                    <RootStack />
+                  </DaemonGate>
+                </ThemeProvider>
               </SafeAreaListener>
             </DaemonClientProvider>
           </QueryClientProvider>
