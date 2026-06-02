@@ -393,18 +393,9 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
     expect(() => r.setActivity("idle")).not.toThrow();
   });
 
-  it("setModel fans out a state-changed event via the runtime's onStateChanged callback", () => {
-    const m = new SessionRuntimeManager<string>();
-    seedExistingSession(m, home, fixtureMeta({ cliSessionId: "a" }));
-    const { listener, onChange } = makeListener();
-    m.subscribeSessionStates(listener);
-
-    const r = m.getOrCreate("a");
-    r.setModel("claude-opus-4-7");
-
-    expect(onChange).toHaveBeenCalledOnce();
-    expect(onChange.mock.calls[0]?.[1].model).toBe("claude-opus-4-7");
-  });
+  // (model fan-out via manager.setModel is covered in the "B: manager
+  // .setModel owns model persistence + fan-out" section below; there's no
+  // runtime-level setModel to test here anymore.)
 
   it("multiple listeners all receive the same fan-out", () => {
     const m = new SessionRuntimeManager<string>();
@@ -468,7 +459,7 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
     expect(onDisk?.lastActivityAt).toBeGreaterThan(1_000);
   });
 
-  it("#17.5 setModel alone does NOT advance disk lastActivityAt (monotonic guard collapses no-op write)", () => {
+  it("#17.5 activity edge does NOT regress disk lastActivityAt when the cached value is in the future (monotonic guard)", () => {
     const m = new SessionRuntimeManager<string>();
     seedExistingSession(
       m,
@@ -476,12 +467,10 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
       fixtureMeta({ cliSessionId: "a", lastActivityAt: 5_000_000_000_000 }),
     );
     const r = m.getOrCreate("a");
-    // Construction stamped runtime.lastActivityAt to Date.now() (a value
-    // strictly LESS than disk's 5e12). setModel fires onStateChanged but
-    // doesn't touch runtime.lastActivityAt, so notifyStateChanged's
-    // monotonic guard rejects the write (runtime clock < cached clock
-    // → no-op).
-    r.setModel("claude-opus-4-7");
+    // setActivity stamps runtime.lastActivityAt = Date.now() (~1.7e12),
+    // strictly LESS than the disk's future 5e12. notifyStateChanged's
+    // monotonic guard rejects the regression — no disk write.
+    r.setActivity("running");
 
     const onDisk = readSidecodeSession(home, "a");
     expect(onDisk?.lastActivityAt).toBe(5_000_000_000_000); // unchanged

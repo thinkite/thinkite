@@ -136,9 +136,11 @@ export class SessionRuntimeManager<T> {
     const created = new SessionRuntime<T>(sessionId, merged);
     const meta = this.states.get(sessionId);
     if (meta?.model !== undefined) {
-      // Direct field assignment (not setModel) — at construction time
-      // there are no listeners attached yet, and even if there were,
-      // initial-state seeding shouldn't look like a "change" event.
+      // Direct field assignment — at construction time there are no
+      // listeners attached yet, and even if there were, initial-state
+      // seeding shouldn't look like a "change" event. (Model is a plain
+      // mirror field; the manager owns it directly — there is no
+      // runtime-level setter.)
       created.currentModel = meta.model;
     }
     this.runtimes.set(sessionId, created);
@@ -217,9 +219,9 @@ export class SessionRuntimeManager<T> {
    *
    * Model persistence + fan-out are OWNED HERE (notifyStateChanged no
    * longer diffs/persists model — see its comment). The live runtime's
-   * `currentModel` is mirrored with a DIRECT field set (matching
-   * getOrCreate's seed) rather than `runtime.setModel`, so the runtime's
-   * onStateChanged doesn't double up with the explicit fan-out below.
+   * `currentModel` is a best-effort mirror, set with a direct field
+   * assignment (matching getOrCreate's seed); persist + fan-out are
+   * explicit below. (There is no runtime-level model setter.)
    */
   setModel(sessionId: string, model: string | undefined): boolean {
     const prev = this.states.get(sessionId);
@@ -387,9 +389,10 @@ export class SessionRuntimeManager<T> {
       return;
     }
 
-    // This fires on activity transitions (setActivity stamps a fresh
-    // lastActivityAt) and on runtime.setModel. We persist ONLY
-    // lastActivityAt here — model is deliberately NOT diffed/persisted.
+    // This fires on activity transitions only (setActivity stamps a fresh
+    // lastActivityAt; model changes go through manager.setModel, which
+    // doesn't route here). We persist ONLY lastActivityAt — model is
+    // deliberately NOT diffed/persisted.
     //
     // Why model is excluded: model persistence is owned by `setModel`
     // (and the initial value by `createSession`), which write

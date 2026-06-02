@@ -492,46 +492,17 @@ describe("SessionRuntime", () => {
     expect(r.query).toBeNull();
   });
 
-  // ─── #17 onStateChanged + setModel + lastActivityAt fan-out ──────────
+  // ─── #17 onStateChanged + lastActivityAt fan-out ─────────────────────
 
   it("#17 currentModel initialized to null at construction", () => {
     const r = new SessionRuntime<string>("s1");
     expect(r.currentModel).toBeNull();
   });
 
-  it("#17 setModel updates currentModel + fires onStateChanged on first set", () => {
-    const seen: string[] = [];
-    const r = new SessionRuntime<string>("s1", {
-      onStateChanged: (sid) => seen.push(sid),
-    });
-    const changed = r.setModel("claude-opus-4-7");
-    expect(changed).toBe(true);
-    expect(r.currentModel).toBe("claude-opus-4-7");
-    expect(seen).toEqual(["s1"]);
-  });
-
-  it("#17 setModel dedupes — same value returns false, no callback", () => {
-    const seen: string[] = [];
-    const r = new SessionRuntime<string>("s1", {
-      onStateChanged: (sid) => seen.push(sid),
-    });
-    r.setModel("claude-opus-4-7");
-    const second = r.setModel("claude-opus-4-7");
-    expect(second).toBe(false);
-    expect(seen).toEqual(["s1"]); // only the first call fanned out
-  });
-
-  it("#17 setModel(null) resets to SDK default + fans out", () => {
-    const seen: string[] = [];
-    const r = new SessionRuntime<string>("s1", {
-      onStateChanged: (sid) => seen.push(sid),
-    });
-    r.setModel("claude-opus-4-7");
-    const reset = r.setModel(null);
-    expect(reset).toBe(true);
-    expect(r.currentModel).toBeNull();
-    expect(seen).toEqual(["s1", "s1"]);
-  });
+  // currentModel is a plain mirror field owned by SessionRuntimeManager
+  // (getOrCreate seed + manager.setModel direct assignment) — there is no
+  // runtime-level setModel, so its read/write behavior is covered by the
+  // manager tests, not here. onStateChanged is fired only by setActivity.
 
   it("#17 setActivity fires onStateChanged on transition (idle→running, running→idle)", () => {
     const seen: string[] = [];

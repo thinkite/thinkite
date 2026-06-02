@@ -263,18 +263,19 @@ export class SessionRuntime<T> {
 
   /** #17 — current model selection for this runtime. `null` = "let SDK
    *  pick default" (honors the user's account / Desktop `Settings.model`
-   *  per upstream docs). Set by:
-   *    - SessionRuntimeManager.getOrCreate seeding from on-disk
-   *      `SidecodeSessionMetadata.model` at first hydration
-   *    - `setModel()` called from router setSessionSelection / bridge
-   *      onSetModel right after `applyFlagSettings({model})` succeeds
+   *  per upstream docs). A best-effort MIRROR — `SidecodeSessionMetadata
+   *  .model` (the manager's `states` cache) is the authoritative source.
+   *  Written by `SessionRuntimeManager` only, via direct field assignment:
+   *    - `getOrCreate` seeds it from on-disk metadata at first hydration
+   *    - `setModel` mirrors the new pick (router setSessionSelection /
+   *      bridge onSetModel) after `applyFlagSettings({model})` succeeds
    *
-   *  Mirrored to iOS via the `session_state_changed.state.model` field so
-   *  the model chip on every client matches the live runtime selection.
-   *  NOT the source of truth for the *next* spawn — `ensureSessionLoop`
-   *  reads its `options.model` from the router's call site, which reads
-   *  from disk metadata. This field is the *live* selection that
-   *  applyFlagSettings has actually applied to the running query. */
+   *  Read by `buildPublicState` as `currentModel ?? meta.model` (so a
+   *  stale-null mirror falls back to the authoritative metadata) → iOS
+   *  via `session_state_changed.state.model`. NOT the source of truth for
+   *  the *next* spawn — `ensureSessionLoop` reads `options.model` from the
+   *  router call site (which reads disk). This field is the *live*
+   *  selection applyFlagSettings has applied to the running query. */
   currentModel: string | null = null;
 
   private readonly bufferCap: number;
@@ -295,9 +296,11 @@ export class SessionRuntime<T> {
   private readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
   private readonly teardownDelayMs: number;
   private readonly log: (msg: string) => void;
-  // #17 state-changed callback — fired from setActivity / setModel on
-  // meaningful transitions. Default no-op so the standalone
-  // pure-data-structure contract holds (tests + manager-less callers).
+  // #17 state-changed callback — fired from setActivity on meaningful
+  // transitions. Default no-op so the standalone pure-data-structure
+  // contract holds (tests + manager-less callers). Model changes do NOT
+  // fire it: model is owned by SessionRuntimeManager (direct mirror +
+  // explicit persist/fan-out), so currentModel is set without a callback.
   private readonly onStateChanged: (sessionId: string) => void;
 
   constructor(sessionId: string, options: SessionRuntimeOptions<T> = {}) {
@@ -533,27 +536,12 @@ export class SessionRuntime<T> {
     return { changed, armed, canceled };
   }
 
-  /**
-   * #17 — set the current model selection. No-op (returns false) when the
-   * new value equals the prior one; otherwise updates `currentModel` and
-   * fires `onStateChanged`. Accepts `string | null` (null = "reset to SDK
-   * default", matches the protocol's `model: string | null` field shape
-   * and `setSessionSelection`'s "unset" semantics).
-   *
-   * Does NOT call `applyFlagSettings` — that's the caller's
-   * responsibility, because the apply path differs by trigger (router
-   * uses the live `query.applyFlagSettings` directly; bridge's onSetModel
-   * goes through SessionRuntimeManager hookup). We only update the
-   * in-runtime mirror that iOS state subscribers read.
-   *
-   * Returns true iff a change was observed (caller can gate logs).
-   */
-  setModel(model: string | null): boolean {
-    if (this.currentModel === model) return false;
-    this.currentModel = model;
-    this.onStateChanged(this.sessionId);
-    return true;
-  }
+  // NOTE: there is no `setModel` here. Model is owned by
+  // SessionRuntimeManager — `getOrCreate` seeds `currentModel` and
+  // `manager.setModel` mirrors it via direct field assignment, then
+  // persists + fans out explicitly. A runtime-level setter that fired
+  // `onStateChanged` used to exist but caused the model to be diffed on
+  // state edges (the create/subscribe race regression); it's gone.
 
   /**
    * Arm the idle-teardown timer iff ALL eligibility predicates hold:

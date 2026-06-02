@@ -1872,8 +1872,10 @@ describe("createCommandHandler — subscribeSessions (#17)", () => {
   it("returns the manager's initial snapshot on response.initial", async () => {
     const runtimeManager = new SessionRuntimeManager<EventDelta>();
     // Pre-create a runtime so getAllSessionStates has memory entries.
+    // currentModel is a plain mirror field (no runtime-level setter) —
+    // set it directly the way the manager does.
     const r = runtimeManager.getOrCreate("seed-1");
-    r.setModel("claude-opus-4-7");
+    r.currentModel = "claude-opus-4-7";
     const handler = createCommandHandler(makeDeps({ runtimeManager }));
     const { ctx, sent } = makeCtx();
 
