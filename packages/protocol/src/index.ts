@@ -216,54 +216,6 @@ export const event = z.discriminatedUnion("type", [
 
 export type Event = z.infer<typeof event>;
 
-// ─── Session metadata (display-oriented; daemon → iOS list view) ──────────
-
-export const sessionOrigin = z.enum(["desktop-mirror", "sidecode-created"]);
-export type SessionOrigin = z.infer<typeof sessionOrigin>;
-
-/**
- * Lean session record returned by `listSessions`. Field set is what the iOS
- * list view actually renders today; extend conservatively as new screens
- * need more. Distinct from Desktop's on-disk `local_*.json` schema and from
- * the SDK's `SDKSessionInfo` — both have many fields we don't expose to the
- * client.
- */
-export const sessionInfo = z.object({
-  sessionId: z.string(),
-  cwd: z.string(),
-  /**
-   * Parent project root. Equal to `cwd` for non-fork sessions; differs
-   * (points to the original project root) for forks running in worktrees.
-   * iOS groups the list by this — without it, each worktree would show
-   * up as its own pseudo-project section. Daemon always populates it
-   * (falls back to `cwd` when missing on disk).
-   */
-  originCwd: z.string(),
-  lastActivityAt: z.number(),
-  origin: sessionOrigin,
-  /** CLI session UUID. Required because every code path that ships a session
-   *  to iOS — desktop-mirror today, sidecode-created tomorrow — produces it.
-   *  iOS uses this to fetch the message transcript via `getMessages`. The
-   *  daemon's reader filters out any local_*.json that lacks it. */
-  cliSessionId: z.string(),
-  title: z.string().optional(),
-  /** Raw model string as persisted on disk — e.g. `claude-opus-4-7[1m]`
-   *  for Desktop sessions (preserves the `[1m]` 1M-context suffix) or the
-   *  SDK alias (`default` / `sonnet` / `haiku`) for sidecode-created
-   *  sessions. iOS uses this for equality / picker-selected-state checks
-   *  and for sending back to the daemon on next sendPrompt. For display
-   *  use `modelLabel` instead. */
-  model: z.string().optional(),
-  /** Display-formatted version of `model` — e.g. "Opus 4.7 1M" derived
-   *  by daemon's `prettyModel`. iOS renders this in session list /
-   *  detail header. Optional because not every code path normalizes
-   *  (and iOS can fall back to raw `model` when missing). */
-  modelLabel: z.string().optional(),
-  isArchived: z.boolean().optional(),
-});
-
-export type SessionInfo = z.infer<typeof sessionInfo>;
-
 // ─── Session control state stream (issue #17) ─────────────────────────────
 //
 // `sessionState` is daemon → iOS's PER-SESSION view-model for the list +
@@ -285,11 +237,10 @@ export type SessionInfo = z.infer<typeof sessionInfo>;
 // event log). Contrast with `eventDelta` / `eventFrame` which IS cursor-
 // keyed and needs ordered fold (transcript timeline).
 //
-// Coexistence with `sessionInfo` / `listSessions`: V0 ships both during
-// the iOS migration to the new stream. Once iOS switches over,
-// `listSessions` is deleted (see project_v0_session_list_design "协议
-// 同步收口"). `sessionState` is the long-term shape; `sessionInfo` is
-// scheduled for removal.
+// `sessionState` is the sole session-list view-model: it fully replaced
+// the old `listSessions` RPC + `sessionInfo` record (deleted once iOS
+// migrated to this stream — see project_v0_session_list_design "协议
+// 同步收口").
 
 export const sessionActivity = z.enum(["idle", "running", "requires_action"]);
 export type SessionActivity = z.infer<typeof sessionActivity>;
@@ -1054,18 +1005,6 @@ export const stopTaskCommand = z.object({
 
 // ─── Request/response commands (correlated by requestId) ───────────────────
 
-export const listSessionsCommand = z.object({
-  type: z.literal("listSessions"),
-  requestId: z.string(),
-  dir: z.string().optional(),
-});
-
-export const listSessionsResponse = z.object({
-  type: z.literal("listSessions.response"),
-  requestId: z.string(),
-  sessions: z.array(sessionInfo),
-});
-
 export const deleteSessionCommand = z.object({
   type: z.literal("deleteSession"),
   requestId: z.string(),
@@ -1103,8 +1042,9 @@ export const continueOnDesktopResponse = z.object({
 // ─── Git status subscription (workspace info bar) ─────────────────────────
 //
 // Push-based per-cwd live status. Client opens a subscription on a cwd
-// (resolved iOS-side from `sessionInfo`), gets an initial snapshot in the
-// response, and then receives `gitStatus` events whenever the daemon's
+// (resolved iOS-side from the session's `sessionState.cwd`), gets an
+// initial snapshot in the response, and then receives `gitStatus` events
+// whenever the daemon's
 // per-cwd watcher detects a change. Closing the DataChannel implicitly
 // unsubscribes; an explicit `unsubscribeGitStatus` releases the watcher
 // ref-count early so the daemon can dispose its fs.watch handles.
@@ -1317,7 +1257,6 @@ export const command = z.discriminatedUnion("type", [
   interruptCommand,
   approveCommand,
   stopTaskCommand,
-  listSessionsCommand,
   deleteSessionCommand,
   continueOnDesktopCommand,
   subscribeGitStatusCommand,
@@ -1335,7 +1274,6 @@ export const response = z.discriminatedUnion("type", [
   sendPromptResponse,
   setSessionSelectionResponse,
   interruptResponse,
-  listSessionsResponse,
   deleteSessionResponse,
   continueOnDesktopResponse,
   subscribeGitStatusResponse,
@@ -1363,7 +1301,6 @@ export const clientFrame = z.discriminatedUnion("type", [
   interruptCommand,
   approveCommand,
   stopTaskCommand,
-  listSessionsCommand,
   deleteSessionCommand,
   continueOnDesktopCommand,
   subscribeGitStatusCommand,
@@ -1392,7 +1329,6 @@ export const daemonFrame = z.discriminatedUnion("type", [
   setSessionSelectionResponse,
   interruptResponse,
   eventFrame,
-  listSessionsResponse,
   deleteSessionResponse,
   continueOnDesktopResponse,
   subscribeGitStatusResponse,

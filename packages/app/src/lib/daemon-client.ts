@@ -500,20 +500,6 @@ export class Transport {
   }
 
   /**
-   * Send `listSessions` and await the matching response (or `error` frame).
-   * Pass `dir` to filter to one project; omit for all projects (iOS groups
-   * client-side).
-   */
-  async listSessions(dir?: string): Promise<unknown[]> {
-    const requestId = Crypto.randomUUID();
-    const frame: { type: string; requestId: string } & Record<string, unknown> =
-      { type: "listSessions", requestId };
-    if (dir !== undefined) frame.dir = dir;
-    const res = (await this.request(frame)) as { sessions: unknown[] };
-    return res.sessions;
-  }
-
-  /**
    * #17 — open the daemon-wide `subscribeSessions` push channel. Awaits
    * the response (returns `initial` snapshot), and ALSO wires the push
    * callbacks into the frame router so subsequent `session_state_changed`
@@ -1138,7 +1124,7 @@ export class Subscription {
  *     fire continuously; the `recovered: false` flag on a re-attach
  *     tells the consumer "your collection is stale, rebuild it."
  *
- * Non-subscribe RPCs (`listSessions`, `getFilesystemRoots`, etc.) are
+ * Non-subscribe RPCs (`getFilesystemRoots`, `listDirectory`, etc.) are
  * thin pass-throughs that `await this.readyPromise` then dispatch to the
  * current transport. If a transport drops while a pass-through is
  * in-flight, the request rejects with "daemon connection closed" —
@@ -1371,11 +1357,6 @@ export class DaemonClient {
   }
 
   // ─── Pass-through RPCs (await readyPromise → dispatch) ────────────
-
-  async listSessions(dir?: string): Promise<unknown[]> {
-    const t = await this.readyPromise;
-    return t.listSessions(dir);
-  }
 
   /**
    * #17 — open the daemon-wide session-states stream. Singleton: only

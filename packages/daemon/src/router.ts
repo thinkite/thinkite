@@ -4,19 +4,16 @@ import * as path from "node:path";
 import type {
   DirectoryEntry,
   EventDelta,
-  SessionInfo,
   TimelineItem,
   TurnUsage,
 } from "@sidecodeapp/protocol";
 import {
   isWhitelistedCommand,
   parseSlashCommand,
-  prettyModel,
   SLASH_COMMANDS,
 } from "@sidecodeapp/protocol";
 import type { CommandHandler } from "./command.js";
 import type { ContinueOnDesktopTarget } from "./desktop/continue-on-desktop.js";
-import type { DesktopSession } from "./desktop/sessions.js";
 import type { GitWatcherRegistry } from "./git-watch.js";
 import {
   ensureSessionLoop,
@@ -29,17 +26,12 @@ import type { SidecodeSessionMetadata } from "./sidecode-sessions.js";
 export interface RouterDeps {
   continueOnDesktop: (target: ContinueOnDesktopTarget) => Promise<void>;
   /**
-   * List Desktop-mirrored sessions. With `{ cwd }` filter to that
-   * project; with `{}` return all sessions across every Desktop env-pair
-   * (iOS groups client-side). Daemon never folds in SDK `listSessions()`
-   * — that returns automation / test noise (see feedback).
-   */
-  listSessions: (opts: { cwd?: string }) => Promise<DesktopSession[]>;
-  /**
    * List sidecode-created sessions from `<home>/sessions/local_*.json`.
-   * Same `cwd` filter semantics as `listSessions`. Sync because it's a
-   * trivial fs.readdir + JSON.parse over a small (~tens) directory;
-   * Promise.all in the handler tolerates plain array returns.
+   * With `{ cwd }` filter to that project; with `{}` return all. Sync
+   * because it's a trivial fs.readdir + JSON.parse over a small (~tens)
+   * directory; Promise.all in the handler tolerates plain array returns.
+   * Feeds the daemon-wide subscribeSessions stream (#17) + the
+   * getFilesystemRoots recent-cwds list.
    */
   listSidecodeSessions: (opts: { cwd?: string }) => SidecodeSessionMetadata[];
   /**
@@ -178,9 +170,9 @@ function getOrCreateGitSubs(ctx: { state: Map<string, unknown> }): GitSubsMap {
 /**
  * Wire up the authenticated-command dispatcher.
  *
- * V0 W1 implements `continueOnDesktop` and `listSessions`. Every other
- * command type is answered with an `unsupported` error frame so iOS fails
- * loudly while the rest of the surface is built out in W2+.
+ * Unimplemented command types are answered with an `unsupported` error
+ * frame so iOS fails loudly rather than hanging on a silently-dropped
+ * request.
  */
 export function createCommandHandler(deps: RouterDeps): CommandHandler {
   return async (cmd, ctx) => {
@@ -257,50 +249,6 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             type: "subscribeSessions.response",
             requestId: cmd.requestId,
             initial,
-          });
-        } catch (err) {
-          ctx.send({
-            type: "error",
-            requestId: cmd.requestId,
-            code: "internal",
-            message: err instanceof Error ? err.message : String(err),
-          });
-        }
-        return;
-      }
-      case "listSessions": {
-        // `dir` is optional: omitted = "all projects", iOS groups by cwd.
-        try {
-          const filter = cmd.dir ? { cwd: cmd.dir } : {};
-          // Read both sources in parallel. Sidecode is sync but Promise.all
-          // happily wraps plain values.
-          const [desktopSessions, sidecodeSessions] = await Promise.all([
-            deps.listSessions(filter),
-            Promise.resolve(deps.listSidecodeSessions(filter)),
-          ]);
-          // Union by cliSessionId. Sidecode metadata is the truth source
-          // for sessions sidecode created — if a session appears in both
-          // (e.g. Desktop later mirrored a sidecode-created one), prefer
-          // sidecode's record so user-set title / titleSource lock from
-          // `/rename` doesn't get overridden by Desktop's auto-summary.
-          //
-          // Title comes straight from sidecode metadata, written at
-          // session creation from the user's first prompt — no display-
-          // time SDK lookup. See sidecode-sessions.ts for the rationale.
-          const byCliSessionId = new Map<string, SessionInfo>();
-          for (const d of desktopSessions) {
-            byCliSessionId.set(d.cliSessionId, toSessionInfo(d));
-          }
-          for (const s of sidecodeSessions) {
-            byCliSessionId.set(s.cliSessionId, toSessionInfoFromSidecode(s));
-          }
-          const sessions = Array.from(byCliSessionId.values()).sort(
-            (a, b) => b.lastActivityAt - a.lastActivityAt,
-          );
-          ctx.send({
-            type: "listSessions.response",
-            requestId: cmd.requestId,
-            sessions,
           });
         } catch (err) {
           ctx.send({
@@ -831,27 +779,19 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         try {
           const desktopPath = path.join(home, "Desktop");
           const documentsPath = path.join(home, "Documents");
-          const [
-            desktopSessions,
-            sidecodeSessions,
-            desktopExists,
-            documentsExists,
-          ] = await Promise.all([
-            deps.listSessions({}),
-            Promise.resolve(deps.listSidecodeSessions({})),
-            fs
-              .stat(desktopPath)
-              .then((s) => s.isDirectory())
-              .catch(() => false),
-            fs
-              .stat(documentsPath)
-              .then((s) => s.isDirectory())
-              .catch(() => false),
-          ]);
-          const recentCwds = await collectRecentCwds(
-            desktopSessions,
-            sidecodeSessions,
-          );
+          const [sidecodeSessions, desktopExists, documentsExists] =
+            await Promise.all([
+              Promise.resolve(deps.listSidecodeSessions({})),
+              fs
+                .stat(desktopPath)
+                .then((s) => s.isDirectory())
+                .catch(() => false),
+              fs
+                .stat(documentsPath)
+                .then((s) => s.isDirectory())
+                .catch(() => false),
+            ]);
+          const recentCwds = await collectRecentCwds(sidecodeSessions);
           ctx.send({
             type: "getFilesystemRoots.response",
             requestId: cmd.requestId,
@@ -923,56 +863,6 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
   };
 }
 
-function toSessionInfo(d: DesktopSession): SessionInfo {
-  return {
-    sessionId: d.sessionId,
-    cwd: d.cwd,
-    originCwd: d.originCwd,
-    lastActivityAt: d.lastActivityAt,
-    origin: "desktop-mirror",
-    cliSessionId: d.cliSessionId,
-    title: d.title || undefined,
-    // `model` carries the RAW string from disk (`claude-opus-4-7[1m]`
-    // etc.) so iOS can equality-check it; `modelLabel` is the pretty
-    // version for display. Both optional but populated here when on disk.
-    model: d.model || undefined,
-    modelLabel: d.model ? prettyModel(d.model) : undefined,
-    isArchived: d.isArchived,
-  };
-}
-
-function toSessionInfoFromSidecode(s: SidecodeSessionMetadata): SessionInfo {
-  return {
-    sessionId: s.sessionId,
-    cwd: s.cwd,
-    originCwd: s.originCwd,
-    // V0 gap: sidecode's `lastActivityAt` is set at creation and never
-    // updated, so the list ordering is "creation time" not real activity.
-    // Surfacing JSONL mtime via getSessionInfo on every entry would fix
-    // it but adds N file reads per list call — deferred until V0.5+.
-    lastActivityAt: s.lastActivityAt,
-    origin: "sidecode-created",
-    cliSessionId: s.cliSessionId,
-    // `title` is populated at session creation from the user's first
-    // prompt (see sidecode-sessions.ts:buildNewSidecodeSession) — never
-    // empty for a properly-created session.
-    title: s.title || undefined,
-    // `model` is persisted in sidecode metadata at creation and on every
-    // setSessionSelection pick. Surface it (+ its display label) so the
-    // iOS picker chip reflects the chosen model and survives a list
-    // refetch — without this the chip would blank out after the
-    // collection reconciles against listSessions.
-    model: s.model || undefined,
-    modelLabel: s.model ? prettyModel(s.model) : undefined,
-    isArchived: s.isArchived,
-  };
-}
-
-/**
- * Convert raw model IDs like "claude-opus-4-7[1m]" to display strings like
- * "Opus 4.7". Tolerates unknown shapes by falling through.
- */
-
 /**
  * Expand "~" / "~/..." to the daemon machine's HOME, then normalize via
  * `path.resolve` (collapses `..` / `.` segments, ensures absolute).
@@ -1008,19 +898,21 @@ function classifyFsError(
 }
 
 /**
- * Aggregate "recent cwds" for the picker sidebar. Union of Desktop
- * session cwds and sidecode session cwds, deduped (keep the most
- * recent lastActivityAt per cwd), filtered to paths that still exist
- * on disk (stale entries from deleted projects drop), sorted desc by
- * lastActivityAt, capped at 10.
+ * Aggregate "recent cwds" for the picker sidebar from sidecode session
+ * cwds, deduped (keep the most recent lastActivityAt per cwd), filtered
+ * to paths that still exist on disk (stale entries from deleted projects
+ * drop), sorted desc by lastActivityAt, capped at 10.
+ *
+ * Sidecode-only: Desktop session history is no longer scanned (the
+ * Desktop-mirror reader was removed with the listSessions RPC). A fresh
+ * install with no sidecode sessions yet returns []; the picker falls back
+ * to its placeholder until the user creates a session.
  */
 async function collectRecentCwds(
-  desktopSessions: DesktopSession[],
   sidecodeSessions: SidecodeSessionMetadata[],
 ): Promise<{ path: string; lastUsedAt: string }[]> {
-  // Dedup by cwd. Per-key value is the LATEST lastActivityAt across
-  // both source sets — a cwd appearing in both contributes whichever
-  // session was touched most recently.
+  // Dedup by cwd. Per-key value is the LATEST lastActivityAt — a cwd
+  // appearing in multiple sessions contributes its most-recent touch.
   const latest = new Map<string, number>();
   const consume = (s: { cwd: string; lastActivityAt: number }) => {
     const prev = latest.get(s.cwd);
@@ -1028,7 +920,6 @@ async function collectRecentCwds(
       latest.set(s.cwd, s.lastActivityAt);
     }
   };
-  for (const s of desktopSessions) consume(s);
   for (const s of sidecodeSessions) consume(s);
 
   // Check existence in parallel; drop entries whose path no longer

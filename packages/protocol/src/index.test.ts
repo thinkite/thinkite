@@ -18,8 +18,6 @@ import {
   interruptCommand,
   interruptResponse,
   isProtocolCompatible,
-  listSessionsCommand,
-  listSessionsResponse,
   PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
   pairOfferFrame,
@@ -29,7 +27,6 @@ import {
   sendPromptResponse,
   serverInfoEvent,
   sessionDivergedEvent,
-  sessionInfo,
   setSessionSelectionCommand,
   setSessionSelectionResponse,
   subscribeCommand,
@@ -227,10 +224,7 @@ describe("command union", () => {
     ).toBe(false);
   });
 
-  it("includes listSessions and deleteSession", () => {
-    expect(command.parse({ type: "listSessions", requestId: "r1" }).type).toBe(
-      "listSessions",
-    );
+  it("includes deleteSession", () => {
     expect(
       command.parse({ type: "deleteSession", requestId: "r2", sessionId: "s" })
         .type,
@@ -365,98 +359,7 @@ describe("streaming-session response + event frames", () => {
   });
 });
 
-describe("session metadata", () => {
-  it("parses minimal SessionInfo (required fields only)", () => {
-    const p = sessionInfo.parse({
-      sessionId: "s1",
-      cwd: "/Users/x",
-      originCwd: "/Users/x",
-      lastActivityAt: 1,
-      origin: "desktop-mirror",
-      cliSessionId: "cli-1",
-    });
-    expect(p.sessionId).toBe("s1");
-    expect(p.title).toBeUndefined();
-  });
-
-  it("rejects SessionInfo missing cliSessionId", () => {
-    expect(
-      sessionInfo.safeParse({
-        sessionId: "s1",
-        cwd: "/Users/x",
-        originCwd: "/Users/x",
-        lastActivityAt: 1,
-        origin: "desktop-mirror",
-      }).success,
-    ).toBe(false);
-  });
-
-  it("rejects SessionInfo missing originCwd", () => {
-    expect(
-      sessionInfo.safeParse({
-        sessionId: "s1",
-        cwd: "/Users/x",
-        lastActivityAt: 1,
-        origin: "desktop-mirror",
-        cliSessionId: "cli-1",
-      }).success,
-    ).toBe(false);
-  });
-
-  it("parses fully-populated SessionInfo with fork (cwd != originCwd)", () => {
-    const p = sessionInfo.parse({
-      sessionId: "local_119c4694-f67a-4e16-b99c-140567c682fd",
-      cwd: "/Users/x/proj/worktrees/feature",
-      originCwd: "/Users/x/proj",
-      lastActivityAt: 1777000000000,
-      origin: "desktop-mirror",
-      cliSessionId: "03f3f808-9702-4dda-82da-34a8b3f76879",
-      title: "Plan project folder structure (fork)",
-      model: "claude-opus-4-7[1m]",
-      modelLabel: "Opus 4.7 1M",
-      isArchived: false,
-    });
-    expect(p.cwd).not.toBe(p.originCwd);
-    expect(p.modelLabel).toBe("Opus 4.7 1M");
-    expect(p.isArchived).toBe(false);
-  });
-
-  it("rejects unknown origin", () => {
-    expect(
-      sessionInfo.safeParse({
-        sessionId: "s1",
-        cwd: "/x",
-        lastActivityAt: 1,
-        origin: "made-up",
-      }).success,
-    ).toBe(false);
-  });
-});
-
 describe("request/response correlation", () => {
-  it("listSessions roundtrip preserves requestId", () => {
-    const req = listSessionsCommand.parse({
-      type: "listSessions",
-      requestId: "r",
-      dir: "/tmp",
-    });
-    const res = listSessionsResponse.parse({
-      type: "listSessions.response",
-      requestId: "r",
-      sessions: [
-        {
-          sessionId: "s1",
-          cwd: "/tmp",
-          originCwd: "/tmp",
-          lastActivityAt: 1,
-          origin: "desktop-mirror",
-          cliSessionId: "cli-s1",
-        },
-      ],
-    });
-    expect(req.requestId).toBe(res.requestId);
-  });
-
   it("deleteSession roundtrip", () => {
     expect(
       deleteSessionCommand.parse({

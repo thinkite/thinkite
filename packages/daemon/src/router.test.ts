@@ -5,12 +5,10 @@ import type {
   Command,
   DaemonFrame,
   EventDelta,
-  SessionInfo,
   TimelineItem,
 } from "@sidecodeapp/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { CommandContext } from "./command.js";
-import type { DesktopSession } from "./desktop/sessions.js";
 import { GitWatcherRegistry } from "./git-watch.js";
 import { createCommandHandler } from "./router.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
@@ -40,13 +38,12 @@ function makeCtx(): {
   };
 }
 
-/** Default deps for tests that don't exercise listSessions. */
+/** Default deps for command-handler tests. */
 function makeDeps(
   overrides?: Partial<Parameters<typeof createCommandHandler>[0]>,
 ): Parameters<typeof createCommandHandler>[0] {
   return {
     continueOnDesktop: vi.fn().mockResolvedValue(undefined),
-    listSessions: vi.fn().mockResolvedValue([]),
     listSidecodeSessions: vi.fn().mockReturnValue([]),
     getMessages: vi.fn().mockResolvedValue({ items: [] }),
     runtimeManager: new SessionRuntimeManager<EventDelta>(),
@@ -55,30 +52,6 @@ function makeDeps(
     gitWatchers: new GitWatcherRegistry(),
     epoch: "test-epoch",
     ...overrides,
-  };
-}
-
-function makeDesktopSession(
-  over: Partial<DesktopSession> = {},
-): DesktopSession {
-  return {
-    sessionId: "local_119c4694-f67a-4e16-b99c-140567c682fd",
-    cliSessionId: "03f3f808-9702-4dda-82da-34a8b3f76879",
-    cwd: "/Users/x/proj",
-    originCwd: "/Users/x/proj",
-    createdAt: 1777000000000,
-    lastActivityAt: 1777000000500,
-    model: "claude-opus-4-7[1m]",
-    effort: "xhigh",
-    isArchived: false,
-    title: "Plan project folder structure",
-    titleSource: "auto",
-    permissionMode: "bypassPermissions",
-    completedTurns: 21,
-    filePath: "/path/to/local_119c4694.json",
-    environmentOuter: "outer-uuid",
-    environmentInner: "inner-uuid",
-    ...over,
   };
 }
 
@@ -165,284 +138,6 @@ describe("createCommandHandler — continueOnDesktop", () => {
       ok: false,
       error: "string failure",
     });
-  });
-});
-
-describe("createCommandHandler — listSessions", () => {
-  it("calls listSessions with the requested cwd and maps results to SessionInfo", async () => {
-    const desktopSession = makeDesktopSession();
-    const listSessions = vi.fn().mockResolvedValue([desktopSession]);
-    const handler = createCommandHandler(makeDeps({ listSessions }));
-    const { ctx, sent } = makeCtx();
-    await handler(
-      { type: "listSessions", requestId: "ls-1", dir: "/Users/x/proj" },
-      ctx,
-    );
-    expect(listSessions).toHaveBeenCalledWith({ cwd: "/Users/x/proj" });
-    expect(sent).toEqual([
-      {
-        type: "listSessions.response",
-        requestId: "ls-1",
-        sessions: [
-          {
-            sessionId: "local_119c4694-f67a-4e16-b99c-140567c682fd",
-            cwd: "/Users/x/proj",
-            originCwd: "/Users/x/proj",
-            lastActivityAt: 1777000000500,
-            origin: "desktop-mirror",
-            cliSessionId: "03f3f808-9702-4dda-82da-34a8b3f76879",
-            title: "Plan project folder structure",
-            model: "claude-opus-4-7[1m]",
-            modelLabel: "Opus 4.7 1M",
-            isArchived: false,
-          },
-        ],
-      },
-    ]);
-  });
-
-  it("converts empty title to undefined (so iOS shows the 'Untitled' fallback)", async () => {
-    const listSessions = vi
-      .fn()
-      .mockResolvedValue([makeDesktopSession({ title: "" })]);
-    const handler = createCommandHandler(makeDeps({ listSessions }));
-    const { ctx, sent } = makeCtx();
-    await handler(
-      { type: "listSessions", requestId: "ls-2", dir: "/Users/x/proj" },
-      ctx,
-    );
-    const res = sent[0] as { sessions: { title?: string }[] };
-    expect(res.sessions[0]?.title).toBeUndefined();
-  });
-
-  it("preserves originCwd from a fork (cwd != originCwd)", async () => {
-    const fork = makeDesktopSession({
-      sessionId: "local_fork",
-      cwd: "/Users/x/proj/worktrees/feature",
-      originCwd: "/Users/x/proj",
-      title: "Plan project folder structure (fork)",
-    });
-    const listSessions = vi.fn().mockResolvedValue([fork]);
-    const handler = createCommandHandler(makeDeps({ listSessions }));
-    const { ctx, sent } = makeCtx();
-    await handler({ type: "listSessions", requestId: "ls-fork" }, ctx);
-    const res = sent[0] as {
-      sessions: Array<{ cwd: string; originCwd: string }>;
-    };
-    expect(res.sessions[0]?.cwd).toBe("/Users/x/proj/worktrees/feature");
-    expect(res.sessions[0]?.originCwd).toBe("/Users/x/proj");
-  });
-
-  it("falls through unrecognized model strings as-is", async () => {
-    const listSessions = vi
-      .fn()
-      .mockResolvedValue([makeDesktopSession({ model: "weird-future-model" })]);
-    const handler = createCommandHandler(makeDeps({ listSessions }));
-    const { ctx, sent } = makeCtx();
-    await handler(
-      { type: "listSessions", requestId: "ls-3", dir: "/Users/x/proj" },
-      ctx,
-    );
-    const res = sent[0] as { sessions: { model?: string }[] };
-    expect(res.sessions[0]?.model).toBe("weird-future-model");
-  });
-
-  it("calls reader with no cwd filter when dir is omitted (all projects)", async () => {
-    const listSessions = vi.fn().mockResolvedValue([]);
-    const handler = createCommandHandler(makeDeps({ listSessions }));
-    const { ctx, sent } = makeCtx();
-    await handler({ type: "listSessions", requestId: "ls-4" }, ctx);
-    expect(listSessions).toHaveBeenCalledWith({});
-    expect(sent[0]).toMatchObject({
-      type: "listSessions.response",
-      sessions: [],
-    });
-  });
-
-  it("returns an error frame when the reader throws", async () => {
-    const listSessions = vi.fn().mockRejectedValue(new Error("disk gone"));
-    const handler = createCommandHandler(makeDeps({ listSessions }));
-    const { ctx, sent } = makeCtx();
-    await handler({ type: "listSessions", requestId: "ls-5", dir: "/x" }, ctx);
-    expect(sent[0]).toMatchObject({
-      type: "error",
-      requestId: "ls-5",
-      code: "internal",
-      message: "disk gone",
-    });
-  });
-
-  it("returns an empty sessions array when reader returns []", async () => {
-    const handler = createCommandHandler(
-      makeDeps({ listSessions: vi.fn().mockResolvedValue([]) }),
-    );
-    const { ctx, sent } = makeCtx();
-    await handler({ type: "listSessions", requestId: "ls-6", dir: "/x" }, ctx);
-    expect(sent[0]).toMatchObject({
-      type: "listSessions.response",
-      sessions: [],
-    });
-  });
-
-  // ─── sidecode union + lazy title-fill ──────────────────────────────────
-
-  function makeSidecodeMeta(
-    over: Partial<SidecodeSessionMetadata> = {},
-  ): SidecodeSessionMetadata {
-    return {
-      sessionId: "local_sc-1",
-      cliSessionId: "sc-1",
-      cwd: "/Users/x/proj",
-      originCwd: "/Users/x/proj",
-      createdAt: 1777000000000,
-      lastActivityAt: 1777000000700,
-      isArchived: false,
-      title: "",
-      titleSource: "auto",
-      completedTurns: 0,
-      permissionMode: "bypassPermissions",
-      effort: "xhigh",
-      ...over,
-    };
-  }
-
-  it("unions sidecode entries with desktop entries (origin: sidecode-created)", async () => {
-    const desktop = makeDesktopSession({
-      cliSessionId: "dt-1",
-      sessionId: "local_dt-1",
-      lastActivityAt: 100,
-      title: "Desktop one",
-    });
-    const sidecode = makeSidecodeMeta({
-      cliSessionId: "sc-1",
-      sessionId: "local_sc-1",
-      lastActivityAt: 200,
-      title: "Sidecode one",
-    });
-    const handler = createCommandHandler(
-      makeDeps({
-        listSessions: vi.fn().mockResolvedValue([desktop]),
-        listSidecodeSessions: vi.fn().mockReturnValue([sidecode]),
-      }),
-    );
-    const { ctx, sent } = makeCtx();
-    await handler({ type: "listSessions", requestId: "ls-u" }, ctx);
-    const res = sent[0] as { sessions: SessionInfo[] };
-    expect(res.sessions).toHaveLength(2);
-    // Sorted by lastActivityAt desc → sidecode (200) first.
-    expect(res.sessions[0]).toMatchObject({
-      cliSessionId: "sc-1",
-      origin: "sidecode-created",
-      title: "Sidecode one",
-    });
-    expect(res.sessions[1]).toMatchObject({
-      cliSessionId: "dt-1",
-      origin: "desktop-mirror",
-      title: "Desktop one",
-    });
-  });
-
-  it("when a session is in BOTH sources, sidecode wins (truth-source semantics)", async () => {
-    const same = "shared-id";
-    const desktop = makeDesktopSession({
-      cliSessionId: same,
-      sessionId: `local_${same}_dt`,
-      title: "From desktop",
-      lastActivityAt: 999,
-    });
-    const sidecode = makeSidecodeMeta({
-      cliSessionId: same,
-      sessionId: `local_${same}_sc`,
-      title: "From sidecode",
-      lastActivityAt: 100,
-    });
-    const handler = createCommandHandler(
-      makeDeps({
-        listSessions: vi.fn().mockResolvedValue([desktop]),
-        listSidecodeSessions: vi.fn().mockReturnValue([sidecode]),
-      }),
-    );
-    const { ctx, sent } = makeCtx();
-    await handler({ type: "listSessions", requestId: "ls-d" }, ctx);
-    const res = sent[0] as { sessions: SessionInfo[] };
-    expect(res.sessions).toHaveLength(1);
-    expect(res.sessions[0]).toMatchObject({
-      cliSessionId: same,
-      origin: "sidecode-created",
-      title: "From sidecode",
-    });
-  });
-
-  it("passes sidecode metadata title straight through (no SDK lookup at display time)", async () => {
-    const sidecode = makeSidecodeMeta({
-      cliSessionId: "sc-titled",
-      title: "Refactor the auth module",
-    });
-    const handler = createCommandHandler(
-      makeDeps({
-        listSidecodeSessions: vi.fn().mockReturnValue([sidecode]),
-      }),
-    );
-    const { ctx, sent } = makeCtx();
-    await handler({ type: "listSessions", requestId: "ls-pt" }, ctx);
-    const res = sent[0] as { sessions: SessionInfo[] };
-    expect(res.sessions[0]?.title).toBe("Refactor the auth module");
-  });
-
-  it("converts empty sidecode title to undefined (defensive — should not happen post-creation)", async () => {
-    const sidecode = makeSidecodeMeta({ title: "" });
-    const handler = createCommandHandler(
-      makeDeps({
-        listSidecodeSessions: vi.fn().mockReturnValue([sidecode]),
-      }),
-    );
-    const { ctx, sent } = makeCtx();
-    await handler({ type: "listSessions", requestId: "ls-empty" }, ctx);
-    const res = sent[0] as { sessions: SessionInfo[] };
-    expect(res.sessions[0]?.title).toBeUndefined();
-  });
-
-  it("surfaces the persisted model + display label for a sidecode session", async () => {
-    const sidecode = makeSidecodeMeta({ model: "claude-opus-4-7[1m]" });
-    const handler = createCommandHandler(
-      makeDeps({
-        listSidecodeSessions: vi.fn().mockReturnValue([sidecode]),
-      }),
-    );
-    const { ctx, sent } = makeCtx();
-    await handler({ type: "listSessions", requestId: "ls-model" }, ctx);
-    const res = sent[0] as { sessions: SessionInfo[] };
-    expect(res.sessions[0]?.model).toBe("claude-opus-4-7[1m]");
-    expect(res.sessions[0]?.modelLabel).toBe("Opus 4.7 1M");
-  });
-
-  it("leaves model/modelLabel undefined when a sidecode session has no model", async () => {
-    const sidecode = makeSidecodeMeta();
-    const handler = createCommandHandler(
-      makeDeps({
-        listSidecodeSessions: vi.fn().mockReturnValue([sidecode]),
-      }),
-    );
-    const { ctx, sent } = makeCtx();
-    await handler({ type: "listSessions", requestId: "ls-nomodel" }, ctx);
-    const res = sent[0] as { sessions: SessionInfo[] };
-    expect(res.sessions[0]?.model).toBeUndefined();
-    expect(res.sessions[0]?.modelLabel).toBeUndefined();
-  });
-
-  it("forwards cwd filter to both listSessions and listSidecodeSessions", async () => {
-    const listSessions = vi.fn().mockResolvedValue([]);
-    const listSidecodeSessions = vi.fn().mockReturnValue([]);
-    const handler = createCommandHandler(
-      makeDeps({ listSessions, listSidecodeSessions }),
-    );
-    const { ctx } = makeCtx();
-    await handler(
-      { type: "listSessions", requestId: "ls-cwd", dir: "/Users/x/proj" },
-      ctx,
-    );
-    expect(listSessions).toHaveBeenCalledWith({ cwd: "/Users/x/proj" });
-    expect(listSidecodeSessions).toHaveBeenCalledWith({ cwd: "/Users/x/proj" });
   });
 });
 
@@ -2055,7 +1750,7 @@ describe("createCommandHandler — getFilesystemRoots", () => {
     expect(sent[0].recentCwds).toEqual([]); // no sessions = no recents
   });
 
-  it("aggregates recent cwds from desktop + sidecode sources, deduped, existence-filtered, sorted desc", async () => {
+  it("aggregates recent cwds from sidecode sessions, deduped, existence-filtered, sorted desc", async () => {
     // Use tmpdir for existing cwds so the existence check actually
     // resolves on the real filesystem.
     const existingA = mkdtempSync(path.join(tmpdir(), "fr-cwdA-"));
@@ -2064,17 +1759,13 @@ describe("createCommandHandler — getFilesystemRoots", () => {
     try {
       const handler = createCommandHandler(
         makeDeps({
-          listSessions: vi.fn().mockResolvedValue([
-            // Same cwd as sidecode below — should dedupe with the
-            // LATEST lastActivityAt of the two ending up in the result.
-            makeDesktopSession({
+          listSidecodeSessions: vi.fn().mockReturnValue([
+            // Two sessions in the same cwd — dedupes to the LATEST
+            // lastActivityAt (900 > 100).
+            makeSidecodeMeta({
               cwd: existingA,
               lastActivityAt: 1700000000100,
             }),
-            // Stale path; should be dropped by existence filter.
-            makeDesktopSession({ cwd: staleC, lastActivityAt: 1700000001000 }),
-          ]),
-          listSidecodeSessions: vi.fn().mockReturnValue([
             makeSidecodeMeta({
               cwd: existingA,
               lastActivityAt: 1700000000900,
@@ -2083,6 +1774,8 @@ describe("createCommandHandler — getFilesystemRoots", () => {
               cwd: existingB,
               lastActivityAt: 1700000000500,
             }),
+            // Stale path; should be dropped by existence filter.
+            makeSidecodeMeta({ cwd: staleC, lastActivityAt: 1700000001000 }),
           ]),
         }),
       );
@@ -2098,7 +1791,7 @@ describe("createCommandHandler — getFilesystemRoots", () => {
         existingA,
         existingB,
       ]);
-      // Dedup keeps the LATER lastActivityAt (sidecode 900 > desktop 100).
+      // Dedup keeps the LATER lastActivityAt (900 > 100).
       expect(sent[0].recentCwds[0].lastUsedAt).toBe(
         new Date(1700000000900).toISOString(),
       );
@@ -2116,9 +1809,9 @@ describe("createCommandHandler — getFilesystemRoots", () => {
     try {
       const handler = createCommandHandler(
         makeDeps({
-          listSessions: vi.fn().mockResolvedValue(
+          listSidecodeSessions: vi.fn().mockReturnValue(
             cwds.map((cwd, i) =>
-              makeDesktopSession({
+              makeSidecodeMeta({
                 cwd,
                 lastActivityAt: 1700000000000 + i,
               }),

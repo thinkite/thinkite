@@ -70,7 +70,8 @@ export default function SessionDetailScreen() {
   // (findOne on cliSessionId) — not the whole list. Drives the header
   // title and the picker's current model. The row is present at mount
   // because the new-session screen inserts it optimistically before
-  // navigating (resume sessions already have it from listSessions).
+  // navigating (resume sessions already have it from the #17
+  // subscribeSessions snapshot).
   const { data: sessionInfo } = useLiveQuery(
     (q) =>
       q

@@ -146,9 +146,10 @@ export interface BridgeServiceOptions {
   /**
    * claude.ai changed the model selector (slice M2.4). The impl routes this to
    * `runtime.query.applyFlagSettings({ model })` (apply to the live query) AND
-   * `updateSidecodeSessionSelection` (write metadata — the iOS chip's truth
-   * source is `SessionInfo.model`, NOT the transcript, so the metadata write
-   * is what makes the chip converge on next list-refresh / re-subscribe).
+   * `runtimeManager.setModel` (mirror onto the runtime + persist metadata —
+   * the iOS chip's truth source is the #17 `sessionState.model`, NOT the
+   * transcript, so the metadata write + fan-out is what makes the chip
+   * converge via the subscribeSessions push).
    * `undefined` = reset to the account default. SDK auto-sends the
    * control_response: success — we owe no response. No EventDelta is emitted
    * (claude.ai already learns the model from the `message.model` on the

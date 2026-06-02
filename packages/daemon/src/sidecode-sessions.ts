@@ -48,9 +48,9 @@ export interface SidecodeSessionMetadata {
   /** Cumulative turn count; V0 starts at 0 and doesn't yet bump on each turn. */
   completedTurns: number;
   /**
-   * Display title — empty initially. Filled in lazily by `listSessions`'s
-   * fetch-and-write-back pass: it reads SDK's `getSessionInfo().summary`
-   * and persists it here, so subsequent reads (and iOS display) come
+   * Display title — derived from the user's first prompt at session
+   * creation (`buildNewSidecodeSession` → `deriveTitleFromFirstPrompt`)
+   * and persisted here, so subsequent reads (and iOS display) come
    * straight from this file. Sidecode metadata is the truth source for
    * the app — display never falls back to `getSessionInfo` at render
    * time.
@@ -194,11 +194,11 @@ export function readSidecodeSession(
  * skipped. Malformed JSON files are skipped silently — a single corrupt
  * file must not break the whole listing (matches Desktop's behavior).
  *
- * `opts.cwd` filters by exact-match cwd (same semantics as
- * `listDesktopSessions`); omit to return all sessions across all cwds.
+ * `opts.cwd` filters by exact-match cwd; omit to return all sessions
+ * across all cwds.
  *
- * Order is unspecified — the router unions with Desktop sessions and
- * sorts by `lastActivityAt` once.
+ * Order is unspecified — consumers (subscribeSessions fan-out,
+ * getFilesystemRoots recent-cwds) sort by `lastActivityAt` themselves.
  */
 export function listSidecodeSessions(
   home: string,

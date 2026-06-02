@@ -11,9 +11,9 @@ import {
  * "is this session working right now" data that the detail screen shows
  * and that the drawer will eventually show per row.
  *
- * This is NOT session metadata (that's the listSessions-backed
- * `sessionsCollection`, server-authoritative). It's ephemeral client-
- * observed state, so it lives in its OWN collection: a refetch of the
+ * This is NOT session metadata (that's the #17 subscribeSessions-backed
+ * `sessionStateCollection`, server-authoritative). It's ephemeral client-
+ * observed state, so it lives in its OWN collection: a push to the
  * sessions list must never clobber it, and a list (drawer) can join it.
  *
  * A `localOnly` collection — pure in-memory, no external sync source —
