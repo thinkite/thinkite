@@ -148,16 +148,21 @@ const Ctx = createContext<DaemonClientContextValue | null>(null);
  * trusted-reconnect path; if no PairedDaemon is on disk, it lands on
  * `unpaired` so the layout can route to the pair screen.
  *
- * Auto-reconnect: once the FIRST successful connection has happened (or
- * a `pair()` resolved), subsequent transport-level closes trigger an
- * exponential-backoff retry loop instead of giving up. The first connect
- * itself does NOT retry — if the daemon's identity rotated between app
- * launches the existing `clearPairedDaemon()` path sends the user back
- * to /onboarding (unchanged behavior). The line is `everConnectedRef`.
+ * Auto-reconnect: every connection failure — the initial boot handshake
+ * included — schedules an exponential-backoff retry and KEEPS the paired
+ * credential. We never clear the pairing on a connect failure: a failure
+ * is overwhelmingly a transient unreachable daemon (Mac asleep, daemon
+ * not running, network blip), and silently wiping on every daemon-down
+ * would force a QR re-scan on the next launch. A genuinely-dead pairing
+ * (e.g. the daemon's identity actually rotated) just sits at `offline`
+ * until the user clears it explicitly via Settings → Forget host
+ * (`unpair()`). This mirrors paseo, where host removal is only ever an
+ * explicit, confirmed user action — never an automatic connect-failure
+ * side effect.
  *
  * `pair()` introduces new credentials. `reset()` re-runs the boot path
  * with whatever's already persisted. `unpair()` is the explicit user
- * teardown.
+ * teardown — the ONLY path that clears the stored credential.
  *
  * Wrap any tree that calls `useDaemonClient()` (typically inside
  * `<QueryClientProvider>` at the layout root).
@@ -199,13 +204,6 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   // unpair) so a late-firing onUnexpectedClose / timer doesn't resurrect
   // a doomed connection. Re-armed by `connect()` and `pair()`.
   const shouldReconnectRef = useRef(true);
-  // Once `true`, transient reconnect failures retry instead of clearing
-  // the paired record. Flipped on the first successful handshake (whether
-  // via boot reconnect or `pair()`); reset on `unpair()`. Distinguishes
-  // "daemon identity rotated since last launch — boot to /onboarding" from
-  // "we know this daemon, just keep trying".
-  const everConnectedRef = useRef(false);
-
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
       clearTimeout(reconnectTimerRef.current);
@@ -293,32 +291,24 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
             transport = await Transport.reconnect(identity, loaded);
           } catch (err) {
             if (epoch !== epochRef.current) return;
-            if (everConnectedRef.current && shouldReconnectRef.current) {
-              // We've successfully reached this daemon at least once
-              // since pair / unpair, so a failure here is most likely
-              // transient (network blip, daemon momentarily down).
-              // Schedule a retry instead of nuking the paired record.
-              const reason = err instanceof Error ? err.message : String(err);
-              setState({ status: "offline", reason, attempt });
-              const delay = reconnectDelayMs(attempt);
-              reconnectTimerRef.current = setTimeout(
-                () => handleBootRetry(epoch, attempt),
-                delay,
-              );
-              setInitialized(true);
-              return;
-            }
-            // First-launch boot failure: most likely the daemon's
-            // identity rotated (fresh `~/.sidecode/identity.ed25519`)
-            // or the address moved permanently. Clear the stale
-            // credential and fall through to /onboarding.
-            console.warn(
-              "daemon initial reconnect failed, clearing pair:",
-              err,
+            if (!shouldReconnectRef.current) return;
+            // Boot reconnect failed. We deliberately do NOT clear the
+            // paired credential — a failure is overwhelmingly a transient
+            // unreachable daemon (Mac asleep, daemon not running, network
+            // blip), not a permanent identity rotation. Go offline +
+            // schedule a backoff retry, KEEP `paired` populated so the
+            // session list / settings keep their host context, and mark
+            // initialized so the splash hands off to the real UI instead
+            // of hanging on a blank screen for the whole handshake window.
+            // A genuinely-dead pairing just retries forever at `offline`;
+            // the user clears it via Settings → Forget host (`unpair()`).
+            const reason = err instanceof Error ? err.message : String(err);
+            setState({ status: "offline", reason, attempt });
+            const delay = reconnectDelayMs(attempt);
+            reconnectTimerRef.current = setTimeout(
+              () => handleBootRetry(epoch, attempt),
+              delay,
             );
-            await clearPairedDaemon();
-            setPaired(null);
-            setState({ status: "unpaired" });
             setInitialized(true);
             return;
           }
@@ -327,7 +317,6 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
             return;
           }
           transport.setOnUnexpectedClose(() => handleUnexpectedClose(epoch));
-          everConnectedRef.current = true;
           transportRef.current = transport;
           // Attach to the stable facade — readyPromise resolves and
           // every registered Subscription replays against the new
@@ -401,7 +390,6 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
         if (prevTransport !== null) facade._detachTransport();
         prevTransport?.close();
         transport.setOnUnexpectedClose(() => handleUnexpectedClose(epoch));
-        everConnectedRef.current = true;
         transportRef.current = transport;
         facade._attachTransport(transport);
         setPaired(loaded);
@@ -428,7 +416,6 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   const unpair = useCallback(async (): Promise<void> => {
     epochRef.current += 1;
     shouldReconnectRef.current = false;
-    everConnectedRef.current = false;
     clearReconnectTimer();
     const prevTransport = transportRef.current;
     transportRef.current = null;

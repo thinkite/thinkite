@@ -5,8 +5,8 @@ import "@/global.css";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import {
@@ -113,27 +113,43 @@ function RootStack() {
   );
 }
 
-// Splash gate. Two concerns are intentionally separate:
+// Boot gate. Three concerns are intentionally separate:
 //
 //   - `isInitialized` — sticky flag, "have we reached any settled state
-//     this launch?" Drives the splash branch. Native splash is one-shot;
-//     once we hide it, we never re-show it on later reconnects.
-//   - `isLoading` / `error` — the live status. Used for the first-attempt
-//     error UI and to drive the Retry button's pending state.
+//     this launch?" Once true we render the real app shell, which may
+//     itself be in an `offline` connection state — that's fine, the
+//     session list shows an offline badge and the retry loop heals it.
+//   - `isLoading` / `error` — the live status. Drives the first-attempt
+//     error UI and the Retry button's pending state.
+//   - `graceElapsed` — a short post-mount timer. Within the grace the
+//     native splash covers the pre-init window so the sub-second happy
+//     path never flashes a connecting screen. Past the grace, if we're
+//     still pre-init, we hand the splash off to a rendered Connecting
+//     view so a daemon-down boot shows live feedback instead of sitting
+//     on a frozen splash / blank screen for the whole CONNECT_TIMEOUT_MS.
 //
 // Pair-vs-main branching is NOT done here — that lives inside `(main)/_layout`
-// via `Stack.Protected` guards on `isUnpaired`. We keep this gate minimal so
-// the splash holds only on the "we don't know yet" window.
+// via `Stack.Protected` guards on `isUnpaired`.
 function DaemonGate({ children }: { children: React.ReactNode }) {
   const { isInitialized, isLoading, error, reset } = useDaemonClient();
+  const [graceElapsed, setGraceElapsed] = useState(false);
+
+  // Short grace so the happy path (sub-second connect) stays behind the
+  // native splash and never flashes the Connecting view.
+  useEffect(() => {
+    const t = setTimeout(() => setGraceElapsed(true), 700);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
-    // Hide as soon as we have something user-meaningful to render — the
-    // app, the pair screen, or the first-attempt error.
-    if (isInitialized || error) {
+    // Hide the native splash once we reach a settled state, hit an error,
+    // OR the grace elapses — whichever is first. Past the grace we own the
+    // screen with a rendered view, so the splash must hand off rather than
+    // sit on top of it.
+    if (isInitialized || error || graceElapsed) {
       SplashScreen.hideAsync().catch(() => undefined);
     }
-  }, [isInitialized, error]);
+  }, [isInitialized, error, graceElapsed]);
 
   if (!isInitialized) {
     if (error) {
@@ -145,11 +161,39 @@ function DaemonGate({ children }: { children: React.ReactNode }) {
         />
       );
     }
-    // Pre-init, no error yet → behind the native splash.
-    return null;
+    // Pre-init: stay behind the native splash during the grace, then
+    // reveal the Connecting view if the handshake is still in flight.
+    return graceElapsed ? <Connecting /> : null;
   }
 
   return <View className="flex-1">{children}</View>;
+}
+
+// Pre-init connecting screen, shown once the splash-grace elapses and the
+// initial handshake is still in flight — most visibly when the Mac daemon
+// is asleep / not running, where the handshake runs the full
+// CONNECT_TIMEOUT_MS before the boot path falls to `offline`. The daemon
+// hint appears after a few seconds so a slightly-slow-but-fine connect
+// doesn't flash it.
+function Connecting() {
+  const [showHint, setShowHint] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setShowHint(true), 3000);
+    return () => clearTimeout(t);
+  }, []);
+  return (
+    <SafeAreaView className="flex-1 items-center justify-center bg-white px-6 dark:bg-black">
+      <ActivityIndicator />
+      <Text className="mt-4 text-base font-medium text-gray-900 dark:text-gray-100">
+        Connecting to daemon…
+      </Text>
+      {showHint ? (
+        <Text className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400">
+          Make sure the sidecode daemon is running on your Mac.
+        </Text>
+      ) : null}
+    </SafeAreaView>
+  );
 }
 
 function ConnectError({
