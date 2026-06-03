@@ -9,8 +9,10 @@ import {
   Text,
 } from "@expo/ui/swift-ui";
 import { foregroundStyle } from "@expo/ui/swift-ui/modifiers";
+import { useQueryClient } from "@tanstack/react-query";
 import { router, Stack } from "expo-router";
 import { statusColor, useDaemonClient } from "@/lib/daemon-client-context";
+import { clearLastUsedCwd } from "@/lib/last-used-cwd";
 
 /**
  * Settings root, iOS-only. Uses `@expo/ui/swift-ui` (Form, Section, Button +
@@ -36,6 +38,16 @@ import { statusColor, useDaemonClient } from "@/lib/daemon-client-context";
  */
 export default function SettingsIndexScreen() {
   const { paired, connectionStatus } = useDaemonClient();
+  const queryClient = useQueryClient();
+
+  // Wipe the persisted "last used cwd" so the next New-session lands on the
+  // empty placeholder again — lets you toggle that state without a Metro
+  // reload. Invalidate so live subscribers re-read null immediately.
+  const onClearLastCwd = async () => {
+    await clearLastUsedCwd();
+    queryClient.invalidateQueries({ queryKey: ["lastUsedCwd"] });
+  };
+
   return (
     <>
       <Stack.Screen options={{ title: "Settings" }} />
@@ -76,8 +88,69 @@ export default function SettingsIndexScreen() {
               </HStack>
             </Button>
           </Section>
+          {/* Dev-only probe pages, relocated here from the session-list
+              sidebar so the sidebar stays product-clean. Whole section is
+              stripped from release builds via __DEV__ (a literal the bundler
+              dead-code-eliminates). Pushes resolve at the (main) Stack level
+              and present a card over this settings sheet; back returns here. */}
+          {__DEV__ && (
+            <Section title="Developer">
+              <DisclosureRow
+                label="Diffs"
+                onPress={() => router.push("/dev/diffs")}
+              />
+              <DisclosureRow
+                label="Menu (@expo/ui swift-ui)"
+                onPress={() => router.push("/dev/menu-expo")}
+              />
+              <DisclosureRow
+                label="Menu (@expo/ui Universal)"
+                onPress={() => router.push("/dev/menu-universal")}
+              />
+              <DisclosureRow
+                label="Menu (@react-native-menu)"
+                onPress={() => router.push("/dev/menu-rnm")}
+              />
+              <DisclosureRow
+                label="KeyboardExtender spike"
+                // Not declared in (main)/_layout.tsx, so it's absent from the
+                // typed-routes union — cast matches the prior sidebar usage.
+                onPress={() => router.push("/dev/keyboard-extender" as never)}
+              />
+              <Button
+                label="Clear last cwd (test placeholder)"
+                onPress={onClearLastCwd}
+              />
+            </Section>
+          )}
         </Form>
       </Host>
     </>
+  );
+}
+
+/**
+ * A borderless Form row with a leading title and trailing chevron — the
+ * disclosure-cell shape iOS Settings uses for "tap to drill in". Same
+ * Button-with-HStack-label trick as the Host row (auto-borderless inside
+ * Form, preserves child foreground colors, full-row hit area + tap
+ * highlight). `foregroundStyle("primary")` keeps the title black/white
+ * instead of inheriting the accent tint a bare Button title would get.
+ */
+function DisclosureRow({
+  label,
+  onPress,
+}: {
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Button onPress={onPress}>
+      <HStack alignment="center" spacing={8}>
+        <Text modifiers={[foregroundStyle("primary")]}>{label}</Text>
+        <Spacer />
+        <Image systemName="chevron.right" size={14} color="#8E8E93" />
+      </HStack>
+    </Button>
   );
 }
