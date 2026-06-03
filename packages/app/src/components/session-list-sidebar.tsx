@@ -1,8 +1,15 @@
+import { Button, Host } from "@expo/ui/swift-ui";
+import {
+  buttonStyle,
+  controlSize,
+  font,
+  foregroundStyle,
+  labelStyle,
+} from "@expo/ui/swift-ui/modifiers";
 import { router } from "expo-router";
 import {
   ActivityIndicator,
   FlatList,
-  Pressable,
   Text,
   useColorScheme,
   View,
@@ -22,13 +29,14 @@ const HEADER_CONTENT_HEIGHT = 52;
 
 /**
  * Custom drawerContent. Replaces the default react-navigation drawer item
- * list with: app title + recents (sectioned by project) + bottom user pill.
+ * list with: a floating title/gear header + a flat recents list + a floating
+ * bottom-right "New Chat" button.
  *
  * The trigger row pattern mirrors Claude iOS: tap a session → close drawer →
- * navigate to the session detail. Tap "+" / new-session → close drawer →
- * navigate to "/" (the new-session create page; lives at
+ * navigate to the session detail. Tap the floating "New Chat" button →
+ * close drawer → navigate to "/" (the new-session create page; lives at
  * `(drawer)/(stack)/index.tsx`, sibling of the detail inside the same
- * inner Stack). Tap user pill → router.push("/settings") → root Stack
+ * inner Stack). Tap the header gear → router.push("/settings") → root Stack
  * pushes the modal sheet over (drawer).
  *
  * Drawer's `navigation` prop only needs `closeDrawer`; full
@@ -39,7 +47,14 @@ const HEADER_CONTENT_HEIGHT = 52;
  *
  * Header chrome: a plain absolute View floats over the list with a
  * linear-gradient scrim (`experimental_backgroundImage`) + the brand title and
- * "+ New" button. (Was a `@react-navigation/elements` Header, dropped — we
+ * a settings-gear button (`@expo/ui/swift-ui` Button with a `glass` buttonStyle
+ * + SF Symbol, hosted in a `Host matchContents` — the iOS 26 Liquid Glass
+ * capsule). The new-session action lives in a separate floating "New Chat"
+ * button pinned bottom-right (same Button with the `glassProminent` style).
+ * We use the swift-ui namespace, not universal — universal Button hardcodes a
+ * `borderedProminent`/`plain` buttonStyle as the innermost modifier, which wins
+ * over any `glass` we'd add, so glass is only reachable via swift-ui direct.
+ * (Header was a `@react-navigation/elements` Header, dropped — we
  * overrode every slot anyway and its getDefaultHeaderHeight 44pt read short on
  * iOS 26; height is now `HEADER_CONTENT_HEIGHT`.) We also tried the native iOS
  * 26 soft scroll-edge effect (react-native-screens' experimental gamma `Stack`
@@ -66,6 +81,12 @@ export function SessionListSidebar({
   // the list's contentContainerStyle.paddingTop (see Body) so row 1 starts
   // just below the bar.
   const headerHeight = insets.top + HEADER_CONTENT_HEIGHT;
+
+  // Reserve room at the bottom of the list so the last row can scroll clear of
+  // the floating New Chat button. The FAB sits at the safe-area edge
+  // (`bottom-safe`), so reserve its ~52pt large-capsule height + a little
+  // breathing room on top of the safe inset.
+  const footerHeight = insets.bottom + 68;
 
   // 3-stop scrim: HOLD full opacity through the status-bar + title band
   // (0%→75%), then fade only the bottom edge (75%→100%) so the area under the
@@ -136,12 +157,16 @@ export function SessionListSidebar({
         sessions={sessions ?? []}
         onOpenSession={handleOpenSession}
         headerHeight={headerHeight}
+        footerHeight={footerHeight}
       />
 
       {/* Floating header — one absolute band. Gradient scrim fills the box
-          (incl. the status bar); `pt-safe` drops the title/+New row below the
+          (incl. the status bar); `pt-safe` drops the title/gear row below the
           status-bar inset; flex-row + items-center lay them out. `box-none`
-          lets taps on empty header area fall through to the list. */}
+          lets taps on empty header area fall through to the list. The gear is
+          a `@expo/ui/swift-ui` Button (SwiftUI), so it needs its own `Host`;
+          `matchContents` sizes the Host to the button. `buttonStyle('glass')`
+          gives the iOS 26 Liquid Glass capsule. */}
       <View
         pointerEvents="box-none"
         className="absolute inset-x-0 top-0 z-10 flex-row items-center justify-between px-4 pt-safe"
@@ -153,32 +178,48 @@ export function SessionListSidebar({
         <Text className="text-2xl font-semibold text-black dark:text-white">
           sidecode
         </Text>
-        <Pressable
-          onPress={handleNewSession}
-          hitSlop={8}
-          className="rounded-full bg-gray-100 px-3 py-1 dark:bg-gray-800"
-        >
-          <Text className="text-sm font-medium text-black dark:text-white">
-            + New
-          </Text>
-        </Pressable>
+        <Host matchContents>
+          <Button
+            label="Settings"
+            systemImage="gearshape"
+            modifiers={[
+              buttonStyle("glass"),
+              labelStyle("iconOnly"),
+              // buttonBorderShape("circle"), // not yet in @expo/ui — next ver
+              font({ size: 22 }),
+            ]}
+            onPress={handleOpenSettings}
+          />
+        </Host>
       </View>
 
-      {/* Bottom user pill — opens settings as modal */}
-      <Pressable
-        onPress={handleOpenSettings}
-        className="flex-row items-center gap-3 border-t border-gray-200 px-4 py-3 dark:border-gray-800"
-        style={{ paddingBottom: insets.bottom + 12 }}
-      >
-        <View className="h-8 w-8 items-center justify-center rounded-full bg-gray-200 dark:bg-gray-700">
-          <Text className="text-xs font-semibold text-black dark:text-white">
-            RY
-          </Text>
-        </View>
-        <Text className="flex-1 text-sm text-black dark:text-white">
-          Settings
-        </Text>
-      </Pressable>
+      {/* Floating "New Chat" button — bottom-right FAB over the list
+          (swift-ui Button → `glassProminent` Liquid Glass capsule, tinted by
+          the accent). `bottom-safe right-6` pin it above the home indicator at
+          the trailing edge; `box-none` lets the rest of the band fall through
+          to the list. */}
+      <View pointerEvents="box-none" className="absolute bottom-safe right-6">
+        <Host matchContents>
+          <Button
+            label="New Chat"
+            systemImage="square.and.pencil"
+            modifiers={[
+              buttonStyle("glassProminent"),
+              controlSize("large"),
+              // `systemImage` renders via a SwiftUI Label, so the SF Symbol
+              // inherits this font — size AND weight, in lockstep with the
+              // title. (Weight is NOT settable on the standalone `<Image>`
+              // component: ImageView hardcodes `.font(.system(size:))` at
+              // regular weight and drops `modifiers` on the SF-Symbol branch,
+              // honoring only `size`/`color`. So both buttons use the Label
+              // path — `systemImage` + `font` — for full control.)
+              font({ size: 16, weight: "semibold" }),
+              foregroundStyle("#FFFFFF"),
+            ]}
+            onPress={handleNewSession}
+          />
+        </Host>
+      </View>
     </View>
   );
 }
@@ -188,11 +229,13 @@ function Body({
   sessions,
   onOpenSession,
   headerHeight,
+  footerHeight,
 }: {
   query: ReturnType<typeof useSessions>;
   sessions: readonly SessionRowData[];
   onOpenSession: (s: SessionRowData) => void;
   headerHeight: number;
+  footerHeight: number;
 }) {
   if (query.isLoading) {
     return (
@@ -237,11 +280,14 @@ function Body({
         <SessionRow session={item} onPress={onOpenSession} />
       )}
       ItemSeparatorComponent={Separator}
-      // Reserve the floating-header band so row 1 starts just below it; the
-      // scroll indicator is inset to match so it doesn't run under the scrim.
-      contentContainerStyle={{ paddingTop: headerHeight }}
+      // Reserve the floating-header band up top (so row 1 starts just below
+      // it) and the floating-button band at the bottom (so the last row clears
+      // the FAB); the scroll indicator is top-inset to match the scrim.
+      contentContainerStyle={{
+        paddingTop: headerHeight,
+        paddingBottom: footerHeight,
+      }}
       scrollIndicatorInsets={{ top: headerHeight }}
-      ListFooterComponent={<View className="h-4" />}
     />
   );
 }
