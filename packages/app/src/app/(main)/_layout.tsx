@@ -61,6 +61,7 @@ export default function MainLayout() {
         <Stack.Screen name="dev/menu-expo" />
         <Stack.Screen name="dev/menu-universal" />
         <Stack.Screen name="dev/menu-rnm" />
+        <Stack.Screen name="dev/running-indicators" />
       </Stack.Protected>
     </Stack>
   );

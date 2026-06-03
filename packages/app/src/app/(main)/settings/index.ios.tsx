@@ -100,6 +100,10 @@ export default function SettingsIndexScreen() {
                 onPress={() => router.push("/dev/diffs")}
               />
               <DisclosureRow
+                label="Running indicators"
+                onPress={() => router.push("/dev/running-indicators")}
+              />
+              <DisclosureRow
                 label="Menu (@expo/ui swift-ui)"
                 onPress={() => router.push("/dev/menu-expo")}
               />

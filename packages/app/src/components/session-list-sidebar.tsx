@@ -6,10 +6,11 @@ import {
   foregroundStyle,
   labelStyle,
 } from "@expo/ui/swift-ui/modifiers";
-import { router } from "expo-router";
+import { router, useGlobalSearchParams } from "expo-router";
+import { useMemo } from "react";
 import {
   ActivityIndicator,
-  FlatList,
+  SectionList,
   Text,
   useColorScheme,
   View,
@@ -18,9 +19,38 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SessionRow } from "@/components/session-row";
 import { useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { useSessions } from "@/hooks/use-sessions";
+import { dayKey, formatDaySection } from "@/lib/format";
 import type { SessionRow as SessionRowData } from "@/lib/sessions-collection";
 
-const Separator = () => <View className="h-px bg-gray-200 dark:bg-gray-800" />;
+interface DaySection {
+  title: string;
+  data: SessionRowData[];
+}
+
+/**
+ * Bucket the recency-sorted sessions into calendar-day sections (Today /
+ * Yesterday / "Jun 1" / …). `sessions` is already sorted `lastActivityAt`
+ * desc by `useSessions`, so a single linear pass keeps both section order
+ * (most-recent day first) and within-section recency. `now` is snapshotted
+ * once so every row buckets against the same "today".
+ */
+function groupSessionsByDay(sessions: readonly SessionRowData[]): DaySection[] {
+  const now = Date.now();
+  const out: DaySection[] = [];
+  let currentKey: string | null = null;
+  for (const session of sessions) {
+    const key = dayKey(session.lastActivityAt);
+    if (key !== currentKey) {
+      out.push({
+        title: formatDaySection(session.lastActivityAt, now),
+        data: [],
+      });
+      currentKey = key;
+    }
+    out[out.length - 1].data.push(session);
+  }
+  return out;
+}
 
 // Floating-header content height, below the status-bar inset. We set our own
 // (instead of react-navigation's getDefaultHeaderHeight, which hardcodes the
@@ -29,8 +59,9 @@ const HEADER_CONTENT_HEIGHT = 52;
 
 /**
  * Custom drawerContent. Replaces the default react-navigation drawer item
- * list with: a floating title/gear header + a flat recents list + a floating
- * bottom-right "New Chat" button.
+ * list with: a floating title/gear header + a day-sectioned recents list
+ * (Today / Yesterday / "Jun 1" …, still recency-sorted, no project grouping)
+ * + a floating bottom-right "New Chat" button.
  *
  * The trigger row pattern mirrors Claude iOS: tap a session → close drawer →
  * navigate to the session detail. Tap the floating "New Chat" button →
@@ -72,8 +103,6 @@ export function SessionListSidebar({
 }: {
   navigation: SidebarNavigation;
 }) {
-  const query = useSessions();
-  const sessions = query.data;
   const insets = useSafeAreaInsets();
   const scheme = useColorScheme() ?? "light";
 
@@ -153,8 +182,6 @@ export function SessionListSidebar({
           the header band so row 1 starts just below it, then rows fade into
           the scrim as they scroll up. */}
       <Body
-        query={query}
-        sessions={sessions ?? []}
         onOpenSession={handleOpenSession}
         headerHeight={headerHeight}
         footerHeight={footerHeight}
@@ -225,18 +252,29 @@ export function SessionListSidebar({
 }
 
 function Body({
-  query,
-  sessions,
   onOpenSession,
   headerHeight,
   footerHeight,
 }: {
-  query: ReturnType<typeof useSessions>;
-  sessions: readonly SessionRowData[];
   onOpenSession: (s: SessionRowData) => void;
   headerHeight: number;
   footerHeight: number;
 }) {
+  // Data hooks live here, not in the parent: nothing above Body consumes them,
+  // and keeping `useGlobalSearchParams` here scopes the per-navigation
+  // re-render to the list — the floating header + FAB (SwiftUI Hosts) don't
+  // re-render every time the active route changes.
+  const query = useSessions();
+  const sessions = query.data ?? [];
+  const { cliSessionId: activeCliSessionId } = useGlobalSearchParams<{
+    cliSessionId?: string;
+  }>();
+
+  // Day-grouped sections. Memoized so the linear bucketing only re-runs when
+  // the session set changes. All hooks stay above the early returns to satisfy
+  // rules-of-hooks.
+  const sections = useMemo(() => groupSessionsByDay(sessions), [sessions]);
+
   if (query.isLoading) {
     return (
       <View className="flex-1 items-center justify-center">
@@ -268,26 +306,38 @@ function Body({
     );
   }
 
-  // Flat list, recency-first per [[project_v0_session_list_design]]. Sort
-  // already done by useSessions' `orderBy` so the data prop is the
-  // render order.
+  // Day-sectioned, recency-first (Claude Desktop style). Sort is done by
+  // useSessions' `orderBy`; groupSessionsByDay just buckets in order. No row
+  // separators and non-sticky headers so the whole list flows under the
+  // gradient scrim as one quiet column.
   return (
-    <FlatList<SessionRowData>
+    <SectionList<SessionRowData, DaySection>
       style={{ flex: 1 }}
-      data={sessions as SessionRowData[]}
+      sections={sections}
       keyExtractor={(item) => item.cliSessionId}
       renderItem={({ item }) => (
-        <SessionRow session={item} onPress={onOpenSession} />
+        <SessionRow
+          session={item}
+          onPress={onOpenSession}
+          isActive={item.cliSessionId === activeCliSessionId}
+        />
       )}
-      ItemSeparatorComponent={Separator}
-      // Reserve the floating-header band up top (so row 1 starts just below
-      // it) and the floating-button band at the bottom (so the last row clears
-      // the FAB); the scroll indicator is top-inset to match the scrim.
+      renderSectionHeader={({ section }) => (
+        <Text className="px-4 pt-5 pb-1 text-sm font-medium text-gray-400 dark:text-gray-500">
+          {section.title}
+        </Text>
+      )}
+      stickySectionHeadersEnabled={false}
+      // No scroll indicator — it'd run under the gradient scrim and adds visual
+      // noise to an otherwise quiet column.
+      showsVerticalScrollIndicator={false}
+      // Reserve the floating-header band up top (so the first section starts
+      // just below it) and the floating-button band at the bottom (so the
+      // last row clears the FAB).
       contentContainerStyle={{
         paddingTop: headerHeight,
         paddingBottom: footerHeight,
       }}
-      scrollIndicatorInsets={{ top: headerHeight }}
     />
   );
 }
