@@ -1,19 +1,14 @@
-import { KeyboardChatLegendList } from "@legendapp/list/keyboard-chat";
+import {
+  KeyboardAwareLegendList,
+  useKeyboardChatComposerInset,
+} from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import type { ImageAttachment } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
-import { LinearGradient } from "expo-linear-gradient";
 import { useHeaderHeight } from "expo-router/react-navigation";
-import { useCallback, useLayoutEffect, useRef } from "react";
-import { type LayoutChangeEvent, useColorScheme, View } from "react-native";
-import {
-  KeyboardStickyView,
-  useReanimatedKeyboardAnimation,
-} from "react-native-keyboard-controller";
-import Reanimated, {
-  useAnimatedStyle,
-  useSharedValue,
-} from "react-native-reanimated";
+import { useCallback, useRef } from "react";
+import { useColorScheme, View } from "react-native";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
@@ -21,11 +16,6 @@ import { TextBlock } from "@/components/transcript/text-block";
 import { ToolBlock } from "@/components/transcript/tool-block";
 import type { RenderBlock } from "@/lib/transcript-blocks";
 import { sendUserMessage } from "@/lib/transcript-collection-factory";
-
-// Animatable wrapper for `LinearGradient` — module-level so the wrapped
-// component identity is stable across renders.
-const ReanimatedLinearGradient =
-  Reanimated.createAnimatedComponent(LinearGradient);
 
 type ChatPanelProps = {
   cliSessionId: string;
@@ -52,10 +42,9 @@ type ChatPanelProps = {
  *      fired, last message stayed hidden behind composer until user
  *      toggled keyboard.)
  *
- *   2. The composer-inset SharedValue starts fresh per session, with
- *      initial value 0 (NOT the measured composer height — see the
- *      block comment at `useSharedValue(0)` below for why). The
- *      measure-callback transition 0→real fires KCSV's
+ *   2. The composer-inset SharedValue (via `useKeyboardChatComposerInset`,
+ *      initialHeight 0) starts fresh per session at 0, NOT the measured
+ *      composer height. The measure-callback transition 0→real fires KCSV's
  *      `useAnimatedReaction` after the list ref is bound, guaranteeing
  *      the bottom inset propagates. (Before: hook sat on the parent
  *      screen with a stale dedup cache, OR init matched measured so no
@@ -75,11 +64,11 @@ type ChatPanelProps = {
  *      starting under the transparent Stack.Header. Both ends become
  *      our responsibility once auto-adjust is off.
  *
- *   4. The list's `offset` prop must mirror
- *      `KeyboardStickyView.offset.opened: -8` (and subtract the
- *      safe area already accounted for in the inset SharedValue) →
- *      `offset={insets.bottom - 8}`. Without this the last message
- *      sits a touch low above composer with the keyboard up.
+ *   4. The list's `keyboardOffset` mirrors `KeyboardStickyView.offset.opened`
+ *      (both `insets.bottom - 8`): with the keyboard up it drops the
+ *      safe-area band baked into the inset (via the composer's `pb-safe`)
+ *      and leaves the last message ~8pt above the keyboard top. Without it
+ *      the last message sits a touch low above the composer.
  *
  * Trade-off: brief no-composer flash during the loading transition
  * (typically <300ms for an in-flight subscribe). Mirror of how
@@ -95,76 +84,17 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
   const listRef = useRef<LegendListRef>(null);
   const composerRef = useRef<View>(null);
   const isDark = useColorScheme() === "dark";
-  const { height: keyboardHeightSV } = useReanimatedKeyboardAnimation();
-  // Inset pipeline — inlined replacement for `useKeyboardChatComposer-
-  // Inset`. We need the list's bottom inset to be `composer height +
-  // insets.bottom` (composer measured + home-indicator band, since the
-  // composer is shifted UP by `insets.bottom` via
-  // KeyboardStickyView.offset.closed). The library hook only reports
-  // composer's measured height through its SharedValue + imperative
-  // `listRef.current.reportContentInset`, so the bottom safe-area band
-  // stays clipped behind the home indicator unless we add insets.bottom
-  // ourselves.
-  //
-  // Why not `useDerivedValue(composerHeight + insets.bottom)` layered
-  // over the hook's SharedValue: confirmed via diagnostic logs that
-  // KCSV's `extraContentPadding` binding only tracks MUTABLE
-  // SharedValues — derived values produce correct .value but don't
-  // propagate to the native ScrollView's contentInset (contentLength
-  // stayed frozen across composer height changes). So we own the
-  // SharedValue directly.
-  //
-  // The two-channel pattern (write SharedValue + call
-  // `reportContentInset`) matches the library hook: SharedValue drives
-  // KCSV's visual padding, the imperative call drives LegendList
-  // virtualization (anchoredEndSpace, end detection).
-  //
-  // **Initial value MUST be 0**, not the expected `composer + insets`.
-  // KCSV's internal `useAnimatedReaction` fires once on mount with
-  // (current=initialValue, previous=undefined) — if listRef isn't bound
-  // yet at that moment, the call is lost; and because the value never
-  // changes afterward (init matches measured), the reaction never
-  // re-fires. Starting at 0 forces a 0→real transition once measure
-  // callback lands AFTER listRef is bound. Symptom of getting this
-  // wrong: session-switch initial bottom inset failed until user
-  // toggled the keyboard. The gradient's `useAnimatedStyle` below
-  // shares this SharedValue and benefits from the same forced
-  // transition.
-  const contentInsetEndAdjustment = useSharedValue(0);
-
-  // Scroll-edge fade gradient — height tracks composer + keyboard so the
-  // band always reaches the composer chrome's top; bottom is fixed at
-  // screen edge via `bottom: 0` in the JSX style.
-  // `keyboardHeightSV.value` is negative when keyboard is open, hence
-  // `-value` for the keyboard contribution.
-  const animatedGradientStyle = useAnimatedStyle(() => ({
-    height: -keyboardHeightSV.value + contentInsetEndAdjustment.value,
-  }));
-
-  const reportInset = useCallback(
-    (composerPx: number) => {
-      const inset = composerPx + insets.bottom;
-      if (!Number.isFinite(inset)) {
-        return;
-      }
-      contentInsetEndAdjustment.value = inset;
-      listRef.current?.reportContentInset({ bottom: inset });
-    },
-    [contentInsetEndAdjustment, insets.bottom],
-  );
-
-  // Run once after composer mounts in case onLayout fires too late
-  // for the list's initial commit. measure() runs after native layout
-  // pass, so by the time the callback runs the composer has its real
-  // height.
-  useLayoutEffect(() => {
-    composerRef.current?.measure((_x, _y, _w, h) => reportInset(h));
-  }, [reportInset]);
-
-  const onComposerLayout = useCallback(
-    (e: LayoutChangeEvent) => reportInset(e.nativeEvent.layout.height),
-    [reportInset],
-  );
+  // Composer → list bottom-inset wiring (library hook). Reports the composer
+  // wrapper's measured height (GitStatusBar + InputBar) as the list's bottom
+  // inset, both via the `contentInsetEndAdjustment` SharedValue (drives KCSV's
+  // visual padding) and an imperative `reportContentInset` (drives LegendList
+  // virtualization). No manual `+ insets.bottom`: the composer owns its
+  // safe-area band via `pb-safe`, so its measured height already includes it.
+  // `initialHeight: 0` → the 0→real transition on the first measure fires
+  // KCSV's reaction after listRef binds; ChatPanel mounts fresh per session so
+  // there's no stale dedup carried across sessions.
+  const { contentInsetEndAdjustment, onComposerLayout } =
+    useKeyboardChatComposerInset(listRef, composerRef, 0);
 
   // The "real send" handed to InputBar as `onSend`. InputBar intercepts
   // slash commands internally (/clear, /model) — only non-slash text +
@@ -205,7 +135,7 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
 
   return (
     <>
-      <KeyboardChatLegendList<RenderBlock>
+      <KeyboardAwareLegendList<RenderBlock>
         ref={listRef}
         data={blocks}
         keyExtractor={(b) => b.id}
@@ -234,10 +164,10 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
         // using KeyboardChatScrollView inside virtualized lists."
         contentInsetAdjustmentBehavior="never"
         automaticallyAdjustContentInsets={false}
-        // Bottom inset = composer measured height + insets.bottom
-        // (see SharedValue setup above). Drives KCSV's visual padding
-        // *and* LegendList virtualization via the imperative
-        // reportContentInset call.
+        // Bottom inset = the composer wrapper's measured height (already
+        // includes the home-indicator band via the composer's `pb-safe`).
+        // Drives KCSV's visual padding *and* LegendList virtualization via
+        // the imperative reportContentInset — both wired by the hook above.
         contentInsetEndAdjustment={contentInsetEndAdjustment}
         // Workaround for facebook/react-native#54123 — on iOS + RN
         // ≥0.81, the `contentInset` area created by extraContentPadding
@@ -248,29 +178,29 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
         // should land in 0.86/0.87 — DELETE this prop after upgrading
         // and verifying scroll/tap in the inset zone.
         applyWorkaroundForContentInsetHitTestBug
-        // Mirrors `KeyboardStickyView.offset.opened: -8`. KCSV's
-        // `offset` is "distance from ScrollView bottom to screen
-        // bottom" and, on keyboard-open, "by how much to reduce the
-        // keyboard push." We want the list to leave a touch of room
-        // above the keyboard matching how composer is lifted (-8pt
-        // above keyboard top); `insets.bottom` cancels the safe area
-        // already accounted for in `contentInsetEndAdjustment` so it
-        // isn't counted twice while open. Without this the last
-        // message sits ~insets.bottom too low above composer when the
-        // keyboard is shown.
-        offset={insets.bottom - 8}
+        // Mirrors `KeyboardStickyView.offset.opened` (both `insets.bottom - 8`).
+        // KCSV's `keyboardOffset` (renamed from `offset` in @legendapp/list 3.0.0)
+        // is "distance from ScrollView bottom to screen bottom" and, on
+        // keyboard-open, "by how much to reduce the keyboard push." We want
+        // the list to leave a touch of room above the keyboard matching how
+        // composer is lifted (-8pt above keyboard top); `insets.bottom`
+        // cancels the safe area already accounted for in
+        // `contentInsetEndAdjustment` so it isn't counted twice while open.
+        // Without this the last message sits ~insets.bottom too low above
+        // composer when the keyboard is shown.
+        keyboardOffset={insets.bottom - 8}
         // ChatGPT-style scrolling, NOT Telegram-style:
         //   - initialScrollAtEnd: boot at the latest message on session
         //     re-open. Runs a per-frame rAF ticker that retargets to true
         //     end as items measure and the inset settles (LegendList
-        //     beta.54 "retarget initial scroll after inset changes").
+        //     retargets the initial scroll after inset changes).
         //   - maintainScrollAtEnd: when user is already pinned at bottom,
         //     new messages keep them pinned; scrolling up disengages.
         //
         // DELIBERATELY OMITTED: `alignItemsAtEnd`. That's a
         // Telegram/iMessage idiom (sparse messages stick to the bottom of
         // the viewport via `flexGrow:1 + justifyContent:flex-end` on the
-        // contentContainer, see @legendapp/list/react.js:6611). For our
+        // contentContainer). For our
         // ChatGPT layout messages flow top-down from the header, and we
         // got two bugs from enabling it: (1) contentContainer was forced
         // to fill the viewport even with one short message, making the
@@ -280,10 +210,13 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
         // `contentInsetEndAdjustment`.
         initialScrollAtEnd
         maintainScrollAtEnd={{ animated: true }}
-        // Keep already-visible content's absolute position stable
-        // when new items arrive or the keyboard toggles — the
-        // Telegram/iMessage "what I'm reading doesn't jump" behavior.
-        maintainVisibleContentPosition
+        // v3 migration: stabilize the visible position on size/layout
+        // changes (keyboard toggle, streaming item growth) but NOT on data
+        // adds — `data:false` hands pin-to-bottom-on-new-message to
+        // `maintainScrollAtEnd` above. This is the v3 guide's recommended chat
+        // config (and the v3 default); set explicitly to document intent. v2's
+        // bare boolean mapped to different defaults.
+        maintainVisibleContentPosition={{ size: true, data: false }}
         // iOS pull-down-to-dismiss for the keyboard.
         keyboardDismissMode="interactive"
         recycleItems
@@ -292,37 +225,13 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
         // floats over the content so what they're reading stays put.
         keyboardLiftBehavior="whenAtEnd"
       />
-      {/* Scroll-edge fade — ChatGPT/Claude-style. Sits as a SIBLING of
-          the KSV (page coords), so `bottom: 0` is the screen edge
-          directly. Rendered BEFORE the KSV → lower in z-order; the
-          composer chrome's translucent backdrop blur sits on top, but
-          the opaque-at-bottom gradient shows through it and through
-          home-indicator / keyboard regions — transcript content
-          "dissolves" into the page bg as it scrolls toward composer.
-
-          Height = `-keyboardHeightSV + contentInsetEndAdjustment` —
-          shares the inset SharedValue, so it transitions 0→real on the
-          same measure callback (see init=0 explanation above). When
-          the keyboard opens, gradient extends into the keyboard
-          region (no hairline gap between chrome and keyboard top). */}
-      <ReanimatedLinearGradient
-        colors={
-          isDark
-            ? ["rgba(0,0,0,0)", "rgba(0,0,0,0.6)"]
-            : ["rgba(255,255,255,0)", "rgba(255,255,255,0.6)"]
-        }
-        pointerEvents="none"
-        style={[
-          { position: "absolute", left: 0, right: 0, bottom: 0 },
-          animatedGradientStyle,
-        ]}
-      />
-      {/* InputBar floats over the list so transcript content can
-          scroll behind it — Liquid Glass needs content underneath to
-          actually blur. KeyboardStickyView's translateY math:
-          `height.value + offset(progress)`; offset closed: -insets.bottom
-          clears the home indicator, opened: -8 lifts a touch above
-          the keyboard top.
+      {/* InputBar floats over the list so transcript content can scroll
+          behind it — Liquid Glass needs content underneath to actually blur.
+          The composer sits flush at the screen bottom (no closed offset); its
+          own `pb-safe` pads GitStatusBar + InputBar above the home indicator.
+          `offset.opened: insets.bottom - 8` — when the keyboard is up it drops
+          that now-unneeded safe-area band and leaves the input ~8pt above the
+          keyboard top.
 
           The inner `composerRef` View wraps everything that needs to
           be measured for list bottom-inset — currently GitStatusBar +
@@ -331,10 +240,20 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
           `collapsable={false}` is required for `measure` / `onLayout`
           to fire reliably on Android. */}
       <KeyboardStickyView
-        offset={{ closed: -insets.bottom, opened: -8 }}
+        offset={{ opened: insets.bottom - 8 }}
         style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
       >
-        <View ref={composerRef} collapsable={false} onLayout={onComposerLayout}>
+        <View
+          ref={composerRef}
+          collapsable={false}
+          onLayout={onComposerLayout}
+          className="pb-safe"
+          style={{
+            experimental_backgroundImage: isDark
+              ? "linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0))"
+              : "linear-gradient(to top, rgba(255,255,255,0.8), rgba(255,255,255,0))",
+          }}
+        >
           <GitStatusBar cwd={cwd} />
           <InputBar cliSessionId={cliSessionId} onSend={rawSend} />
         </View>
