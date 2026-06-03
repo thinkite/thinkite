@@ -139,15 +139,14 @@ export function SessionListSidebar({
       />
 
       {/* Floating header — one absolute band. Gradient scrim fills the box
-          (incl. the status bar); paddingTop drops the title/+New row below the
-          inset; flex-row + items-center lay them out. `box-none` lets taps on
-          empty header area fall through to the list. */}
+          (incl. the status bar); `pt-safe` drops the title/+New row below the
+          status-bar inset; flex-row + items-center lay them out. `box-none`
+          lets taps on empty header area fall through to the list. */}
       <View
         pointerEvents="box-none"
-        className="absolute inset-x-0 top-0 z-10 flex-row items-center justify-between px-4"
+        className="absolute inset-x-0 top-0 z-10 flex-row items-center justify-between px-4 pt-safe"
         style={{
           height: headerHeight,
-          paddingTop: insets.top,
           experimental_backgroundImage: headerScrim,
         }}
       >
