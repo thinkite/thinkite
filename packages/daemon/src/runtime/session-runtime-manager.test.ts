@@ -346,6 +346,22 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
     expect(r.currentModel).toBe("claude-sonnet-4-6");
   });
 
+  it("getOrCreate seeds lastActivityAt from disk metadata (viewing doesn't fabricate now)", () => {
+    const m = new SessionRuntimeManager<string>();
+    const past = 1_700_000_000_000; // fixed past timestamp, well before now
+    writeSidecodeSession(
+      home,
+      fixtureMeta({ cliSessionId: "seeded", lastActivityAt: past }),
+    );
+    m.setHome(home); // hydrate from disk
+    const r = m.getOrCreate("seeded");
+    // Materializing a runtime just to serve a read-only transcript subscribe
+    // must NOT bump lastActivityAt to the constructor's Date.now() — it
+    // inherits the persisted timestamp, so a session doesn't jump to the top
+    // of the iOS list merely from being viewed.
+    expect(r.lastActivityAt).toBe(past);
+  });
+
   it("getOrCreate does NOT seed currentModel when home is unset (memory-only manager)", () => {
     const m = new SessionRuntimeManager<string>();
     const r = m.getOrCreate("no-home");

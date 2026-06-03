@@ -143,6 +143,16 @@ export class SessionRuntimeManager<T> {
       // runtime-level setter.)
       created.currentModel = meta.model;
     }
+    // Seed lastActivityAt from persisted metadata too (same rationale as the
+    // model mirror above). Without this, a runtime materialized purely to
+    // serve a transcript `subscribe` — i.e. just *viewing* a session —
+    // reports the constructor's `Date.now()`, and buildPublicState (which
+    // prefers the runtime over meta) re-sorts the just-viewed session to the
+    // top of the iOS list. Viewing isn't activity; only `setActivity` (turn
+    // start/idle edges) should advance the timestamp forward from here.
+    if (meta?.lastActivityAt !== undefined) {
+      created.lastActivityAt = meta.lastActivityAt;
+    }
     this.runtimes.set(sessionId, created);
     return created;
   }
