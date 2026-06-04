@@ -17,7 +17,6 @@
     "@nandorojo/galeria": "^3.0.3",
     "@noble/ed25519": "^3.1.0",
     "@noble/hashes": "^2.2.0",
-    "@react-native-menu/menu": "^2.0.0",
     "@sidecodeapp/protocol": "workspace:*",
     "@tanstack/db": "^0.6.7",
     "@tanstack/query-db-collection": "^1.0.38",

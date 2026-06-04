@@ -1,4 +1,3 @@
-import { type MenuAction, MenuView } from "@react-native-menu/menu";
 import {
   type CommandContext,
   DEFAULT_MODEL,
@@ -7,6 +6,7 @@ import {
   MODELS,
 } from "@sidecodeapp/protocol";
 import { eq, useLiveQuery } from "@tanstack/react-db";
+import { ContextMenu, type MenuAction } from "@yyq1025/react-native-nitro-menu";
 import { GlassView } from "expo-glass-effect";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
@@ -148,14 +148,14 @@ async function compressToAttachment(
  *   - `stop.fill` (running): turn is in flight, tap → interrupt (internal)
  *
  * Attachment flow: `+` button opens a native attachment menu (Camera
- * / Photos via `@react-native-menu/menu` — NOT @expo/ui/community/menu,
- * which wraps SwiftUI Menu in a UIHostingController and conflicts with
- * iOS 14+ auto keyboard avoidance, causing the trigger to drift above
- * sibling Pressables on first keyboard show under system IME); picked
- * assets are compressed (long edge 2576 / JPEG q0.85) and shown as a
- * horizontal pill row above the TextInput until the user sends or
- * removes them. Cap: 8 images per message (Opus 4.7 vision token
- * budget).
+ * / Photos via the nitro tap menu `@yyq1025/react-native-nitro-menu` —
+ * a pure-UIKit UIButton+UIMenu, NOT @expo/ui/community/menu, which wraps
+ * SwiftUI Menu in a UIHostingController and conflicts with iOS 14+ auto
+ * keyboard avoidance, drifting the trigger above sibling icons on first
+ * keyboard show under system IME); picked assets are compressed (long
+ * edge 2576 / JPEG q0.85) and shown as a horizontal pill row above the
+ * TextInput until the user sends or removes them. Cap: 8 images per
+ * message (Opus 4.7 vision token budget).
  *
  * Liquid Glass requires iOS 26+. On older iOS / Android the GlassView
  * silently falls back to a plain View; the inline `backgroundColor`
@@ -296,9 +296,9 @@ export function InputBar({
 
   const currentModel = MODELS.find((m) => m.model === model);
   // Cap is enforced in three places: PHPicker's selectionLimit
-  // (per-pick), Camera early-return guard, and MenuView action
-  // `disabled`. We DON'T dim the `+` button itself — the menu will
-  // grow other non-image items (voice memo, doc, snippet) that
+  // (per-pick), Camera early-return guard, and the attachment menu's
+  // `disabled` attribute. We DON'T dim the `+` button itself — the menu
+  // will grow other non-image items (voice memo, doc, snippet) that
   // shouldn't be blocked just because the image cap is hit.
   const remainingSlots = MAX_TOTAL_IMAGES - images.length;
   const canAdd = remainingSlots > 0;
@@ -492,72 +492,70 @@ export function InputBar({
           />
           <View className="px-3 flex-row items-center justify-between">
             <View className="flex-row items-center gap-2">
-              {/* `+` button → native attachment menu via @react-native-menu/menu
-                  (UIKit UIMenu on iOS, PopupMenu on Android). MenuView wraps
-                  the trigger Pressable directly; tapping fires `onPressAction`
-                  with the action's id. Note: `imageColor` MUST be set on each
-                  action — see comment at the prop. */}
-              <MenuView
-                actions={[
-                  {
-                    id: "library",
-                    title: "Photos",
-                    image: "photo.on.rectangle",
-                    // SDK 55+ New Arch workaround: native side forwards a
-                    // default `0` tint when imageColor is unset, rendering
-                    // the SF Symbol as opaque-zero (invisible). Explicit
-                    // color is required.
-                    // https://github.com/react-native-menu/menu/issues/1198
-                    imageColor: colorScheme === "dark" ? "#e4e4e7" : "#3f3f46",
-                    attributes: { disabled: !canAdd },
-                  },
-                  {
-                    id: "camera",
-                    title: "Camera",
-                    image: "camera",
-                    imageColor: colorScheme === "dark" ? "#e4e4e7" : "#3f3f46",
-                    attributes: { disabled: !canAdd },
-                  },
-                ]}
-                onPressAction={({ nativeEvent: { event } }) => {
-                  if (event === "camera") pickFromCamera();
-                  else if (event === "library") pickFromLibrary();
+              {/* `+` button → native attachment menu via the nitro tap menu
+                  (a transparent showsMenuAsPrimaryAction UIButton + UIMenu on
+                  iOS, PopupMenu on Android — pure UIKit, no UIHostingController,
+                  so it stays put on first keyboard show; that immunity is why
+                  we don't use @expo/ui here). The trigger content renders under
+                  the overlay button (so a plain View, not a Pressable); tapping
+                  fires `onPressAction` with the `actionKey`. No `imageColor`
+                  needed — UIKit template-tints the SF Symbol. */}
+              <ContextMenu
+                trigger="tap"
+                menuConfig={{
+                  items: [
+                    {
+                      actionKey: "library",
+                      title: "Photos",
+                      image: { systemName: "photo.on.rectangle" },
+                      attributes: canAdd ? [] : ["disabled"],
+                    },
+                    {
+                      actionKey: "camera",
+                      title: "Camera",
+                      image: { systemName: "camera" },
+                      attributes: canAdd ? [] : ["disabled"],
+                    },
+                  ],
+                }}
+                onPressAction={(actionKey) => {
+                  if (actionKey === "camera") pickFromCamera();
+                  else if (actionKey === "library") pickFromLibrary();
                 }}
               >
-                <Pressable className="p-1.75 rounded-full bg-black/5 dark:bg-white/10">
+                <View className="p-1.75 rounded-full bg-black/5 dark:bg-white/10">
                   <SymbolView
                     name="plus"
                     size={22}
                     weight="regular"
                     tintColor={colorScheme === "dark" ? "#e4e4e7" : "#3f3f46"}
                   />
-                </Pressable>
-              </MenuView>
-              {/* Model picker chip — flat native menu (UIMenu on iOS,
-                  PopupMenu on Android). One row per non-deprecated
-                  model from the bundled MODELS table; `state: "on"` on
-                  the active row gives the native ✓. Effort isn't exposed
-                  (sidecode V0 trusts SDK adaptive thinking + per-account
-                  Settings.effortLevel). */}
-              <MenuView
-                // Menu-level title — UIMenu's `title` renders as a
-                // greyed header above the action rows. Used here to
-                // surface the meter's exact numbers (the chip fill
-                // alone reads as % only). Omitted when contextUsage is
-                // undefined so the menu doesn't show an empty header
-                // on new-session / pre-first-turn states.
-                title={
-                  contextUsage
+                </View>
+              </ContextMenu>
+              {/* Model picker chip — flat nitro tap menu (UIMenu on iOS,
+                  PopupMenu on Android). One row per non-deprecated model from
+                  the bundled MODELS table; `state: "on"` on the active row
+                  gives the native ✓. Effort isn't exposed (sidecode V0 trusts
+                  SDK adaptive thinking + per-account Settings.effortLevel). */}
+              <ContextMenu
+                trigger="tap"
+                menuConfig={{
+                  // Menu-level title — the root UIMenu's `title` renders as a
+                  // greyed header above the action rows. Surfaces the meter's
+                  // exact numbers (the chip fill alone reads as % only).
+                  // Omitted when contextUsage is undefined so the menu doesn't
+                  // show an empty header on new-session / pre-first-turn states.
+                  title: contextUsage
                     ? `Context usage: ${formatTokensK(contextUsage.used)} / ${formatTokensK(contextUsage.max)}`
-                    : undefined
-                }
-                actions={MODELS.map<MenuAction>((m) => ({
-                  id: m.model,
-                  title: m.displayName,
-                  state: m.model === model ? "on" : "off",
-                }))}
-                onPressAction={({ nativeEvent: { event } }) => {
-                  onPickModel(event);
+                    : undefined,
+                  items: MODELS.map<MenuAction>((m) => ({
+                    actionKey: m.model,
+                    title: m.displayName,
+                    state: m.model === model ? "on" : "off",
+                  })),
+                }}
+                onPressAction={(actionKey) => {
+                  onPickModel(actionKey);
                 }}
               >
                 {/* Context meter — fills the chip background left→right
@@ -567,7 +565,7 @@ export function InputBar({
                     layers on top (RN sibling order = z-order). No extra
                     layout cost when `contextUsage` is undefined — the
                     null branch skips the absolute View entirely. */}
-                <Pressable className="relative flex-row items-center gap-1 px-3 py-2 rounded-full bg-black/5 dark:bg-white/10 overflow-hidden">
+                <View className="relative flex-row items-center gap-1 px-3 py-2 rounded-full bg-black/5 dark:bg-white/10 overflow-hidden">
                   {contextUsage && (
                     <View
                       className="absolute inset-y-0 left-0"
@@ -583,8 +581,8 @@ export function InputBar({
                   <Text className="text-sm text-zinc-700 dark:text-zinc-200">
                     {currentModel?.displayName ?? "Model"}
                   </Text>
-                </Pressable>
-              </MenuView>
+                </View>
+              </ContextMenu>
             </View>
             <View className="flex-row items-center gap-3">
               <Pressable className="p-1.75">
