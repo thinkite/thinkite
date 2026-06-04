@@ -100,26 +100,8 @@ export default function SettingsIndexScreen() {
                 onPress={() => router.push("/dev/diffs")}
               />
               <DisclosureRow
-                label="Running indicators"
-                onPress={() => router.push("/dev/running-indicators")}
-              />
-              <DisclosureRow
-                label="Menu (@expo/ui swift-ui)"
-                onPress={() => router.push("/dev/menu-expo")}
-              />
-              <DisclosureRow
-                label="Menu (@expo/ui Universal)"
-                onPress={() => router.push("/dev/menu-universal")}
-              />
-              <DisclosureRow
-                label="Menu (@react-native-menu)"
-                onPress={() => router.push("/dev/menu-rnm")}
-              />
-              <DisclosureRow
                 label="KeyboardExtender spike"
-                // Not declared in (main)/_layout.tsx, so it's absent from the
-                // typed-routes union — cast matches the prior sidebar usage.
-                onPress={() => router.push("/dev/keyboard-extender" as never)}
+                onPress={() => router.push("/dev/keyboard-extender")}
               />
               <Button
                 label="Clear last cwd (test placeholder)"

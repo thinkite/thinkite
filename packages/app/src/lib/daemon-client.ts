@@ -777,6 +777,37 @@ export class Transport {
   }
 
   /**
+   * CCR upgrade — mirror this pure WebRTC session to a cloud `cse_` so it's
+   * visible + drivable from claude.ai / Claude Desktop. Daemon attaches the
+   * bridge at the next turn boundary; the iOS-facing `bridged` flag flips via
+   * the `subscribeSessions` push once BridgeService worker-state lands. Throws
+   * on daemon error (e.g. cannot upgrade mid-turn) so callers can roll back any
+   * optimistic UI.
+   */
+  async bridgeSession(sessionId: string): Promise<void> {
+    const requestId = Crypto.randomUUID();
+    await this.request({
+      type: "bridgeSession",
+      requestId,
+      sessionId,
+    });
+  }
+
+  /**
+   * CCR downgrade ("make private") — drop the cloud mirror; the session
+   * continues as a pure WebRTC session. Idempotent: unbridging a session that
+   * isn't bridged is a no-op success.
+   */
+  async unbridgeSession(sessionId: string): Promise<void> {
+    const requestId = Crypto.randomUUID();
+    await this.request({
+      type: "unbridgeSession",
+      requestId,
+      sessionId,
+    });
+  }
+
+  /**
    * Identity-checked unsubscribe — both the local registry slot AND the
    * RPC are gated on `owner` still matching the stored callback.
    *
@@ -1464,6 +1495,16 @@ export class DaemonClient {
   async interrupt(sessionId: string): Promise<void> {
     const t = await this.readyPromise;
     return t.interrupt(sessionId);
+  }
+
+  async bridgeSession(sessionId: string): Promise<void> {
+    const t = await this.readyPromise;
+    return t.bridgeSession(sessionId);
+  }
+
+  async unbridgeSession(sessionId: string): Promise<void> {
+    const t = await this.readyPromise;
+    return t.unbridgeSession(sessionId);
   }
 
   /**

@@ -56,6 +56,9 @@ importers:
       '@tanstack/react-query':
         specifier: ^5.100.5
         version: 5.100.5(react@19.2.3)
+      '@yyq1025/react-native-nitro-menu':
+        specifier: ^0.2.0
+        version: 0.2.0(react-native-nitro-modules@0.35.6(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       burnt:
         specifier: ^0.13.0
         version: 0.13.0(expo@56.0.8)(react-dom@19.2.3(react@19.2.3))(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
@@ -2815,6 +2818,13 @@ packages:
   '@xmldom/xmldom@0.9.10':
     resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
     engines: {node: '>=14.6'}
+
+  '@yyq1025/react-native-nitro-menu@0.2.0':
+    resolution: {integrity: sha512-Xs+KM7CVp60RRfa2mScMx1PR5CehU/czKsue++YdxXL7tQ8ZlNad6mThzmD2aV6lblM05Iwo+TZ8cQ7zP+BqhA==}
+    peerDependencies:
+      react: '*'
+      react-native: '*'
+      react-native-nitro-modules: '*'
 
   abort-controller@3.0.0:
     resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==}
@@ -9494,6 +9504,12 @@ snapshots:
   '@xmldom/xmldom@0.8.13': {}
 
   '@xmldom/xmldom@0.9.10': {}
+
+  '@yyq1025/react-native-nitro-menu@0.2.0(react-native-nitro-modules@0.35.6(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)':
+    dependencies:
+      react: 19.2.3
+      react-native: 0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3)
+      react-native-nitro-modules: 0.35.6(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
 
   abort-controller@3.0.0:
     dependencies:

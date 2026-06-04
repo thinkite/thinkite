@@ -323,7 +323,7 @@ function Body({
         />
       )}
       renderSectionHeader={({ section }) => (
-        <Text className="px-4 pt-5 pb-1 text-sm font-medium text-gray-400 dark:text-gray-500">
+        <Text className="px-3 pt-2 pb-1 text-sm font-medium text-gray-400 dark:text-gray-500">
           {section.title}
         </Text>
       )}
@@ -334,6 +334,7 @@ function Body({
       // Reserve the floating-header band up top (so the first section starts
       // just below it) and the floating-button band at the bottom (so the
       // last row clears the FAB).
+      contentContainerClassName="px-2 gap-1"
       contentContainerStyle={{
         paddingTop: headerHeight,
         paddingBottom: footerHeight,
