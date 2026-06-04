@@ -716,6 +716,10 @@ export class Transport {
     cwd?: string;
     images?: ImageAttachment[];
     model?: string;
+    /** Create-bridged: on a NEW session's FIRST send, the daemon attaches a CCR
+     *  bridge before turn 1 (mirrors live from the first message, no backfill).
+     *  Ignored for an existing session — use `bridgeSession` to upgrade one. */
+    bridged?: boolean;
     userMessageUuid?: string;
   }): Promise<void> {
     const requestId = Crypto.randomUUID();
@@ -731,6 +735,7 @@ export class Transport {
       frame.images = opts.images;
     }
     if (opts.model !== undefined) frame.model = opts.model;
+    if (opts.bridged !== undefined) frame.bridged = opts.bridged;
     if (opts.userMessageUuid !== undefined) {
       frame.userMessageUuid = opts.userMessageUuid;
     }
@@ -1478,6 +1483,8 @@ export class DaemonClient {
     cwd?: string;
     images?: ImageAttachment[];
     model?: string;
+    /** Create-bridged on a new session's first send — see Transport.sendPrompt. */
+    bridged?: boolean;
     userMessageUuid?: string;
   }): Promise<void> {
     const t = await this.readyPromise;

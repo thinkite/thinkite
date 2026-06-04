@@ -12,6 +12,7 @@ import { StyleSheet, Text, useColorScheme, View } from "react-native";
 // pressed/active background needs the Pressable's `{ pressed }` state callback —
 // which the className→style merge would flatten away.
 import { Pressable } from "react-native-gesture-handler";
+import { confirmBridgeToggle } from "@/lib/confirm-bridge-toggle";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 import type { SessionRow as SessionRowData } from "@/lib/sessions-collection";
 
@@ -97,36 +98,28 @@ export function SessionRow({ session, onPress, isActive }: SessionRowProps) {
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const { client } = useDaemonClient();
 
-  // The `bridged` flag is daemon-derived (pushed via subscribeSessions), so we
-  // just fire the RPC and let the cloud badge flip when the daemon broadcasts —
-  // no optimistic local state to roll back.
-  const onBridge = () =>
-    client
-      .bridgeSession(session.cliSessionId)
-      .catch((err) => console.warn("[sidecode] bridgeSession failed:", err));
-  const onUnbridge = () =>
-    client
-      .unbridgeSession(session.cliSessionId)
-      .catch((err) => console.warn("[sidecode] unbridgeSession failed:", err));
-
   // Single toggle action — parity with the action sheet it replaced. (Delete et
   // al. land here once the daemon grows the RPCs; the menu surface is now ready
   // for them.) The title goes on the action, not a menu header, so it reads as
-  // a verb; the lifted preview already shows which row you're on.
+  // a verb; the lifted preview already shows which row you're on. Icon vocab
+  // matches the detail-screen header toggle: laptopcomputer (private/your Mac)
+  // ↔ cloud (remote control).
   const menuConfig: MenuConfig = {
     items: [
       {
         actionKey: "bridge",
         title: isBridged ? "Make private" : "Start Remote Control",
-        image: { systemName: isBridged ? "lock" : "cloud" },
+        image: { systemName: isBridged ? "laptopcomputer" : "cloud" },
       },
     ],
   };
 
+  // Confirm-then-toggle via the shared helper (same Alert copy + dispatch as the
+  // header button); the `bridged` flag flips on the daemon broadcast, not
+  // optimistically.
   const onAction = (actionKey: string) => {
     if (actionKey === "bridge") {
-      if (isBridged) onUnbridge();
-      else onBridge();
+      confirmBridgeToggle(client, session.cliSessionId, isBridged);
     }
   };
 

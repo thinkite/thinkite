@@ -124,6 +124,10 @@ interface CreateSessionVars {
   cwd: string;
   images?: ImageAttachment[];
   model?: string;
+  /** Create-bridged: when true, the first send attaches a CCR bridge before
+   *  turn 1 (daemon-side), so the session is remote-controllable from its very
+   *  first message. Chosen on the new-session screen. */
+  bridged?: boolean;
 }
 
 /**
@@ -158,6 +162,10 @@ export const createSession = createOptimisticAction<CreateSessionVars>({
       createdAt: now,
       isArchived: false,
       permissionMode: "bypassPermissions",
+      // Seed the chosen create-bridged intent so the row's cloud badge shows
+      // immediately; the daemon broadcasts the canonical `bridged` on reconcile
+      // (and corrects to pure if its pre-turn attach happens to fail).
+      bridged: vars.bridged,
     });
   },
   mutationFn: async (vars) => {
@@ -167,6 +175,7 @@ export const createSession = createOptimisticAction<CreateSessionVars>({
       cwd: vars.cwd,
       images: vars.images,
       model: vars.model,
+      bridged: vars.bridged,
     });
     // No refetch — daemon's setActivity("running") on this prompt fires
     // a session_state_changed envelope which the sync handler folds in

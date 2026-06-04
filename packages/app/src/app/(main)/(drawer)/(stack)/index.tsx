@@ -2,8 +2,8 @@ import type { ImageAttachment } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
 import { router, Stack, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
-import { useCallback } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useCallback, useState } from "react";
+import { Alert, Pressable, Text, View } from "react-native";
 import {
   KeyboardAvoidingView,
   KeyboardController,
@@ -68,6 +68,27 @@ export default function NewSessionScreen() {
   // DEFAULT_MODEL). The chosen model arrives back via `rawSend`'s `model`
   // arg at send time and seeds `createSession`. No selection state here.
 
+  // Create-bridged intent: a LOCAL pref (no session exists yet — nothing to
+  // RPC) that rides out on the first send's `bridged` flag. Mirrors the detail
+  // screen's header toggle, but here it just flips local state.
+  const [createBridged, setCreateBridged] = useState(false);
+  const toggleCreateBridged = useCallback(() => {
+    // Turning OFF (→ private) needs no confirm — nothing is exposed yet.
+    if (createBridged) {
+      setCreateBridged(false);
+      return;
+    }
+    // Turning ON (→ bridged) confirms first, like the other bridge toggles.
+    Alert.alert(
+      "Start Remote Control?",
+      "The session you create will be bridged to the cloud from its first message — visible and controllable from claude.ai and Claude Desktop.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Start", onPress: () => setCreateBridged(true) },
+      ],
+    );
+  }, [createBridged]);
+
   // Raw send — invoked for non-slash text AND for whitelisted
   // passthrough commands (/init, /review). On new-session only those
   // two passthrough commands are reachable; intercept commands aren't
@@ -101,6 +122,7 @@ export default function NewSessionScreen() {
         cwd,
         images,
         model,
+        bridged: createBridged,
       }).isPersisted.promise.catch((err) => {
         console.error("create session failed", err);
       });
@@ -114,7 +136,7 @@ export default function NewSessionScreen() {
         params: { cliSessionId: newId, cwd, new: "1" },
       });
     },
-    [cwd, setLastUsedCwd],
+    [cwd, setLastUsedCwd, createBridged],
   );
 
   const openDrawer = useCallback(() => {
@@ -135,6 +157,16 @@ export default function NewSessionScreen() {
       <Stack.Header transparent />
       <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button icon="line.3.horizontal" onPress={openDrawer} />
+      </Stack.Toolbar>
+      {/* Create-bridged toggle — same laptopcomputer↔cloud vocabulary as the
+          detail header, but a LOCAL intent (no session to bridge yet); it rides
+          out on the first send. Claude orange when armed. */}
+      <Stack.Toolbar placement="right">
+        <Stack.Toolbar.Button
+          icon={createBridged ? "cloud.fill" : "laptopcomputer"}
+          tintColor={createBridged ? "#DA7756" : undefined}
+          onPress={toggleCreateBridged}
+        />
       </Stack.Toolbar>
       <View className="flex-1 bg-white dark:bg-black pb-safe">
         <KeyboardAvoidingView

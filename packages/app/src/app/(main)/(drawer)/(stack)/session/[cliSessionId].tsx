@@ -3,6 +3,7 @@ import { Stack, useLocalSearchParams, useNavigation } from "expo-router";
 import { DrawerActions } from "expo-router/react-navigation";
 import { useCallback, useEffect, useMemo } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
+import { SessionBridgeToolbar } from "@/components/session-bridge-toolbar";
 import { ChatPanel } from "@/components/transcript/chat-panel";
 import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 import { useSessionTranscript } from "@/hooks/use-session-transcript";
@@ -104,6 +105,9 @@ export default function SessionDetailScreen() {
       <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button icon="line.3.horizontal" onPress={openDrawer} />
       </Stack.Toolbar>
+      {/* Trailing bridge toggle (laptopcomputer ↔ cloud.fill). Own component so
+          this screen stays free of useDaemonClient (see header note). */}
+      <SessionBridgeToolbar cliSessionId={cliSessionId} />
       <ToolCallSheetProvider>
         <View className="flex-1 bg-white dark:bg-black">
           {session.isInitialLoading ? (
