@@ -100,7 +100,7 @@ export default function RootLayout() {
  *     on; this slot has to be unguarded.
  *   - `(main)` — group hosting the real app surface. Its own
  *     `_layout.tsx` runs the Stack.Protected gating between
- *     `onboarding` (unpaired) and `(drawer) / settings / dev/diffs`
+ *     `onboarding` (unpaired) and `(drawer) / settings / dev/*`
  *     (paired).
  *
  * Anchor (declared above) points at `(main)` so the formSheet has a

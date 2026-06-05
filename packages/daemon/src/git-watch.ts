@@ -82,6 +82,19 @@ export interface GitStatus {
 
 export type GitStatusListener = (status: GitStatus) => void;
 
+/** Result of a one-shot working-tree diff (see `GitWatcher.getDiff`). */
+export interface GitDiff {
+  /** False when `cwd` isn't a git repo (then `diff` is ""). */
+  isRepo: boolean;
+  /** Raw multi-file unified diff (tracked vs comparison ref + untracked
+   *  all-add patches). "" when there are no changes. */
+  diff: string;
+  /** Number of files present in `diff` (matches what renders). */
+  fileCount: number;
+  /** True when untracked synthesis hit a cap and dropped file(s). */
+  truncated: boolean;
+}
+
 const NON_REPO_STATUS = (project: string): GitStatus => ({
   isRepo: false,
   project,
@@ -155,6 +168,14 @@ export class GitWatcher {
       });
     this.inFlight = promise;
     return promise;
+  }
+
+  /** One-shot working-tree diff matching the `+N -M` the status bar shows:
+   *  `git diff <comparisonRef>` (default-branch merge-base, else HEAD) for
+   *  tracked changes, plus synthesized all-add patches for untracked non-binary
+   *  files. Not cached — opened on demand; shares the global git limit. */
+  async getDiff(): Promise<GitDiff> {
+    return gitLimit(() => this.fetchDiff());
   }
 
   /** Free all resources. Idempotent. */
@@ -250,19 +271,14 @@ export class GitWatcher {
     }
     if (!isRepo) return NON_REPO_STATUS(this.project);
 
-    // Resolve a comparison ref so `+N -M` matches user intuition
-    // ("what have I done since I last synced") rather than just
-    // working-tree dirt. When the branch has an upstream (typical
-    // for main / pushed feature branches), diff against it — that
-    // covers unpushed local commits + staged + working-tree changes
-    // in one shot. With no upstream, fall back to HEAD (= just
-    // uncommitted). Either way, untracked files get summed in
-    // separately because `git diff` never sees them.
-    const statusResult = await this.git.status().catch(() => null);
-    const comparisonRef =
-      statusResult?.tracking && statusResult.tracking.trim().length > 0
-        ? statusResult.tracking
-        : "HEAD";
+    // `+N -M` measures "what this branch changed vs the default branch"
+    // (committed branch work + staged + working-tree + untracked), matching
+    // Claude Desktop + Paseo — see `resolveComparisonRef`. `git diff` never
+    // sees untracked files, so they're summed in separately.
+    const [statusResult, comparisonRef] = await Promise.all([
+      this.git.status().catch(() => null),
+      this.resolveComparisonRef(),
+    ]);
 
     const [diffResult, untrackedAdditions] = await Promise.all([
       this.git.diffSummary([comparisonRef]).catch(() => null),
@@ -282,17 +298,122 @@ export class GitWatcher {
   }
 
   /**
-   * Sum line counts of untracked, non-binary, non-huge files. `git
-   * diff` doesn't include them, but tools like Claude Desktop and
-   * Paseo do — every line of a new file is a user-authored addition,
-   * and ignoring them under-counts the `+N` number dramatically.
-   *
-   * Caps mirror Paseo's heuristic: max 500 files, max 256 KiB per
-   * file, skip files with a null byte in their first 512 bytes
-   * (rough binary detection). Anything past those caps is silently
-   * skipped — the resulting count is "useful" rather than "exact".
+   * Comparison ref for status + diff: `merge-base(defaultBranch, HEAD)`, so
+   * `+N -M` and the diff show "what this branch changed vs the default branch"
+   * (committed branch work + uncommitted + untracked) — matching Claude
+   * Desktop and Paseo (`checkout-git.ts`), NOT just unpushed/uncommitted.
+   * Falls back to HEAD when there's no resolvable default branch or no merge-
+   * base (unrelated histories, unborn HEAD), degrading to uncommitted-only.
    */
-  private async countUntrackedAdditions(): Promise<number> {
+  private async resolveComparisonRef(): Promise<string> {
+    const defaultBranch = await this.resolveDefaultBranch();
+    if (defaultBranch === null) return "HEAD";
+    try {
+      const sha = (
+        await this.git.raw(["merge-base", defaultBranch, "HEAD"])
+      ).trim();
+      return sha.length > 0 ? sha : "HEAD";
+    } catch {
+      return "HEAD";
+    }
+  }
+
+  /**
+   * Repo default branch (Paseo's `resolveRepositoryDefaultBranch`): the target
+   * of `origin/HEAD` (prefer the local branch name so merge-base needs no
+   * fetch), else a local `main` / `master`. Null when none is resolvable.
+   */
+  private async resolveDefaultBranch(): Promise<string | null> {
+    try {
+      const ref = (
+        await this.git.raw([
+          "symbolic-ref",
+          "--quiet",
+          "refs/remotes/origin/HEAD",
+        ])
+      ).trim();
+      if (ref.length > 0) {
+        const remoteShort = ref.replace(/^refs\/remotes\//, ""); // origin/main
+        const localName = remoteShort.startsWith("origin/")
+          ? remoteShort.slice("origin/".length)
+          : remoteShort;
+        try {
+          await this.git.raw([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            `refs/heads/${localName}`,
+          ]);
+          return localName;
+        } catch {
+          return remoteShort; // e.g. "origin/main" — not checked out locally
+        }
+      }
+    } catch {
+      // origin/HEAD not set — fall through to a local main/master guess.
+    }
+    try {
+      const branches = new Set(
+        (await this.git.raw(["branch", "--format=%(refname:short)"]))
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0),
+      );
+      if (branches.has("main")) return "main";
+      if (branches.has("master")) return "master";
+    } catch {
+      // ignore — no default branch resolvable.
+    }
+    return null;
+  }
+
+  /** Build the working-tree diff: tracked changes vs the same comparison ref
+   *  `fetchStatus` uses (so it matches `+N -M`), plus untracked all-add
+   *  patches (`git diff` never shows untracked, but the `+N` count includes
+   *  them). */
+  private async fetchDiff(): Promise<GitDiff> {
+    let isRepo: boolean;
+    try {
+      isRepo = await this.git.checkIsRepo();
+    } catch {
+      isRepo = false;
+    }
+    if (!isRepo) {
+      return { isRepo: false, diff: "", fileCount: 0, truncated: false };
+    }
+
+    const comparisonRef = await this.resolveComparisonRef();
+    const [tracked, untracked] = await Promise.all([
+      this.git.diff([comparisonRef]).catch(() => ""),
+      this.buildUntrackedDiff(),
+    ]);
+
+    const diff = tracked + untracked.diff;
+    return {
+      isRepo: true,
+      diff,
+      // Count file headers in the final diff — exact for both the real `git
+      // diff` output and the synthesized untracked patches, and naturally
+      // excludes untracked files the caps dropped. Content lines can't match
+      // (they're prefixed with a space/+/-), only real headers sit at col 0.
+      fileCount: (diff.match(/^diff --git /gm) ?? []).length,
+      truncated: untracked.truncated,
+    };
+  }
+
+  /**
+   * Walk untracked, non-binary, non-huge files (the ones `git diff` never
+   * shows) and hand each one's `\n`-normalized content to `visit`. Shared by
+   * the `+N` count AND the working-tree diff so the diff renders exactly the
+   * files the count includes — no drift between the bar number and the diff.
+   *
+   * Caps mirror Paseo's heuristic: max 500 files, max 256 KiB per file, skip
+   * files with a null byte in their first 512 bytes (rough binary detection).
+   * `truncated` is true when a cap dropped a file.
+   */
+  private async forEachUntrackedTextFile(
+    visit: (rel: string, content: string) => void,
+  ): Promise<{ truncated: boolean }> {
     try {
       const out = await this.git.raw([
         "ls-files",
@@ -304,28 +425,76 @@ export class GitWatcher {
         .map((l) => l.trim())
         .filter((l) => l.length > 0);
 
-      let additions = 0;
+      let truncated = files.length > UNTRACKED_MAX_FILES;
       for (const rel of files.slice(0, UNTRACKED_MAX_FILES)) {
         const abs = path.resolve(this.cwd, rel);
         try {
           const stat = await statFile(abs);
-          if (!stat.isFile()) continue;
-          if (stat.size === 0) continue;
-          if (stat.size > UNTRACKED_MAX_FILE_BYTES) continue;
+          if (!stat.isFile() || stat.size === 0) continue;
+          if (stat.size > UNTRACKED_MAX_FILE_BYTES) {
+            truncated = true;
+            continue;
+          }
           if (await isLikelyBinary(abs, stat.size)) continue;
-          const content = await readFile(abs, "utf-8");
-          const normalized = content.replace(/\r\n/g, "\n");
-          const lines = normalized.split("\n").length;
-          additions += normalized.endsWith("\n") ? lines - 1 : lines;
+          const content = (await readFile(abs, "utf-8")).replace(/\r\n/g, "\n");
+          visit(rel, content);
         } catch {
           // Permission denied, symlink-to-nowhere, etc. — skip.
         }
       }
-      return additions;
+      return { truncated };
     } catch {
-      return 0;
+      return { truncated: false };
     }
   }
+
+  /**
+   * Sum line counts of untracked files — `git diff` doesn't include them, but
+   * tools like Claude Desktop and Paseo do (every line of a new file is a
+   * user-authored addition), and ignoring them under-counts `+N` dramatically.
+   */
+  private async countUntrackedAdditions(): Promise<number> {
+    let additions = 0;
+    await this.forEachUntrackedTextFile((_rel, content) => {
+      const lines = content.split("\n").length;
+      additions += content.endsWith("\n") ? lines - 1 : lines;
+    });
+    return additions;
+  }
+
+  /** All-add unified patches for untracked text files, concatenated — the
+   *  part of the working-tree diff that `git diff` can't produce. */
+  private async buildUntrackedDiff(): Promise<{
+    diff: string;
+    truncated: boolean;
+  }> {
+    let diff = "";
+    const { truncated } = await this.forEachUntrackedTextFile(
+      (rel, content) => {
+        diff += synthesizeAddPatch(rel, content);
+      },
+    );
+    return { diff, truncated };
+  }
+}
+
+/** Build a git-style all-add unified patch for a new (untracked) file.
+ *  `content` must be `\n`-normalized. The line set mirrors
+ *  countUntrackedAdditions' math so the diff aligns with the `+N` count. */
+function synthesizeAddPatch(rel: string, content: string): string {
+  const hasFinalNewline = content.endsWith("\n");
+  const body = hasFinalNewline ? content.slice(0, -1) : content;
+  const lines = body.split("\n");
+  let patch =
+    `diff --git a/${rel} b/${rel}\n` +
+    "new file mode 100644\n" +
+    "--- /dev/null\n" +
+    `+++ b/${rel}\n` +
+    `@@ -0,0 +1,${lines.length} @@\n` +
+    lines.map((l) => `+${l}`).join("\n") +
+    "\n";
+  if (!hasFinalNewline) patch += "\\ No newline at end of file\n";
+  return patch;
 }
 
 /** Sniff the first 512 bytes for a null byte. Cheap heuristic that

@@ -33,13 +33,19 @@ import { useGitStatus } from "@/hooks/use-git-status";
 export function GitStatusBar({
   cwd,
   onPress,
+  onStatusChange,
   showChanges = true,
 }: {
   cwd: string | undefined;
   /** Tap handler. Omitting yields a non-interactive bar (Pressable
    *  with no onPress is a noop). new-session screen wires this to
-   *  the cwd picker; detail page leaves it undefined in V0. */
+   *  the cwd picker; detail page wires it to the working-tree diff. */
   onPress?: () => void;
+  /** Fired on each git-status push for `cwd` — forwarded straight to
+   *  `useGitStatus`. The session-detail caller uses it to invalidate the
+   *  working-tree-diff query (kept out of this generic bar so the new-session
+   *  screen, which has no diff sheet, doesn't carry that coupling). */
+  onStatusChange?: () => void;
   /** Show the "+N -M" change-count pill (when cwd is a git repo with
    *  pending changes). Default true to preserve detail-page behavior.
    *  New-session screen passes false: the bar is a cwd PICKER there
@@ -48,7 +54,7 @@ export function GitStatusBar({
   showChanges?: boolean;
 }) {
   const colorScheme = useColorScheme() ?? "light";
-  const status = useGitStatus(cwd);
+  const status = useGitStatus(cwd, onStatusChange);
 
   const isPlaceholder = cwd === undefined;
   const isRepo = status?.isRepo === true;

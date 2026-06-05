@@ -96,10 +96,6 @@ export default function SettingsIndexScreen() {
           {__DEV__ && (
             <Section title="Developer">
               <DisclosureRow
-                label="Diffs"
-                onPress={() => router.push("/dev/diffs")}
-              />
-              <DisclosureRow
                 label="KeyboardExtender spike"
                 onPress={() => router.push("/dev/keyboard-extender")}
               />

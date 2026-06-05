@@ -1,29 +1,17 @@
-const path = require("node:path");
 const { getDefaultConfig } = require("expo/metro-config");
 const { withUniwindConfig } = require("uniwind/metro");
 
 const config = getDefaultConfig(__dirname);
 
-// react-native-diffs is consumed via `link:../../../react-native-diffs` for
-// local Swift iteration ahead of upstream PR. Two things Metro needs:
-//   1. follow symlinks so node_modules/react-native-diffs (a symlink to the
-//      clone) actually resolves
-//   2. watchFolders includes the clone path so Metro indexes its source files
-//      and picks up edits
-const reactNativeDiffsClone = path.resolve(
-  __dirname,
-  "../../../react-native-diffs",
-);
+// Follow symlinks so Metro resolves the pnpm-linked workspace packages
+// (`@sidecodeapp/protocol`, etc.).
 config.resolver.unstable_enableSymlinks = true;
-config.watchFolders = [...(config.watchFolders ?? []), reactNativeDiffsClone];
-// Prevent Metro from descending into the clone's own node_modules and picking
-// up duplicate copies of react / react-native that conflict with this app's.
-config.resolver.blockList = [
-  ...(Array.isArray(config.resolver.blockList)
-    ? config.resolver.blockList
-    : []),
-  new RegExp(`${reactNativeDiffsClone}/node_modules/.*`),
-];
+
+// Pierre's off-thread highlight worker (worker-portable.js) is vendored into
+// assets/ with a `.pwt` extension so Metro serves it as a fetchable ASSET (not a
+// JS module to bundle). The DOM webview fetches its URI → Blob → `new Worker`.
+// See scripts/sync-pierre-worker.mjs.
+config.resolver.assetExts.push("pwt");
 
 module.exports = withUniwindConfig(config, {
   // relative path to your global.css file (from previous step)

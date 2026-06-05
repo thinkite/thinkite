@@ -1144,6 +1144,38 @@ export const gitStatusEvent = z.object({
   status: gitStatus,
 });
 
+// ─── Working-tree diff (one-shot RPC; opened from the status bar) ──────────
+//
+// Returns the raw unified diff matching the `+N -M` the status bar shows:
+// `git diff <ref>` against the SAME comparison ref the watcher uses (upstream
+// tracking ref, else HEAD) for tracked changes, PLUS synthesized all-add
+// patches for untracked non-binary files (`git diff` never sees untracked, but
+// the count includes them). `diff` is "" when the tree is clean.
+
+export const getWorkingTreeDiffCommand = z.object({
+  type: z.literal("getWorkingTreeDiff"),
+  requestId: z.string(),
+  cwd: z.string(),
+});
+
+export const getWorkingTreeDiffResponse = z.object({
+  type: z.literal("getWorkingTreeDiff.response"),
+  requestId: z.string(),
+  cwd: z.string(),
+  /** False when `cwd` isn't a git repository (`diff` is then ""). */
+  isRepo: z.boolean(),
+  /** Raw multi-file unified diff (tracked vs comparison ref + untracked
+   *  all-add patches). "" when there are no changes. */
+  diff: z.string(),
+  /** Number of files present in `diff` (tracked changed + untracked
+   *  included). Matches what renders — excludes untracked files dropped by
+   *  the caps. 0 when clean / non-repo. */
+  fileCount: z.number().int().nonnegative(),
+  /** True when untracked synthesis hit its caps (>500 files, or a file
+   *  >256 KiB skipped) — the diff is "useful" not "exhaustive". */
+  truncated: z.boolean(),
+});
+
 // ─── Filesystem browser (cwd picker + V0.5+ file picker) ───────────────────
 //
 // One workhorse RPC + one bootstrap RPC. The workhorse `listDirectory`
@@ -1304,6 +1336,7 @@ export const command = z.discriminatedUnion("type", [
   deleteSessionCommand,
   subscribeGitStatusCommand,
   unsubscribeGitStatusCommand,
+  getWorkingTreeDiffCommand,
   listDirectoryCommand,
   getFilesystemRootsCommand,
   bridgeSessionCommand,
@@ -1322,6 +1355,7 @@ export const response = z.discriminatedUnion("type", [
   deleteSessionResponse,
   subscribeGitStatusResponse,
   unsubscribeGitStatusResponse,
+  getWorkingTreeDiffResponse,
   listDirectoryResponse,
   getFilesystemRootsResponse,
   bridgeSessionResponse,
@@ -1350,6 +1384,7 @@ export const clientFrame = z.discriminatedUnion("type", [
   deleteSessionCommand,
   subscribeGitStatusCommand,
   unsubscribeGitStatusCommand,
+  getWorkingTreeDiffCommand,
   listDirectoryCommand,
   getFilesystemRootsCommand,
   bridgeSessionCommand,
@@ -1382,6 +1417,7 @@ export const daemonFrame = z.discriminatedUnion("type", [
   subscribeGitStatusResponse,
   unsubscribeGitStatusResponse,
   gitStatusEvent,
+  getWorkingTreeDiffResponse,
   listDirectoryResponse,
   getFilesystemRootsResponse,
   subscribeSessionsResponse,

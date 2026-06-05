@@ -1,5 +1,5 @@
 import type { GitStatus } from "@sidecodeapp/protocol";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 
 /**
@@ -27,9 +27,18 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  * Returns `null` when there's no usable state to render. Caller (the
  * info bar) decides whether to hide entirely or show a placeholder.
  */
-export function useGitStatus(cwd: string | undefined): GitStatus | null {
+export function useGitStatus(
+  cwd: string | undefined,
+  /** Fired on every status push (incl. the initial snapshot) while mounted — a
+   *  generic change hook so the caller can react (e.g. invalidate a derived
+   *  query) WITHOUT this primitive knowing about that query. Held in a ref, so
+   *  passing a fresh inline callback each render doesn't re-subscribe. */
+  onChange?: (status: GitStatus) => void,
+): GitStatus | null {
   const { client, connectionStatus } = useDaemonClient();
   const [status, setStatus] = useState<GitStatus | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
   useEffect(() => {
     if (!cwd || connectionStatus !== "online") {
@@ -47,6 +56,7 @@ export function useGitStatus(cwd: string | undefined): GitStatus | null {
       .subscribeGitStatus(cwd, (s) => {
         if (!active) return;
         setStatus(s);
+        onChangeRef.current?.(s);
       })
       .then(({ status: initial, unsubscribe }) => {
         if (!active) {
@@ -54,6 +64,7 @@ export function useGitStatus(cwd: string | undefined): GitStatus | null {
           return;
         }
         setStatus(initial);
+        onChangeRef.current?.(initial);
         cleanup = unsubscribe;
       })
       .catch((err) => {

@@ -586,6 +586,31 @@ export class Transport {
   }
 
   /**
+   * Working-tree diff for `cwd` — the status bar's tap target. One-shot RPC
+   * (request/response by requestId), wrapped in react-query by
+   * `use-working-tree-diff`. Returns the raw multi-file unified diff matching
+   * the bar's `+N -M` (vs the default-branch merge-base, incl untracked).
+   */
+  async getWorkingTreeDiff(cwd: string): Promise<{
+    isRepo: boolean;
+    diff: string;
+    fileCount: number;
+    truncated: boolean;
+  }> {
+    const requestId = Crypto.randomUUID();
+    return (await this.request({
+      type: "getWorkingTreeDiff",
+      requestId,
+      cwd,
+    })) as {
+      isRepo: boolean;
+      diff: string;
+      fileCount: number;
+      truncated: boolean;
+    };
+  }
+
+  /**
    * Bootstrap RPC for the picker — one call returns daemon machine's
    * HOME + (if they exist) Desktop / Documents shortcut paths +
    * recent-cwd candidates aggregated from session history. Callers
@@ -1465,6 +1490,16 @@ export class DaemonClient {
   }> {
     const t = await this.readyPromise;
     return t.listDirectory(path, opts);
+  }
+
+  async getWorkingTreeDiff(cwd: string): Promise<{
+    isRepo: boolean;
+    diff: string;
+    fileCount: number;
+    truncated: boolean;
+  }> {
+    const t = await this.readyPromise;
+    return t.getWorkingTreeDiff(cwd);
   }
 
   async getFilesystemRoots(): Promise<{

@@ -26,7 +26,7 @@ const CARD_RADIUS = Platform.OS === "ios" ? 53 : 0;
  *
  * `swipeEdgeWidth: 120` — leftmost 120pt is swipe-to-open hot zone. Wide
  * enough to feel responsive but bounded so it doesn't fight horizontal-
- * scroll content (DiffsView etc) in the main pane.
+ * scroll content (the diff/code webview) in the main pane.
  *
  * Settings + other modal routes live at the ROOT Stack level (one level
  * above this Drawer), so `router.push("/settings")` slides up modally OVER

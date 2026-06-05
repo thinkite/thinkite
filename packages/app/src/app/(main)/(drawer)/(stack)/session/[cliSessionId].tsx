@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { SessionBridgeToolbar } from "@/components/session-bridge-toolbar";
 import { ChatPanel } from "@/components/transcript/chat-panel";
-import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 import { useSessionTranscript } from "@/hooks/use-session-transcript";
 import { sessionStateCollection } from "@/lib/sessions-collection";
 import { flattenToBlocks } from "@/lib/transcript-blocks";
@@ -108,26 +107,26 @@ export default function SessionDetailScreen() {
       {/* Trailing bridge toggle (laptopcomputer ↔ cloud.fill). Own component so
           this screen stays free of useDaemonClient (see header note). */}
       <SessionBridgeToolbar cliSessionId={cliSessionId} />
-      <ToolCallSheetProvider>
-        <View className="flex-1 bg-white dark:bg-black">
-          {session.isInitialLoading ? (
-            <View className="flex-1 items-center justify-center">
-              <ActivityIndicator />
-            </View>
-          ) : session.error ? (
-            <View className="flex-1 items-center justify-center px-6">
-              <Text className="text-center text-base font-medium text-red-600 dark:text-red-400">
-                Couldn't load messages
-              </Text>
-              <Text className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400">
-                {session.error.message}
-              </Text>
-            </View>
-          ) : (
-            <ChatPanel cliSessionId={cliSessionId} cwd={cwd} blocks={blocks} />
-          )}
-        </View>
-      </ToolCallSheetProvider>
+      {/* ToolCallSheetProvider lives in (stack)/_layout.tsx so its resident
+          webview + worker pool are shared across session switches. */}
+      <View className="flex-1 bg-white dark:bg-black">
+        {session.isInitialLoading ? (
+          <View className="flex-1 items-center justify-center">
+            <ActivityIndicator />
+          </View>
+        ) : session.error ? (
+          <View className="flex-1 items-center justify-center px-6">
+            <Text className="text-center text-base font-medium text-red-600 dark:text-red-400">
+              Couldn't load messages
+            </Text>
+            <Text className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400">
+              {session.error.message}
+            </Text>
+          </View>
+        ) : (
+          <ChatPanel cliSessionId={cliSessionId} cwd={cwd} blocks={blocks} />
+        )}
+      </View>
     </>
   );
 }

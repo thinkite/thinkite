@@ -559,6 +559,35 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         });
         return;
       }
+      case "getWorkingTreeDiff": {
+        // One-shot working-tree diff for the cwd — the status bar's tap
+        // target. Reuses the per-cwd GitWatcher (created on demand; getDiff
+        // runs git without starting the fs.watch a subscribe would, so a
+        // diff-only caller never leaks a watcher). The diff matches the
+        // bar's `+N -M`: tracked vs the same comparison ref + untracked
+        // all-add patches.
+        try {
+          const watcher = deps.gitWatchers.getOrCreate(cmd.cwd);
+          const result = await watcher.getDiff();
+          ctx.send({
+            type: "getWorkingTreeDiff.response",
+            requestId: cmd.requestId,
+            cwd: cmd.cwd,
+            isRepo: result.isRepo,
+            diff: result.diff,
+            fileCount: result.fileCount,
+            truncated: result.truncated,
+          });
+        } catch (err) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
       case "sendPrompt": {
         // Reject during shutdown: any new query we spawn now can't be
         // drained cleanly — manager.shutdown() iterates a snapshot.

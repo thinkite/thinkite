@@ -11,9 +11,9 @@ import type { TextRenderBlock } from "@/lib/transcript-blocks";
  * column). Assistant messages stream as full-width markdown via
  * `ChatMarkdown` (react-native-enriched-markdown) — Fabric component
  * that self-sizes via Yoga, so each row hits LegendList with its real
- * height on first layout. Avoids the Nitro async-measurement flicker
- * that DiffsView (used in tool-block) suffers from. See
- * `ChatMarkdown.tsx` header for the full chat-vs-tool-detail rationale.
+ * height on first layout. Avoids the async-measurement flicker a Nitro /
+ * WebView renderer would have. See `ChatMarkdown.tsx` header for the full
+ * chat-vs-tool-detail rationale.
  *
  * Bubble shape mirrors Claude Desktop's user-message look — pale blue
  * background, dark navy text. Role labels (YOU / CLAUDE) are

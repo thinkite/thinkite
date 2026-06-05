@@ -4,6 +4,7 @@ import {
 } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import type { ImageAttachment } from "@sidecodeapp/protocol";
+import { useQueryClient } from "@tanstack/react-query";
 import * as Crypto from "expo-crypto";
 import { useHeaderHeight } from "expo-router/react-navigation";
 import { useCallback, useRef } from "react";
@@ -14,6 +15,7 @@ import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
 import { TextBlock } from "@/components/transcript/text-block";
 import { ToolBlock } from "@/components/transcript/tool-block";
+import { useToolCallSheet } from "@/components/transcript/tool-call-sheet";
 import type { RenderBlock } from "@/lib/transcript-blocks";
 import { sendUserMessage } from "@/lib/transcript-collection-factory";
 
@@ -84,6 +86,13 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
   const listRef = useRef<LegendListRef>(null);
   const composerRef = useRef<View>(null);
   const isDark = useColorScheme() === "dark";
+  // Tap the workspace status bar → open the working-tree diff in the shared
+  // sheet (the provider wraps this screen, see session/[cliSessionId].tsx).
+  const { openGitDiff } = useToolCallSheet();
+  // Git changes → invalidate the diff query so an OPEN diff sheet refetches
+  // (no-op while closed → query inactive). Wired through GitStatusBar's
+  // onStatusChange (the single gitStatus subscriber) rather than re-subscribing.
+  const queryClient = useQueryClient();
   // Composer → list bottom-inset wiring (library hook). Reports the composer
   // wrapper's measured height (GitStatusBar + InputBar) as the list's bottom
   // inset, both via the `contentInsetEndAdjustment` SharedValue (drives KCSV's
@@ -254,7 +263,18 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
               : "linear-gradient(to top, rgba(255,255,255,0.8), rgba(255,255,255,0))",
           }}
         >
-          <GitStatusBar cwd={cwd} />
+          <GitStatusBar
+            cwd={cwd}
+            onPress={cwd ? () => openGitDiff(cwd) : undefined}
+            onStatusChange={
+              cwd
+                ? () =>
+                    queryClient.invalidateQueries({
+                      queryKey: ["workingTreeDiff", cwd],
+                    })
+                : undefined
+            }
+          />
           <InputBar cliSessionId={cliSessionId} onSend={rawSend} />
         </View>
       </KeyboardStickyView>

@@ -1,15 +1,18 @@
 import type { ToolCallDetail } from "@sidecodeapp/protocol";
 import { ModalBottomSheet } from "@swmansion/react-native-bottom-sheet";
+import { Asset } from "expo-asset";
 import {
   createContext,
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import {
+  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -18,8 +21,17 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useWorkingTreeDiff } from "@/hooks/use-working-tree-diff";
 import type { ToolRenderBlock } from "@/lib/transcript-blocks";
+import workerPortableAsset from "../../../assets/pierre/worker-portable.pwt";
 import PierreView from "./pierre-view";
+
+// Pierre's off-thread highlight worker (worker-portable.js), vendored as a Metro
+// asset so the DOM webview can fetch it (a Metro URL in dev). Resolved once;
+// PierreView fetches this URI → Blob → `new Worker`. See metro.config.js +
+// scripts/sync-pierre-worker.mjs.
+const WORKER_ASSET_URI = Asset.fromModule(workerPortableAsset).uri;
 
 /**
  * Single shared BottomSheet at transcript level (Paseo pattern). Each ToolBlock
@@ -51,6 +63,8 @@ import PierreView from "./pierre-view";
 
 interface ToolCallSheetContextValue {
   openToolCall: (block: ToolRenderBlock) => void;
+  /** Open the working-tree diff for `cwd` (wired to GitStatusBar's tap). */
+  openGitDiff: (cwd: string) => void;
   closeToolCall: () => void;
 }
 
@@ -78,7 +92,7 @@ const FULL = 0.92;
 const SCRIM_OPACITIES = [0, 0.5, 0.5];
 
 interface WebviewPayload {
-  kind: "diff" | "code";
+  kind: "diff" | "code" | "multifile";
   content: string;
   name?: string;
   /** Hide Pierre's filename header + line-number gutter — true for
@@ -95,32 +109,69 @@ const WARMUP: WebviewPayload = {
   noHeader: true,
 };
 
+/** What the sheet is currently showing. The resident webview is shared across
+ *  both — tool detail (static, from a block) and the live working-tree diff. */
+type Showing =
+  | { kind: "tool"; block: ToolRenderBlock }
+  | { kind: "gitDiff"; cwd: string }
+  | null;
+
 export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const { height } = useWindowDimensions();
+  // Bottom safe-area inset (home indicator). Fed to PierreView so the multi-file
+  // CodeView's last line clears it — single-file File/PatchDiff get this for free
+  // from WKWebView's content inset, but CodeView's internal CSS scroll does not.
+  const insets = useSafeAreaInsets();
   const detents = useMemo(
     () => [0, Math.round(height * HALF), Math.round(height * FULL)],
     [height],
   );
 
-  const [block, setBlock] = useState<ToolRenderBlock | null>(null);
+  const [showing, setShowing] = useState<Showing>(null);
   const [index, setIndex] = useState(0); // 0 closed · 1 half · 2 full
   // The resident webview always renders the LAST webview payload, so a native
-  // body (error/unknown) overlaid on top never discards warm webview content.
+  // body (error/unknown/loading) overlaid on top never discards warm content.
   const [webview, setWebview] = useState<WebviewPayload>(WARMUP);
+  // gitDiff only: false until the fetched diff has PAINTED, so an opaque loading
+  // overlay hides the prior payload until then (no flash). Stays true across
+  // live refetches (re-tokenize happens in place behind nothing).
+  const [diffReady, setDiffReady] = useState(false);
 
-  // Content string currently painted in the webview, and the one we're swapping
-  // to. Comparing content (not callId) makes warm-reuse robust to id reuse.
+  // Warm-reuse / flash-free bookkeeping (RN-side; never crosses the bridge).
   const renderedContent = useRef<string>(WARMUP.content);
   const pendingContent = useRef<string>(WARMUP.content);
-  const awaitingOpen = useRef(false);
+  const awaitingOpen = useRef(false); // tool open waits on first paint
+  const awaitingDiffPaint = useRef(false); // gitDiff reveal waits on paint
 
-  const desc = block ? describeDetail(block) : null;
-  const showWebview = desc?.mode !== "native";
+  // Working-tree diff: one-shot RPC via react-query, fetched only while the
+  // git-diff sheet is open. structuralSharing keeps `data` referentially stable
+  // across byte-identical refetches → the effect below no-ops (no re-tokenize).
+  // GitStatusBar invalidates ["workingTreeDiff", cwd] on git changes.
+  const gitDiffCwd = showing?.kind === "gitDiff" ? showing.cwd : undefined;
+  const diffQuery = useWorkingTreeDiff(gitDiffCwd, {
+    enabled: gitDiffCwd !== undefined && index > 0,
+  });
+  const diffData = diffQuery.data;
+
+  // Push fetched diff content into the resident webview. Reference-stable
+  // `diffData` means an unchanged refetch doesn't re-fire this.
+  useEffect(() => {
+    if (showing?.kind !== "gitDiff") return;
+    if (!diffData?.isRepo || diffData.diff === "") return;
+    if (diffData.diff === renderedContent.current) {
+      // Already painted (reopen of an unchanged diff) → reveal now, no swap.
+      setDiffReady(true);
+      return;
+    }
+    pendingContent.current = diffData.diff;
+    awaitingDiffPaint.current = true;
+    setWebview({ kind: "multifile", content: diffData.diff });
+  }, [showing, diffData]);
 
   const openToolCall = useCallback((b: ToolRenderBlock) => {
     const d = describeDetail(b);
-    setBlock(b);
+    setShowing({ kind: "tool", block: b });
     if (d.mode === "native") {
       // No webview to wait on — open immediately (from closed; keep half/full).
       awaitingOpen.current = false;
@@ -145,14 +196,27 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const openGitDiff = useCallback((cwd: string) => {
+    // Open immediately with a loading overlay (there's a fetch + tokenize
+    // before content is ready); the diff fills in via the effect + diffReady.
+    awaitingOpen.current = false;
+    setDiffReady(false);
+    setShowing({ kind: "gitDiff", cwd });
+    setIndex((i) => (i === 0 ? 1 : i));
+  }, []);
+
   const closeToolCall = useCallback(() => {
     awaitingOpen.current = false;
-    setIndex(0); // keep `block` + `webview` so re-opening the same row is warm
+    setIndex(0); // keep `showing` + `webview` so re-opening is warm
   }, []);
 
   // Fired by the webview once shiki has loaded and the payload has painted.
   const onReady = useCallback(() => {
     renderedContent.current = pendingContent.current;
+    if (awaitingDiffPaint.current) {
+      awaitingDiffPaint.current = false;
+      setDiffReady(true);
+    }
     if (awaitingOpen.current) {
       awaitingOpen.current = false;
       setIndex((i) => (i === 0 ? 1 : i));
@@ -160,8 +224,33 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ openToolCall, closeToolCall }),
-    [openToolCall, closeToolCall],
+    () => ({ openToolCall, openGitDiff, closeToolCall }),
+    [openToolCall, openGitDiff, closeToolCall],
+  );
+
+  // ── Body: webview vs an opaque native overlay (loading/empty/error/etc.) ──
+  const toolDesc =
+    showing?.kind === "tool" ? describeDetail(showing.block) : null;
+
+  let nativeNode: ReactNode = null;
+  if (showing?.kind === "tool") {
+    if (toolDesc?.mode === "native") nativeNode = toolDesc.node;
+  } else if (showing?.kind === "gitDiff") {
+    if (diffQuery.isError) {
+      nativeNode = <DiffNote text="Couldn't load the diff." />;
+    } else if (diffData?.isRepo === false) {
+      nativeNode = <DiffNote text="Not a git repository." />;
+    } else if (diffData && diffData.diff === "") {
+      nativeNode = <DiffNote text="No changes." />;
+    } else if (!diffReady) {
+      nativeNode = <DiffNote text="Loading diff…" spinner />;
+    }
+  }
+  // Keep the webview LAID OUT (not display:none) whenever it must paint — always
+  // in gitDiff mode (it paints behind the loading overlay so onReady fires), and
+  // in tool mode unless a native body replaces it.
+  const webviewLaidOut = !(
+    showing?.kind === "tool" && toolDesc?.mode === "native"
   );
 
   const surface = (
@@ -197,15 +286,33 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
           <View className="h-1 w-9 rounded-full bg-gray-300 dark:bg-gray-700" />
         </View>
         <View className="flex-row items-center gap-2 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
-          {block ? (
-            <ToolChip name={block.name} isError={block.status === "failed"} />
-          ) : null}
-          {block?.summary ? (
+          {showing?.kind === "tool" ? (
+            <>
+              <ToolChip
+                name={showing.block.name}
+                isError={showing.block.status === "failed"}
+              />
+              {showing.block.summary ? (
+                <Text
+                  numberOfLines={1}
+                  className="flex-1 text-base text-gray-700 dark:text-gray-300"
+                >
+                  {showing.block.summary}
+                </Text>
+              ) : (
+                <View className="flex-1" />
+              )}
+            </>
+          ) : showing?.kind === "gitDiff" ? (
             <Text
               numberOfLines={1}
-              className="flex-1 text-base text-gray-700 dark:text-gray-300"
+              className="flex-1 text-base font-medium text-gray-800 dark:text-gray-200"
             >
-              {block.summary}
+              {diffData
+                ? `${diffData.fileCount} ${
+                    diffData.fileCount === 1 ? "file" : "files"
+                  } changed${diffData.truncated ? " (truncated)" : ""}`
+                : "Working tree"}
             </Text>
           ) : (
             <View className="flex-1" />
@@ -216,12 +323,12 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
         </View>
 
         <View className="flex-1">
-          {/* Resident webview — hidden (but mounted/warm) under native bodies. */}
+          {/* Resident webview — stays mounted/warm; hidden only under a tool
+              native body. For gitDiff it paints behind the loading overlay. */}
           <View
             style={{
               flex: 1,
-              display: showWebview ? "flex" : "none",
-              paddingHorizontal: 16,
+              display: webviewLaidOut ? "flex" : "none",
             }}
           >
             <PierreView
@@ -232,6 +339,9 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
               disableLineNumbers={webview.noLineNumbers}
               scheme={scheme}
               onReady={onReady}
+              collapsed={index === 0}
+              bottomInset={insets.bottom}
+              workerUri={WORKER_ASSET_URI}
               dom={{
                 matchContents: false,
                 scrollEnabled: true,
@@ -240,20 +350,41 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
                 showsVerticalScrollIndicator: false,
                 showsHorizontalScrollIndicator: false,
                 style: { flex: 1, backgroundColor: "transparent" },
+                contentInsetAdjustmentBehavior: "never",
+                automaticallyAdjustContentInsets: false,
               }}
             />
           </View>
-          {desc?.mode === "native" ? (
-            <ScrollView
-              style={StyleSheet.absoluteFill}
-              contentContainerStyle={NATIVE_CONTENT}
+          {/* Opaque overlay ON TOP of the webview — covers it for loading /
+              empty / error / tool-native (so a painting webview behind isn't
+              seen). Same color as `surface`. */}
+          {nativeNode !== null ? (
+            <View
+              style={[
+                StyleSheet.absoluteFill,
+                {
+                  backgroundColor: scheme === "dark" ? "#000000" : "#ffffff",
+                },
+              ]}
             >
-              {desc.node}
-            </ScrollView>
+              <ScrollView contentContainerStyle={NATIVE_CONTENT}>
+                {nativeNode}
+              </ScrollView>
+            </View>
           ) : null}
         </View>
       </ModalBottomSheet>
     </ToolCallSheetContext.Provider>
+  );
+}
+
+/** Small native status line for the sheet body (loading / empty / error). */
+function DiffNote({ text, spinner }: { text: string; spinner?: boolean }) {
+  return (
+    <View className="flex-row items-center gap-2 py-2">
+      {spinner ? <ActivityIndicator /> : null}
+      <Text className="text-sm text-gray-500 dark:text-gray-400">{text}</Text>
+    </View>
   );
 }
 

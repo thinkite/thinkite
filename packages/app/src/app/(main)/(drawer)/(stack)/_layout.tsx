@@ -1,4 +1,5 @@
 import { Stack } from "expo-router";
+import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 
 /**
  * `(stack)` — invisible route group whose only purpose is to wrap the
@@ -37,13 +38,23 @@ import { Stack } from "expo-router";
  */
 export default function StackLayout() {
   return (
-    <Stack
-      screenOptions={{
-        animation: "fade",
-      }}
-    >
-      <Stack.Screen name="index" />
-      <Stack.Screen name="session/[cliSessionId]" />
-    </Stack>
+    // ToolCallSheetProvider lives HERE, above the Stack, rather than inside the
+    // detail screen — so the single resident Pierre webview (warm shiki + the
+    // off-thread highlight worker pool) and the shared BottomSheet PERSIST across
+    // session switches. Switching sessions is a `router.replace` within this
+    // Stack: if the provider were per-screen it'd unmount + cold-reinit the
+    // webview/workers on every switch. (Trade-off: it also mounts on the
+    // new-session `index` screen at cold launch, pre-warming the webview before
+    // the first diff/tool open; `index` doesn't consume the context itself.)
+    <ToolCallSheetProvider>
+      <Stack
+        screenOptions={{
+          animation: "fade",
+        }}
+      >
+        <Stack.Screen name="index" />
+        <Stack.Screen name="session/[cliSessionId]" />
+      </Stack>
+    </ToolCallSheetProvider>
   );
 }

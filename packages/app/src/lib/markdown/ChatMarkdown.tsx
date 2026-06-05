@@ -10,19 +10,15 @@ import {
  * that self-sizes via Yoga, supports GFM (tables, task lists,
  * strikethrough), and animates new tokens during streaming.
  *
- * Why not the DiffsView-based `MarkdownView` for chat?
- *   - DiffsView (Nitro) can't report intrinsic size to Yoga
- *     (mrousavy/nitro#1199). The async onContentSizeChange workaround
- *     causes a 0→real height transition that flickers under LegendList
- *     virtualization on scroll-up. Enriched is a regular Fabric component:
- *     Yoga measures it synchronously on first layout, so each row hits
- *     the list with its real height — no flicker, no scroll drift.
- *   - DiffsView does not expose `theme.fonts.body` (no fontFamily prop),
- *     and SwiftUI synthesizes weak italic on faces without a real italic
- *     variant. Chat typography looks off.
- *   - DiffsView's tree-sitter syntax highlight is a free win for tool
- *     detail (Read/Bash/Edit/Write outputs) but isn't worth the trade-off
- *     above for plain-prose chat.
+ * Why a native Fabric markdown component for chat (not a WebView/Nitro
+ * renderer)?
+ *   - A Fabric component is measured synchronously by Yoga on first layout,
+ *     so each row hits LegendList with its real height — no flicker, no
+ *     scroll drift on scroll-up. A renderer that reports size asynchronously
+ *     (the former DiffsView/Nitro path, mrousavy/nitro#1199) causes a 0→real
+ *     height transition that flickers under list virtualization.
+ *   - It exposes chat typography (fontFamily / real italic) and animates new
+ *     tokens during streaming — both of which plain-prose chat needs.
  *
  * Streaming behavior (V0 ships streaming via Slice F+G+H):
  *   - `streamingAnimation` — fades in newly appended tokens as patch_text
@@ -36,11 +32,10 @@ import {
  *   - `flavor: 'github'` — enables GFM extensions; commonmark-only would
  *     drop tables which Claude responses occasionally include.
  *
- * Tool detail markdown still goes through `MarkdownView` (DiffsView):
- * tree-sitter highlight + raw-diff auto-detect outweigh fontFamily/italic
- * concerns for code-heavy tool output, and tool-block rows are inside
- * BottomSheet / accordion — not subject to the LegendList scroll-flicker
- * hot path.
+ * Tool detail (Read/Bash/Edit/Write outputs + diffs) is rendered separately by
+ * `PierreView` (@pierre/diffs in an expo-dom WebView): syntax highlight +
+ * raw-diff handling matter there, and tool-block rows live in a BottomSheet —
+ * not on the LegendList scroll-flicker hot path.
  */
 
 // Heading + paragraph metrics derived from a side-by-side comparison with

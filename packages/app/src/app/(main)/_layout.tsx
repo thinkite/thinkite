@@ -15,8 +15,8 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  * card. Hoisting the gating one level down sidesteps that.
  *
  * URL paths are unchanged — route groups (parenthesized folders) are
- * URL-transparent in expo-router. `/onboarding`, `/settings`,
- * `/dev/diffs` and the drawer routes all stay at the same paths.
+ * URL-transparent in expo-router. `/onboarding`, `/settings`, the `/dev/*`
+ * probes and the drawer routes all stay at the same paths.
  */
 export default function MainLayout() {
   const { isUnpaired } = useDaemonClient();
@@ -57,7 +57,6 @@ export default function MainLayout() {
           options={{ presentation: "formSheet", sheetGrabberVisible: true }}
         />
         {/* Dev probe pages — keep as standard pushes, no modal. */}
-        <Stack.Screen name="dev/diffs" />
         <Stack.Screen name="dev/keyboard-extender" />
       </Stack.Protected>
     </Stack>
