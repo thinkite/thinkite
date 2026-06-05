@@ -13,6 +13,7 @@ import { font, foregroundStyle, frame } from "@expo/ui/swift-ui/modifiers";
 import { router } from "expo-router";
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useListDirectory } from "@/hooks/use-list-directory";
+import { useDaemonClient } from "@/lib/daemon-client-context";
 
 /**
  * iOS folder list for the cwd picker. Two modes:
@@ -58,9 +59,18 @@ export function FolderList({ path }: { path: string | undefined }) {
  */
 function LocationsAndRecents() {
   const query = useFilesystemRoots();
+  const { connectionStatus } = useDaemonClient();
 
   if (query.isPending) {
-    return <StatusText>Loading…</StatusText>;
+    // Offline → getFilesystemRoots hangs on the facade readyPromise
+    // (auto-resumes on reconnect), so isPending alone would read as
+    // "Loading…" forever. Distinguish on connection: online = genuinely
+    // loading, otherwise = offline (it loads when the daemon reconnects).
+    return (
+      <StatusText>
+        {connectionStatus === "online" ? "Loading…" : "Offline"}
+      </StatusText>
+    );
   }
 
   if (query.isError) {
@@ -117,9 +127,15 @@ function LocationsAndRecents() {
  */
 function BrowseFolder({ path }: { path: string }) {
   const query = useListDirectory(path);
+  const { connectionStatus } = useDaemonClient();
 
   if (query.isPending) {
-    return <StatusText>Loading…</StatusText>;
+    // Same offline handling as the root list — see LocationsAndRecents.
+    return (
+      <StatusText>
+        {connectionStatus === "online" ? "Loading…" : "Offline"}
+      </StatusText>
+    );
   }
 
   if (query.isError) {

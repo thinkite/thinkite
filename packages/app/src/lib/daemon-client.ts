@@ -1173,6 +1173,23 @@ export class Subscription {
   }
 }
 
+/**
+ * Thrown by WRITE RPCs when no transport is attached (offline). Lets a
+ * caller tell a deliberate offline-gate rejection apart from a real RPC
+ * failure. The UI write-gate (`connectionStatus` in InputBar) prevents
+ * virtually all of these by disabling the affordance; this is the facade
+ * backstop so a write that slips past the UI (a race) fails FAST instead
+ * of hanging on `readyPromise` — and is NOT silently queued to fire on
+ * the next reconnect (see project memory "queued-writes OUT": prompts are
+ * time-sensitive agent commands, not mergeable document edits).
+ */
+export class OfflineError extends Error {
+  constructor(message = "daemon offline") {
+    super(message);
+    this.name = "OfflineError";
+  }
+}
+
 // ─── DaemonClient facade ────────────────────────────────────────────────
 
 /**
@@ -1512,6 +1529,23 @@ export class DaemonClient {
     return t.getFilesystemRoots();
   }
 
+  /**
+   * Write-gate backstop: return the current transport or throw
+   * `OfflineError` immediately when offline. Used by WRITE RPCs instead
+   * of `await this.readyPromise` so they reject fast rather than hang
+   * until the next reconnect (which would be an invisible, unbounded,
+   * accidental queue — exactly what "queued-writes OUT" forbids). Reads
+   * keep `await this.readyPromise` on purpose, so they auto-resume on
+   * reconnect. `transport !== null` ⟺ `readyPromise` resolved (online),
+   * so this is equivalent to the await when online, fail-fast when not.
+   */
+  private requireTransport(): Transport {
+    if (this.transport === null) {
+      throw new OfflineError("daemon offline — write rejected");
+    }
+    return this.transport;
+  }
+
   async sendPrompt(opts: {
     sessionId: string;
     text: string;
@@ -1522,7 +1556,7 @@ export class DaemonClient {
     bridged?: boolean;
     userMessageUuid?: string;
   }): Promise<void> {
-    const t = await this.readyPromise;
+    const t = this.requireTransport();
     return t.sendPrompt(opts);
   }
 
@@ -1530,22 +1564,22 @@ export class DaemonClient {
     sessionId: string;
     model?: string;
   }): Promise<void> {
-    const t = await this.readyPromise;
+    const t = this.requireTransport();
     return t.setSessionSelection(opts);
   }
 
   async interrupt(sessionId: string): Promise<void> {
-    const t = await this.readyPromise;
+    const t = this.requireTransport();
     return t.interrupt(sessionId);
   }
 
   async bridgeSession(sessionId: string): Promise<void> {
-    const t = await this.readyPromise;
+    const t = this.requireTransport();
     return t.bridgeSession(sessionId);
   }
 
   async unbridgeSession(sessionId: string): Promise<void> {
-    const t = await this.readyPromise;
+    const t = this.requireTransport();
     return t.unbridgeSession(sessionId);
   }
 

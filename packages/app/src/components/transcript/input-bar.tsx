@@ -23,7 +23,7 @@ import {
 import { SlashPanel } from "@/components/transcript/slash-panel";
 import { useContextUsage } from "@/hooks/use-context-usage";
 import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
-import { useDaemonClient } from "@/lib/daemon-client-context";
+import { statusColor, useDaemonClient } from "@/lib/daemon-client-context";
 import { useSessionTurnResult } from "@/lib/session-turn-result";
 import {
   sessionStateCollection,
@@ -128,7 +128,7 @@ async function compressToAttachment(
 
 /**
  * Chat input bar — pill-shaped GlassView with optional attachment
- * pill row + text input + action row (plus | spacer | mic | send).
+ * pill row + text input + action row (plus + model chip | spacer | send).
  *
  * Self-sourcing: pass `cliSessionId` and InputBar derives EVERYTHING it
  * can from it — the model picker / context meter / running state (from the
@@ -142,10 +142,12 @@ async function compressToAttachment(
  * `onSend` receives only REAL sends — slash commands are intercepted
  * internally and never reach it.
  *
- * The send button has three states:
- *   - `arrow.up` (active): user has text OR attached images, tap → onSend
- *   - `waveform` (idle):   empty composer, tap is a no-op (voice slot, V0.5+)
+ * The send button has two icon states (+ a disabled/dimmed idle):
+ *   - `arrow.up` (active): user has text OR attached images, tap → onSend.
+ *     Empty composer → same arrow, but disabled + dimmed (`sendActive`).
  *   - `stop.fill` (running): turn is in flight, tap → interrupt (internal)
+ * Offline → disabled + dimmed in every state (write gate); a status dot
+ * sits just left of the button. (The old `waveform` voice slot was dropped.)
  *
  * Attachment flow: `+` button opens a native attachment menu (Camera
  * / Photos via the nitro tap menu `@yyq1025/react-native-nitro-menu` —
@@ -195,7 +197,13 @@ export function InputBar({
     model: string,
   ) => boolean | void;
 }) {
-  const { client } = useDaemonClient();
+  const { client, connectionStatus } = useDaemonClient();
+  // Write gate: only an established transport (online) accepts sends /
+  // interrupts. connecting / offline / error all gate. The facade also
+  // fail-fasts these RPCs (OfflineError) as a backstop, but disabling the
+  // affordance here is the primary prevention — no optimistic bubble, no
+  // hung promise. Reads (model draft, attachments) stay usable offline.
+  const online = connectionStatus === "online";
   const [text, setText] = useState("");
   const [images, setImages] = useState<DraftAttachment[]>([]);
 
@@ -298,7 +306,7 @@ export function InputBar({
   // Cap is enforced in three places: PHPicker's selectionLimit
   // (per-pick), Camera early-return guard, and the attachment menu's
   // `disabled` attribute. We DON'T dim the `+` button itself — the menu
-  // will grow other non-image items (voice memo, doc, snippet) that
+  // will grow other non-image items (doc, snippet, etc.) that
   // shouldn't be blocked just because the image cap is hit.
   const remainingSlots = MAX_TOTAL_IMAGES - images.length;
   const canAdd = remainingSlots > 0;
@@ -359,6 +367,10 @@ export function InputBar({
   const canSend = hasText || images.length > 0;
 
   const handlePress = () => {
+    // Write gate: offline → no send, no interrupt (both need a live
+    // round-trip to the daemon and would otherwise hang / accidental-queue).
+    // The button is also visually disabled below; this is the logic guard.
+    if (!online) return;
     if (isRunning) {
       // Interrupt the in-flight turn (only a session that exists can be
       // running). Best-effort — interrupt is idempotent daemon-side.
@@ -393,11 +405,14 @@ export function InputBar({
     // clamped position, which React then writes back into state.
   };
 
-  const sendIconName: "arrow.up" | "waveform" | "stop.fill" = isRunning
+  const sendIconName: "arrow.up" | "stop.fill" = isRunning
     ? "stop.fill"
-    : canSend
-      ? "arrow.up"
-      : "waveform";
+    : "arrow.up";
+  // The send button is actionable only when online AND there's something
+  // to do (text/images to send, or a running turn to interrupt). Empty
+  // composer or offline → dimmed + disabled. (Replaces the old `waveform`
+  // idle state — the voice/recording slot was dropped.)
+  const sendActive = online && (canSend || isRunning);
 
   return (
     <View className="px-4">
@@ -585,16 +600,20 @@ export function InputBar({
               </ContextMenu>
             </View>
             <View className="flex-row items-center gap-3">
-              <Pressable className="p-1.75">
-                <SymbolView
-                  name="mic"
-                  size={22}
-                  weight="regular"
-                  tintColor={colorScheme === "dark" ? "#e4e4e7" : "#3f3f46"}
+              {/* Write-gate status dot — sits just left of send, shown only
+                  when NOT online (connecting/offline = gray, error = red, per
+                  statusColor). Signals "composer can't send right now"; the
+                  send button beside it is disabled + dimmed. */}
+              {!online && (
+                <View
+                  className="size-2 rounded-full"
+                  style={{ backgroundColor: statusColor(connectionStatus) }}
                 />
-              </Pressable>
+              )}
               <Pressable
                 onPress={handlePress}
+                disabled={!sendActive}
+                style={{ opacity: sendActive ? 1 : 0.4 }}
                 className="p-1.75 items-center justify-center rounded-full bg-zinc-900 dark:bg-zinc-100"
               >
                 <SymbolView
