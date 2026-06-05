@@ -2,6 +2,7 @@
 // randomUUID) before any consumer — ed25519 identity, TanStack DB — runs.
 import "@/lib/polyfills";
 import "@/global.css";
+import { BottomSheetProvider } from "@swmansion/react-native-bottom-sheet";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -66,7 +67,20 @@ export default function RootLayout() {
                   value={scheme === "dark" ? DarkTheme : DefaultTheme}
                 >
                   <DaemonGate>
-                    <RootStack />
+                    {/* BottomSheetProvider hosts the portal that the tool-call
+                        `ModalBottomSheet` renders into. It MUST sit ABOVE the
+                        navigator (RootStack) so the portal — and its scrim —
+                        paint over the native UINavigationBar header: an in-tree
+                        RN sheet nested inside a screen renders BELOW that native
+                        bar (react-native-screens#525, gorhom#502). It MUST also
+                        stay INSIDE SafeAreaProvider — the sheet calls
+                        useSafeAreaFrame()/useSafeAreaInsets(), which throw with
+                        no provider above them. Inside every app provider, just
+                        above RootStack, satisfies both; matches SWM's own
+                        example (SafeAreaProvider > BottomSheetProvider > nav). */}
+                    <BottomSheetProvider>
+                      <RootStack />
+                    </BottomSheetProvider>
                   </DaemonGate>
                 </ThemeProvider>
               </SafeAreaListener>

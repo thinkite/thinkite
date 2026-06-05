@@ -1,10 +1,6 @@
-import {
-  BottomSheetModal,
-  BottomSheetScrollView,
-} from "@expo/ui/community/bottom-sheet";
 import type { ToolCallDetail } from "@sidecodeapp/protocol";
+import { ModalBottomSheet } from "@swmansion/react-native-bottom-sheet";
 import {
-  type ComponentRef,
   createContext,
   type ReactNode,
   useCallback,
@@ -13,38 +9,45 @@ import {
   useRef,
   useState,
 } from "react";
-import { Text, View } from "react-native";
-import { MarkdownView } from "@/lib/markdown";
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useColorScheme,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import type { ToolRenderBlock } from "@/lib/transcript-blocks";
+import PierreView from "./pierre-view";
 
 /**
- * Single shared BottomSheet at transcript level (Paseo pattern). Each
- * ToolBlock row is a Pressable that calls `openToolCall(block)` — the sheet
- * lives outside the virtualized list, so its open state is independent of
- * row-recycle lifecycle. Combined with the trigger row losing the inline
- * DiffsView, this lets LegendList run with `recycleItems` enabled and a
- * uniform low estimated row height.
+ * Single shared BottomSheet at transcript level (Paseo pattern). Each ToolBlock
+ * row is a Pressable that calls `openToolCall(block)`; the sheet lives outside
+ * the virtualized list, so its open state is independent of row-recycle.
  *
- * Implementation: `@expo/ui/community/bottom-sheet` (gorhom-API drop-in
- * backed by SwiftUI `.sheet(isPresented:)` → `UISheetPresentationController`
- * on iOS). API stays gorhom-shaped (imperative ref `present()`/`dismiss()`,
- * `snapPoints`, `onDismiss`); under the hood it's an iOS native sheet — no
- * Reanimated layer, matches Apple Maps / Files location-card physics.
+ * Shell: `@swmansion/react-native-bottom-sheet` (`ModalBottomSheet`, a NATIVE
+ * Fabric sheet). Chosen over the previous `@expo/ui/community/bottom-sheet`
+ * (SwiftUI `.sheet`) for two reasons:
+ *   1. It keeps collapsed children MOUNTED (controlled `index`/`detents` model,
+ *      no UISheetPresentationController), so the Pierre webview below stays
+ *      RESIDENT + PRE-WARMED → fast first open. The SwiftUI sheet lazily
+ *      mounts → cold every open.
+ *   2. `ModalBottomSheet` (= `<BottomSheet modal/>` over a `BottomSheetProvider`
+ *      portal) renders a dimming `scrim` backdrop we control via `scrimColor` /
+ *      `scrimOpacities`. (The inline `BottomSheet`'s scrim is a no-op.)
  *
- * Lifecycle: `block` holds the rendered detail across the slide-out and is
- * cleared in `onDismiss`. Per the community-bottom-sheet iOS impl, user
- * dismissals route through SwiftUI's @State change → JS handler runs AFTER
- * the close animation, so content stays mounted during the slide-out and
- * we don't flash empty content.
+ * Content: a single resident `PierreView` (@pierre/diffs in an expo-dom WebView)
+ * renders diff/code detail bodies; this replaces react-native-diffs
+ * (`MarkdownView`) for tool detail. Error / `unknown` / empty bodies render
+ * NATIVELY in an overlaid region while the webview is hidden (display:none) but
+ * stays mounted/warm. See `describeDetail`.
  *
- * Caveats vs gorhom (per node_modules/@expo/ui/src/community/bottom-sheet/CLAUDE.md):
- *   - `BottomSheetBackdrop` not supported → SwiftUI provides system backdrop
- *   - `handleIndicatorStyle` / `handleStyle` accepted but no-op on native
- *   - `enablePanDownToClose` controls BOTH swipe-to-dismiss AND backdrop tap
- *     (SwiftUI doesn't expose these separately)
+ * Open flow (flash-free): on tap we swap the webview content while the sheet is
+ * still collapsed, then open (`setIndex`) only after the new payload PAINTS
+ * (`onReady`). Warm-reuse: re-tapping a row whose content is already painted
+ * opens instantly (compared by content string, robust to callId reuse).
  */
-
-type SheetRef = ComponentRef<typeof BottomSheetModal>;
 
 interface ToolCallSheetContextValue {
   openToolCall: (block: ToolRenderBlock) => void;
@@ -65,23 +68,95 @@ export function useToolCallSheet(): ToolCallSheetContextValue {
   return ctx;
 }
 
-const SNAP_POINTS = ["50%", "100%"];
+// Closed / half / (near-)full. Fixed, NOT content-sized: a measured detent left
+// a small file stuck at a previous large file's height (spike finding). The
+// webview owns its own vertical scroll.
+const HALF = 0.5;
+const FULL = 0.92;
+// Per-detent scrim alpha: transparent when closed, dimmed (not blacked out) at
+// half + full so the transcript stays faintly visible behind.
+const SCRIM_OPACITIES = [0, 0.5, 0.5];
+
+interface WebviewPayload {
+  kind: "diff" | "code";
+  content: string;
+  name?: string;
+  /** Hide Pierre's filename header + line-number gutter — true for
+   *  command/search output (bash, grep, glob). */
+  noHeader?: boolean;
+  noLineNumbers?: boolean;
+}
+
+// Pre-warm payload: a tiny file so shiki loads before the first real open.
+const WARMUP: WebviewPayload = {
+  kind: "code",
+  content: "// warm\n",
+  name: "warm.ts",
+  noHeader: true,
+};
 
 export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
-  const sheetRef = useRef<SheetRef>(null);
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const { height } = useWindowDimensions();
+  const detents = useMemo(
+    () => [0, Math.round(height * HALF), Math.round(height * FULL)],
+    [height],
+  );
+
   const [block, setBlock] = useState<ToolRenderBlock | null>(null);
+  const [index, setIndex] = useState(0); // 0 closed · 1 half · 2 full
+  // The resident webview always renders the LAST webview payload, so a native
+  // body (error/unknown) overlaid on top never discards warm webview content.
+  const [webview, setWebview] = useState<WebviewPayload>(WARMUP);
+
+  // Content string currently painted in the webview, and the one we're swapping
+  // to. Comparing content (not callId) makes warm-reuse robust to id reuse.
+  const renderedContent = useRef<string>(WARMUP.content);
+  const pendingContent = useRef<string>(WARMUP.content);
+  const awaitingOpen = useRef(false);
+
+  const desc = block ? describeDetail(block) : null;
+  const showWebview = desc?.mode !== "native";
 
   const openToolCall = useCallback((b: ToolRenderBlock) => {
+    const d = describeDetail(b);
     setBlock(b);
-    sheetRef.current?.present();
+    if (d.mode === "native") {
+      // No webview to wait on — open immediately (from closed; keep half/full).
+      awaitingOpen.current = false;
+      setIndex((i) => (i === 0 ? 1 : i));
+      return;
+    }
+    if (d.content === renderedContent.current) {
+      // Already painted → instant warm open, no re-tokenize.
+      awaitingOpen.current = false;
+      setIndex((i) => (i === 0 ? 1 : i));
+      return;
+    }
+    // Swap content while collapsed; `onReady` opens the sheet after it paints.
+    pendingContent.current = d.content;
+    awaitingOpen.current = true;
+    setWebview({
+      kind: d.kind,
+      content: d.content,
+      name: d.name,
+      noHeader: d.noHeader,
+      noLineNumbers: d.noLineNumbers,
+    });
   }, []);
 
   const closeToolCall = useCallback(() => {
-    sheetRef.current?.dismiss();
+    awaitingOpen.current = false;
+    setIndex(0); // keep `block` + `webview` so re-opening the same row is warm
   }, []);
 
-  const handleDismiss = useCallback(() => {
-    setBlock(null);
+  // Fired by the webview once shiki has loaded and the payload has painted.
+  const onReady = useCallback(() => {
+    renderedContent.current = pendingContent.current;
+    if (awaitingOpen.current) {
+      awaitingOpen.current = false;
+      setIndex((i) => (i === 0 ? 1 : i));
+    }
   }, []);
 
   const value = useMemo(
@@ -89,112 +164,202 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
     [openToolCall, closeToolCall],
   );
 
-  // iOS 26's SwiftUI sheet uses Liquid Glass as the default presentation
-  // material — translucent over the transcript behind. We let that through
-  // (no backgroundColor override) so the sheet has a consistent glassy look
-  // edge-to-edge. Painting a solid color on just the inner ScrollView
-  // covers the middle but leaves the drag-handle strip and bottom safe-area
-  // chrome translucent → looks broken (those strips live OUTSIDE our
-  // ScrollView, inside community/bottom-sheet's internal RNHostView).
-  // SwiftUI's `presentationBackground` modifier (the proper override) isn't
-  // exposed by @expo/ui — until it is, embrace the glass aesthetic and tune
-  // child content (code blocks, diffs) for transparency instead.
+  const surface = (
+    <View
+      style={[
+        StyleSheet.absoluteFill,
+        {
+          backgroundColor: scheme === "dark" ? "#000000" : "#ffffff",
+          borderTopLeftRadius: 16,
+          borderTopRightRadius: 16,
+        },
+      ]}
+    />
+  );
+
   return (
     <ToolCallSheetContext.Provider value={value}>
       {children}
-      <BottomSheetModal
-        ref={sheetRef}
-        snapPoints={SNAP_POINTS}
-        enableDynamicSizing={false}
-        enablePanDownToClose
-        onDismiss={handleDismiss}
+      {/* Renders into the root BottomSheetProvider's portal (app/_layout.tsx),
+          which sits above the navigator so the sheet + scrim cover the native
+          header. Do NOT wrap a second BottomSheetProvider here — the nearest
+          one wins, and a screen-level host renders below the nav bar again. */}
+      <ModalBottomSheet
+        index={index}
+        detents={detents}
+        onIndexChange={setIndex}
+        scrimColor="#000000"
+        scrimOpacities={SCRIM_OPACITIES}
+        surface={surface}
       >
-        <BottomSheetScrollView
-          contentContainerStyle={{ padding: 16, paddingBottom: 48 }}
-        >
-          {block ? <SheetBody block={block} /> : null}
-        </BottomSheetScrollView>
-      </BottomSheetModal>
+        {/* Grabber affordance (the native sheet draws none). */}
+        <View className="items-center pb-1 pt-2">
+          <View className="h-1 w-9 rounded-full bg-gray-300 dark:bg-gray-700" />
+        </View>
+        <View className="flex-row items-center gap-2 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
+          {block ? (
+            <ToolChip name={block.name} isError={block.status === "failed"} />
+          ) : null}
+          {block?.summary ? (
+            <Text
+              numberOfLines={1}
+              className="flex-1 text-base text-gray-700 dark:text-gray-300"
+            >
+              {block.summary}
+            </Text>
+          ) : (
+            <View className="flex-1" />
+          )}
+          <Pressable onPress={closeToolCall} hitSlop={8}>
+            <Text className="text-base text-blue-500">Close</Text>
+          </Pressable>
+        </View>
+
+        <View className="flex-1">
+          {/* Resident webview — hidden (but mounted/warm) under native bodies. */}
+          <View
+            style={{
+              flex: 1,
+              display: showWebview ? "flex" : "none",
+              paddingHorizontal: 16,
+            }}
+          >
+            <PierreView
+              kind={webview.kind}
+              content={encodeURIComponent(webview.content)}
+              name={webview.name}
+              disableFileHeader={webview.noHeader}
+              disableLineNumbers={webview.noLineNumbers}
+              scheme={scheme}
+              onReady={onReady}
+              dom={{
+                matchContents: false,
+                scrollEnabled: true,
+                // Hide native WKWebView scroll indicators (CSS
+                // ::-webkit-scrollbar can't touch the iOS document indicator).
+                showsVerticalScrollIndicator: false,
+                showsHorizontalScrollIndicator: false,
+                style: { flex: 1, backgroundColor: "transparent" },
+              }}
+            />
+          </View>
+          {desc?.mode === "native" ? (
+            <ScrollView
+              style={StyleSheet.absoluteFill}
+              contentContainerStyle={NATIVE_CONTENT}
+            >
+              {desc.node}
+            </ScrollView>
+          ) : null}
+        </View>
+      </ModalBottomSheet>
     </ToolCallSheetContext.Provider>
   );
 }
 
-// ─── Sheet content ─────────────────────────────────────────────────────
+const NATIVE_CONTENT = { padding: 16, paddingBottom: 48 } as const;
 
-function SheetBody({ block }: { block: ToolRenderBlock }) {
+// ─── Detail → render descriptor ────────────────────────────────────────────
+
+type Descriptor =
+  | {
+      mode: "webview";
+      kind: "diff" | "code";
+      content: string;
+      name?: string;
+      /** Plain command/search output (bash, grep, glob): hide the filename
+       *  header AND the line-number gutter — it's not source/line-addressable. */
+      noHeader?: boolean;
+      noLineNumbers?: boolean;
+    }
+  | { mode: "native"; node: ReactNode };
+
+/**
+ * Map a tool block to how its body renders. Diff/code go to the Pierre webview;
+ * errors, `unknown`, and empty output render natively (plain Text — no
+ * react-native-diffs). Mirrors the old `DetailBody` dispatch.
+ */
+function describeDetail(block: ToolRenderBlock): Descriptor {
   const isError = block.status === "failed";
-  return (
-    <View>
-      <View className="mb-3 flex-row items-center gap-2">
-        <ToolChip name={block.name} isError={isError} />
-        {block.summary ? (
-          <Text
-            numberOfLines={1}
-            className="flex-1 text-base text-gray-700 dark:text-gray-300"
-          >
-            {block.summary}
-          </Text>
-        ) : null}
-      </View>
-      <DetailBody detail={block.detail} isError={isError} error={block.error} />
-    </View>
-  );
-}
-
-function DetailBody({
-  detail,
-  isError,
-  error,
-}: {
-  detail: ToolCallDetail;
-  isError: boolean;
-  error: string | null;
-}) {
+  const { detail, error } = block;
   switch (detail.type) {
-    case "bash":
-      return (
-        <FencedDetail
-          markdownContent={fence(
-            formatBashBody(detail.command, detail.output),
-            "bash",
-          )}
-        />
-      );
+    case "bash": {
+      // Command (with `$ `/`> ` prefixes) + captured output, like Claude Desktop.
+      const body = formatBashBody(detail.command, detail.output);
+      return body.length === 0
+        ? NATIVE_EMPTY
+        : {
+            mode: "webview",
+            kind: "code",
+            content: body,
+            name: "command.sh",
+            noHeader: true,
+            noLineNumbers: true,
+          };
+    }
     case "edit":
-    case "write":
-      // Failed Edit/Write: the unified diff was *computed from input* and
-      // never actually applied — rendering it would imply a successful change.
-      if (isError) return <ErrorBanner text={error ?? "Tool failed."} />;
-      // Pass unifiedDiff RAW (no ```diff fence). MarkdownView's diff renderer
-      // is the auto-detect path triggered by content starting with `--- ` /
-      // `+++ ` / `@@`; wrapping in a fence makes it fall through to the
-      // generic code-block renderer (no red/green rows).
-      return <FencedDetail markdownContent={detail.unifiedDiff} />;
-    case "read":
-      // Failed Read: detail.content is the error string; show as plain banner.
-      if (isError) return <ErrorBanner text={error ?? "Read failed."} />;
-      return (
-        <FencedDetail
-          markdownContent={fence(detail.content, detail.language)}
-        />
-      );
+    case "write": {
+      // Failed Edit/Write: the unified diff was computed from input and never
+      // applied — show the error, not a diff that implies a successful change.
+      if (isError) return errorNative(error ?? "Tool failed.");
+      return detail.unifiedDiff.length === 0
+        ? NATIVE_EMPTY
+        : { mode: "webview", kind: "diff", content: detail.unifiedDiff };
+    }
+    case "read": {
+      if (isError) return errorNative(error ?? "Read failed.");
+      return detail.content.length === 0
+        ? NATIVE_EMPTY
+        : {
+            mode: "webview",
+            kind: "code",
+            content: detail.content,
+            name: basename(detail.filePath),
+          };
+    }
     case "grep":
     case "glob":
-      return <FencedDetail markdownContent={fence(detail.output)} />;
+      return detail.output.length === 0
+        ? NATIVE_EMPTY
+        : {
+            mode: "webview",
+            kind: "code",
+            content: detail.output,
+            name: "results.txt",
+            noHeader: true,
+            noLineNumbers: true,
+          };
     case "unknown":
-      return <UnknownDetail detail={detail} isError={isError} error={error} />;
+      return {
+        mode: "native",
+        node: <UnknownDetail detail={detail} isError={isError} error={error} />,
+      };
+    default:
+      // Long-tail types not specially rendered in V0 (web_fetch, agent, etc.) —
+      // render nothing, matching the old switch's implicit fall-through.
+      return { mode: "native", node: null };
   }
 }
 
-function FencedDetail({ markdownContent }: { markdownContent: string }) {
-  if (markdownContent.length === 0) {
-    return (
-      <Text className="text-xs italic text-gray-500 dark:text-gray-400">
-        (no output)
-      </Text>
-    );
-  }
-  return <MarkdownView content={markdownContent} />;
+const NATIVE_EMPTY: Descriptor = { mode: "native", node: <EmptyOutput /> };
+
+function errorNative(text: string): Descriptor {
+  return { mode: "native", node: <ErrorBanner text={text} /> };
+}
+
+function basename(p: string): string {
+  const parts = p.split("/");
+  return parts[parts.length - 1] || p;
+}
+
+// ─── Native bodies ─────────────────────────────────────────────────────────
+
+function EmptyOutput() {
+  return (
+    <Text className="text-xs italic text-gray-500 dark:text-gray-400">
+      (no output)
+    </Text>
+  );
 }
 
 function ErrorBanner({ text }: { text: string }) {
@@ -298,19 +463,13 @@ export function ToolChip({
   );
 }
 
-// ─── Helpers ───────────────────────────────────────────────────────────
-
-function fence(body: string, lang?: string): string {
-  if (body.length === 0) return "";
-  return `\`\`\`${lang ?? ""}\n${body}\n\`\`\``;
-}
+// ─── Helpers ───────────────────────────────────────────────────────────────
 
 /**
- * Compose a Bash detail body the way Claude Desktop does: the command
- * prefixed with `$ ` (subsequent lines with `> ` like an interactive shell
- * continuation), then the captured output below. We always show the command
- * — even when output is empty — so a Bash invocation stays visible after
- * its expected silence (e.g. `cd`, `mkdir`).
+ * Compose a Bash detail body the way Claude Desktop does: the command prefixed
+ * with `$ ` (continuation lines with `> ` like an interactive shell), then the
+ * captured output below. We always show the command — even when output is empty
+ * — so a Bash invocation stays visible after its expected silence (`cd`, etc.).
  */
 function formatBashBody(command: string, output: string): string {
   const cmdLines = command.split("\n");
