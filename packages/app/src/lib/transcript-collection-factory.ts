@@ -1,6 +1,9 @@
 import type { ImageAttachment, TimelineItem } from "@sidecodeapp/protocol";
-import { type Collection, createOptimisticAction } from "@tanstack/db";
-import { createCollection } from "@tanstack/react-db";
+import {
+  type Collection,
+  createCollection,
+  createOptimisticAction,
+} from "@tanstack/react-db";
 import { type DaemonClient, daemonClient } from "@/lib/daemon-client";
 import {
   clearSessionTurnResult,

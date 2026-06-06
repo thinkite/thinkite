@@ -1,6 +1,5 @@
 import type { ImageAttachment, SessionState } from "@sidecodeapp/protocol";
-import { createOptimisticAction } from "@tanstack/db";
-import { createCollection } from "@tanstack/react-db";
+import { createCollection, createOptimisticAction } from "@tanstack/react-db";
 import { daemonClient } from "@/lib/daemon-client";
 
 /**

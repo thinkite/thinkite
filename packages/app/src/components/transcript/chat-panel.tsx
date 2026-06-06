@@ -5,8 +5,12 @@ import {
 } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import type { ImageAttachment } from "@sidecodeapp/protocol";
-import type { Collection } from "@tanstack/db";
-import { eq, useLiveQuery, useLiveQueryEffect } from "@tanstack/react-db";
+import {
+  type Collection,
+  eq,
+  useLiveQuery,
+  useLiveQueryEffect,
+} from "@tanstack/react-db";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Crypto from "expo-crypto";
 import { useHeaderHeight } from "expo-router/react-navigation";

@@ -50,9 +50,6 @@ importers:
       '@swmansion/react-native-bottom-sheet':
         specifier: 0.14.1
         version: 0.14.1(react-native-safe-area-context@5.7.0(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native@0.85.3(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
-      '@tanstack/db':
-        specifier: ^0.6.8
-        version: 0.6.8(typescript@6.0.3)
       '@tanstack/react-db':
         specifier: ^0.1.86
         version: 0.1.86(react@19.2.3)(typescript@6.0.3)
