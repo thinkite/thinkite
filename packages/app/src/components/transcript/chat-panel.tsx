@@ -62,14 +62,9 @@ type ChatPanelProps = {
  *      fired, last message stayed hidden behind composer until user
  *      toggled keyboard.)
  *
- *   2. The composer-inset SharedValue (via `useKeyboardChatComposerInset`,
- *      initialHeight 0) starts fresh per session at 0, NOT the measured
- *      composer height. The measure-callback transition 0→real fires KCSV's
- *      `useAnimatedReaction` after the list ref is bound, guaranteeing
- *      the bottom inset propagates. (Before: hook sat on the parent
- *      screen with a stale dedup cache, OR init matched measured so no
- *      transition fired — both left the last message clipped until the
- *      user toggled the keyboard.)
+ *   2. The composer-inset SharedValue (via `useKeyboardChatComposerInset`) is
+ *      seeded with a deliberate near-miss of the measured composer height — not
+ *      0, not the exact value; see the call site for why.
  *
  *   3. KeyboardChatScrollView vs. iOS automatic contentInset
  *      adjustments: must disable both
@@ -122,11 +117,14 @@ export function ChatPanel({
   // visual padding) and an imperative `reportContentInset` (drives LegendList
   // virtualization). No manual `+ insets.bottom`: the composer owns its
   // safe-area band via `pb-safe`, so its measured height already includes it.
-  // `initialHeight: 0` → the 0→real transition on the first measure fires
-  // KCSV's reaction after listRef binds; ChatPanel mounts fresh per session so
-  // there's no stale dedup carried across sessions.
+  // 180 is a deliberate near-miss of the measured composer height: close enough
+  // that initialScrollAtEnd's bootstrap converges in its frame budget, but ≠ the
+  // exact value and ≠ 0. An exact seed makes the post-measure inset delta zero →
+  // the bootstrap retarget AND KCSV's useAnimatedReaction both no-op (convergence-
+  // bounds abort + inset lost on session switch-back); 0 is the other extreme —
+  // its delta is too large to converge in budget.
   const { contentInsetEndAdjustment, onComposerLayout } =
-    useKeyboardChatComposerInset(listRef, composerRef, 0);
+    useKeyboardChatComposerInset(listRef, composerRef, 180);
 
   // Idiomatic scroll-on-send (LegendList chat pattern). `scrollMessageToEnd`
   // brings the just-sent message into view no matter where the user had

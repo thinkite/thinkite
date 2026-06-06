@@ -1,10 +1,6 @@
 "use dom";
 
-import {
-  isHighlighterLoaded,
-  parsePatchFiles,
-  type SupportedLanguages,
-} from "@pierre/diffs";
+import { parsePatchFiles, type SupportedLanguages } from "@pierre/diffs";
 import {
   CodeView,
   File,
@@ -191,25 +187,23 @@ export default function PierreView({
     containerRef.current?.scrollTo({ top: 0, left: 0 });
   }, [collapsed]);
 
-  // Pierre calls `onPostRender` on each render commit: "mount" (plain), then
-  // "update" after the highlight pass. Reveal on the highlighted commit. Two
-  // ways to know it's highlighted: the main-thread highlighter is loaded (no
-  // worker), OR the commit is an "update" — which is the post-highlight re-render
-  // for BOTH the main-thread and the worker path (where `isHighlighterLoaded()`
-  // stays false because tokenization happens off-thread). The FALLBACK_MS timer
-  // still backstops the case where neither ever holds.
+  // Reveal on the FIRST render commit of the new content — don't wait for the
+  // highlight pass (viewing shouldn't block on the highlighter, which on a
+  // worker-load failure never completes). Opens with plain code, colorizes in
+  // place a frame later; highlighting only adds color → no reflow. onPostRender
+  // fires post-DOM-update and fireReady is content-keyed → once per payload, no
+  // flash of the previous one.
   const handlePostRender = useCallback(
     (_node: HTMLElement, _instance: unknown, phase: PostRenderPhase) => {
       if (phase === "unmount") return;
-      if (!isHighlighterLoaded() && phase !== "update") return;
       fireReady(decodedRef.current);
     },
     [fireReady],
   );
 
-  // Backstop per content change: if the highlighter never loads, onPostRender
-  // never qualifies — open anyway after a timeout so the sheet can't hang.
-  // Empty content is ready immediately.
+  // Backstop per content change: if Pierre never commits (e.g. it throws before
+  // first render and RenderBoundary takes over), onPostRender never fires — open
+  // anyway after a timeout so the sheet can't hang. Empty content is ready now.
   useEffect(() => {
     if (decoded.length === 0) {
       fireReady(decoded);

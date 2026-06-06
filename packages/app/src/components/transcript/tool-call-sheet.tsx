@@ -20,6 +20,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { KeyboardController } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkingTreeDiff } from "@/hooks/use-working-tree-diff";
 import type { ToolRenderBlock } from "@/lib/transcript-blocks";
@@ -169,6 +170,7 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
   }, [showing, diffData]);
 
   const openToolCall = useCallback((b: ToolRenderBlock) => {
+    KeyboardController.dismiss(); // sheet open dismisses the composer keyboard
     const d = describeDetail(b);
     setShowing({ kind: "tool", block: b });
     if (d.mode === "native") {
@@ -196,6 +198,7 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const openGitDiff = useCallback((cwd: string) => {
+    KeyboardController.dismiss(); // sheet open dismisses the composer keyboard
     // Open immediately with a loading overlay (there's a fetch + tokenize
     // before content is ready); the diff fills in via the effect + diffReady.
     awaitingOpen.current = false;
@@ -258,7 +261,7 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
         StyleSheet.absoluteFill,
         {
           backgroundColor: scheme === "dark" ? "#000000" : "#ffffff",
-          borderTopLeftRadius:24,
+          borderTopLeftRadius: 24,
           borderTopRightRadius: 24,
           borderCurve: "continuous",
         },
