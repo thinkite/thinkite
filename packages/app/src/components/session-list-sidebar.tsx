@@ -5,6 +5,7 @@ import {
   font,
   foregroundStyle,
   labelStyle,
+  buttonBorderShape,
 } from "@expo/ui/swift-ui/modifiers";
 import { router, useGlobalSearchParams } from "expo-router";
 import { useMemo } from "react";
@@ -212,7 +213,8 @@ export function SessionListSidebar({
             modifiers={[
               buttonStyle("glass"),
               labelStyle("iconOnly"),
-              // buttonBorderShape("circle"), // not yet in @expo/ui — next ver
+              // controlSize("large"),
+              // buttonBorderShape("circle"),
               font({ size: 22 }),
             ]}
             onPress={handleOpenSettings}

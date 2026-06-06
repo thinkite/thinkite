@@ -1,28 +1,42 @@
 import {
   KeyboardAwareLegendList,
   useKeyboardChatComposerInset,
+  useKeyboardScrollToEnd,
 } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import type { ImageAttachment } from "@sidecodeapp/protocol";
+import type { Collection } from "@tanstack/db";
+import { eq, useLiveQuery, useLiveQueryEffect } from "@tanstack/react-db";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Crypto from "expo-crypto";
 import { useHeaderHeight } from "expo-router/react-navigation";
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useColorScheme, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
 import { TextBlock } from "@/components/transcript/text-block";
+import { ThinkingIndicator } from "@/components/transcript/thinking-indicator";
 import { ToolBlock } from "@/components/transcript/tool-block";
 import { useToolCallSheet } from "@/components/transcript/tool-call-sheet";
+import { haptics } from "@/lib/haptics";
+import { sessionStateCollection } from "@/lib/sessions-collection";
 import type { RenderBlock } from "@/lib/transcript-blocks";
-import { sendUserMessage } from "@/lib/transcript-collection-factory";
+import {
+  type OrderedTimelineItem,
+  sendUserMessage,
+} from "@/lib/transcript-collection-factory";
 
 type ChatPanelProps = {
   cliSessionId: string;
   cwd: string | undefined;
   blocks: RenderBlock[];
+  /** The raw per-session transcript collection (from useSessionTranscript).
+   *  Threaded in rather than re-derived via the factory so the onEnter
+   *  haptics effect runs over the exact instance the screen already
+   *  subscribed — same object, no second cache lookup. */
+  collection: Collection<OrderedTimelineItem, string>;
 };
 
 /**
@@ -80,7 +94,12 @@ type ChatPanelProps = {
  * for the inset hook state and initialScrollAtEnd that weren't
  * reliable.
  */
-export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
+export function ChatPanel({
+  cliSessionId,
+  cwd,
+  blocks,
+  collection,
+}: ChatPanelProps) {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
   const listRef = useRef<LegendListRef>(null);
@@ -105,26 +124,76 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
   const { contentInsetEndAdjustment, onComposerLayout } =
     useKeyboardChatComposerInset(listRef, composerRef, 0);
 
-  // The "real send" handed to InputBar as `onSend`. InputBar intercepts
-  // slash commands internally (/clear, /model) — only non-slash text +
-  // whitelisted passthrough commands (/init, /review, /compact) reach
-  // here. Interrupt is also owned by InputBar now (it has cliSessionId).
+  // Idiomatic scroll-on-send (LegendList chat pattern). `scrollMessageToEnd`
+  // brings the just-sent message into view no matter where the user had
+  // scrolled to; `freeze` (passed to the list) suspends maintainScrollAtEnd /
+  // maintainVisibleContentPosition during the animation so they don't fight it.
+  const { freeze, scrollMessageToEnd } = useKeyboardScrollToEnd({ listRef });
+
+  // isThinking: the turn is running (daemon-pushed activity, #17) but the last
+  // block isn't Claude's text yet — the initial think window + tool gaps. Drives
+  // the resident footer.
+  const { data: sessionRow } = useLiveQuery(
+    (q) =>
+      q
+        .from({ s: sessionStateCollection })
+        .where(({ s }) => eq(s.cliSessionId, cliSessionId))
+        .findOne(),
+    [cliSessionId],
+  );
+  const isRunning = sessionRow?.activity === "running";
+  const lastBlock = blocks[blocks.length - 1];
+  const isThinking =
+    isRunning &&
+    !(lastBlock?.kind === "text" && lastBlock.role === "assistant");
+
+  // Message haptics, driven from the on-screen ChatPanel (not the collection
+  // sync, which can run off-screen within gcTime and buzz a session you're not
+  // in). skipInitial mutes the open-backlog; a reconnect re-ingests as one batch
+  // so unchanged rows are updates, not re-enters. Per message that enters:
+  // user_message → send, assistant_message → genStart (each agent segment buzzes).
+  useLiveQueryEffect<OrderedTimelineItem>(
+    {
+      query: (q) => q.from({ t: collection }),
+      skipInitial: true,
+      onEnter: (e) => {
+        if (e.value.type === "user_message") haptics.send();
+        if (e.value.type === "assistant_message") haptics.genStart();
+      },
+    },
+    [collection],
+  );
+
+  // genEnd on the turn ending — not a transcript delta, so it tracks the
+  // daemon-pushed activity flag going running→idle. Transition-guarded: fires
+  // once, and never on unmount (navigating away mid-turn stays quiet).
+  const prevRunning = useRef(false);
+  useEffect(() => {
+    if (prevRunning.current && !isRunning) haptics.genEnd();
+    prevRunning.current = isRunning;
+  }, [isRunning]);
+
+  // anchoredEndSpace anchor for the just-sent message: the streaming reply fills
+  // reserved space below it instead of shoving the scroll target (overshoot fix).
+  // Set in rawSend at send time (the activity flag lags a round-trip); cleared
+  // when the turn goes idle.
+  const [anchorIndex, setAnchorIndex] = useState(-1);
+  useEffect(() => {
+    if (!isRunning) setAnchorIndex(-1);
+  }, [isRunning]);
+
+  // The "real send" handed to InputBar. InputBar already intercepts slash
+  // commands; only plain text + whitelisted passthroughs (/init, /review,
+  // /compact) reach here.
   const rawSend = useCallback(
     (text: string, images: ImageAttachment[] | undefined, model: string) => {
-      // Optimistic in-session send: `sendUserMessage` inserts the bubble
-      // into this session's transcript collection synchronously (instant
-      // paint) and fires the sendPrompt under a client-generated uuid; the
-      // daemon's synthesized append reuses that uuid so the synced row
-      // dedupes against this optimistic insert by key. See sendUserMessage.
-      //
-      // cwd is forwarded for the SDK's project-key resolution on `--resume`
-      // (plumbed through route params); `model` (InputBar's current picker
-      // selection) rides along so a daemon-restart respawn inherits it —
-      // mid-session apply is owned by updateSessionModel at pick time, this
-      // is only the respawn seed.
+      // Optimistic insert (instant paint) + sendPrompt under one client uuid the
+      // daemon reuses, so the synced row dedupes by key. cwd/model ride along for
+      // --resume project-key resolution and the daemon-restart respawn seed.
+      const userMessageUuid = Crypto.randomUUID();
       void sendUserMessage({
         cliSessionId,
-        userMessageUuid: Crypto.randomUUID(),
+        userMessageUuid,
         text,
         cwd,
         images,
@@ -132,8 +201,15 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
       }).isPersisted.promise.catch((err) => {
         console.error("sendPrompt failed", err);
       });
+      // Anchor the new message, then scroll to it next frame (after the optimistic
+      // insert reflows). closeKeyboard:false — dismissing mid-scroll fights the
+      // scroll target.
+      setAnchorIndex(blocks.length);
+      requestAnimationFrame(() => {
+        void scrollMessageToEnd({ animated: true, closeKeyboard: false });
+      });
     },
-    [cliSessionId, cwd],
+    [cliSessionId, cwd, blocks.length, scrollMessageToEnd],
   );
 
   // No first-send-after-create effect here anymore: the new-session
@@ -146,8 +222,26 @@ export function ChatPanel({ cliSessionId, cwd, blocks }: ChatPanelProps) {
     <>
       <KeyboardAwareLegendList<RenderBlock>
         ref={listRef}
+        // Suspends maintainScrollAtEnd / maintainVisibleContentPosition while
+        // `scrollMessageToEnd` animates on send, so the chat-pattern scroll
+        // isn't fought by the resting scroll managers (LegendList chat guide).
+        freeze={freeze}
+        // Reserve blank space below the just-sent user message for its turn so
+        // the streaming response fills it without moving the anchor (fixes the
+        // scroll overshoot). Undefined when idle → normal layout.
+        anchoredEndSpace={
+          anchorIndex >= 0
+            ? { anchorIndex, anchorOffset: headerHeight }
+            : undefined
+        }
         data={blocks}
         keyExtractor={(b) => b.id}
+        // Resident "Thinking…" footer — always mounted at constant height,
+        // `active` just fades the label. Constant footerSize is the point: a
+        // mount/unmount changes anchoredEndSpace's contentBelowAnchor without
+        // triggering its recompute, which jumped the anchored message. Also
+        // doubles as the gap below the last message.
+        ListFooterComponent={<ThinkingIndicator active={isThinking} />}
         renderItem={({ item }) => {
           if (item.kind === "text") return <TextBlock block={item} />;
           if (item.kind === "tool") return <ToolBlock block={item} />;

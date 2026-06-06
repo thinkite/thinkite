@@ -352,7 +352,7 @@ export default function PierreView({
             // PatchDiff get the same via a padded wrapper div). 8s are Pierre's
             // DEFAULT_CODE_VIEW_LAYOUT, replicated since passing `layout`
             // replaces the whole default.
-            layout: { paddingTop: 0, paddingBottom: 8 + bottomInset, gap: 0 },
+            layout: { paddingTop: 0, paddingBottom: bottomInset, gap: 0 },
             onPostRender: handlePostRender,
           }}
         />

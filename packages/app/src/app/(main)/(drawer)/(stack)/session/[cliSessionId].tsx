@@ -123,7 +123,12 @@ export default function SessionDetailScreen() {
             </Text>
           </View>
         ) : (
-          <ChatPanel cliSessionId={cliSessionId} cwd={cwd} blocks={blocks} />
+          <ChatPanel
+            cliSessionId={cliSessionId}
+            cwd={cwd}
+            blocks={blocks}
+            collection={session.collection}
+          />
         )}
       </View>
     </>

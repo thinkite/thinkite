@@ -1,8 +1,6 @@
 packages:
   - "packages/*"
-minimumReleaseAgeExclude:
-  - "@anthropic-ai/claude-agent-sdk"
-  - "@yyq1025/react-native-nitro-menu@0.2.0"
+minimumReleaseAge: 360
 allowBuilds:
   esbuild: true
   msgpackr-extract: true

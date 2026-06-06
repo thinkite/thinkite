@@ -13,7 +13,6 @@ import {
 } from "react";
 import {
   ActivityIndicator,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -86,7 +85,7 @@ export function useToolCallSheet(): ToolCallSheetContextValue {
 // a small file stuck at a previous large file's height (spike finding). The
 // webview owns its own vertical scroll.
 const HALF = 0.5;
-const FULL = 0.92;
+const FULL = 1;
 // Per-detent scrim alpha: transparent when closed, dimmed (not blacked out) at
 // half + full so the transcript stays faintly visible behind.
 const SCRIM_OPACITIES = [0, 0.5, 0.5];
@@ -259,8 +258,9 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
         StyleSheet.absoluteFill,
         {
           backgroundColor: scheme === "dark" ? "#000000" : "#ffffff",
-          borderTopLeftRadius: 16,
-          borderTopRightRadius: 16,
+          borderTopLeftRadius:24,
+          borderTopRightRadius: 24,
+          borderCurve: "continuous",
         },
       ]}
     />
@@ -282,7 +282,7 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
         surface={surface}
       >
         {/* Grabber affordance (the native sheet draws none). */}
-        <View className="items-center pb-1 pt-2">
+        <View className="items-center pt-1">
           <View className="h-1 w-9 rounded-full bg-gray-300 dark:bg-gray-700" />
         </View>
         <View className="flex-row items-center gap-2 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
@@ -317,9 +317,6 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
           ) : (
             <View className="flex-1" />
           )}
-          <Pressable onPress={closeToolCall} hitSlop={8}>
-            <Text className="text-base text-blue-500">Close</Text>
-          </Pressable>
         </View>
 
         <View className="flex-1">

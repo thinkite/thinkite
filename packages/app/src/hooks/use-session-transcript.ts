@@ -31,6 +31,10 @@ import { getTranscriptCollection } from "@/lib/transcript-collection-factory";
  *    first onSubscribed. No hand-rolled `isInitialLoading` useState.
  *
  * Return shape:
+ *   - `collection` (the raw per-session transcript collection — threaded
+ *     to ChatPanel so it can run a `useLiveQueryEffect` over the same
+ *     instance for onEnter haptics, instead of re-deriving it via the
+ *     factory)
  *   - `items` / `isInitialLoading`
  *   - `lastError` (last turn failure — drives the detail screen's
  *     console.error; not rendered)
@@ -59,6 +63,7 @@ export function useSessionTranscript(cliSessionId: string, isNew = false) {
   const turnResult = useSessionTurnResult(cliSessionId);
 
   return {
+    collection,
     items: data ?? [],
     lastError: turnResult.lastError,
     isInitialLoading: isLoading,

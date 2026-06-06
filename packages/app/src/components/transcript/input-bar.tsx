@@ -451,7 +451,7 @@ export function InputBar({
               : "rgba(255,255,255,0.6)",
         }}
       >
-        <View className="py-3 gap-2 rounded-3xl border-continuous overflow-hidden">
+        <View className="py-3 gap-3 rounded-3xl border-continuous overflow-hidden">
           {/* Attachment pill row — only when there are draft images.
               Horizontal scroll so 8 thumbs fit on narrow screens. The
               X badge sits INSIDE each thumbnail's bounds (not negative

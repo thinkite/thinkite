@@ -162,8 +162,12 @@ export interface SessionStatesCallbacks {
  *
  * If this trips, the UX message blames the most likely cause: the user
  * forgot to open the menubar Pair window on their Mac.
+ *
+ * Also bounds the boot "Connecting to daemon…" screen before it falls to
+ * `offline`. 10s (was 15s) for a snappier fall-through, still well above the
+ * <200ms LAN path and ~2–3s slow-ICE worst case; the retry loop covers overflow.
  */
-const CONNECT_TIMEOUT_MS = 15_000;
+const CONNECT_TIMEOUT_MS = 10_000;
 
 /**
  * Single underlying WebRTC + RPC transport for the daemon connection.
