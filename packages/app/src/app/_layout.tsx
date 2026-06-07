@@ -27,6 +27,7 @@ import {
 } from "@/lib/daemon-client-context";
 import { queryClient } from "@/lib/query-client";
 import { SafeAreaView } from "@/lib/styled";
+import { getThemePreference } from "@/lib/theme-preference";
 
 // Hold the native splash open through the daemon handshake. Per Expo docs,
 // preventAutoHideAsync MUST run in module scope (not inside a hook) — by the
@@ -52,6 +53,16 @@ export const unstable_settings = {
 
 export default function RootLayout() {
   const scheme = useColorScheme() ?? "light";
+
+  // Apply the persisted theme preference once on boot. `Uniwind.setTheme` drives
+  // the className variants + Appearance.setColorScheme (→ every useColorScheme
+  // consumer and the nav ThemeProvider below). Default "system" is uniwind's own
+  // default, so a fresh install is a no-op. Brief flash possible: SecureStore is
+  // async, so we sit at system for a frame or two before a forced theme lands.
+  useEffect(() => {
+    void getThemePreference().then((pref) => Uniwind.setTheme(pref));
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>

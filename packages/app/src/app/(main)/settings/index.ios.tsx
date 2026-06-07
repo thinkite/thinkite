@@ -4,15 +4,23 @@ import {
   Host,
   HStack,
   Image,
+  Menu,
   Section,
   Spacer,
   Text,
+  VStack,
 } from "@expo/ui/swift-ui";
-import { foregroundStyle } from "@expo/ui/swift-ui/modifiers";
+import { font, foregroundStyle, padding } from "@expo/ui/swift-ui/modifiers";
 import { useQueryClient } from "@tanstack/react-query";
+import Constants from "expo-constants";
 import { router, Stack } from "expo-router";
+import {
+  useSetThemePreference,
+  useThemePreference,
+} from "@/hooks/use-theme-preference";
 import { statusColor, useDaemonClient } from "@/lib/daemon-client-context";
 import { clearLastUsedCwd } from "@/lib/last-used-cwd";
+import type { ThemePref } from "@/lib/theme-preference";
 
 /**
  * Settings root, iOS-only. Uses `@expo/ui/swift-ui` (Form, Section, Button +
@@ -39,6 +47,7 @@ import { clearLastUsedCwd } from "@/lib/last-used-cwd";
 export default function SettingsIndexScreen() {
   const { paired, connectionStatus } = useDaemonClient();
   const queryClient = useQueryClient();
+  const version = Constants.expoConfig?.version ?? "—";
 
   // Wipe the persisted "last used cwd" so the next New-session lands on the
   // empty placeholder again — lets you toggle that state without a Metro
@@ -63,49 +72,66 @@ export default function SettingsIndexScreen() {
         />
       </Stack.Toolbar>
       <Host style={{ flex: 1 }}>
-        <Form>
-          <Section title="Host">
-            <Button onPress={() => router.push("/settings/host")}>
-              <HStack alignment="center" spacing={8}>
-                {/* Leading status dot (Mail.app unread-indicator pattern) —
+        <VStack alignment="center">
+          <Form>
+            <Section title="General">
+              <AppearanceMenu />
+            </Section>
+            <Section title="Host">
+              <Button onPress={() => router.push("/settings/host")}>
+                <HStack alignment="center" spacing={8}>
+                  {/* Leading status dot (Mail.app unread-indicator pattern) —
                     scannable at-a-glance state without reading text. Same
                     color as the host-detail Status section so the row's
                     state matches the page it leads to. */}
-                <Image
-                  systemName="circle.fill"
-                  size={10}
-                  color={statusColor(connectionStatus)}
-                />
-                {/* Without an explicit foreground style, SwiftUI Button
+                  <Image
+                    systemName="circle.fill"
+                    size={10}
+                    color={statusColor(connectionStatus)}
+                  />
+                  {/* Without an explicit foreground style, SwiftUI Button
                     tints the title text with the current accent color
                     (system blue). `foregroundStyle("primary")` forces
                     the literal `Color.primary` (black/white auto-adapt). */}
-                <Text modifiers={[foregroundStyle("primary")]}>
-                  {paired?.serviceName ?? "—"}
-                </Text>
-                <Spacer />
-                <Image systemName="chevron.right" size={14} color="#8E8E93" />
-              </HStack>
-            </Button>
-          </Section>
-          {/* Dev-only probe pages, relocated here from the session-list
+                  <Text modifiers={[foregroundStyle("primary")]}>
+                    {paired?.serviceName ?? "—"}
+                  </Text>
+                  <Spacer />
+                  <Image systemName="chevron.right" size={14} color="#8E8E93" />
+                </HStack>
+              </Button>
+            </Section>
+            {/* Dev-only probe pages, relocated here from the session-list
               sidebar so the sidebar stays product-clean. Whole section is
               stripped from release builds via __DEV__ (a literal the bundler
               dead-code-eliminates). Pushes resolve at the (main) Stack level
               and present a card over this settings sheet; back returns here. */}
-          {__DEV__ && (
-            <Section title="Developer">
-              <DisclosureRow
-                label="KeyboardExtender spike"
-                onPress={() => router.push("/dev/keyboard-extender")}
-              />
-              <Button
-                label="Clear last cwd (test placeholder)"
-                onPress={onClearLastCwd}
-              />
-            </Section>
-          )}
-        </Form>
+            {__DEV__ && (
+              <Section title="Developer">
+                <DisclosureRow
+                  label="KeyboardExtender spike"
+                  onPress={() => router.push("/dev/keyboard-extender")}
+                />
+                <Button
+                  label="Clear last cwd (test placeholder)"
+                  onPress={onClearLastCwd}
+                />
+              </Section>
+            )}
+          </Form>
+          {/* App version — OUTSIDE the Form so it renders as plain text, not a
+              Form cell. The VStack lets the Form fill and pins this centered at
+              the bottom. */}
+          <Text
+            modifiers={[
+              font({ size: 13 }),
+              foregroundStyle("#8E8E93"),
+              padding({ bottom: 16 }),
+            ]}
+          >
+            Version {version}
+          </Text>
+        </VStack>
       </Host>
     </>
   );
@@ -134,5 +160,55 @@ function DisclosureRow({
         <Image systemName="chevron.right" size={14} color="#8E8E93" />
       </HStack>
     </Button>
+  );
+}
+
+const APPEARANCE_OPTIONS: { value: ThemePref; label: string }[] = [
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+  { value: "system", label: "System" },
+];
+
+/**
+ * Appearance row: a static "Appearance" label on the left; on the right, a
+ * `Menu` whose trigger is ONLY the current value + up/down glyph (just that
+ * trailing chunk is tappable, not the whole row). The menu lists the three
+ * options with a leading checkmark on the selected one (iOS's native
+ * menu-selection affordance). Picking applies + persists via
+ * `useSetThemePreference` (one `Uniwind.setTheme` flips the whole app).
+ */
+function AppearanceMenu() {
+  const { data: pref = "system" } = useThemePreference();
+  const setPref = useSetThemePreference();
+  const current = APPEARANCE_OPTIONS.find((o) => o.value === pref);
+
+  return (
+    <HStack alignment="center" spacing={8}>
+      <Text modifiers={[foregroundStyle("primary")]}>Appearance</Text>
+      <Spacer />
+      <Menu
+        label={
+          <HStack alignment="center" spacing={4}>
+            <Text modifiers={[foregroundStyle("#8E8E93")]}>
+              {current?.label ?? "System"}
+            </Text>
+            <Image
+              systemName="chevron.up.chevron.down"
+              size={12}
+              color="#8E8E93"
+            />
+          </HStack>
+        }
+      >
+        {APPEARANCE_OPTIONS.map((o) => (
+          <Button
+            key={o.value}
+            label={o.label}
+            systemImage={o.value === pref ? "checkmark" : undefined}
+            onPress={() => setPref(o.value)}
+          />
+        ))}
+      </Menu>
+    </HStack>
   );
 }

@@ -5,13 +5,14 @@ import {
   HStack,
   Image,
   Section,
+  Spacer,
   Text,
 } from "@expo/ui/swift-ui";
-import { font } from "@expo/ui/swift-ui/modifiers";
-import { Stack } from "expo-router";
+import { font, foregroundStyle } from "@expo/ui/swift-ui/modifiers";
 import { PROTOCOL_VERSION } from "@sidecodeapp/protocol";
+import { Stack } from "expo-router";
+import type { ReactNode } from "react";
 import { Alert } from "react-native";
-import { fingerprintFromPubkey } from "@/lib/daemon-client";
 import {
   statusColor,
   statusLabel,
@@ -54,41 +55,41 @@ export default function SettingsHostScreen() {
     );
   };
 
-  // 16-hex-char fingerprint is derived from the daemon pubkey — same
-  // formula as the daemon's identity.ts. Persisting the derived value
-  // would just be redundant state. Pre-pair (paired === null) we show
-  // a placeholder; the rest of this screen is gated on `paired` too.
-  const fingerprint = paired
-    ? fingerprintFromPubkey(paired.daemonIdentityPublicKey)
-    : "—";
-
   return (
     <>
       <Stack.Screen options={{ title: paired?.serviceName ?? "Host" }} />
       <Host style={{ flex: 1 }}>
         <Form>
-          <Section title="Status">
-            <HStack alignment="center" spacing={8}>
+          {/* One section of label-left / value-right rows (iOS Settings value
+              table) — collapses what were four single-value sections. Each row
+              is a bare HStack; LabeledContent would be the semantic fit but its
+              props are an empty stub in this @expo/ui version. */}
+          <Section>
+            <InfoRow label="Status">
               <Image
                 systemName="circle.fill"
                 size={10}
                 color={statusColor(connectionStatus)}
               />
-              <Text>{statusLabel(connectionStatus)}</Text>
-            </HStack>
-          </Section>
-          <Section title="Hostname">
-            <Text>{paired?.serviceName ?? "—"}</Text>
-          </Section>
-          <Section title="Fingerprint">
-            <Text modifiers={[font({ design: "monospaced" })]}>
-              {fingerprint}
-            </Text>
-          </Section>
-          <Section title="Protocol">
-            <Text modifiers={[font({ design: "monospaced" })]}>
-              {PROTOCOL_VERSION}
-            </Text>
+              <Text modifiers={[foregroundStyle("#8E8E93")]}>
+                {statusLabel(connectionStatus)}
+              </Text>
+            </InfoRow>
+            <InfoRow label="Hostname">
+              <Text modifiers={[foregroundStyle("#8E8E93")]}>
+                {paired?.serviceName ?? "—"}
+              </Text>
+            </InfoRow>
+            <InfoRow label="Protocol">
+              <Text
+                modifiers={[
+                  font({ design: "monospaced" }),
+                  foregroundStyle("#8E8E93"),
+                ]}
+              >
+                {PROTOCOL_VERSION}
+              </Text>
+            </InfoRow>
           </Section>
           <Section>
             {/* biome-ignore lint/a11y/useValidAriaRole: SwiftUI ButtonRole
@@ -100,5 +101,19 @@ export default function SettingsHostScreen() {
         </Form>
       </Host>
     </>
+  );
+}
+
+/**
+ * Compact label-left / value-right Form row (iOS Settings value-cell). Label is
+ * primary; pass the value as children (tint it secondary at the call site).
+ */
+function InfoRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <HStack alignment="center" spacing={8}>
+      <Text modifiers={[foregroundStyle("primary")]}>{label}</Text>
+      <Spacer />
+      {children}
+    </HStack>
   );
 }
