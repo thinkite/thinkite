@@ -7,14 +7,17 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "channel": "development"
+      "channel": "development",
+      "env": {
+        "APP_VARIANT": "development"
+      }
     },
     "preview": {
       "distribution": "internal",
       "channel": "preview",
       "autoIncrement": true,
       "env": {
-        "NPM_CONFIG_IGNORE_SCRIPTS": "true"
+        "APP_VARIANT": "preview"
       }
     },
     "production": {
@@ -22,7 +25,7 @@
       "channel": "production",
       "autoIncrement": true,
       "env": {
-        "NPM_CONFIG_IGNORE_SCRIPTS": "true"
+        "APP_VARIANT": "production"
       }
     }
   },
