@@ -193,7 +193,17 @@ function AppearanceMenu() {
       <Menu
         label={
           <HStack alignment="center" spacing={4}>
-            <Text modifiers={[foregroundStyle("#8E8E93")]}>
+            {/* iOS 26 SwiftUI Menu clips a dynamic-width label for ~1 frame
+                on mount (expo/expo#44579 — an OS Menu bug, not Expo). Reserve
+                width for the longest option ("System") and trailing-align so
+                the value sits flush against the chevron and never clips.
+                ~60pt covers it at body size. */}
+            <Text
+              modifiers={[
+                foregroundStyle("#8E8E93"),
+                frame({ minWidth: 60, alignment: "trailing" }),
+              ]}
+            >
               {current?.label ?? "System"}
             </Text>
             <Image
