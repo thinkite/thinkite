@@ -2,7 +2,7 @@
   "expo": {
     "name": "Sidecode",
     "slug": "sidecode",
-    "version": "1.0.0",
+    "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "sidecode",
@@ -12,7 +12,11 @@
       "bundleIdentifier": "app.sidecode",
       "associatedDomains": [
         "applinks:sidecode.app"
-      ]
+      ],
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bitcode": false
     },
     "android": {
       "adaptiveIcon": {
@@ -22,7 +26,17 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "app.sidecode"
+      "package": "app.sidecode",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.INTERNET",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WAKE_LOCK",
+        "android.permission.BLUETOOTH"
+      ]
     },
     "web": {
       "output": "static",
@@ -68,6 +82,18 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "0fe45941-a0e5-44f4-a681-65548d572da0"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/0fe45941-a0e5-44f4-a681-65548d572da0"
     }
   }
 }
