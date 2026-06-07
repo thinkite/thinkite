@@ -872,27 +872,40 @@ export class Transport {
   }
 
   /**
-   * Subscribe to live git status for a `cwd`. Returns the initial
-   * snapshot together with an `unsubscribe` thunk; subsequent state
-   * changes arrive through `onUpdate`. Mirrors the `subscribe` lifecycle
-   * exactly — identity-checked cleanup, transport-close clears the map.
+   * One-shot git status snapshot for `cwd` — the react-query queryFn
+   * counterpart to `subscribeGitStatus`'s change stream. Daemon-side it
+   * reuses the per-cwd watcher's cached `refresh()`, so firing it
+   * concurrently with subscribe costs at most one git invocation.
+   */
+  async getGitStatus(cwd: string): Promise<GitStatus> {
+    const requestId = Crypto.randomUUID();
+    const res = (await this.request({
+      type: "getGitStatus",
+      requestId,
+      cwd,
+    })) as { status: GitStatus; cwd: string };
+    return res.status;
+  }
+
+  /**
+   * Subscribe to live git status for a `cwd` — a PURE change stream (no
+   * initial snapshot; fetch that via `getGitStatus`). Subsequent changes
+   * arrive through `onUpdate`; returns an `unsubscribe` thunk. Mirrors the
+   * `subscribe` lifecycle — identity-checked cleanup, transport-close
+   * clears the map.
    */
   async subscribeGitStatus(
     cwd: string,
     onUpdate: GitStatusCallback,
-  ): Promise<{
-    status: GitStatus;
-    unsubscribe: () => Promise<void>;
-  }> {
+  ): Promise<{ unsubscribe: () => Promise<void> }> {
     this.gitStatusCallbacks.set(cwd, onUpdate);
-    let res: { status: GitStatus; cwd: string };
     try {
       const requestId = Crypto.randomUUID();
-      res = (await this.request({
+      await this.request({
         type: "subscribeGitStatus",
         requestId,
         cwd,
-      })) as { status: GitStatus; cwd: string };
+      });
     } catch (err) {
       if (this.gitStatusCallbacks.get(cwd) === onUpdate) {
         this.gitStatusCallbacks.delete(cwd);
@@ -900,7 +913,6 @@ export class Transport {
       throw err;
     }
     return {
-      status: res.status,
       unsubscribe: () => this.unsubscribeGitStatusOwned(cwd, onUpdate),
     };
   }
@@ -1587,21 +1599,24 @@ export class DaemonClient {
     return t.unbridgeSession(sessionId);
   }
 
+  /** One-shot git status snapshot for `cwd` (react-query queryFn). */
+  async getGitStatus(cwd: string): Promise<GitStatus> {
+    const t = await this.readyPromise;
+    return t.getGitStatus(cwd);
+  }
+
   /**
-   * Per-cwd git status subscribe. Pass-through to the current
-   * transport — NO facade-managed registry (git status is cheap to
-   * re-fetch and per-cwd subscriptions don't have the same continuity
-   * requirements as transcript). Consumers re-subscribe on transport
-   * swap by including `daemonClient.connectionEpoch` in their useEffect
-   * deps.
+   * Per-cwd git status subscribe — a pure change stream (initial snapshot
+   * comes from `getGitStatus`). Pass-through to the current transport —
+   * NO facade-managed registry (git status is cheap to re-fetch and per-cwd
+   * subscriptions don't have the same continuity requirements as
+   * transcript). Consumers re-subscribe on transport swap by including
+   * `daemonClient.connectionEpoch` in their useEffect deps.
    */
   async subscribeGitStatus(
     cwd: string,
     onUpdate: (status: GitStatus) => void,
-  ): Promise<{
-    status: GitStatus;
-    unsubscribe: () => Promise<void>;
-  }> {
+  ): Promise<{ unsubscribe: () => Promise<void> }> {
     const t = await this.readyPromise;
     return t.subscribeGitStatus(cwd, onUpdate);
   }

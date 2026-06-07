@@ -504,7 +504,33 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         });
         return;
       }
+      case "getGitStatus": {
+        // One-shot snapshot — the client's react-query queryFn. Reuses the
+        // per-cwd watcher's cached `refresh()` (15s TTL + in-flight dedup),
+        // and `getOrCreate`/`refresh` never start fs.watch, so a snapshot-
+        // only caller leaks no watcher (same contract as getWorkingTreeDiff).
+        try {
+          const status = await deps.gitWatchers.getOrCreate(cmd.cwd).refresh();
+          ctx.send({
+            type: "getGitStatus.response",
+            requestId: cmd.requestId,
+            cwd: cmd.cwd,
+            status,
+          });
+        } catch (err) {
+          ctx.send({
+            type: "error",
+            requestId: cmd.requestId,
+            code: "internal",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
       case "subscribeGitStatus": {
+        // Pure change-stream registration — NO initial snapshot. The client
+        // fetches the initial via `getGitStatus` (concurrently) and folds
+        // these `gitStatus` deltas into the same query-cache entry.
         try {
           const watcher = deps.gitWatchers.getOrCreate(cmd.cwd);
           const gitSubs = getOrCreateGitSubs(ctx);
@@ -525,16 +551,10 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           // followed by DC.close is fine.
           ctx.onDisconnect(unsubscribe);
 
-          // Initial snapshot in the response primes the iOS bar without
-          // a follow-up event roundtrip. `GitWatcher.subscribe` is pure
-          // registration — listener fires only on subsequent changes —
-          // so this `refresh()` is the one and only initial delivery.
-          const status = await watcher.refresh();
           ctx.send({
             type: "subscribeGitStatus.response",
             requestId: cmd.requestId,
             cwd,
-            status,
           });
         } catch (err) {
           ctx.send({

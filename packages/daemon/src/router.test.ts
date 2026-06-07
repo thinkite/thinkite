@@ -1456,7 +1456,7 @@ describe("createCommandHandler — subscribe with turn-boundary settled cache", 
   });
 });
 
-describe("createCommandHandler — subscribeGitStatus / unsubscribeGitStatus", () => {
+describe("createCommandHandler — getGitStatus / subscribeGitStatus / unsubscribeGitStatus", () => {
   // Uses a real GitWatcherRegistry against a tmp non-git directory. The
   // happy snapshot for non-repo dirs is deterministic (`isRepo:false`,
   // all numeric fields zero) so we can assert the wire shape without
@@ -1475,31 +1475,45 @@ describe("createCommandHandler — subscribeGitStatus / unsubscribeGitStatus", (
     rmSync(cwd, { recursive: true, force: true });
   }
 
-  it("replies with a non-repo snapshot for a plain directory", async () => {
+  it("getGitStatus replies with a non-repo snapshot for a plain directory", async () => {
+    const handler = createCommandHandler(makeGitDeps());
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "getGitStatus", requestId: "g0", cwd } satisfies Command,
+      ctx,
+    );
+    expect(sent).toEqual([
+      {
+        type: "getGitStatus.response",
+        requestId: "g0",
+        cwd,
+        status: {
+          isRepo: false,
+          project: path.basename(cwd),
+          branch: null,
+          ahead: 0,
+          behind: 0,
+          insertions: 0,
+          deletions: 0,
+          isDirty: false,
+        },
+      },
+    ]);
+    // Snapshot-only never starts a watcher (no fs.watch leak).
+    expect(registry.getOrCreate(cwd).listenerCount()).toBe(0);
+    cleanup();
+  });
+
+  it("subscribeGitStatus acks WITHOUT an initial snapshot", async () => {
     const handler = createCommandHandler(makeGitDeps());
     const { ctx, sent } = makeCtx();
     await handler(
       { type: "subscribeGitStatus", requestId: "g1", cwd } satisfies Command,
       ctx,
     );
-    expect(sent.length).toBeGreaterThanOrEqual(1);
-    const response = sent.find((f) => f.type === "subscribeGitStatus.response");
-    expect(response).toBeDefined();
-    expect(response).toMatchObject({
-      type: "subscribeGitStatus.response",
-      requestId: "g1",
-      cwd,
-      status: {
-        isRepo: false,
-        project: path.basename(cwd),
-        branch: null,
-        ahead: 0,
-        behind: 0,
-        insertions: 0,
-        deletions: 0,
-        isDirty: false,
-      },
-    });
+    expect(sent).toEqual([
+      { type: "subscribeGitStatus.response", requestId: "g1", cwd },
+    ]);
     cleanup();
   });
 

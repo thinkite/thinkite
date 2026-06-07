@@ -1083,15 +1083,16 @@ export const deleteSessionResponse = z.object({
   requestId: z.string(),
 });
 
-// ─── Git status subscription (workspace info bar) ─────────────────────────
+// ─── Git status: snapshot (get) + live subscription (workspace info bar) ──
 //
-// Push-based per-cwd live status. Client opens a subscription on a cwd
-// (resolved iOS-side from the session's `sessionState.cwd`), gets an
-// initial snapshot in the response, and then receives `gitStatus` events
-// whenever the daemon's
-// per-cwd watcher detects a change. Closing the DataChannel implicitly
-// unsubscribes; an explicit `unsubscribeGitStatus` releases the watcher
-// ref-count early so the daemon can dispose its fs.watch handles.
+// Split into two RPCs so the client maps onto the canonical react-query
+// realtime shape: `getGitStatus` is the one-shot snapshot (queryFn —
+// cached + deduped daemon-side, symmetric with `getWorkingTreeDiff`), and
+// `subscribeGitStatus` is a PURE change stream (no initial in its response)
+// that pushes `gitStatus` events as the per-cwd watcher detects changes
+// (client folds each into the query cache). Closing the DataChannel
+// implicitly unsubscribes; an explicit `unsubscribeGitStatus` releases the
+// watcher ref-count early so the daemon can dispose its fs.watch handles.
 
 export const gitStatus = z.object({
   /** False when `cwd` isn't a git repository. Numeric fields are zero,
@@ -1110,19 +1111,35 @@ export const gitStatus = z.object({
 });
 export type GitStatus = z.infer<typeof gitStatus>;
 
+/** One-shot snapshot for `cwd`. Reuses the per-cwd watcher's cached
+ *  `refresh()` (15s TTL + in-flight dedup), so firing this concurrently
+ *  with `subscribeGitStatus` costs at most one git invocation. */
+export const getGitStatusCommand = z.object({
+  type: z.literal("getGitStatus"),
+  requestId: z.string(),
+  cwd: z.string(),
+});
+
+export const getGitStatusResponse = z.object({
+  type: z.literal("getGitStatus.response"),
+  requestId: z.string(),
+  cwd: z.string(),
+  status: gitStatus,
+});
+
 export const subscribeGitStatusCommand = z.object({
   type: z.literal("subscribeGitStatus"),
   requestId: z.string(),
   cwd: z.string(),
 });
 
+/** Pure change-stream ack — NO initial snapshot (use `getGitStatus`).
+ *  The watcher's listener fires only on subsequent changes, delivered as
+ *  `gitStatus` events. */
 export const subscribeGitStatusResponse = z.object({
   type: z.literal("subscribeGitStatus.response"),
   requestId: z.string(),
   cwd: z.string(),
-  /** Snapshot at subscribe time — saves a follow-up roundtrip before the
-   *  iOS bar can render. Live deltas follow via `gitStatus` events. */
-  status: gitStatus,
 });
 
 export const unsubscribeGitStatusCommand = z.object({
@@ -1334,6 +1351,7 @@ export const command = z.discriminatedUnion("type", [
   approveCommand,
   stopTaskCommand,
   deleteSessionCommand,
+  getGitStatusCommand,
   subscribeGitStatusCommand,
   unsubscribeGitStatusCommand,
   getWorkingTreeDiffCommand,
@@ -1353,6 +1371,7 @@ export const response = z.discriminatedUnion("type", [
   setSessionSelectionResponse,
   interruptResponse,
   deleteSessionResponse,
+  getGitStatusResponse,
   subscribeGitStatusResponse,
   unsubscribeGitStatusResponse,
   getWorkingTreeDiffResponse,
@@ -1382,6 +1401,7 @@ export const clientFrame = z.discriminatedUnion("type", [
   approveCommand,
   stopTaskCommand,
   deleteSessionCommand,
+  getGitStatusCommand,
   subscribeGitStatusCommand,
   unsubscribeGitStatusCommand,
   getWorkingTreeDiffCommand,
@@ -1414,6 +1434,7 @@ export const daemonFrame = z.discriminatedUnion("type", [
   unbridgeSessionResponse,
   eventFrame,
   deleteSessionResponse,
+  getGitStatusResponse,
   subscribeGitStatusResponse,
   unsubscribeGitStatusResponse,
   gitStatusEvent,

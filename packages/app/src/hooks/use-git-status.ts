@@ -1,82 +1,72 @@
 import type { GitStatus } from "@sidecodeapp/protocol";
-import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 
 /**
- * Subscribe to live git status for a `cwd`. Returns the latest snapshot
- * or `null` while loading / cwd is undefined.
+ * Live git status for a `cwd`, as the canonical react-query realtime shape:
+ * a one-shot `getGitStatus` queryFn for the initial snapshot, plus a pure
+ * change-stream subscription that folds each push into the SAME cache entry
+ * via `setQueryData`. Returns the latest snapshot, or `null` while loading /
+ * `cwd` is undefined / offline.
  *
- * Why `connectionStatus` is in useEffect deps: unlike the transcript
- * subscribe (which goes through the facade's auto-resume Subscription
- * registry), git status is a pass-through to the current Transport.
- * When the transport drops + reconnects the old subscription is dead;
- * the facade's stable `client` reference alone wouldn't trigger a
- * re-subscribe. Including `connectionStatus` makes the effect re-fire
- * on every offline→online transition, landing a fresh subscribe on the
- * new transport. Git watcher updates are cheap so the extra round-trip
- * is fine — auto-resume in the facade is the wrong tool for this case.
- *
- * Race / cleanup:
- *   - `active` guards against setState after unmount.
- *   - If the subscribe Promise resolves after unmount, we still call
- *     the returned `unsubscribe` thunk (best-effort — transport may
- *     already be dead).
- *   - Transport's `subscribeGitStatus` is identity-checked: a stale
- *     unsubscribe after a quick remount won't clobber the new sub.
- *
- * Returns `null` when there's no usable state to render. Caller (the
- * info bar) decides whether to hide entirely or show a placeholder.
+ * Why `connectionStatus` gates + re-subscribes: git status is a pass-through
+ * to the current Transport, NOT a facade-managed auto-resume subscription.
+ * On an offline→online transport swap the old subscription is dead; gating
+ * `enabled` on `connectionStatus` re-fires both the query (fresh snapshot —
+ * the watcher may have missed changes while we were gone) and the subscribe
+ * effect (a new listener on the new transport). Default staleTime means
+ * re-enabling refetches; the daemon's 15s status cache keeps that cheap.
  */
 export function useGitStatus(
   cwd: string | undefined,
-  /** Fired on every status push (incl. the initial snapshot) while mounted — a
-   *  generic change hook so the caller can react (e.g. invalidate a derived
-   *  query) WITHOUT this primitive knowing about that query. Held in a ref, so
-   *  passing a fresh inline callback each render doesn't re-subscribe. */
+  /** Fired on each live status-change push (NOT the initial snapshot — that's
+   *  the queryFn) — a generic change hook so the caller can react (e.g.
+   *  invalidate the working-tree-diff query) WITHOUT this primitive knowing
+   *  about it. Held in a ref, so a fresh inline callback each render doesn't
+   *  re-subscribe. */
   onChange?: (status: GitStatus) => void,
 ): GitStatus | null {
   const { client, connectionStatus } = useDaemonClient();
-  const [status, setStatus] = useState<GitStatus | null>(null);
+  const queryClient = useQueryClient();
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
+  const enabled = cwd !== undefined && connectionStatus === "online";
+
+  const { data } = useQuery({
+    queryKey: ["gitStatus", cwd],
+    queryFn: () => {
+      if (!cwd) throw new Error("cwd required");
+      return client.getGitStatus(cwd);
+    },
+    enabled,
+  });
+
+  // Live deltas — a pure change stream (no initial; that's the queryFn). Each
+  // push folds into the same cache entry and notifies onChange.
   useEffect(() => {
-    if (!cwd || connectionStatus !== "online") {
-      setStatus(null);
-      return;
-    }
+    if (!enabled || !cwd) return;
     let active = true;
-    let cleanup: (() => Promise<void>) | null = null;
-
-    // Reset on cwd change so we don't briefly show the prior cwd's
-    // numbers while waiting for the new subscribe to resolve.
-    setStatus(null);
-
+    let unsub: (() => Promise<void>) | null = null;
     client
       .subscribeGitStatus(cwd, (s) => {
         if (!active) return;
-        setStatus(s);
+        queryClient.setQueryData(["gitStatus", cwd], s);
         onChangeRef.current?.(s);
       })
-      .then(({ status: initial, unsubscribe }) => {
-        if (!active) {
-          void unsubscribe().catch(() => {});
-          return;
-        }
-        setStatus(initial);
-        onChangeRef.current?.(initial);
-        cleanup = unsubscribe;
+      .then(({ unsubscribe }) => {
+        if (!active) return void unsubscribe().catch(() => {});
+        unsub = unsubscribe;
       })
       .catch((err) => {
-        if (!active) return;
-        console.error("subscribeGitStatus failed", err);
+        if (active) console.error("subscribeGitStatus failed", err);
       });
-
     return () => {
       active = false;
-      void cleanup?.().catch(() => {});
+      void unsub?.().catch(() => {});
     };
-  }, [client, cwd, connectionStatus]);
+  }, [client, cwd, enabled, queryClient]);
 
-  return status;
+  return data ?? null;
 }
