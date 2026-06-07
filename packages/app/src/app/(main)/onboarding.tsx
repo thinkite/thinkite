@@ -1,96 +1,76 @@
+import { Button, Column, Host, Text as UIText } from "@expo/ui";
+import { controlSize, frame } from "@expo/ui/swift-ui/modifiers";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { router, Stack } from "expo-router";
-import { SymbolView } from "expo-symbols";
 import { useCallback, useRef, useState } from "react";
-import {
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  useColorScheme,
-  View,
-} from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Alert, Linking, Pressable, Text, View } from "react-native";
+import { SidecodeMark } from "@/components/sidecode-mark";
 
 /**
  * `/onboarding` — first-launch / re-pair gate (only reachable while
- * `isUnpaired` is true). Two entry methods:
+ * `isUnpaired` is true). Single primary action (Scan), paste as a secondary
+ * fallback, and a persistent "get the Mac app" footer.
  *
+ * Two ways to get a pair offer in:
  *   1. **Scan QR** — `CameraView.launchScanner` opens the iOS 16+
- *      `DataScannerViewController` modal. We register the result via
- *      `CameraView.onModernBarcodeScanned` BEFORE calling launchScanner;
- *      iOS auto-dismisses the scanner on Android, but on iOS we call
- *      `dismissScanner()` explicitly so the modal goes away as soon as
- *      we have a value. Permission is requested lazily on the first tap.
+ *      `DataScannerViewController`. We register the result via
+ *      `onModernBarcodeScanned` BEFORE launchScanner, then `dismissScanner()`
+ *      once we have a value. Permission is requested lazily on first tap.
+ *   2. **Paste code** — `Alert.prompt` (iOS-only native prompt). The user
+ *      long-press-pastes the base64url payload (or full UL) copied from
+ *      sidecode on the Mac. Single-line is fine: it's paste-and-go, and
+ *      `/pair` shows the decoded serviceName as the real confirmation.
  *
- *   2. **Paste payload** — TextInput accepting the base64url string
- *      that `sidecode pair` prints next to the QR. This is the simulator
- *      path (no real camera) and the fallback if the user can't get
- *      VisionKit to focus.
+ * Both route the payload to the `/pair` modal (the single owner of `pair()` +
+ * confirmation). UL deep-links land on the same modal, so all paths converge.
  *
- * Both paths route the extracted payload to the `/pair` modal via
- * `router.push("/pair?o=...")` — the modal is the single owner of the
- * `pair()` call (busy state, error surface, "Pair with this Mac?"
- * confirmation). UL deep-links land on the same modal, so all entry
- * paths converge on one piece of code.
- *
- * UX note: scan and paste are visible side-by-side; we don't gate the
- * scan button on `Device.isDevice` because (a) the simulator behavior
- * of `launchScanner` is to reject (caught below and surfaced as a
- * hint) rather than crash, and (b) hiding native UI when a paste path
- * is present would just confuse anyone running on a simulator. The
- * bias is "if it doesn't work, the paste field is right below it."
- */
-/**
- * The menu bar app encodes the pair offer as a Universal Link URL
- * (`https://sidecode.app/pair?o=<base64url>`) so the iPhone's built-in
- * Camera app can scan it and open straight into the app. The in-app
- * scanner / paste field accepts either form — bare base64url (legacy
- * `sidecode pair` CLI output) or the full URL.
+ * UI is hybrid: RN owns the layout, text, brand mark, and the footer link
+ * (flexbox + uniwind `dark:` theming, `Pressable`/`Image` do links + logos
+ * naturally). ONLY the CTA bar is an `@expo/ui` (universal) Host, so the
+ * Buttons render the native iOS 26 control look (Liquid Glass) that RN can't
+ * reproduce — plain `variant="filled"/"outlined"`, no explicit buttonStyle.
+ * The Host self-sizes its height via `matchContents={{ vertical: true }}`
+ * (effective on iOS) and `alignSelf:"stretch"` gives it RN's full width;
+ * `ignoreSafeArea="keyboard"` stops the Alert.prompt keyboard from shoving
+ * the Host upward.
  */
 function extractOfferPayload(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return "";
-  // Tolerate any URL whose `o` query param holds the offer — keeps the
-  // scanner working if we ever change the canonical host (preview /
-  // staging) without re-rolling the iOS app.
+  // Tolerate any URL whose `o` query param holds the offer — keeps the scanner
+  // working if we ever change the canonical host (preview / staging) without
+  // re-rolling the iOS app.
   if (/^https?:\/\//i.test(trimmed)) {
     try {
       const url = new URL(trimmed);
       const o = url.searchParams.get("o");
       if (o) return o;
     } catch {
-      // Fall through — treat malformed URL as bare payload.
+      // Fall through — treat a malformed URL as a bare payload.
     }
   }
   return trimmed;
 }
 
 export default function OnboardingRoute() {
-  const insets = useSafeAreaInsets();
-  const scheme = useColorScheme() ?? "light";
-  // Tuple shape from useCameraPermissions: [status, request, get]. We only
-  // need the request action — there's no UI dependency on `status`, the
-  // user always taps "Scan QR" first which fires the request.
+  // Tuple from useCameraPermissions: [status, request, get]. We only need the
+  // request action — the user always taps "Scan" first, which fires it.
   const [, requestCameraPermission] = useCameraPermissions();
 
-  const [pasteValue, setPasteValue] = useState("");
   const [error, setError] = useState<string | null>(null);
-  // Guards against a stale onModernBarcodeScanned callback firing after
-  // we've already kicked off the pair modal (the scanner can deliver
-  // multiple results in quick succession before dismiss completes).
+  // Guards a stale onModernBarcodeScanned callback firing after we've already
+  // kicked off the pair modal (the scanner can deliver several results before
+  // dismiss completes).
   const handlingScanRef = useRef(false);
 
   const openPairModal = useCallback((raw: string) => {
     const payload = extractOfferPayload(raw);
     if (!payload) {
-      setError("Empty payload");
+      setError("Empty pair code");
       return;
     }
     setError(null);
-    // The modal owns busy/error/confirmation UI from here on.
+    // The modal owns busy / error / confirmation UI from here on.
     router.push({ pathname: "/pair", params: { o: payload } });
   }, []);
 
@@ -99,7 +79,7 @@ export default function OnboardingRoute() {
     try {
       const perm = await requestCameraPermission();
       if (!perm.granted) {
-        setError("Camera permission denied. Use 'Paste payload' below.");
+        setError("Camera permission denied. Use “Paste code” instead.");
         return;
       }
       handlingScanRef.current = false;
@@ -114,11 +94,10 @@ export default function OnboardingRoute() {
         await CameraView.launchScanner({ barcodeTypes: ["qr"] });
       } catch (err) {
         sub.remove();
-        // launchScanner rejects on simulator (no DataScannerViewController
-        // hardware path) — surface a clear hint pointing at the paste
-        // field instead of dropping the user into a generic error.
+        // launchScanner rejects on simulator (no DataScannerViewController) —
+        // point at the paste path instead of a generic error.
         setError(
-          `Scanner unavailable on this device. Paste the payload from \`sidecode pair\` below. (${
+          `Scanner unavailable on this device. Use “Paste code” instead. (${
             err instanceof Error ? err.message : String(err)
           })`,
         );
@@ -129,104 +108,101 @@ export default function OnboardingRoute() {
   }, [requestCameraPermission, openPairModal]);
 
   const handlePaste = useCallback(() => {
-    openPairModal(pasteValue);
-  }, [pasteValue, openPairModal]);
+    // iOS-only native prompt; the user long-press-pastes the code. V0 is
+    // iOS-only, so no Android fallback is needed here.
+    Alert.prompt(
+      "Paste pair code",
+      "Paste the code shown in sidecode on your Mac.",
+      (value) => openPairModal(value ?? ""),
+      "plain-text",
+    );
+  }, [openPairModal]);
+
+  const openMacDownload = useCallback(() => {
+    void Linking.openURL("https://sidecode.app/mac");
+  }, []);
 
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        style={{ flex: 1 }}
-      >
-        <ScrollView
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{
-            flexGrow: 1,
-            paddingTop: insets.top + 24,
-            paddingBottom: insets.bottom + 24,
-            paddingHorizontal: 24,
-          }}
-          className="bg-white dark:bg-black"
-        >
-          {/* Brand + intro */}
-          <View className="mb-8">
-            <Text className="text-3xl font-semibold text-black dark:text-white">
-              sidecode
-            </Text>
-            <Text className="mt-3 text-sm leading-relaxed text-gray-600 dark:text-gray-400">
-              Connect this phone to your Mac's sidecode daemon. On your Mac, run{" "}
-              <Text className="font-mono text-gray-900 dark:text-gray-200">
-                sidecode pair
-              </Text>{" "}
-              and either scan the QR code or paste the payload below.
-            </Text>
-          </View>
-
-          {/* Scan CTA */}
-          <Pressable
-            onPress={handleScan}
-            className="mb-3 flex-row items-center justify-center gap-3 rounded-2xl bg-black px-5 py-4 dark:bg-white"
-          >
-            <SymbolView
-              name="qrcode.viewfinder"
-              size={22}
-              tintColor={scheme === "dark" ? "#0a0a0a" : "#ffffff"}
-            />
-            <Text className="text-base font-semibold text-white dark:text-black">
-              Scan QR code
-            </Text>
-          </Pressable>
-
-          {/* Divider */}
-          <View className="my-5 flex-row items-center">
-            <View className="h-px flex-1 bg-gray-200 dark:bg-gray-800" />
-            <Text className="mx-3 text-xs uppercase tracking-wider text-gray-500 dark:text-gray-500">
-              or
-            </Text>
-            <View className="h-px flex-1 bg-gray-200 dark:bg-gray-800" />
-          </View>
-
-          {/* Paste field */}
-          <Text className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            Paste payload
+      <View className="flex-1 bg-white dark:bg-black px-6 pb-safe-offset-4 pt-safe">
+        <View className="flex-1 justify-center">
+          <SidecodeMark size={64} />
+          <Text className="mt-4 text-3xl font-bold text-black dark:text-white">
+            sidecode
           </Text>
-          <TextInput
-            value={pasteValue}
-            onChangeText={setPasteValue}
-            placeholder="paste pair code from sidecode pair"
-            placeholderTextColor={scheme === "dark" ? "#52525b" : "#a1a1aa"}
-            autoCapitalize="none"
-            autoCorrect={false}
-            autoComplete="off"
-            spellCheck={false}
-            multiline
-            className="min-h-24 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 font-mono text-xs text-black dark:border-gray-800 dark:bg-gray-950 dark:text-white"
-          />
-          <Pressable
-            onPress={handlePaste}
-            disabled={!pasteValue.trim()}
-            className="mt-3 flex-row items-center justify-center gap-2 rounded-2xl border border-gray-300 bg-white px-5 py-4 dark:border-gray-700 dark:bg-gray-950"
-            style={!pasteValue.trim() ? { opacity: 0.5 } : undefined}
-          >
-            <Text className="text-base font-medium text-black dark:text-white">
-              Connect
-            </Text>
-          </Pressable>
+          <Text className="mt-2 text-base text-gray-500 dark:text-gray-400">
+            Control Claude Code on Mac from your phone.
+          </Text>
+          <Text className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            Peer-to-peer — your code never leaves your devices.
+          </Text>
+          {error ? (
+            <Text className="mt-3 text-sm text-red-500">{error}</Text>
+          ) : null}
+        </View>
 
-          {/* Error / status */}
-          {error && (
-            <View className="mt-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 dark:border-red-800 dark:bg-red-950">
-              <Text
-                selectable
-                className="text-xs text-red-700 dark:text-red-300"
+        {/* The precondition first-run users miss: a QR only exists once the
+            Mac side opens its Pair window. Name the exact menu item. */}
+        <Text className="mb-3 text-sm text-gray-500 dark:text-gray-400 text-center">
+          Sidecode Mac menu → Pair new device.
+        </Text>
+
+        {/* CTA bar — the only @expo/ui island. Universal Buttons render the
+            native iOS 26 Liquid Glass control look; the Host self-sizes its
+            height (matchContents) and stretches to RN's full width. */}
+        <Host
+          matchContents={{ vertical: true }}
+          style={{ alignSelf: "stretch" }}
+          ignoreSafeArea="keyboard"
+        >
+          <Column spacing={8}>
+            <Button
+              variant="filled"
+              onPress={handleScan}
+              modifiers={[controlSize("extraLarge")]}
+            >
+              <UIText
+                textStyle={{
+                  fontWeight: "600",
+                  textAlign: "center",
+                }}
+                modifiers={[frame({ maxWidth: Infinity })]}
               >
-                {error}
-              </Text>
-            </View>
-          )}
-        </ScrollView>
-      </KeyboardAvoidingView>
+                Scan QR code
+              </UIText>
+            </Button>
+            <Button
+              variant="outlined"
+              onPress={handlePaste}
+              modifiers={[controlSize("extraLarge")]}
+            >
+              <UIText
+                textStyle={{
+                  textAlign: "center",
+                }}
+                modifiers={[frame({ maxWidth: Infinity })]}
+              >
+                Paste code
+              </UIText>
+            </Button>
+          </Column>
+        </Host>
+
+        {/* Footer link — RN handles tappable links + styling naturally. */}
+        <Pressable
+          onPress={openMacDownload}
+          hitSlop={8}
+          className="mt-4 self-center"
+        >
+          <Text className="text-sm text-gray-500 dark:text-gray-400">
+            Need the Mac app?{" "}
+            <Text className="text-gray-900 underline dark:text-gray-200">
+              sidecode.app/mac
+            </Text>
+          </Text>
+        </Pressable>
+      </View>
     </>
   );
 }
