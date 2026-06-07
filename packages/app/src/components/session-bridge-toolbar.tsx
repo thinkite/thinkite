@@ -16,8 +16,8 @@ const BRIDGED_TINT = "#DA7756";
  * so the detail screen stays free of `useDaemonClient` (imperative daemon calls
  * live next to the UI that triggers them).
  *
- *   - `laptopcomputer` (private): the session runs peer-to-peer to your Mac,
- *     not in the cloud. Tap → bridge.
+ *   - `cloud` (private): the session runs peer-to-peer to your Mac, not in the
+ *     cloud. Tap → bridge.
  *   - `cloud.fill` in Claude orange (bridged): mirrored to the cloud, visible +
  *     controllable from claude.ai / Claude Desktop. Tap → make private.
  *
@@ -54,7 +54,7 @@ export function SessionBridgeToolbar({
   return (
     <Stack.Toolbar placement="right">
       <Stack.Toolbar.Button
-        icon={isBridged ? "cloud.fill" : "laptopcomputer"}
+        icon={isBridged ? "cloud.fill" : "cloud"}
         tintColor={isBridged ? BRIDGED_TINT : undefined}
         disabled={!online}
         onPress={() => confirmBridgeToggle(client, cliSessionId, isBridged)}

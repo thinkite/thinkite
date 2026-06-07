@@ -105,7 +105,7 @@ export default function SessionDetailScreen() {
       <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button icon="line.3.horizontal" onPress={openDrawer} />
       </Stack.Toolbar>
-      {/* Trailing bridge toggle (laptopcomputer ↔ cloud.fill). Own component so
+      {/* Trailing bridge toggle (cloud ↔ cloud.fill). Own component so
           this screen stays free of useDaemonClient (see header note). */}
       <SessionBridgeToolbar cliSessionId={cliSessionId} />
       {/* ToolCallSheetProvider lives in (stack)/_layout.tsx so its resident

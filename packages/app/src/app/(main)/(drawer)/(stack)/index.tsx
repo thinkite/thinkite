@@ -158,12 +158,12 @@ export default function NewSessionScreen() {
       <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button icon="line.3.horizontal" onPress={openDrawer} />
       </Stack.Toolbar>
-      {/* Create-bridged toggle — same laptopcomputer↔cloud vocabulary as the
+      {/* Create-bridged toggle — same cloud↔cloud.fill vocabulary as the
           detail header, but a LOCAL intent (no session to bridge yet); it rides
           out on the first send. Claude orange when armed. */}
       <Stack.Toolbar placement="right">
         <Stack.Toolbar.Button
-          icon={createBridged ? "cloud.fill" : "laptopcomputer"}
+          icon={createBridged ? "cloud.fill" : "cloud"}
           tintColor={createBridged ? "#DA7756" : undefined}
           onPress={toggleCreateBridged}
         />

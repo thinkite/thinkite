@@ -49,7 +49,7 @@ export default function StackLayout() {
     <ToolCallSheetProvider>
       <Stack
         screenOptions={{
-          animation: "fade",
+          animation: "none",
         }}
       >
         <Stack.Screen name="index" />

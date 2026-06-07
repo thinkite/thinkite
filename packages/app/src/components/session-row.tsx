@@ -100,16 +100,16 @@ export function SessionRow({ session, onPress, isActive }: SessionRowProps) {
 
   // Single toggle action — parity with the action sheet it replaced. (Delete et
   // al. land here once the daemon grows the RPCs; the menu surface is now ready
-  // for them.) The title goes on the action, not a menu header, so it reads as
-  // a verb; the lifted preview already shows which row you're on. Icon vocab
-  // matches the detail-screen header toggle: laptopcomputer (private/your Mac)
-  // ↔ cloud (remote control).
+  // for them.) The title carries the verb; the icon shows the session's CURRENT
+  // state in the shared cloud↔cloud.fill vocabulary (cloud = local, cloud.fill =
+  // CCR), same as the detail-screen header toggle. The lifted preview already
+  // shows which row you're on.
   const menuConfig: MenuConfig = {
     items: [
       {
         actionKey: "bridge",
         title: isBridged ? "Make private" : "Start Remote Control",
-        image: { systemName: isBridged ? "laptopcomputer" : "cloud" },
+        image: { systemName: isBridged ? "cloud.fill" : "cloud" },
       },
     ],
   };

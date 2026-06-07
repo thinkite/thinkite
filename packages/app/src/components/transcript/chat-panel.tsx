@@ -257,11 +257,14 @@ export function ChatPanel({
         // With `contentInsetAdjustmentBehavior="never"` below, iOS no
         // longer auto-pads the top; we have to do it ourselves.
         style={{ paddingTop: headerHeight }}
-        // Mixed-block heuristic: short user bubble ~60pt, assistant
-        // text ~100pt, tool block ~50pt (sheet-on-tap, no inline
-        // expanded content). ~80 is a defensible average; the list
-        // re-measures actual sizes after first render.
-        estimatedItemSize={80}
+        // Per-kind type (user / assistant / tool / divider — text split by role
+        // since a user bubble and assistant text size very differently) → a
+        // running-average size PER type instead of one global average, learned
+        // per mount. Steady-state win: once a few rows of a kind measure, the
+        // rest land close to real (helps the initialScrollAtEnd reveal converge
+        // → fewer "convergence bounds" warns). Also keys the recycle pool so a
+        // text row isn't recycled into a tool.
+        getItemType={(item) => (item.kind === "text" ? item.role : item.kind)}
         // Disable iOS's automatic contentInset adjustments — they
         // fight KeyboardChatScrollView's own inset management and end
         // up double-counting safe area. Per react-native-keyboard-

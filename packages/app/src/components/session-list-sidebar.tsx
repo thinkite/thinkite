@@ -1,11 +1,11 @@
 import { Button, Host } from "@expo/ui/swift-ui";
 import {
+  buttonBorderShape,
   buttonStyle,
   controlSize,
   font,
   foregroundStyle,
   labelStyle,
-  buttonBorderShape,
 } from "@expo/ui/swift-ui/modifiers";
 import { router, useGlobalSearchParams } from "expo-router";
 import { useMemo } from "react";
@@ -144,19 +144,27 @@ export function SessionListSidebar({
     // the navigation below shouldn't wait on SecureStore I/O.
     setLastUsedCwd.mutate(session.cwd);
     navigation.closeDrawer();
-    router.replace({
-      pathname: "/session/[cliSessionId]",
-      params: {
-        cliSessionId: session.cliSessionId,
-        // No title param — the detail screen reads it from the session's
-        // collection row (filtered live query), so it stays correct as
-        // the daemon's canonical title lands.
-        //
-        // Pass cwd so the session screen can hand it to sendPrompt — the
-        // SDK derives the project key from cwd to locate the JSONL for
-        // `claude --resume`.
-        cwd: session.cwd,
-      },
+    // Defer the route swap one frame so the drawer-close animation kicks off on
+    // clean frames first — closing before the swap protects the animation's
+    // startup, since the destination's heavy first render (ChatPanel +
+    // LegendList bootstrap + transcript) is JS-thread work that would otherwise
+    // share the frame closeDrawer dispatches on. (requestAnimationFrame, not the
+    // deprecated InteractionManager.)
+    requestAnimationFrame(() => {
+      router.replace({
+        pathname: "/session/[cliSessionId]",
+        params: {
+          cliSessionId: session.cliSessionId,
+          // No title param — the detail screen reads it from the session's
+          // collection row (filtered live query), so it stays correct as
+          // the daemon's canonical title lands.
+          //
+          // Pass cwd so the session screen can hand it to sendPrompt — the
+          // SDK derives the project key from cwd to locate the JSONL for
+          // `claude --resume`.
+          cwd: session.cwd,
+        },
+      });
     });
   };
 
@@ -213,8 +221,7 @@ export function SessionListSidebar({
             modifiers={[
               buttonStyle("glass"),
               labelStyle("iconOnly"),
-              // controlSize("large"),
-              // buttonBorderShape("circle"),
+              buttonBorderShape("circle"),
               font({ size: 22 }),
             ]}
             onPress={handleOpenSettings}
