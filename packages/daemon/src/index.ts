@@ -45,17 +45,24 @@ export interface Daemon {
   /** Number of currently authenticated WebRTC peers. */
   authenticatedPeerCount(): number;
   /**
-   * Mint a fresh pair offer pointing at this daemon. Pure over the
+   * Mint a fresh pair offer pointing at this daemon. Pure: derived from the
    * daemon's identity + the given serviceName — no per-offer state, no
-   * nonces, no clock dependency.
+   * nonces, no clock dependency, NO side effects. The same daemon always
+   * mints the same offer, so a caller can mint once and cache it.
    *
-   * Side effect: extends the "pair window open" admission window. The
-   * menubar's PairView calls this on open and again every 2.5min while
-   * the window stays visible, which keeps unknown pubkeys admittable
-   * over the same window. Closing the pair window stops the refreshes;
-   * admission lapses after `PAIR_WINDOW_MS` (5min) of silence.
+   * Admission is controlled separately via `setPairing` — minting an offer
+   * does NOT open the gate.
    */
   createPairOffer(serviceName: string): { encoded: string };
+  /**
+   * Open / close the pair-window admission gate. While open, an unknown
+   * client pubkey that connects is admitted to known_clients; while closed,
+   * unknown pubkeys are rejected. The menubar flips this on the Pair
+   * window's open/close — the window being visible IS the gate, so closing
+   * it stops admitting new devices immediately (no trailing TTL).
+   * Already-paired clients reconnect regardless of this flag.
+   */
+  setPairing(open: boolean): void;
   /**
    * Per-session runtime manager. Empty until slice G wires it into the
    * router; surfaced here so daemon.stop() can drain it on shutdown and
@@ -71,23 +78,16 @@ export interface Daemon {
   readonly bridgeService: BridgeService;
 }
 
-/**
- * How long after the most recent `createPairOffer()` call we still admit
- * unknown client pubkeys via the signaling worker. Tied to the menubar
- * PairView's 2.5min refresh cadence — one missed refresh keeps the window
- * open, two consecutive misses (= window closed for ≥ 5min) closes it.
- */
-const PAIR_WINDOW_MS = 5 * 60_000;
-
 export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   const home = options.homeDir ?? resolveSidecodeHome();
   const identity = loadOrCreateIdentity(home);
   const knownClients = KnownClients.load(home);
 
-  // Auto-tracked pair-window admission gate (see PAIR_WINDOW_MS comment).
-  // `0` = never opened; `createPairOffer` writes the current time on each
-  // call. `WebRTCPeerServer.isPairing` reads this on every `peer.joined`.
-  let lastPairOfferAt = 0;
+  // Pair-window admission gate. The menubar flips this via `setPairing` on
+  // the Pair window's open/close; `WebRTCPeerServer.isPairing` reads it on
+  // every `peer.joined`. Closed by default — the window must be open for an
+  // unknown pubkey to be admitted.
+  let pairingOpen = false;
 
   // Lazy-populated by slice G's router when it sees its first sendPrompt.
   // Drained on shutdown via daemon.stop() → runtimeManager.shutdown().
@@ -312,7 +312,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     identity,
     knownClients,
     commandHandler,
-    isPairing: () => Date.now() - lastPairOfferAt < PAIR_WINDOW_MS,
+    isPairing: () => pairingOpen,
     signalingHost: options.signalingHost,
     signalingScheme: options.signalingScheme,
     log: (event, data) =>
@@ -380,9 +380,11 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     pairedClientCount: () => knownClients.list().length,
     authenticatedPeerCount: () => webrtc.authenticatedCount(),
     createPairOffer: (serviceName) => {
-      lastPairOfferAt = Date.now();
       const { encoded } = createPairOffer(identity, serviceName);
       return { encoded };
+    },
+    setPairing: (open) => {
+      pairingOpen = open;
     },
     runtimeManager,
     bridgeService,

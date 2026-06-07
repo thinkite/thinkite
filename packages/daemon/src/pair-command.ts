@@ -31,10 +31,10 @@ export async function runPairCommand(_args: readonly string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Caveat: this CLI mints the offer in a separate process, so it does
-  // NOT extend the running daemon's pair-window admission window (that's
-  // tied to in-process `createPairOffer` calls). For a fresh pair, also
-  // open the menubar's Pair UI. For re-pairing an already-known client
+  // Caveat: this CLI mints the offer in a separate process, so it can NOT
+  // open the running daemon's pair-window admission gate (that gate is driven
+  // by the menubar Pair window's open/close, in-process). For a fresh pair,
+  // also open the menubar's Pair UI. For re-pairing an already-known client
   // (e.g. wiped iOS install with same pubkey), this CLI alone is enough.
   const { encoded } = createPairOffer(identity, hostname());
 

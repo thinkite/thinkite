@@ -6,11 +6,10 @@ import { contextBridge, ipcRenderer } from "electron";
  * IPC channel — bumping it to `expose` style instead of full Node access
  * keeps the renderer sandboxed (`contextIsolation: true`).
  *
- * `getPairOffer()` asks main to mint a fresh pair offer via the daemon's
- * `createPairOffer()`. Pure on the daemon side; calling it ALSO extends
- * the auto-tracked "pair window open" admission window in the daemon, so
- * the renderer's periodic refresh (PairView ticks every 2.5min) keeps
- * unknown pubkeys admittable as long as the window is visible.
+ * `getPairOffer()` asks main to mint the pair offer via the daemon's
+ * `createPairOffer()`. Pure on the daemon side (same daemon → same offer),
+ * so PairView calls it once. The admission gate is driven by the Pair
+ * window's open/close in main (daemon.setPairing), NOT by this call.
  */
 contextBridge.exposeInMainWorld("sidecode", {
   getPairOffer: (): Promise<{ encoded: string }> =>

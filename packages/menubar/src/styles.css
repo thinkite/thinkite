@@ -1,6 +1,4 @@
 @import "tailwindcss";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -46,7 +44,11 @@
 }
 
 :root {
-    --background: oklch(1 0 0);
+    /* Light-mode window surface: a soft gray (≈ #F2F2F2) rather than stark
+       white, so it reads like a native macOS window and the white QR card
+       (bg-white, kept white in both themes) pops against it. `--card` stays
+       white below. Dark-mode `--background` is unchanged. */
+    --background: oklch(0.96 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
     --card-foreground: oklch(0.145 0 0);

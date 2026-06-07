@@ -1,16 +1,16 @@
+import { hostname } from "node:os";
+import path from "node:path";
+import { type Daemon, start as startDaemon } from "@sidecodeapp/daemon";
 import {
   app,
   BrowserWindow,
   ipcMain,
-  Tray,
   Menu,
   nativeImage,
   powerSaveBlocker,
   shell,
+  Tray,
 } from "electron";
-import { hostname } from "node:os";
-import path from "node:path";
-import { type Daemon, start as startDaemon } from "@sidecodeapp/daemon";
 
 let tray: Tray | null = null;
 let pairWindow: BrowserWindow | null = null;
@@ -211,9 +211,13 @@ function openPairWindow() {
     pairWindow.focus();
     return;
   }
+  // The Pair window being open IS the admission gate: open it now, close it
+  // in the `closed` handler below. No TTL — closing the window stops
+  // admitting unknown pubkeys immediately.
+  daemon?.setPairing(true);
   const win = new BrowserWindow({
     width: 420,
-    height: 540,
+    height: 600,
     show: false,
     resizable: false,
     fullscreenable: false,
@@ -223,7 +227,11 @@ function openPairWindow() {
     // rest of the chrome is owned by the React shell. Drag is enabled
     // via a `-webkit-app-region: drag` strip in PairView's Shell.
     titleBarStyle: "hiddenInset",
-    title: "",
+    // Per-window title. The shared index.html ships a <title>, which Electron
+    // would otherwise copy onto every window that loads it; `page-title-updated`
+    // preventDefault (below) locks this in so the Pair window keeps its own
+    // name (visible in Mission Control / window menus, not in the hidden bar).
+    title: "Pair a Device",
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -238,8 +246,14 @@ function openPairWindow() {
       hash: "pair",
     });
   }
+  // Keep the BrowserWindow `title` above instead of inheriting the document's
+  // <title> from index.html.
+  win.on("page-title-updated", (e) => e.preventDefault());
   win.once("ready-to-show", () => win.show());
   win.on("closed", () => {
+    // Window closed → close the admission gate. Already-paired clients still
+    // reconnect; only NEW unknown-pubkey pairing is gated.
+    daemon?.setPairing(false);
     pairWindow = null;
   });
   pairWindow = win;
@@ -273,9 +287,10 @@ app.whenReady().then(async () => {
     `[main] daemon ready (fingerprint ${daemon.fingerprint}, ${daemon.pairedClientCount()} paired clients)`,
   );
 
-  // PairView refreshes on a 2.5min cadence to keep the daemon's 5-min
-  // admission gate open while the window is visible. `hostname()` is
-  // surfaced as `serviceName` in iOS's confirm modal.
+  // Mint the QR payload for PairView. Pure (the same daemon always mints the
+  // same offer), so PairView calls this once. `hostname()` is surfaced as
+  // `serviceName` in iOS's confirm modal. The admission gate is driven by the
+  // window's open/close (setPairing), NOT by this call.
   ipcMain.handle("sidecode:getPairOffer", () => {
     if (!daemon) throw new Error("daemon not ready");
     return daemon.createPairOffer(hostname());
