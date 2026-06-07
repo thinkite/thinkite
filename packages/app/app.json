@@ -8,7 +8,7 @@
     "scheme": "sidecode",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon",
+      "icon": "./assets/sidecode.icon",
       "bundleIdentifier": "app.sidecode",
       "associatedDomains": [
         "applinks:sidecode.app"
@@ -33,11 +33,9 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
-          "android": {
-            "image": "./assets/images/splash-icon.png",
-            "imageWidth": 76
-          }
+          "backgroundColor": "#111110",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 128
         }
       ],
       "expo-secure-store",

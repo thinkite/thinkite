@@ -8,9 +8,13 @@ import {
   Section,
   Spacer,
   Text,
-  VStack,
 } from "@expo/ui/swift-ui";
-import { font, foregroundStyle, padding } from "@expo/ui/swift-ui/modifiers";
+import {
+  font,
+  foregroundStyle,
+  frame,
+  padding,
+} from "@expo/ui/swift-ui/modifiers";
 import { useQueryClient } from "@tanstack/react-query";
 import Constants from "expo-constants";
 import { router, Stack } from "expo-router";
@@ -72,66 +76,66 @@ export default function SettingsIndexScreen() {
         />
       </Stack.Toolbar>
       <Host style={{ flex: 1 }}>
-        <VStack alignment="center">
-          <Form>
-            <Section title="General">
-              <AppearanceMenu />
-            </Section>
-            <Section title="Host">
-              <Button onPress={() => router.push("/settings/host")}>
-                <HStack alignment="center" spacing={8}>
-                  {/* Leading status dot (Mail.app unread-indicator pattern) —
+        <Form>
+          <Section title="General">
+            <AppearanceMenu />
+          </Section>
+          <Section
+            title="Host"
+            footer={
+              <Text
+                modifiers={[
+                  font({ size: 13 }),
+                  foregroundStyle("#8E8E93"),
+                  padding({ top: 16 }),
+                  frame({ maxWidth: Infinity }),
+                ]}
+              >
+                Version {version}
+              </Text>
+            }
+          >
+            <Button onPress={() => router.push("/settings/host")}>
+              <HStack alignment="center" spacing={8}>
+                {/* Leading status dot (Mail.app unread-indicator pattern) —
                     scannable at-a-glance state without reading text. Same
                     color as the host-detail Status section so the row's
                     state matches the page it leads to. */}
-                  <Image
-                    systemName="circle.fill"
-                    size={10}
-                    color={statusColor(connectionStatus)}
-                  />
-                  {/* Without an explicit foreground style, SwiftUI Button
+                <Image
+                  systemName="circle.fill"
+                  size={10}
+                  color={statusColor(connectionStatus)}
+                />
+                {/* Without an explicit foreground style, SwiftUI Button
                     tints the title text with the current accent color
                     (system blue). `foregroundStyle("primary")` forces
                     the literal `Color.primary` (black/white auto-adapt). */}
-                  <Text modifiers={[foregroundStyle("primary")]}>
-                    {paired?.serviceName ?? "—"}
-                  </Text>
-                  <Spacer />
-                  <Image systemName="chevron.right" size={14} color="#8E8E93" />
-                </HStack>
-              </Button>
-            </Section>
-            {/* Dev-only probe pages, relocated here from the session-list
+                <Text modifiers={[foregroundStyle("primary")]}>
+                  {paired?.serviceName ?? "—"}
+                </Text>
+                <Spacer />
+                <Image systemName="chevron.right" size={14} color="#8E8E93" />
+              </HStack>
+            </Button>
+          </Section>
+          {/* Dev-only probe pages, relocated here from the session-list
               sidebar so the sidebar stays product-clean. Whole section is
               stripped from release builds via __DEV__ (a literal the bundler
               dead-code-eliminates). Pushes resolve at the (main) Stack level
               and present a card over this settings sheet; back returns here. */}
-            {__DEV__ && (
-              <Section title="Developer">
-                <DisclosureRow
-                  label="KeyboardExtender spike"
-                  onPress={() => router.push("/dev/keyboard-extender")}
-                />
-                <Button
-                  label="Clear last cwd (test placeholder)"
-                  onPress={onClearLastCwd}
-                />
-              </Section>
-            )}
-          </Form>
-          {/* App version — OUTSIDE the Form so it renders as plain text, not a
-              Form cell. The VStack lets the Form fill and pins this centered at
-              the bottom. */}
-          <Text
-            modifiers={[
-              font({ size: 13 }),
-              foregroundStyle("#8E8E93"),
-              padding({ bottom: 16 }),
-            ]}
-          >
-            Version {version}
-          </Text>
-        </VStack>
+          {__DEV__ && (
+            <Section title="Developer">
+              <DisclosureRow
+                label="KeyboardExtender spike"
+                onPress={() => router.push("/dev/keyboard-extender")}
+              />
+              <Button
+                label="Clear last cwd (test placeholder)"
+                onPress={onClearLastCwd}
+              />
+            </Section>
+          )}
+        </Form>
       </Host>
     </>
   );

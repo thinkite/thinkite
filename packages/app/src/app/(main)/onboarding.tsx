@@ -1,5 +1,5 @@
 import { Button, Column, Host, Text as UIText } from "@expo/ui";
-import { controlSize, frame } from "@expo/ui/swift-ui/modifiers";
+import { controlSize, frame, tint } from "@expo/ui/swift-ui/modifiers";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { router, Stack } from "expo-router";
 import { useCallback, useRef, useState } from "react";
@@ -160,7 +160,7 @@ export default function OnboardingRoute() {
             <Button
               variant="filled"
               onPress={handleScan}
-              modifiers={[controlSize("extraLarge")]}
+              modifiers={[controlSize("extraLarge"), tint("#EE5722")]}
             >
               <UIText
                 textStyle={{
@@ -175,7 +175,7 @@ export default function OnboardingRoute() {
             <Button
               variant="outlined"
               onPress={handlePaste}
-              modifiers={[controlSize("extraLarge")]}
+              modifiers={[controlSize("extraLarge"), tint("#EE5722")]}
             >
               <UIText
                 textStyle={{

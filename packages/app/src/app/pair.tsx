@@ -1,5 +1,5 @@
 import { Button, Column, Host, Icon, Spacer, Text } from "@expo/ui";
-import { controlSize, frame } from "@expo/ui/swift-ui/modifiers";
+import { controlSize, frame, tint } from "@expo/ui/swift-ui/modifiers";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useMemo, useState } from "react";
 import { decodePairOffer, type PairOffer } from "@/lib/daemon-client";
@@ -153,7 +153,7 @@ export default function PairModal() {
         style={{ paddingHorizontal: 20 }}
       >
         <Column alignment="start" spacing={12}>
-          <Icon name="laptopcomputer.and.iphone" size={56} color="#007AFF" />
+          <Icon name="laptopcomputer.and.iphone" size={56} color="#EE5722" />
           <Column alignment="start" spacing={6}>
             <Text textStyle={{ fontSize: 22, fontWeight: "600" }}>{title}</Text>
             {serviceName && (
@@ -177,7 +177,7 @@ export default function PairModal() {
             variant="filled"
             onPress={primaryAction.onPress}
             disabled={primaryAction.disabled}
-            modifiers={[controlSize("large")]}
+            modifiers={[controlSize("extraLarge"), tint("#EE5722")]}
           >
             <Text
               textStyle={{
@@ -195,7 +195,7 @@ export default function PairModal() {
               variant="outlined"
               onPress={secondary.onPress}
               disabled={busy}
-              modifiers={[controlSize("large")]}
+              modifiers={[controlSize("extraLarge"), tint("#EE5722")]}
             >
               <Text
                 textStyle={{ fontSize: 17, textAlign: "center" }}

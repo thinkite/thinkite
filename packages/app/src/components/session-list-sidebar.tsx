@@ -4,8 +4,8 @@ import {
   buttonStyle,
   controlSize,
   font,
-  foregroundStyle,
   labelStyle,
+  tint,
 } from "@expo/ui/swift-ui/modifiers";
 import { router, useGlobalSearchParams } from "expo-router";
 import { useMemo } from "react";
@@ -242,15 +242,8 @@ export function SessionListSidebar({
             modifiers={[
               buttonStyle("glassProminent"),
               controlSize("large"),
-              // `systemImage` renders via a SwiftUI Label, so the SF Symbol
-              // inherits this font — size AND weight, in lockstep with the
-              // title. (Weight is NOT settable on the standalone `<Image>`
-              // component: ImageView hardcodes `.font(.system(size:))` at
-              // regular weight and drops `modifiers` on the SF-Symbol branch,
-              // honoring only `size`/`color`. So both buttons use the Label
-              // path — `systemImage` + `font` — for full control.)
               font({ size: 16, weight: "semibold" }),
-              foregroundStyle("#FFFFFF"),
+              tint("#EE5722"),
             ]}
             onPress={handleNewSession}
           />

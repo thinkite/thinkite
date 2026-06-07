@@ -122,6 +122,7 @@ export default function RootLayout() {
  * to keep the native splash up until the daemon-client state settles.
  */
 function RootStack() {
+  const colorScheme = useColorScheme() ?? "light";
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(main)" />
@@ -143,6 +144,12 @@ function RootStack() {
           // screen" (validated inside NativeStackView.tsx whenever
           // stackPresentation !== 'push').
           headerShown: true,
+          contentStyle: {
+            backgroundColor:
+              colorScheme === "dark"
+                ? "rgba(28,28,30,0.6)"
+                : "rgba(255,255,255,0.6)",
+          },
         }}
       />
     </Stack>
