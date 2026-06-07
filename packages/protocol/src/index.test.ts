@@ -32,7 +32,7 @@ import {
   timelineItem,
   unsubscribeCommand,
   unsubscribeResponse,
-} from "./index.js";
+} from "./index.ts";
 
 describe("PROTOCOL_VERSION", () => {
   it("is a valid semver string sourced from package.json", () => {

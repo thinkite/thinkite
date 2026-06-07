@@ -12,12 +12,18 @@
     "preview": {
       "distribution": "internal",
       "channel": "preview",
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "NPM_CONFIG_IGNORE_SCRIPTS": "true"
+      }
     },
     "production": {
       "distribution": "store",
       "channel": "production",
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "NPM_CONFIG_IGNORE_SCRIPTS": "true"
+      }
     }
   },
   "submit": {

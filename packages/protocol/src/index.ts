@@ -7,7 +7,7 @@ export {
   ChunkReassembler,
   chunkMessage,
   isChunkEnvelope,
-} from "./chunking.js";
+} from "./chunking.ts";
 export {
   DEFAULT_MODEL,
   getDefaultModelId,
@@ -16,11 +16,11 @@ export {
   type ModelEntry,
   type ModelMetadata,
   prettyModel,
-} from "./models.js";
+} from "./models.ts";
 export {
   dtlsFingerprintTranscript,
   extractDtlsFingerprint,
-} from "./sdp-fingerprint.js";
+} from "./sdp-fingerprint.ts";
 export {
   type CommandContext,
   type CommandHandling,
@@ -30,7 +30,7 @@ export {
   SLASH_COMMANDS,
   type SlashCommandName,
   type SlashCommandSpec,
-} from "./slash-commands.js";
+} from "./slash-commands.ts";
 
 // ─── Protocol version ──────────────────────────────────────────────────────
 //

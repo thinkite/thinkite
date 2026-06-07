@@ -4,7 +4,7 @@ import {
   getCommandsForContext,
   isWhitelistedCommand,
   parseSlashCommand,
-} from "./slash-commands.js";
+} from "./slash-commands.ts";
 
 describe("SLASH_COMMANDS table invariants", () => {
   it("every spec.name matches its map key", () => {

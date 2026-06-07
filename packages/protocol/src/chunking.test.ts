@@ -5,7 +5,7 @@ import {
   chunkMessage,
   isChunkEnvelope,
   resetChunkIdCounterForTests,
-} from "./chunking.js";
+} from "./chunking.ts";
 
 describe("chunkMessage", () => {
   beforeEach(() => {
