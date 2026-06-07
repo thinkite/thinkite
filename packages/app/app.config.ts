@@ -1,3 +1,5 @@
+import type { ConfigContext, ExpoConfig } from "expo/config";
+
 // Dynamic Expo config layered over app.json. Varies the iOS bundle id, Android
 // package, app name, and URL scheme per build variant so development, preview,
 // and production install side by side and DO NOT share an iOS Keychain — i.e.
@@ -13,7 +15,13 @@
 // record + the AASA at sidecode.app). dev/preview get suffixed ids, so Universal
 // Links (https://sidecode.app/...) won't deep-link into them unless those ids
 // are added to the AASA appIDs — QR pairing still works on every variant.
-const VARIANTS = {
+interface Variant {
+  idSuffix: string;
+  nameSuffix: string;
+  scheme: string;
+}
+
+const VARIANTS: Record<string, Variant> = {
   development: {
     idSuffix: ".dev",
     nameSuffix: " (Dev)",
@@ -31,19 +39,21 @@ const VARIANTS = {
   },
 };
 
-module.exports = ({ config }) => {
-  const variant = VARIANTS[process.env.APP_VARIANT] ?? VARIANTS.development;
+export default ({ config }: ConfigContext): ExpoConfig => {
+  const variant =
+    VARIANTS[process.env.APP_VARIANT ?? "development"] ?? VARIANTS.development;
   return {
     ...config,
     name: `${config.name}${variant.nameSuffix}`,
+    slug: config.slug ?? "sidecode",
     scheme: variant.scheme,
     ios: {
       ...config.ios,
-      bundleIdentifier: `${config.ios.bundleIdentifier}${variant.idSuffix}`,
+      bundleIdentifier: `${config.ios?.bundleIdentifier}${variant.idSuffix}`,
     },
     android: {
       ...config.android,
-      package: `${config.android.package}${variant.idSuffix}`,
+      package: `${config.android?.package}${variant.idSuffix}`,
     },
   };
 };
