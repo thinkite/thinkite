@@ -24,6 +24,12 @@ files:
   - dist-electron/**/*
   - assets/**/*
   - package.json
+  # We spawn the user's SYSTEM claude (daemon resolves it + passes
+  # pathToClaudeCodeExecutable), so the SDK's bundled per-platform `claude`
+  # binary (~205MB) is dead weight. Drop it → dmg ~178MB → ~90MB. The main
+  # @anthropic-ai/claude-agent-sdk (the JS SDK) is kept; only the
+  # claude-agent-sdk-<platform> binary package(s) are excluded.
+  - "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
 
 asar: true
 # node-datachannel ships a prebuilt .node — it must live OUTSIDE the asar to be

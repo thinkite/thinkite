@@ -61,6 +61,7 @@ import type {
   ImageAttachment,
   ToolCallDetail,
 } from "@sidecodeapp/protocol";
+import { getClaudeStatus } from "../claude-binary.js";
 import {
   attachOutputToDetail,
   buildDetailFromInput,
@@ -224,6 +225,19 @@ export function ensureSessionLoop(
   // the timer — the gap that pure ensureSessionLoop-entry-cancel missed.
   if (runtime.loopPromise) return runtime.loopPromise;
 
+  // Fail fast if the Claude Code executable is unresolved: surface the concrete
+  // reason as turn_failed (the SDK would otherwise throw a cryptic spawn error,
+  // and we don't ship a bundled binary to fall back to). NOT stored as
+  // loopPromise, so a later sendPrompt retries once the user fixes claude +
+  // the daemon rechecks (recheckClaudeBinary). A test queryFactory bypasses the
+  // real spawn, so it doesn't need a resolved binary.
+  const claude = getClaudeStatus();
+  if (!claude.ok && !options.queryFactory) {
+    runtime.addEvent({ kind: "turn_failed", error: claude.error });
+    return Promise.resolve();
+  }
+  const claudeExecutable = claude.ok ? claude.path : undefined;
+
   const channel = createAsyncMessageInput<SDKUserMessage>();
   runtime.inputChannel = channel;
 
@@ -259,6 +273,7 @@ export function ensureSessionLoop(
           sessionId: runtime.sessionId,
           includePartialMessages: true as const,
           cwd: options.cwd,
+          pathToClaudeCodeExecutable: claudeExecutable,
         }
       : {
           ...bypassFlags,
@@ -266,6 +281,7 @@ export function ensureSessionLoop(
           resume: runtime.sessionId,
           includePartialMessages: true as const,
           cwd: options.cwd,
+          pathToClaudeCodeExecutable: claudeExecutable,
         };
   const q: Query = factory({
     prompt: channel.iterable,
