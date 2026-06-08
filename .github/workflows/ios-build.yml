@@ -1,68 +1,29 @@
-name: iOS build + submit
+name: EAS iOS build + submit
 
-# Builds the iOS app on a free macOS runner (free for public repos) via
-# `eas build --local`. This replicates the working local build flow — EAS's own
-# cloud `eas build` currently fails on sharp's source-build during pnpm install,
-# but a fresh Apple-Silicon runner finds sharp's arm64 prebuilt (like a dev Mac)
-# and has no shared Metro cache to go stale. Optionally submits to TestFlight.
+# Triggers an EAS *cloud* build of the iOS app and auto-submits to TestFlight.
+# The build runs on EAS infrastructure (sharp's source-build is avoided via
+# SHARP_IGNORE_GLOBAL_LIBVIPS in the build profile env), so this job only runs
+# the eas-cli trigger — no macOS runner, Xcode, or local install needed.
 #
 # Required secret: EXPO_TOKEN (expo.dev > Account settings > Access tokens).
-# It authenticates EAS, pulls the EAS-managed iOS signing credentials, reads the
-# remote build number (appVersionSource: remote), and authorizes submit.
-# Signing certs/profiles + the App Store Connect API key live in EAS, not here.
+# iOS signing credentials + the App Store Connect API key are EAS-managed.
 on:
   workflow_dispatch:
-    inputs:
-      submit:
-        description: Submit the build to TestFlight after building
-        type: boolean
-        default: false
 
 jobs:
   ios:
-    runs-on: macos-latest # standard Apple-Silicon runner — free for public repos
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # iOS deploymentTarget 26 needs a matching Xcode.
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
 
-      - run: corepack enable
-
-      - name: Resolve pnpm store dir
-        run: echo "PNPM_STORE=$(pnpm store path --silent)" >> "$GITHUB_ENV"
-
-      - uses: actions/cache@v4
-        with:
-          path: ${{ env.PNPM_STORE }}
-          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: pnpm-${{ runner.os }}-
-
-      - run: pnpm install --frozen-lockfile
-
       - run: npm install -g eas-cli
 
-      - name: Build .ipa (eas build --local)
+      - name: EAS cloud build + auto-submit (iOS)
         working-directory: packages/app
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas build --local --non-interactive --platform ios --profile production --output "${{ runner.temp }}/sidecode.ipa"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sidecode-ios-ipa
-          path: ${{ runner.temp }}/sidecode.ipa
-          if-no-files-found: error
-
-      - name: Submit to TestFlight
-        if: inputs.submit
-        working-directory: packages/app
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas submit --non-interactive --platform ios --profile production --path "${{ runner.temp }}/sidecode.ipa"
+        run: eas build --platform ios --profile production --auto-submit --non-interactive
