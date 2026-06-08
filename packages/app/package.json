@@ -72,5 +72,12 @@
     "@types/react": "~19.2.2",
     "typescript": "~6.0.3"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "install": {
+      "exclude": [
+        "react-native-keyboard-controller"
+      ]
+    }
+  }
 }
