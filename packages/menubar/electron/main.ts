@@ -12,6 +12,12 @@ import {
   Tray,
 } from "electron";
 import { inheritShellEnv } from "./shell-env";
+import {
+  checkForUpdates,
+  getUpdateState,
+  initUpdater,
+  quitAndInstall,
+} from "./updater";
 
 let tray: Tray | null = null;
 let pairWindow: BrowserWindow | null = null;
@@ -33,9 +39,6 @@ const MOCK_USAGE_STATS = {
   last7d: { tokens: 850_000 },
   last30d: { tokens: 2_100_000 },
 };
-
-const MOCK_UPDATE_AVAILABLE = true;
-const MOCK_UPDATE_VERSION = "1.2.0";
 
 function nowPlus(seconds: number): string {
   return new Date(Date.now() + seconds * 1000).toISOString();
@@ -122,6 +125,27 @@ function claudeStatusItem(): Electron.MenuItemConstructorOptions | null {
   };
 }
 
+// State-adaptive update row driven by electron-updater (electron/updater.ts).
+// Shown only when there's something to convey; idle/error fall back to the
+// manual "Check for updates" in the About submenu.
+function updateMenuItem(): Electron.MenuItemConstructorOptions | null {
+  const s = getUpdateState();
+  switch (s.status) {
+    case "checking":
+      return { label: "Checking for updates…", enabled: false };
+    case "downloading":
+      return { label: `Downloading update… ${s.percent}%`, enabled: false };
+    case "downloaded":
+      return {
+        label: `Restart to update · v${s.version}`,
+        icon: symbolIcon("arrow.up.circle"),
+        click: () => quitAndInstall(),
+      };
+    default:
+      return null; // idle | error
+  }
+}
+
 function buildMenu(): Electron.Menu {
   const plan = MOCK_PLAN_USAGE;
   const usage = MOCK_USAGE_STATS;
@@ -202,15 +226,8 @@ function buildMenu(): Electron.Menu {
   const claudeItem = claudeStatusItem();
   if (claudeItem) items.unshift(claudeItem, { type: "separator" });
 
-  if (MOCK_UPDATE_AVAILABLE) {
-    items.push({
-      label: `Update v${MOCK_UPDATE_VERSION} · Install`,
-      icon: symbolIcon("arrow.up.circle"),
-      click: () => {
-        console.log("[main] update install clicked (mock)");
-      },
-    });
-  }
+  const updateItem = updateMenuItem();
+  if (updateItem) items.push(updateItem);
 
   items.push(
     {
@@ -220,9 +237,7 @@ function buildMenu(): Electron.Menu {
         { label: `Version ${app.getVersion()}`, enabled: false },
         {
           label: "Check for updates",
-          click: () => {
-            console.log("[main] check for updates clicked (mock)");
-          },
+          click: () => checkForUpdates(),
         },
         {
           label: "View on GitHub",
@@ -358,6 +373,10 @@ app.whenReady().then(async () => {
 
   refreshMenu();
   console.log("[main] tray + menu ready");
+
+  // electron-updater: auto-download + drive the update menu items. Rebuilds the
+  // menu on every state change so the row reflects checking/downloading/ready.
+  initUpdater({ onStateChange: refreshMenu });
 });
 
 app.on("before-quit", (event: Electron.Event) => {

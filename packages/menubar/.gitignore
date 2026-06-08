@@ -3,3 +3,6 @@
 
 # iconset scratch dir from icns generation
 *.iconset
+
+# local signing / notarization env (APPLE_API_* etc.) — never commit
+.env*.local

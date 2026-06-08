@@ -1,6 +1,6 @@
 {
   "name": "@sidecodeapp/menubar",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "private": true,
   "description": "macOS menu bar app for sidecode — Electron + React 19 + Tailwind",
   "author": "sidecode",
@@ -18,11 +18,12 @@
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "package:mac": "pnpm --filter '@sidecodeapp/menubar...' run build && electron-builder --mac --arm64 --publish never",
-    "package:mac:publish": "pnpm --filter '@sidecodeapp/menubar...' run build && electron-builder --mac --arm64 --publish always"
+    "package:mac:publish": "pnpm --filter '@sidecodeapp/menubar...' run build && set -a && { . ./.env.local 2>/dev/null || true; } && set +a && electron-builder --mac --arm64 --publish always"
   },
   "dependencies": {
     "@sidecodeapp/daemon": "workspace:*",
     "@tanstack/react-query": "^5.94.0",
+    "electron-updater": "^6.8.9",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-qrcode-logo": "^4.1.0"
