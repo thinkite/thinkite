@@ -10,8 +10,8 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "eas-build-post-install": "node scripts/sync-pierre-worker.mjs",
-    "ota:preview": "EXPO_NO_BUNDLE_SPLITTING=1 eas update --channel preview --environment preview",
-    "ota:production": "EXPO_NO_BUNDLE_SPLITTING=1 eas update --channel production --environment production"
+    "ota:preview": "APP_VARIANT=preview EXPO_NO_BUNDLE_SPLITTING=1 eas update --channel preview --environment preview",
+    "ota:production": "APP_VARIANT=production EXPO_NO_BUNDLE_SPLITTING=1 eas update --channel production --environment production"
   },
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^15.0.1",
