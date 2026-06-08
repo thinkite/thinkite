@@ -32,7 +32,8 @@
   "submit": {
     "production": {
       "ios": {
-        "appleTeamId": "KX4PZHC9R3"
+        "appleTeamId": "KX4PZHC9R3",
+        "bundleIdentifier": "app.sidecode"
       }
     }
   }

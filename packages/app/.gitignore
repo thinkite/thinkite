@@ -45,3 +45,6 @@ app-example
 /ios
 /android
 assets/pierre/
+
+# EAS local build output (eas build --local)
+*.ipa
