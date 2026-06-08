@@ -296,9 +296,15 @@ app.whenReady().then(async () => {
     return daemon.createPairOffer(hostname());
   });
 
-  const trayImage = nativeImage.createEmpty();
-  tray = new Tray(trayImage);
-  tray.setTitle("◉ sc");
+  // Tray icon: a monochrome template image (black + alpha). macOS ignores the
+  // RGB and tints via the alpha mask — dark glyph on light menu bars, light on
+  // dark, auto-inverted on highlight. createFromPath auto-pairs the @2x file and
+  // honors the `Template` filename suffix; setTemplateImage is an explicit guard.
+  const trayIcon = nativeImage.createFromPath(
+    path.join(import.meta.dirname, "../assets/iconTemplate.png"),
+  );
+  trayIcon.setTemplateImage(true);
+  tray = new Tray(trayIcon);
   tray.on("click", refreshMenu);
   tray.on("right-click", refreshMenu);
 

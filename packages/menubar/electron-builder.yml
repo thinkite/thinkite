@@ -1,0 +1,69 @@
+# electron-builder v26 config. Packages the Electron menu bar app into a
+# signed/notarized .dmg (+ .zip for electron-updater). arm64-only per V0 scope.
+#
+# Build pipeline: `pnpm --filter "@sidecodeapp/menubar..." run build` compiles
+# protocol + daemon (tsc) and the app (vite → dist/ + dist-electron/), then
+# electron-builder packages the result. See the `package:mac` script.
+
+appId: app.sidecode.menubar
+productName: sidecode
+
+directories:
+  # CRITICAL: vite emits the renderer to dist/. electron-builder's default
+  # output is also `dist` and it WIPES the output dir first — which would
+  # delete the renderer build. Send artifacts to release/ instead.
+  output: release
+  # buildResources defaults to `build/` — that's where icon.icns and
+  # entitlements.mac.plist live. The mac icon is auto-picked from build/icon.icns.
+  buildResources: build
+
+# App files baked into the asar. Production node_modules are collected
+# automatically (no need to list them); this filter only scopes app source.
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - assets/**/*
+  - package.json
+
+asar: true
+# node-datachannel ships a prebuilt .node — it must live OUTSIDE the asar to be
+# dlopen-able at runtime. It's the only native runtime module in the dep tree
+# (the other *.node files in the repo are build-time tools: vite/tailwind/astro).
+asarUnpack:
+  - "**/node_modules/node-datachannel/**"
+
+# node-datachannel is prebuilt; do not rebuild native modules against Electron's
+# headers (no node-gyp toolchain assumed on the build host).
+npmRebuild: false
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip # required by electron-updater (Squirrel.Mac updates from .zip)
+      arch: [arm64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Menu bar agent: no Dock icon, no Cmd-Tab entry, no app menu. Pairs with the
+  # runtime app.dock.hide() in main.ts (this makes it permanent + flicker-free).
+  extendInfo:
+    LSUIElement: true
+  # SIGNING OFF for now → produces an unsigned .app/.dmg for local validation.
+  # When the Developer ID cert is in place, delete `identity: null`, set
+  # `notarize: true`, and provide APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD /
+  # APPLE_TEAM_ID (or an ASC API key) via env. NOTE: auto-update will NOT work
+  # until the build is signed — Squirrel.Mac refuses unsigned apps.
+  identity: null
+  notarize: false
+
+# electron-updater feed. Generic provider = any static HTTPS host (Cloudflare
+# R2 public bucket / custom domain). Generating this config makes the build
+# emit latest-mac.yml + .blockmap (differential updates). Fill in the R2 URL.
+publish:
+  provider: generic
+  url: https://REPLACE_WITH_R2_PUBLIC_URL
+  channel: latest

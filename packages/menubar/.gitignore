@@ -1,0 +1,5 @@
+# electron-builder output (dmg / zip / latest-mac.yml / blockmap)
+/release
+
+# iconset scratch dir from icns generation
+*.iconset

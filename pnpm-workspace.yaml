@@ -2,6 +2,9 @@ packages:
   - "packages/*"
 minimumReleaseAge: 360
 allowBuilds:
+  # Windows installer maker, pulled in transitively by electron-builder. We
+  # only ship macOS (arm64) → never build it (it would fetch Squirrel.Windows).
+  electron-winstaller: false
   esbuild: true
   msgpackr-extract: true
   msw: true
@@ -9,15 +12,3 @@ allowBuilds:
   sharp: true
   workerd: true
 nodeLinker: hoisted
-# Include other platforms' prebuilt optional deps (e.g. @img/sharp-*) in the
-# lockfile so a CI/EAS worker whose arch differs from the dev machine still
-# installs a prebuilt binary instead of falling back to a source build.
-supportedArchitectures:
-  os:
-    - current
-    - darwin
-    - linux
-  cpu:
-    - current
-    - x64
-    - arm64

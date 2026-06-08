@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "macOS menu bar app for sidecode — Electron + React 19 + Tailwind",
+  "author": "sidecode",
   "type": "module",
   "main": "dist-electron/main.js",
   "os": [
@@ -15,7 +16,9 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "package:mac": "pnpm --filter '@sidecodeapp/menubar...' run build && electron-builder --mac --arm64 --publish never",
+    "package:mac:publish": "pnpm --filter '@sidecodeapp/menubar...' run build && electron-builder --mac --arm64 --publish always"
   },
   "dependencies": {
     "@sidecodeapp/daemon": "workspace:*",
@@ -29,9 +32,10 @@
     "@types/react": "^19.2",
     "@types/react-dom": "^19.2",
     "@vitejs/plugin-react": "^6.0.2",
-    "electron": "^42.1.0",
+    "electron": "42.1.0",
     "tailwindcss": "^4.3.0",
     "vite": "^8.0.13",
-    "vite-plugin-electron": "1.0.0-beta.10"
+    "vite-plugin-electron": "1.0.0-beta.10",
+    "electron-builder": "^26.15.2"
   }
 }
