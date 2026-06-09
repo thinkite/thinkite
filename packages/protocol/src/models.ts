@@ -109,12 +109,15 @@ export interface ModelMetadata {
 export const MODEL_METADATA: Record<string, ModelMetadata> = {
   // ─── Current models ─────────────────────────────────────────────────
   // Fable is a separate tier alongside Opus (NOT a generational
-  // replacement — Opus 4.8 stays current + default). Fable 5 currently
-  // ships only as the 1M-context variant; there is no base
-  // `claude-fable-5` id to list.
+  // replacement — Opus 4.8 stays current + default).
   "claude-fable-5[1m]": {
     displayName: "Fable 5 1M",
     contextWindow: 1_000_000,
+    minClaudeVersion: "2.1.170",
+  },
+  "claude-fable-5": {
+    displayName: "Fable 5",
+    contextWindow: 200_000,
     minClaudeVersion: "2.1.170",
   },
   "claude-opus-4-8[1m]": {
