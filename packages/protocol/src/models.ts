@@ -80,6 +80,22 @@ export interface ModelMetadata {
    *  Defaults to 200_000 for current Claude 4.x models; `[1m]` variants
    *  opt into the 1M-context beta. */
   contextWindow?: number;
+
+  /** Earliest Claude Code version with first-class support for this model
+   *  (per the claude-code CHANGELOG entry that launched it). Omitted =
+   *  any binary is fine.
+   *
+   *  "First-class" because this is NOT a hard compatibility floor: the
+   *  binary passes unknown model ids through to the API (which does the
+   *  real validation), and the `[1m]` suffix is parsed generically. An
+   *  older binary mostly works — but falls back to default client-side
+   *  tables (context-window/auto-compact thresholds, labels, cost) and
+   *  may silently remap ids it considers retired.
+   *
+   *  Compare against daemon's `ClaudeStatus.version` (claude-binary.ts).
+   *  Not enforced anywhere yet — whether consumers gray out the picker
+   *  entry or prompt the user to update claude is an open decision. */
+  minClaudeVersion?: string;
 }
 
 /**
@@ -92,6 +108,15 @@ export interface ModelMetadata {
  */
 export const MODEL_METADATA: Record<string, ModelMetadata> = {
   // ─── Current models ─────────────────────────────────────────────────
+  // Fable is a separate tier alongside Opus (NOT a generational
+  // replacement — Opus 4.8 stays current + default). Fable 5 currently
+  // ships only as the 1M-context variant; there is no base
+  // `claude-fable-5` id to list.
+  "claude-fable-5[1m]": {
+    displayName: "Fable 5 1M",
+    contextWindow: 1_000_000,
+    minClaudeVersion: "2.1.170",
+  },
   "claude-opus-4-8[1m]": {
     displayName: "Opus 4.8 1M",
     isDefault: true,
@@ -180,6 +205,9 @@ export interface ModelEntry {
   description?: string;
   /** Context window in tokens. */
   contextWindow?: number;
+  /** Earliest Claude Code version with first-class support — see
+   *  `ModelMetadata.minClaudeVersion`. */
+  minClaudeVersion?: string;
 }
 
 /**
@@ -197,6 +225,7 @@ export const MODELS: readonly ModelEntry[] = Object.entries(MODEL_METADATA)
       isDefault: m.isDefault === true,
       description: m.description,
       contextWindow: m.contextWindow,
+      minClaudeVersion: m.minClaudeVersion,
     }),
   );
 
