@@ -1,6 +1,10 @@
 packages:
   - "packages/*"
 minimumReleaseAge: 360
+minimumReleaseAgeExclude:
+  # Glob also covers the per-platform binary sub-packages (-darwin-arm64,
+  # -linux-x64, …) introduced in SDK 0.3.170.
+  - "@anthropic-ai/claude-agent-sdk*"
 allowBuilds:
   # Windows installer maker, pulled in transitively by electron-builder. We
   # only ship macOS (arm64) → never build it (it would fetch Squirrel.Windows).
