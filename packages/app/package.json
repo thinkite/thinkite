@@ -8,7 +8,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint",
+    "lint": "biome check .",
     "eas-build-post-install": "node scripts/sync-pierre-worker.mjs",
     "ota:preview": "APP_VARIANT=preview EXPO_NO_BUNDLE_SPLITTING=1 eas update --channel preview --environment preview",
     "ota:production": "APP_VARIANT=production EXPO_NO_BUNDLE_SPLITTING=1 eas update --channel production --environment production"
