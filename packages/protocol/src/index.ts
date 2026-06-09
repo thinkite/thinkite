@@ -49,9 +49,16 @@ export {
 // themselves.
 //
 // Bump policy:
-//   - **patch** (0.0.1 → 0.0.2 / 1.2.3 → 1.2.4): additive only — new
-//     optional field, new enum case, new whole frame type that older
-//     peers harmlessly ignore. Compatible.
+//   - **patch** (0.0.1 → 0.0.2 / 1.2.3 → 1.2.4): additive only — a new
+//     optional field, or a whole new frame type that older peers
+//     harmlessly ignore (the daemon drops unknown command types, iOS
+//     drops unknown event types; no `z.strictObject`, so extra fields
+//     are stripped). NOTE: a new *enum case* on an EXISTING field is NOT
+//     automatically additive — it's breaking for a closed `z.enum` the
+//     daemon validates (old daemon rejects the whole frame) or for any
+//     consumer that switches on the value without a default. Treat an
+//     enum-case add as breaking unless that field is a loose string with
+//     a fallback path. Compatible.
 //   - **minor** (0.0.x → 0.1.0 during 0.x; 1.0.0 → 1.1.0 post-1.0):
 //     0.x minor bump is breaking (npm semver convention for 0.x);
 //     ≥1.0 minor bump is additive. The compat helper handles both.

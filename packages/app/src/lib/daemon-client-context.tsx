@@ -11,10 +11,11 @@ import {
 } from "react";
 import {
   clearPairedDaemon,
-  DaemonClient,
+  type DaemonClient,
   daemonClient,
   decodePairOffer,
   getPairedDaemon,
+  IncompatibleProtocolError,
   type PairedDaemon,
   Transport,
 } from "./daemon-client";
@@ -41,12 +42,20 @@ const reconnectDelayMs = (attempt: number): number =>
  * `DaemonClient` facade is stable for the Provider's lifetime and held
  * in a ref). State is purely the connection-status machine; consumers
  * always get back the same facade instance via context.
+ *
+ * Axis note: this is the connection-HEALTH machine. The IDENTITY axis
+ * (paired vs not) lives in the separate `paired` field, which is what the
+ * route gate (`isUnpaired`) reads. `unpaired` here is just this machine's
+ * resting value when there's no credential — set atomically with
+ * `setPaired(null)`, used only for badge derivation. Do NOT route off it;
+ * route off `paired` so health transitions can't move the user between
+ * onboarding and main.
  */
 type DaemonState =
   | { status: "connecting"; attempt: number }
   | { status: "ready" }
   | { status: "offline"; reason?: string; attempt: number }
-  | { status: "unpaired" }
+  | { status: "unpaired" } // resting value when paired === null (not the route signal)
   | { status: "error"; error: Error };
 
 /**
@@ -292,6 +301,17 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
           } catch (err) {
             if (epoch !== epochRef.current) return;
             if (!shouldReconnectRef.current) return;
+            // Protocol mismatch is TERMINAL — retrying can't change a
+            // version check. Stop the auto-reconnect loop and surface a
+            // terminal `error` (red, "update both"); the user re-attempts
+            // via reset() after updating. KEEP `paired` so the update
+            // screen can still show host context, like the offline path.
+            if (err instanceof IncompatibleProtocolError) {
+              shouldReconnectRef.current = false;
+              setState({ status: "error", error: err });
+              setInitialized(true);
+              return;
+            }
             // Boot reconnect failed. We deliberately do NOT clear the
             // paired credential — a failure is overwhelmingly a transient
             // unreachable daemon (Mac asleep, daemon not running, network
@@ -337,7 +357,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
     },
     // handleBootRetry / handleUnexpectedClose are useEffectEvent —
     // stable-identity by contract, intentionally excluded from deps.
-    [clearReconnectTimer, facade],
+    [clearReconnectTimer],
   );
 
   // First-time pair via a freshly-scanned / pasted offer. The Transport.pair
@@ -345,16 +365,18 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   // pair screen. We bump the epoch to invalidate any in-flight connect()
   // attempt (e.g. if connect() lost the race against pair()).
   //
-  // Important: we deliberately do NOT flip state to `connecting` while
-  // pairing — staying in `unpaired` keeps the `Stack.Protected` guard on
-  // /onboarding active throughout, so OnboardingRoute (and any pair
-  // modal stacked on top of it) stays mounted and its local error state
-  // survives a failed attempt. If we transitioned to `connecting`
-  // mid-pair, isUnpaired would briefly flip false, the router would
-  // redirect to /, and on failure flip back to /onboarding — unmounting
-  // OnboardingRoute and wiping the error message we just set. Busy /
-  // spinner state is owned by the caller (OnboardingRoute or
-  // PairModal) locally; this context only flips on outcome.
+  // Routing is gated on the identity axis (`paired`), not on connection
+  // health, so the route can't flicker mid-pair no matter what `state`
+  // does: `paired` stays null until the handshake succeeds, keeping the
+  // /onboarding `Stack.Protected` guard active throughout (OnboardingRoute
+  // and any stacked pair modal stay mounted, so their local error state
+  // survives a failed attempt). We still don't set `connecting` here —
+  // there's nothing to show; busy/spinner + error UI are owned locally by
+  // the caller (OnboardingRoute / PairModal). This context only mutates
+  // `paired`/`state` on outcome. (Before the identity-axis split, a
+  // `connecting` here would have flipped isUnpaired false and bounced the
+  // router, unmounting the modal and wiping its error — that coupling is
+  // gone now that the gate reads `paired`, not `state.status`.)
   const pair = useCallback(
     async (offerB64: string): Promise<void> => {
       epochRef.current += 1;
@@ -404,7 +426,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
       }
     },
     // handleUnexpectedClose is useEffectEvent — see note in `connect`.
-    [clearReconnectTimer, facade],
+    [clearReconnectTimer],
   );
 
   // Explicit user-initiated unpair (settings → host → "Forget host").
@@ -424,7 +446,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
     await clearPairedDaemon();
     setPaired(null);
     setState({ status: "unpaired" });
-  }, [clearReconnectTimer, facade]);
+  }, [clearReconnectTimer]);
 
   useEffect(() => {
     connect();
@@ -437,13 +459,13 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
       if (prevTransport !== null) facade._detachTransport();
       prevTransport?.close();
     };
-  }, [connect, clearReconnectTimer, facade]);
+  }, [connect, clearReconnectTimer]);
 
   const reset = useCallback(() => connect(0), [connect]);
 
   const value = useMemo<DaemonClientContextValue>(
     () => ({ client: facade, state, paired, initialized, reset, pair, unpair }),
-    [facade, state, paired, initialized, reset, pair, unpair],
+    [state, paired, initialized, reset, pair, unpair],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -467,9 +489,12 @@ interface UseDaemonClientResult {
   paired: PairedDaemon | null;
   /** True during any in-flight handshake (initial boot AND every reset/reconnect). */
   isLoading: boolean;
-  /** True when there is no PairedDaemon on disk — the app should route
-   *  to the pair screen. Distinct from `error`: this is an expected
-   *  state on first launch / after a daemon identity rotation. */
+  /** True when there's no paired credential (`paired === null`) — the app
+   *  should route to the pair screen. This is the IDENTITY axis and the
+   *  ONLY signal the route gate depends on; it's deliberately decoupled
+   *  from connection health (connecting/ready/offline/error) so a transient
+   *  health state can never flip the onboarding↔main route. Distinct from
+   *  `error`: being unpaired is an expected first-launch state, not a fault. */
   isUnpaired: boolean;
   /** Sticky: true once we've reached any settled state (ready, unpaired,
    *  or error). Use this for one-shot UX like the splash gate. */
@@ -501,10 +526,16 @@ export function useDaemonClient(): UseDaemonClientResult {
     client,
     paired,
     isLoading: state.status === "connecting",
-    isUnpaired: state.status === "unpaired",
+    // Routing keys off the IDENTITY axis (`paired`), never connection
+    // health. A health transition (connecting/ready/offline/error) must
+    // never flip the onboarding↔main route — only acquiring or clearing a
+    // credential does. `paired === null` ⟺ no credential ⟺ show pair screen.
+    isUnpaired: paired === null,
     isInitialized: initialized,
     error: state.status === "error" ? state.error : null,
-    connectionStatus: deriveConnectionStatus(state),
+    // No credential → nothing to badge (the pair screen is up); otherwise
+    // the live health tone. Mirrors `isUnpaired` keying off identity.
+    connectionStatus: paired === null ? null : deriveConnectionStatus(state),
     reset,
     pair,
     unpair,

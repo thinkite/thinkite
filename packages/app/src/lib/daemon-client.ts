@@ -24,6 +24,31 @@ import type { ClientIdentity } from "./identity";
 import { SignalingClient, type SignalingPeer } from "./signaling-client";
 import { WebRTCPeer } from "./webrtc-peer";
 
+/**
+ * Thrown by the connect handshake when the daemon and app speak
+ * wire-incompatible protocol versions (either side too old — the caret
+ * compat gate is symmetric, so we can't tell which from here, and it
+ * doesn't matter: "update both to latest" is always-correct guidance).
+ *
+ * Unlike a transient unreachable-daemon failure, this is TERMINAL: no
+ * amount of retrying changes the version check. `DaemonClientProvider`
+ * routes it to a terminal `error` state and stops the auto-reconnect loop
+ * (the user re-attempts via `reset()` after updating). `daemonProtocolVersion`
+ * is best-effort for diagnostics — null when the daemon rejected our `hello`
+ * before we could read its version; the user-facing copy never names a side.
+ */
+export class IncompatibleProtocolError extends Error {
+  readonly appProtocolVersion = PROTOCOL_VERSION;
+  readonly daemonProtocolVersion: string | null;
+  constructor(daemonProtocolVersion: string | null = null) {
+    super(
+      "Sidecode is out of date. Update both the iPhone app and the Mac app to the latest version, then try again.",
+    );
+    this.name = "IncompatibleProtocolError";
+    this.daemonProtocolVersion = daemonProtocolVersion;
+  }
+}
+
 // SecureStore restricts keys to [A-Za-z0-9._-] — no slashes / colons. Bump
 // the trailing version when the persisted shape changes — older entries
 // with a different shape become unreadable, the consumer falls into the
@@ -391,10 +416,11 @@ export class Transport {
                   `daemon reported incompatible_protocol: ${frame.message}`,
                 );
               }
+              // Daemon's error frame carries no structured version (only the
+              // freetext message above), so direction is unknown — fine, the
+              // copy never names a side.
               fail(
-                new Error(
-                  "Sidecode on your Mac speaks a different protocol version. Update both the app and the Mac app, then try again.",
-                ),
+                new IncompatibleProtocolError(frame.protocolVersion ?? null),
               );
               return;
             }
@@ -410,11 +436,7 @@ export class Transport {
               // than continue and watch frames break in opaque ways.
               if (!isProtocolCompatible(frame.protocolVersion)) {
                 dcEv.removeEventListener("message", onHelloReply);
-                fail(
-                  new Error(
-                    "Sidecode on your Mac speaks a different protocol version. Update both the app and the Mac app, then try again.",
-                  ),
-                );
+                fail(new IncompatibleProtocolError(frame.protocolVersion));
                 return;
               }
               settled = true;
