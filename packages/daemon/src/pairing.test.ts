@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
 import {
   decodePairOfferPayload,
   PAIR_OFFER_VERSION,
 } from "@sidecodeapp/protocol";
+import { describe, expect, it } from "vitest";
 import type { Identity } from "./identity.js";
 import { createPairOffer } from "./pairing.js";
 

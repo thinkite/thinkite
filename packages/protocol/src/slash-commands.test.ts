@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  SLASH_COMMANDS,
   getCommandsForContext,
   isWhitelistedCommand,
   parseSlashCommand,
+  SLASH_COMMANDS,
 } from "./slash-commands.ts";
 
 describe("SLASH_COMMANDS table invariants", () => {

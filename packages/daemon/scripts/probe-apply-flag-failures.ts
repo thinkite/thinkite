@@ -52,7 +52,10 @@ function makeChannel<T>(): {
         return {
           next(): Promise<IteratorResult<T, void>> {
             if (queue.length > 0) {
-              return Promise.resolve({ value: queue.shift() as T, done: false });
+              return Promise.resolve({
+                value: queue.shift() as T,
+                done: false,
+              });
             }
             if (closed) {
               return Promise.resolve({ value: undefined, done: true });
@@ -74,10 +77,7 @@ function userMessage(text: string): SDKUserMessage {
   };
 }
 
-async function probe(
-  label: string,
-  fn: () => Promise<unknown>,
-): Promise<void> {
+async function probe(label: string, fn: () => Promise<unknown>): Promise<void> {
   process.stdout.write(`\n[${label}] calling... `);
   try {
     const r = await fn();
@@ -177,7 +177,9 @@ async function main() {
   // Probe 8: After all those, try to run an actual turn. If the last
   // apply (setModel undefined) reset to default, this should work and
   // modelUsage will tell us which model actually ran.
-  console.log("\n[probe] running follow-up turn to see what runs after all the bad applies");
+  console.log(
+    "\n[probe] running follow-up turn to see what runs after all the bad applies",
+  );
   let endResult: SDKMessage | undefined;
   const probeTurn = (async () => {
     for await (const msg of q as AsyncIterable<SDKMessage>) {
@@ -188,10 +190,7 @@ async function main() {
     }
   })();
   channel.push(userMessage("Reply just 'ok'."));
-  await Promise.race([
-    probeTurn,
-    new Promise((r) => setTimeout(r, 60_000)),
-  ]);
+  await Promise.race([probeTurn, new Promise((r) => setTimeout(r, 60_000))]);
   if (endResult) {
     const r = endResult as unknown as {
       subtype?: string;

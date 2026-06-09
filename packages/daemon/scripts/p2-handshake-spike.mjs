@@ -25,12 +25,12 @@
  *   node packages/daemon/scripts/p2-handshake-spike.mjs
  */
 import { sign as cryptoSign, generateKeyPairSync } from "node:crypto";
-import { WebSocket } from "partysocket";
 import {
+  RTCIceCandidate,
   RTCPeerConnection,
   RTCSessionDescription,
-  RTCIceCandidate,
 } from "node-datachannel/polyfill";
+import { WebSocket } from "partysocket";
 import { resolveSidecodeHome } from "../dist/home.js";
 import { loadOrCreateIdentity } from "../dist/identity.js";
 
@@ -80,7 +80,11 @@ function waitForState(pc, predicate, label, timeoutMs = 10000) {
     const tick = () => {
       if (predicate()) return resolve();
       if (Date.now() - start > timeoutMs) {
-        return reject(new Error(`${label}: timeout (state=${pc.connectionState}/${pc.iceConnectionState})`));
+        return reject(
+          new Error(
+            `${label}: timeout (state=${pc.connectionState}/${pc.iceConnectionState})`,
+          ),
+        );
       }
       setTimeout(tick, 50);
     };
@@ -94,7 +98,8 @@ let daemonOwnedDataChannel = null;
 const daemonWS = new WebSocket(buildDaemonUrl, undefined, { maxRetries: 3 });
 
 daemonWS.addEventListener("message", async (e) => {
-  const text = typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
+  const text =
+    typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
   const msg = JSON.parse(text);
 
   if (msg.type === "peer.joined") {
@@ -106,8 +111,12 @@ daemonWS.addEventListener("message", async (e) => {
 
     pc.addEventListener("icecandidate", (event) => {
       if (event.candidate) {
-        const cand = event.candidate.toJSON ? event.candidate.toJSON() : { candidate: String(event.candidate) };
-        daemonWS.send(JSON.stringify({ to: clientId, type: "candidate", candidate: cand }));
+        const cand = event.candidate.toJSON
+          ? event.candidate.toJSON()
+          : { candidate: String(event.candidate) };
+        daemonWS.send(
+          JSON.stringify({ to: clientId, type: "candidate", candidate: cand }),
+        );
       }
     });
 
@@ -124,11 +133,18 @@ daemonWS.addEventListener("message", async (e) => {
 
     const offer = await pc.createOffer({});
     await pc.setLocalDescription(offer);
-    daemonWS.send(JSON.stringify({ to: clientId, type: "offer", sdp: offer.sdp }));
+    daemonWS.send(
+      JSON.stringify({ to: clientId, type: "offer", sdp: offer.sdp }),
+    );
   } else if (msg.type === "answer") {
     const pc = activePCs.get(msg.from);
-    if (!pc) { console.error(`[daemon] answer for unknown peer ${msg.from}`); return; }
-    await pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: msg.sdp }));
+    if (!pc) {
+      console.error(`[daemon] answer for unknown peer ${msg.from}`);
+      return;
+    }
+    await pc.setRemoteDescription(
+      new RTCSessionDescription({ type: "answer", sdp: msg.sdp }),
+    );
     console.log(`[daemon] setRemoteDescription(answer) for ${msg.from}`);
   } else if (msg.type === "candidate") {
     const pc = activePCs.get(msg.from);
@@ -151,8 +167,12 @@ const clientWS = new WebSocket(buildClientUrl(), undefined, { maxRetries: 3 });
 
 clientPC.addEventListener("icecandidate", (event) => {
   if (event.candidate && daemonPeerId) {
-    const cand = event.candidate.toJSON ? event.candidate.toJSON() : { candidate: String(event.candidate) };
-    clientWS.send(JSON.stringify({ to: daemonPeerId, type: "candidate", candidate: cand }));
+    const cand = event.candidate.toJSON
+      ? event.candidate.toJSON()
+      : { candidate: String(event.candidate) };
+    clientWS.send(
+      JSON.stringify({ to: daemonPeerId, type: "candidate", candidate: cand }),
+    );
   }
 });
 
@@ -171,7 +191,8 @@ clientPC.addEventListener("datachannel", (event) => {
 });
 
 clientWS.addEventListener("message", async (e) => {
-  const text = typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
+  const text =
+    typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
   const msg = JSON.parse(text);
 
   if (msg.type === "peers") {
@@ -180,10 +201,14 @@ clientWS.addEventListener("message", async (e) => {
   } else if (msg.type === "offer") {
     daemonPeerId = msg.from;
     console.log(`[client] offer received from ${daemonPeerId}`);
-    await clientPC.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: msg.sdp }));
+    await clientPC.setRemoteDescription(
+      new RTCSessionDescription({ type: "offer", sdp: msg.sdp }),
+    );
     const answer = await clientPC.createAnswer();
     await clientPC.setLocalDescription(answer);
-    clientWS.send(JSON.stringify({ to: msg.from, type: "answer", sdp: answer.sdp }));
+    clientWS.send(
+      JSON.stringify({ to: msg.from, type: "answer", sdp: answer.sdp }),
+    );
     console.log(`[client] answer sent`);
   } else if (msg.type === "candidate") {
     try {
@@ -199,31 +224,64 @@ console.log("[client] connected");
 
 // === Wait for both ends to reach connected ===
 const daemonPC = await new Promise((resolve) => {
-  const tick = () => activePCs.size > 0 ? resolve([...activePCs.values()][0]) : setTimeout(tick, 50);
+  const tick = () =>
+    activePCs.size > 0
+      ? resolve([...activePCs.values()][0])
+      : setTimeout(tick, 50);
   tick();
 });
 
 console.log("\nwaiting for handshake to complete...");
 await Promise.all([
-  waitForState(daemonPC, () => daemonPC.connectionState === "connected", "daemon PC connected"),
-  waitForState(clientPC, () => clientPC.connectionState === "connected", "client PC connected"),
+  waitForState(
+    daemonPC,
+    () => daemonPC.connectionState === "connected",
+    "daemon PC connected",
+  ),
+  waitForState(
+    clientPC,
+    () => clientPC.connectionState === "connected",
+    "client PC connected",
+  ),
 ]);
 
 // === Assertions ===
 console.log("\nP2.4 assertions:");
-assert(daemonPC.connectionState === "connected", "daemon PC connectionState = connected");
-assert(clientPC.connectionState === "connected", "client PC connectionState = connected");
-assert(daemonOwnedDataChannel?.readyState === "open", "daemon DataChannel = open");
-assert(clientReceivedDataChannel?.readyState === "open", "client DataChannel = open (via datachannel event)");
+assert(
+  daemonPC.connectionState === "connected",
+  "daemon PC connectionState = connected",
+);
+assert(
+  clientPC.connectionState === "connected",
+  "client PC connectionState = connected",
+);
+assert(
+  daemonOwnedDataChannel?.readyState === "open",
+  "daemon DataChannel = open",
+);
+assert(
+  clientReceivedDataChannel?.readyState === "open",
+  "client DataChannel = open (via datachannel event)",
+);
 
 // Wait for messages to be exchanged
 await new Promise((r) => setTimeout(r, 500));
-assert(daemonOwnedDataChannel?._lastMessage === "hello from client", `daemon received client's message (got: ${daemonOwnedDataChannel?._lastMessage})`);
-assert(clientReceivedDataChannel?._lastMessage === "hello from daemon", `client received daemon's message (got: ${clientReceivedDataChannel?._lastMessage})`);
+assert(
+  daemonOwnedDataChannel?._lastMessage === "hello from client",
+  `daemon received client's message (got: ${daemonOwnedDataChannel?._lastMessage})`,
+);
+assert(
+  clientReceivedDataChannel?._lastMessage === "hello from daemon",
+  `client received daemon's message (got: ${clientReceivedDataChannel?._lastMessage})`,
+);
 
 console.log("\nfinal PC state:");
-console.log(`  daemon:  connectionState=${daemonPC.connectionState}, iceConnectionState=${daemonPC.iceConnectionState}`);
-console.log(`  client:  connectionState=${clientPC.connectionState}, iceConnectionState=${clientPC.iceConnectionState}`);
+console.log(
+  `  daemon:  connectionState=${daemonPC.connectionState}, iceConnectionState=${daemonPC.iceConnectionState}`,
+);
+console.log(
+  `  client:  connectionState=${clientPC.connectionState}, iceConnectionState=${clientPC.iceConnectionState}`,
+);
 
 // Cleanup
 for (const pc of activePCs.values()) pc.close();
@@ -232,5 +290,7 @@ daemonWS.close();
 clientWS.close();
 await new Promise((r) => setTimeout(r, 300));
 
-console.log(`\n${failures === 0 ? "✓ all P2.4 checks passed — full WebRTC handshake works" : `✗ ${failures} failures`}`);
+console.log(
+  `\n${failures === 0 ? "✓ all P2.4 checks passed — full WebRTC handshake works" : `✗ ${failures} failures`}`,
+);
 process.exit(failures === 0 ? 0 : 1);

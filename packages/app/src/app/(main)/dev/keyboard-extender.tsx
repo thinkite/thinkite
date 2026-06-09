@@ -1,9 +1,9 @@
 import {
-  SLASH_COMMANDS,
-  type SlashCommandSpec,
   getCommandsForContext,
   isWhitelistedCommand,
   parseSlashCommand,
+  SLASH_COMMANDS,
+  type SlashCommandSpec,
 } from "@sidecodeapp/protocol";
 import * as Burnt from "burnt";
 import { GlassView } from "expo-glass-effect";

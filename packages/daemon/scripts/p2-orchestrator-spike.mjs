@@ -24,8 +24,8 @@
  *   node packages/daemon/scripts/p2-orchestrator-spike.mjs
  */
 import { sign as cryptoSign, generateKeyPairSync } from "node:crypto";
-import { WebSocket } from "partysocket";
 import { RTCPeerConnection } from "node-datachannel/polyfill";
+import { WebSocket } from "partysocket";
 import { resolveSidecodeHome } from "../dist/home.js";
 import { loadOrCreateIdentity } from "../dist/identity.js";
 
@@ -34,7 +34,9 @@ const SCHEME = process.env.SIGNALING_INSECURE === "1" ? "ws" : "wss";
 
 const home = resolveSidecodeHome();
 const daemon = loadOrCreateIdentity(home);
-console.log(`daemon identity: ${daemon.fingerprint} (${daemon.publicKeyB64.slice(0, 12)}...)`);
+console.log(
+  `daemon identity: ${daemon.fingerprint} (${daemon.publicKeyB64.slice(0, 12)}...)`,
+);
 
 // Generate an ephemeral mock-client keypair (we DON'T use daemon's identity
 // for the client side — we want to simulate a separate iOS device).
@@ -67,7 +69,10 @@ function buildClientUrl() {
 function waitForOpen(ws, label) {
   return new Promise((resolve, reject) => {
     if (ws.readyState === WebSocket.OPEN) return resolve();
-    const onOpen = () => { ws.removeEventListener("open", onOpen); resolve(); };
+    const onOpen = () => {
+      ws.removeEventListener("open", onOpen);
+      resolve();
+    };
     ws.addEventListener("open", onOpen);
     setTimeout(() => reject(new Error(`${label}: open timeout`)), 5000);
   });
@@ -80,7 +85,11 @@ function waitFor(arr, pred, timeoutMs, label) {
       const hit = arr.find(pred);
       if (hit) return resolve(hit);
       if (Date.now() - start > timeoutMs) {
-        return reject(new Error(`${label}: timeout. saw types: ${arr.map((m) => m.type).join(",")}`));
+        return reject(
+          new Error(
+            `${label}: timeout. saw types: ${arr.map((m) => m.type).join(",")}`,
+          ),
+        );
       }
       setTimeout(tick, 30);
     };
@@ -95,13 +104,16 @@ const daemonWS = new WebSocket(buildDaemonUrl, undefined, { maxRetries: 3 });
 let daemonConnId = null;
 
 daemonWS.addEventListener("message", async (e) => {
-  const text = typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
+  const text =
+    typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
   const msg = JSON.parse(text);
   daemonMessages.push(msg);
 
   if (msg.type === "peer.joined") {
     const clientId = msg.peer.id;
-    console.log(`[daemon] peer.joined id=${clientId} pubkey=${msg.peer.pubkey.slice(0, 12)}...`);
+    console.log(
+      `[daemon] peer.joined id=${clientId} pubkey=${msg.peer.pubkey.slice(0, 12)}...`,
+    );
 
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
@@ -116,14 +128,18 @@ daemonWS.addEventListener("message", async (e) => {
         const cand = event.candidate.toJSON
           ? event.candidate.toJSON()
           : { candidate: String(event.candidate) };
-        daemonWS.send(JSON.stringify({ to: clientId, type: "candidate", candidate: cand }));
+        daemonWS.send(
+          JSON.stringify({ to: clientId, type: "candidate", candidate: cand }),
+        );
       }
     });
 
     pc.createDataChannel("sidecode/v1", { ordered: true });
     const offer = await pc.createOffer({});
     await pc.setLocalDescription(offer);
-    daemonWS.send(JSON.stringify({ to: clientId, type: "offer", sdp: offer.sdp }));
+    daemonWS.send(
+      JSON.stringify({ to: clientId, type: "offer", sdp: offer.sdp }),
+    );
     console.log(`[daemon] offer sent to ${clientId}`);
   }
 });
@@ -132,21 +148,34 @@ await waitForOpen(daemonWS, "daemon");
 // First message daemon receives is `peers` (initial roster); we can't
 // easily read connection.id from outside, but we use it indirectly via
 // the `from` field of forwarded messages later.
-const initialPeers = await waitFor(daemonMessages, (m) => m.type === "peers", 3000, "daemon peers");
-console.log(`[daemon] initial peers: ${initialPeers.peers.length} client(s) already online`);
+const initialPeers = await waitFor(
+  daemonMessages,
+  (m) => m.type === "peers",
+  3000,
+  "daemon peers",
+);
+console.log(
+  `[daemon] initial peers: ${initialPeers.peers.length} client(s) already online`,
+);
 
 // === Mock client side ===
 const clientMessages = [];
 const clientWS = new WebSocket(buildClientUrl(), undefined, { maxRetries: 3 });
 clientWS.addEventListener("message", (e) => {
-  const text = typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
+  const text =
+    typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
   clientMessages.push(JSON.parse(text));
 });
 await waitForOpen(clientWS, "client");
 console.log("[client] connected");
 
 // Client receives initial `peers` frame containing the daemon's id
-const clientPeers = await waitFor(clientMessages, (m) => m.type === "peers", 3000, "client peers");
+const clientPeers = await waitFor(
+  clientMessages,
+  (m) => m.type === "peers",
+  3000,
+  "client peers",
+);
 const daemonPeerInfo = clientPeers.peers.find((p) => p.role === "daemon");
 if (!daemonPeerInfo) {
   console.error("✗ client didn't see daemon in initial peers frame");
@@ -156,26 +185,47 @@ daemonConnId = daemonPeerInfo.id;
 console.log(`[client] sees daemon at id=${daemonConnId}`);
 
 // === Wait for daemon to react to peer.joined and send us offer ===
-const offer = await waitFor(clientMessages, (m) => m.type === "offer", 5000, "client offer");
+const offer = await waitFor(
+  clientMessages,
+  (m) => m.type === "offer",
+  5000,
+  "client offer",
+);
 
 console.log("\nP2.3 assertions:");
-assert(offer.from === daemonConnId, `offer.from matches daemon id (got "${offer.from}")`);
-assert(typeof offer.sdp === "string" && offer.sdp.includes("a=fingerprint:sha-256"), "offer.sdp carries DTLS fingerprint");
-assert(offer.sdp.includes("m=application"), "offer.sdp has DataChannel m=application line");
+assert(
+  offer.from === daemonConnId,
+  `offer.from matches daemon id (got "${offer.from}")`,
+);
+assert(
+  typeof offer.sdp === "string" && offer.sdp.includes("a=fingerprint:sha-256"),
+  "offer.sdp carries DTLS fingerprint",
+);
+assert(
+  offer.sdp.includes("m=application"),
+  "offer.sdp has DataChannel m=application line",
+);
 assert(offer.sdp.includes("a=ice-ufrag:"), "offer.sdp carries ICE ufrag");
 
 // Wait a bit for ICE candidates to flow through
 await new Promise((r) => setTimeout(r, 3000));
 const candidates = clientMessages.filter((m) => m.type === "candidate");
-console.log(`  ${candidates.length > 0 ? "✓" : "✗"} client received ${candidates.length} ICE candidates`);
+console.log(
+  `  ${candidates.length > 0 ? "✓" : "✗"} client received ${candidates.length} ICE candidates`,
+);
 if (candidates.length === 0) failures += 1;
 
 // Sample a couple candidates to show they look right
 for (const c of candidates.slice(0, 3)) {
-  console.log(`    ${c.candidate?.candidate ?? JSON.stringify(c.candidate)?.slice(0, 80)}`);
+  console.log(
+    `    ${c.candidate?.candidate ?? JSON.stringify(c.candidate)?.slice(0, 80)}`,
+  );
 }
 
-assert(activePCs.size === 1, `daemon tracks 1 active PC (got ${activePCs.size})`);
+assert(
+  activePCs.size === 1,
+  `daemon tracks 1 active PC (got ${activePCs.size})`,
+);
 
 // Cleanup
 for (const pc of activePCs.values()) pc.close();
@@ -183,5 +233,7 @@ daemonWS.close();
 clientWS.close();
 await new Promise((r) => setTimeout(r, 200));
 
-console.log(`\n${failures === 0 ? "✓ all P2.3 checks passed" : `✗ ${failures} failures`}`);
+console.log(
+  `\n${failures === 0 ? "✓ all P2.3 checks passed" : `✗ ${failures} failures`}`,
+);
 process.exit(failures === 0 ? 0 : 1);

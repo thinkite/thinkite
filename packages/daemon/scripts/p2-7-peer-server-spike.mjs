@@ -28,13 +28,19 @@
  */
 import {
   createHash,
-  generateKeyPairSync,
   sign as cryptoSign,
   verify as cryptoVerify,
+  generateKeyPairSync,
 } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  RTCIceCandidate,
+  RTCPeerConnection,
+  RTCSessionDescription,
+} from "node-datachannel/polyfill";
+import PartySocket from "partysocket";
 import {
   dtlsFingerprintTranscript,
   extractDtlsFingerprint,
@@ -42,12 +48,6 @@ import {
 import { loadOrCreateIdentity, publicKeyFromB64 } from "../dist/identity.js";
 import { KnownClients } from "../dist/known-clients.js";
 import { WebRTCPeerServer } from "../dist/webrtc-peer.js";
-import {
-  RTCIceCandidate,
-  RTCPeerConnection,
-  RTCSessionDescription,
-} from "node-datachannel/polyfill";
-import PartySocket from "partysocket";
 
 const testHome = mkdtempSync(join(tmpdir(), "sidecode-p2-7c-"));
 console.log(`test home: ${testHome}`);
@@ -110,7 +110,9 @@ const clientWS = new PartySocket({
 clientPC.addEventListener("icecandidate", (e) => {
   if (e.candidate && daemonPeerId) {
     const cand =
-      typeof e.candidate.toJSON === "function" ? e.candidate.toJSON() : e.candidate;
+      typeof e.candidate.toJSON === "function"
+        ? e.candidate.toJSON()
+        : e.candidate;
     clientWS.send(
       JSON.stringify({ to: daemonPeerId, type: "candidate", candidate: cand }),
     );
@@ -192,7 +194,9 @@ function waitFor(arr, pred, timeoutMs, label) {
       if (hit) return resolve(hit);
       if (Date.now() - start > timeoutMs) {
         return reject(
-          new Error(`${label} timeout. saw: ${arr.map((m) => m.type).join(",")}`),
+          new Error(
+            `${label} timeout. saw: ${arr.map((m) => m.type).join(",")}`,
+          ),
         );
       }
       setTimeout(tick, 30);
@@ -202,9 +206,17 @@ function waitFor(arr, pred, timeoutMs, label) {
 }
 
 try {
-  const pong = await waitFor(daemonReplies, (m) => m.type === "pong", 15_000, "pong");
+  const pong = await waitFor(
+    daemonReplies,
+    (m) => m.type === "pong",
+    15_000,
+    "pong",
+  );
   console.log("\nP2.7c assertions:");
-  assert(server.authenticatedCount() === 1, `server.authenticatedCount() === 1 (got ${server.authenticatedCount()})`);
+  assert(
+    server.authenticatedCount() === 1,
+    `server.authenticatedCount() === 1 (got ${server.authenticatedCount()})`,
+  );
   assert(typeof pong.echoT === "number", "pong echoes ping timestamp");
   assert(Date.now() - pong.echoT < 30_000, "round-trip happened recently");
 } catch (err) {
@@ -216,6 +228,8 @@ try {
   clientWS.close();
   await server.stop();
   rmSync(testHome, { recursive: true, force: true });
-  console.log(`\n${failures === 0 ? "✓ all P2.7c checks passed" : `✗ ${failures} failures`}`);
+  console.log(
+    `\n${failures === 0 ? "✓ all P2.7c checks passed" : `✗ ${failures} failures`}`,
+  );
   process.exit(failures === 0 ? 0 : 1);
 }

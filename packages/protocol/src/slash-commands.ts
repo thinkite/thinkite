@@ -106,7 +106,7 @@ export type SlashCommandName = keyof typeof SLASH_COMMANDS;
 /** True iff `name` (without leading `/`) is in the V0 whitelist. Acts
  *  as a type guard so callers can index `SLASH_COMMANDS[name]` after. */
 export function isWhitelistedCommand(name: string): name is SlashCommandName {
-  return Object.prototype.hasOwnProperty.call(SLASH_COMMANDS, name);
+  return Object.hasOwn(SLASH_COMMANDS, name);
 }
 
 /** Picker data source. Returns specs in `SLASH_COMMANDS` declared order. */

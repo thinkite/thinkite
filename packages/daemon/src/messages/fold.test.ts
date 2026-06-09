@@ -46,7 +46,10 @@ describe("foldEventDelta", () => {
       uuid: "a1",
       deltaText: " world",
     } as EventDelta);
-    expect(settled[0]).toMatchObject({ type: "assistant_message", text: "Hello world" });
+    expect(settled[0]).toMatchObject({
+      type: "assistant_message",
+      text: "Hello world",
+    });
   });
 
   it("patch_text targets the LAST matching assistant_message (streaming)", () => {

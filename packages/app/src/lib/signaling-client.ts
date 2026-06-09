@@ -99,11 +99,7 @@ export class SignalingClient {
    *  Drops silently if the WS isn't open — peer.joined arrival ordering
    *  guarantees the daemon will have us in their roster before the next
    *  reconnect cycle attempts this frame. */
-  send(
-    to: string,
-    type: string,
-    payload: Record<string, unknown> = {},
-  ): void {
+  send(to: string, type: string, payload: Record<string, unknown> = {}): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ to, type, ...payload }));
   }

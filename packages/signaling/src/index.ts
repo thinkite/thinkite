@@ -1,9 +1,9 @@
 import {
-  routePartykitRequest,
-  Server,
   type Connection,
   type ConnectionContext,
   type Lobby,
+  routePartykitRequest,
+  Server,
   type WSMessage,
 } from "partyserver";
 
@@ -98,7 +98,10 @@ export class Signaling extends Server<Env> {
         if (c.id !== connection.id) c.close(1008, "replaced_by_new_daemon");
       }
 
-      connection.setState({ role: "daemon", pubkey: roomPubkey } satisfies ConnectionState);
+      connection.setState({
+        role: "daemon",
+        pubkey: roomPubkey,
+      } satisfies ConnectionState);
 
       // Hand the daemon a roster of currently-online clients so it knows
       // who to issue offers to. (Most common at daemon restart: clients
@@ -114,14 +117,21 @@ export class Signaling extends Server<Env> {
 
     // role === "client"
     const clientPubkey = url.searchParams.get("pubkey") ?? "";
-    connection.setState({ role: "client", pubkey: clientPubkey } satisfies ConnectionState);
+    connection.setState({
+      role: "client",
+      pubkey: clientPubkey,
+    } satisfies ConnectionState);
 
     // Notify all online daemons (typically just one) of the new client.
     // The daemon will gate against its known_clients.json at application
     // layer before deciding to issue an offer.
     const joinedFrame = JSON.stringify({
       type: "peer.joined",
-      peer: { id: connection.id, pubkey: clientPubkey, role: "client" } satisfies PeerDescriptor,
+      peer: {
+        id: connection.id,
+        pubkey: clientPubkey,
+        role: "client",
+      } satisfies PeerDescriptor,
     });
     for (const d of this.getConnections("daemon")) {
       d.send(joinedFrame);
@@ -146,13 +156,17 @@ export class Signaling extends Server<Env> {
           ? raw.byteLength
           : raw.byteLength;
     if (size > MAX_MSG_BYTES) {
-      sender.send(JSON.stringify({ type: "error", reason: "payload_too_large" }));
+      sender.send(
+        JSON.stringify({ type: "error", reason: "payload_too_large" }),
+      );
       return;
     }
 
     let parsed: ClientEnvelope;
     try {
-      parsed = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
+      parsed = JSON.parse(
+        typeof raw === "string" ? raw : new TextDecoder().decode(raw),
+      );
     } catch {
       sender.send(JSON.stringify({ type: "error", reason: "bad_json" }));
       return;
@@ -173,7 +187,11 @@ export class Signaling extends Server<Env> {
       // connected. Surface this so sender can re-discover via the next
       // `peer.joined` event.
       sender.send(
-        JSON.stringify({ type: "error", reason: "peer_not_found", to: parsed.to }),
+        JSON.stringify({
+          type: "error",
+          reason: "peer_not_found",
+          to: parsed.to,
+        }),
       );
       return;
     }
@@ -185,13 +203,22 @@ export class Signaling extends Server<Env> {
     target.send(JSON.stringify(forwarded));
   }
 
-  onClose(connection: Connection, _code: number, _reason: string, _wasClean: boolean) {
+  onClose(
+    connection: Connection,
+    _code: number,
+    _reason: string,
+    _wasClean: boolean,
+  ) {
     const state = connection.state as ConnectionState | null;
     if (!state) return;
     const peerRole: Role = state.role === "daemon" ? "client" : "daemon";
     const frame = JSON.stringify({
       type: "peer.left",
-      peer: { id: connection.id, pubkey: state.pubkey, role: state.role } satisfies PeerDescriptor,
+      peer: {
+        id: connection.id,
+        pubkey: state.pubkey,
+        role: state.role,
+      } satisfies PeerDescriptor,
     });
     for (const c of this.getConnections(peerRole)) {
       c.send(frame);
@@ -202,7 +229,10 @@ export class Signaling extends Server<Env> {
     // CF observability already records this; keep a short note for
     // local `wrangler tail` debugging. Don't propagate to peers —
     // single-side errors aren't a peer-routing event.
-    console.error(`[Signaling/${this.name}] ws error (conn=${connection.id}):`, error);
+    console.error(
+      `[Signaling/${this.name}] ws error (conn=${connection.id}):`,
+      error,
+    );
   }
 }
 
@@ -235,7 +265,9 @@ async function verifyDaemonSig(
       false,
       ["verify"],
     );
-    const message = new TextEncoder().encode(`signaling/v1/${roomPubkey}/${ts}`);
+    const message = new TextEncoder().encode(
+      `signaling/v1/${roomPubkey}/${ts}`,
+    );
     return await crypto.subtle.verify("Ed25519", key, sigBytes, message);
   } catch {
     return false;

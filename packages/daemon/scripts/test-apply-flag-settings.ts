@@ -59,7 +59,10 @@ function makeChannel<T>(): {
         return {
           next(): Promise<IteratorResult<T, void>> {
             if (queue.length > 0) {
-              return Promise.resolve({ value: queue.shift() as T, done: false });
+              return Promise.resolve({
+                value: queue.shift() as T,
+                done: false,
+              });
             }
             if (closed) {
               return Promise.resolve({ value: undefined, done: true });
@@ -105,7 +108,10 @@ async function main() {
   };
   const captures: Capture[] = [
     { label: "BEFORE applyFlagSettings", assistantText: "" },
-    { label: "AFTER applyFlagSettings (haiku + low effort)", assistantText: "" },
+    {
+      label: "AFTER applyFlagSettings (haiku + low effort)",
+      assistantText: "",
+    },
   ];
   let phase = 0;
 

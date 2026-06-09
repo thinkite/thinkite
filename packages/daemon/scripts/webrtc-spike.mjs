@@ -53,11 +53,20 @@ function assert(cond, label) {
 }
 
 console.log("\nSDP checks:");
-assert(sdp.includes("a=fingerprint:sha-256"), "DTLS fingerprint present (E2EE root)");
+assert(
+  sdp.includes("a=fingerprint:sha-256"),
+  "DTLS fingerprint present (E2EE root)",
+);
 assert(sdp.includes("a=ice-ufrag:"), "ICE ufrag present");
 assert(sdp.includes("a=ice-pwd:"), "ICE pwd present");
-assert(/m=application \d+ .*DTLS\/SCTP/.test(sdp), "m=application DTLS/SCTP line present");
-assert(candidates.length > 0, `at least one ICE candidate gathered (got ${candidates.length})`);
+assert(
+  /m=application \d+ .*DTLS\/SCTP/.test(sdp),
+  "m=application DTLS/SCTP line present",
+);
+assert(
+  candidates.length > 0,
+  `at least one ICE candidate gathered (got ${candidates.length})`,
+);
 
 console.log("\nPeerConnection state:");
 console.log(`  connectionState:    ${pc.connectionState}`);
@@ -74,5 +83,7 @@ for (const line of sdp.split("\n")) {
 }
 
 pc.close();
-console.log(`\n${process.exitCode === 1 ? "✗ some checks failed" : "✓ all checks passed"}`);
+console.log(
+  `\n${process.exitCode === 1 ? "✗ some checks failed" : "✓ all checks passed"}`,
+);
 process.exit(process.exitCode ?? 0);

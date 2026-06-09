@@ -1,12 +1,12 @@
 import {
+  dtlsFingerprintTranscript,
+  extractDtlsFingerprint,
+} from "@sidecodeapp/protocol";
+import {
   RTCIceCandidate,
   RTCPeerConnection,
   RTCSessionDescription,
 } from "react-native-webrtc";
-import {
-  dtlsFingerprintTranscript,
-  extractDtlsFingerprint,
-} from "@sidecodeapp/protocol";
 
 /**
  * iOS-side WebRTC peer.
@@ -105,7 +105,8 @@ export class WebRTCPeer {
     // Forward locally-gathered candidates to the owner. The owner pipes
     // them through SignalingClient to the daemon.
     pc.addEventListener("icecandidate", (event) => {
-      const candidate = (event as { candidate: RTCIceCandidate | null }).candidate;
+      const candidate = (event as { candidate: RTCIceCandidate | null })
+        .candidate;
       if (!candidate) return; // null candidate signals end-of-candidates
       this.opts.onLocalCandidate(candidate.toJSON());
     });

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 /**
  * P3.4 helper: run WebRTCPeerServer forever, pre-paired with a given
  * iOS client pubkey. Used for end-to-end testing of the iOS
@@ -19,7 +20,6 @@ import { join } from "node:path";
 import { loadOrCreateIdentity } from "../dist/identity.js";
 import { KnownClients } from "../dist/known-clients.js";
 import { WebRTCPeerServer } from "../dist/webrtc-peer.js";
-import { createHash } from "node:crypto";
 
 const iosPubkey = process.argv[2];
 if (!iosPubkey) {
@@ -50,7 +50,9 @@ console.log("┌─────────────────────�
 console.log("│ DAEMON PUBKEY (paste into iOS spike):");
 console.log(`│   ${identity.publicKeyB64}`);
 console.log("├─────────────────────────────────────────────────────────");
-console.log(`│ paired iOS client: ${iosFingerprint} (${iosPubkey.slice(0, 12)}…)`);
+console.log(
+  `│ paired iOS client: ${iosFingerprint} (${iosPubkey.slice(0, 12)}…)`,
+);
 console.log("└─────────────────────────────────────────────────────────");
 console.log("");
 

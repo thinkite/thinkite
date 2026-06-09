@@ -4,8 +4,8 @@ import {
   Pressable,
   ScrollView,
   Text,
-  View,
   useColorScheme,
+  View,
 } from "react-native";
 
 /**

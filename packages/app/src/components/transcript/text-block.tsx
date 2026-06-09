@@ -43,7 +43,10 @@ export function TextBlock({ block }: { block: TextRenderBlock }) {
         {fileUris && <ImageStack urls={fileUris} />}
         {hasText && (
           <View className="max-w-[85%] rounded-xl bg-[#0A0A0A0F] dark:bg-[#FAFAFA14] px-3 py-2">
-            <Text selectable className="text-base text-[#0A0A0A] dark:text-[#FAFAFA]">
+            <Text
+              selectable
+              className="text-base text-[#0A0A0A] dark:text-[#FAFAFA]"
+            >
               {block.text}
             </Text>
           </View>

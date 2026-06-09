@@ -15,9 +15,9 @@
  * with the daemon's real Ed25519 keypair.
  */
 import { sign as cryptoSign } from "node:crypto";
+import { WebSocket } from "partysocket";
 import { resolveSidecodeHome } from "../dist/home.js";
 import { loadOrCreateIdentity } from "../dist/identity.js";
-import { WebSocket } from "partysocket";
 
 const home = resolveSidecodeHome();
 const identity = loadOrCreateIdentity(home);
@@ -33,7 +33,9 @@ const scheme = insecure ? "ws" : "wss";
 function buildUrl() {
   const ts = Date.now();
   const message = Buffer.from(`signaling/v1/${identity.publicKeyB64}/${ts}`);
-  const sig = cryptoSign(null, message, identity.privateKey).toString("base64url");
+  const sig = cryptoSign(null, message, identity.privateKey).toString(
+    "base64url",
+  );
   const params = new URLSearchParams({ role: "daemon", ts: String(ts), sig });
   return `${scheme}://${host}/parties/signaling/${identity.publicKeyB64}?${params}`;
 }
@@ -47,11 +49,14 @@ ws.addEventListener("open", () => {
   console.log(`[+${Date.now() - start}ms] open`);
 });
 ws.addEventListener("message", (e) => {
-  const text = typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
+  const text =
+    typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
   console.log(`[+${Date.now() - start}ms] recv:`, text);
 });
 ws.addEventListener("close", (e) => {
-  console.log(`[+${Date.now() - start}ms] close: code=${e.code} reason=${e.reason}`);
+  console.log(
+    `[+${Date.now() - start}ms] close: code=${e.code} reason=${e.reason}`,
+  );
 });
 ws.addEventListener("error", (e) => {
   console.log(`[+${Date.now() - start}ms] error:`, e?.message ?? e);

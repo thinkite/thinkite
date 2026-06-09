@@ -17,7 +17,11 @@
  *  6. Client closes → daemon receives peer.left.
  */
 
-import { generateKeyPairSync, sign as cryptoSign, randomBytes } from "node:crypto";
+import {
+  sign as cryptoSign,
+  generateKeyPairSync,
+  randomBytes,
+} from "node:crypto";
 
 // Default to local `wrangler dev`; override with SIGNALING_URL=wss://... to
 // smoke-test a deployed Worker. Example:
@@ -42,11 +46,14 @@ function open(url, label) {
     const ws = new WebSocket(url);
     const messages = [];
     ws.addEventListener("message", (e) => {
-      const text = typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
+      const text =
+        typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
       messages.push(JSON.parse(text));
     });
     ws.addEventListener("open", () => resolve({ ws, messages, label }));
-    ws.addEventListener("error", (e) => reject(new Error(`${label}: ws error`)));
+    ws.addEventListener("error", (e) =>
+      reject(new Error(`${label}: ws error`)),
+    );
     ws.addEventListener("close", (e) => {
       ws._closeInfo = { code: e.code, reason: e.reason };
     });
@@ -76,7 +83,8 @@ function waitForClose(ws, timeoutMs = 3000) {
     const start = Date.now();
     const tick = () => {
       if (ws._closeInfo) return resolve(ws._closeInfo);
-      if (Date.now() - start > timeoutMs) return reject(new Error("close timeout"));
+      if (Date.now() - start > timeoutMs)
+        return reject(new Error("close timeout"));
       setTimeout(tick, 30);
     };
     tick();
@@ -109,7 +117,10 @@ async function main() {
     ws.addEventListener("error", () => resolve({ type: "error" }));
     setTimeout(() => resolve({ type: "timeout" }), 3000);
   });
-  assert(badEvent.type === "error", `bad_signature triggers error event (got ${badEvent.type})`);
+  assert(
+    badEvent.type === "error",
+    `bad_signature triggers error event (got ${badEvent.type})`,
+  );
 
   console.log("\n[2] daemon with GOOD signature is accepted");
   const ts = Date.now();
@@ -117,16 +128,31 @@ async function main() {
   const sig = b64url(cryptoSign(null, msg, privateKey));
   const daemonUrl = `${HOST}/parties/signaling/${room}?role=daemon&ts=${ts}&sig=${sig}`;
   const daemon = await open(daemonUrl, "daemon");
-  const initialPeers = await waitFor(daemon.messages, (m) => m.type === "peers");
-  assert(Array.isArray(initialPeers.peers), "daemon got peers frame on connect");
+  const initialPeers = await waitFor(
+    daemon.messages,
+    (m) => m.type === "peers",
+  );
+  assert(
+    Array.isArray(initialPeers.peers),
+    "daemon got peers frame on connect",
+  );
   assert(initialPeers.peers.length === 0, "no clients online yet");
 
   console.log("\n[3] client connects → daemon receives peer.joined");
   const clientUrl = `${HOST}/parties/signaling/${room}?role=client&pubkey=${encodeURIComponent(clientPubkey)}`;
   const client = await open(clientUrl, "client");
-  const joined = await waitFor(daemon.messages, (m) => m.type === "peer.joined");
-  assert(joined.peer.pubkey === clientPubkey, "peer.joined carries correct client pubkey");
-  assert(typeof joined.peer.id === "string", "peer.joined carries client connection id");
+  const joined = await waitFor(
+    daemon.messages,
+    (m) => m.type === "peer.joined",
+  );
+  assert(
+    joined.peer.pubkey === clientPubkey,
+    "peer.joined carries correct client pubkey",
+  );
+  assert(
+    typeof joined.peer.id === "string",
+    "peer.joined carries client connection id",
+  );
   const clientPeerId = joined.peer.id;
 
   console.log("\n[4] client also sees daemon in its initial peers frame");
@@ -137,13 +163,17 @@ async function main() {
 
   console.log("\n[5] message routing by `to` field, `from` server-stamped");
   // client → daemon
-  client.ws.send(JSON.stringify({ to: daemonPeerId, type: "offer", sdp: "v=0..." }));
+  client.ws.send(
+    JSON.stringify({ to: daemonPeerId, type: "offer", sdp: "v=0..." }),
+  );
   const offer = await waitFor(daemon.messages, (m) => m.type === "offer");
   assert(offer.sdp === "v=0...", "daemon receives offer payload");
   assert(offer.from === clientPeerId, "`from` server-stamped to sender id");
   assert(offer.to === daemonPeerId, "`to` preserved");
   // daemon → client
-  daemon.ws.send(JSON.stringify({ to: clientPeerId, type: "answer", sdp: "v=1..." }));
+  daemon.ws.send(
+    JSON.stringify({ to: clientPeerId, type: "answer", sdp: "v=1..." }),
+  );
   const answer = await waitFor(client.messages, (m) => m.type === "answer");
   assert(answer.sdp === "v=1...", "client receives answer payload");
   assert(answer.from === daemonPeerId, "client sees `from = daemon`");
@@ -161,14 +191,25 @@ async function main() {
 
   console.log("\n[8] new daemon replaces old daemon");
   const ts2 = Date.now();
-  const sig2 = b64url(cryptoSign(null, Buffer.from(`signaling/v1/${daemonPubkey}/${ts2}`), privateKey));
+  const sig2 = b64url(
+    cryptoSign(
+      null,
+      Buffer.from(`signaling/v1/${daemonPubkey}/${ts2}`),
+      privateKey,
+    ),
+  );
   const daemon2Url = `${HOST}/parties/signaling/${room}?role=daemon&ts=${ts2}&sig=${sig2}`;
   await open(daemon2Url, "daemon2");
   const closeInfo = await waitForClose(daemon.ws);
   assert(closeInfo.code === 1008, "old daemon closed with policy violation");
-  assert(closeInfo.reason === "replaced_by_new_daemon", "reason = replaced_by_new_daemon");
+  assert(
+    closeInfo.reason === "replaced_by_new_daemon",
+    "reason = replaced_by_new_daemon",
+  );
 
-  console.log(`\n${failures === 0 ? "✓ all checks passed" : `✗ ${failures} failures`}`);
+  console.log(
+    `\n${failures === 0 ? "✓ all checks passed" : `✗ ${failures} failures`}`,
+  );
   process.exit(failures === 0 ? 0 : 1);
 }
 

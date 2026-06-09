@@ -63,7 +63,8 @@ module.exports = {
   // build at a local static server); otherwise the real R2 host (TODO).
   publish: {
     provider: "generic",
-    url: process.env.SIDECODE_UPDATE_URL || "https://REPLACE_WITH_R2_PUBLIC_URL",
+    url:
+      process.env.SIDECODE_UPDATE_URL || "https://REPLACE_WITH_R2_PUBLIC_URL",
     channel: "latest",
   },
 };
