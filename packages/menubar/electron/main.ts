@@ -231,7 +231,7 @@ function buildMenu(): Electron.Menu {
 
   items.push(
     {
-      label: "About sidecode",
+      label: "About Sidecode",
       icon: symbolIcon("info.circle"),
       submenu: [
         { label: `Version ${app.getVersion()}`, enabled: false },

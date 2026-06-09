@@ -2,7 +2,7 @@
   "name": "@sidecodeapp/menubar",
   "version": "0.0.1",
   "private": true,
-  "description": "macOS menu bar app for sidecode — Electron + React 19 + Tailwind",
+  "description": "macOS menu bar app for Sidecode — Electron + React 19 + Tailwind",
   "author": "sidecode",
   "type": "module",
   "main": "dist-electron/main.js",
@@ -18,6 +18,7 @@
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "package:mac": "pnpm --filter '@sidecodeapp/menubar...' run build && electron-builder --mac --arm64 --publish never",
+    "package:mac:notarize": "pnpm --filter '@sidecodeapp/menubar...' run build && set -a && { . ./.env.local 2>/dev/null || true; } && set +a && electron-builder --mac --arm64 --publish never",
     "package:mac:publish": "pnpm --filter '@sidecodeapp/menubar...' run build && set -a && { . ./.env.local 2>/dev/null || true; } && set +a && electron-builder --mac --arm64 --publish always"
   },
   "dependencies": {

@@ -11,7 +11,7 @@ const notarize = Boolean(process.env.APPLE_API_KEY);
 /** @type {import("electron-builder").Configuration} */
 module.exports = {
   appId: "app.sidecode.menubar",
-  productName: "sidecode",
+  productName: "Sidecode",
   directories: {
     // CRITICAL: vite emits the renderer to dist/. electron-builder's default
     // output is also `dist` and it WIPES the output dir first — send artifacts
@@ -59,8 +59,8 @@ module.exports = {
   // electron-updater feed. Generic = any static host; generating this makes the
   // build emit latest-mac.yml + .blockmap (differential updates). The packaged
   // app's embedded app-update.yml bakes in whatever url is set at BUILD time.
-  // SIDECODE_UPDATE_URL lets a local build point at the test feed
-  // (http://localhost:8788, `pnpm feed`); otherwise the real R2 host (TODO).
+  // SIDECODE_UPDATE_URL overrides the feed at build time (e.g. point a test
+  // build at a local static server); otherwise the real R2 host (TODO).
   publish: {
     provider: "generic",
     url: process.env.SIDECODE_UPDATE_URL || "https://REPLACE_WITH_R2_PUBLIC_URL",
