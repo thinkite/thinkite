@@ -80,24 +80,6 @@ export interface ModelMetadata {
    *  Defaults to 200_000 for current Claude 4.x models; `[1m]` variants
    *  opt into the 1M-context beta. */
   contextWindow?: number;
-
-  /** Earliest Claude Code version with first-class support for this model
-   *  (per the claude-code CHANGELOG entry that launched it). Omitted =
-   *  any binary is fine.
-   *
-   *  "First-class" because this is NOT a hard compatibility floor: the
-   *  binary passes unknown model ids through to the API (which does the
-   *  real validation), and the `[1m]` suffix is parsed generically. An
-   *  older binary mostly works — but falls back to default client-side
-   *  tables (context-window/auto-compact thresholds, labels, cost) and
-   *  may silently remap ids it considers retired.
-   *
-   *  Largely informational now that sidecode BUNDLES the claude binary — the
-   *  .app ships a known version, so every shipped model is supported by
-   *  construction. Kept as metadata (and for a future picker that might
-   *  surface "needs Claude Code ≥ X" if the bundled version is ever
-   *  decoupled from the model set). Not enforced anywhere. */
-  minClaudeVersion?: string;
 }
 
 /**
@@ -115,12 +97,10 @@ export const MODEL_METADATA: Record<string, ModelMetadata> = {
   "claude-fable-5[1m]": {
     displayName: "Fable 5 1M",
     contextWindow: 1_000_000,
-    minClaudeVersion: "2.1.170",
   },
   "claude-fable-5": {
     displayName: "Fable 5",
     contextWindow: 200_000,
-    minClaudeVersion: "2.1.170",
   },
   "claude-opus-4-8[1m]": {
     displayName: "Opus 4.8 1M",
@@ -210,9 +190,6 @@ export interface ModelEntry {
   description?: string;
   /** Context window in tokens. */
   contextWindow?: number;
-  /** Earliest Claude Code version with first-class support — see
-   *  `ModelMetadata.minClaudeVersion`. */
-  minClaudeVersion?: string;
 }
 
 /**
@@ -230,7 +207,6 @@ export const MODELS: readonly ModelEntry[] = Object.entries(MODEL_METADATA)
       isDefault: m.isDefault === true,
       description: m.description,
       contextWindow: m.contextWindow,
-      minClaudeVersion: m.minClaudeVersion,
     }),
   );
 
