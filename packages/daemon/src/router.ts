@@ -13,6 +13,7 @@ import {
   SLASH_COMMANDS,
 } from "@sidecodeapp/protocol";
 import type { BridgeService } from "./bridge/bridge-service.js";
+import { OAuthRefreshError } from "./bridge/oauth-refresh.js";
 import type { CommandHandler } from "./command.js";
 import type { GitWatcherRegistry } from "./git-watch.js";
 import {
@@ -106,6 +107,16 @@ export interface RouterDeps {
    */
   queryFactory?: SessionLoopOptions["queryFactory"];
   /**
+   * Mint a fresh OAuth access token for a claude spawn (OAuthRefreshManager
+   * .ensureFresh in production: reads keychain, refreshes if near expiry,
+   * writes back). The sendPrompt handler calls this right before
+   * `ensureSessionLoop` and hands the result in as `oauthToken`. Rejects
+   * (OAuthRefreshError) when there are no credentials / re-login is needed —
+   * the handler turns that into a `turn_failed`. Omitted on the test path
+   * (`queryFactory` set), which spawns no real binary.
+   */
+  ensureFreshToken?: () => Promise<string>;
+  /**
    * Per-daemon registry of `GitWatcher`s keyed by `cwd`. Shared across
    * connections so two iOS clients on the same project re-use one watch
    * + cache. Daemon disposes the whole registry on shutdown.
@@ -174,6 +185,23 @@ function getOrCreateGitSubs(ctx: { state: Map<string, unknown> }): GitSubsMap {
   const created: GitSubsMap = new Map();
   ctx.state.set(GIT_SUBS_KEY, created);
   return created;
+}
+
+/** User-facing message for an `ensureFreshToken` failure before a spawn. The
+ *  bundled binary needs a Claude login (keychain `Claude Code-credentials`,
+ *  written by `claude /login` or Claude Desktop); sidecode never logs in
+ *  itself. Maps OAuthRefreshError kinds to actionable copy. */
+function authErrorMessage(err: unknown): string {
+  if (err instanceof OAuthRefreshError) {
+    if (err.kind === "no_credentials") {
+      return "Not signed in to Claude. Run `claude /login` (or sign in with Claude Desktop), then try again.";
+    }
+    if (err.kind === "needs_relogin") {
+      return "Your Claude login has expired. Run `claude /login` again, then retry.";
+    }
+    return "Couldn't reach Claude to refresh your login. Check your connection and try again.";
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -723,6 +751,27 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             }
           }
 
+          // Mint a fresh OAuth token for the spawn (the bundled binary gets
+          // it via env). Failure (no creds / re-login) surfaces in-band as a
+          // `turn_failed` so iOS renders it in the transcript, then we ACK the
+          // RPC and stop — no spawn. Skipped on the test path (queryFactory).
+          let oauthToken: string | undefined;
+          if (deps.queryFactory === undefined && deps.ensureFreshToken) {
+            try {
+              oauthToken = await deps.ensureFreshToken();
+            } catch (err) {
+              runtime.addEvent({
+                kind: "turn_failed",
+                error: authErrorMessage(err),
+              });
+              ctx.send({
+                type: "sendPrompt.response",
+                requestId: cmd.requestId,
+              });
+              return;
+            }
+          }
+
           // Idempotent — second sendPrompt for same session reuses the
           // existing loop. mode/cwd/model are only consulted on the
           // FIRST call (when ensureSessionLoop actually spawns the SDK
@@ -735,6 +784,7 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             mode,
             cwd: cmd.cwd,
             model: cmd.model,
+            oauthToken,
             queryFactory: deps.queryFactory,
           });
           // pushPrompt emits turn_started synchronously before the SDK

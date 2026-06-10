@@ -92,9 +92,11 @@ export interface ModelMetadata {
    *  tables (context-window/auto-compact thresholds, labels, cost) and
    *  may silently remap ids it considers retired.
    *
-   *  Compare against daemon's `ClaudeStatus.version` (claude-binary.ts).
-   *  Not enforced anywhere yet — whether consumers gray out the picker
-   *  entry or prompt the user to update claude is an open decision. */
+   *  Largely informational now that sidecode BUNDLES the claude binary — the
+   *  .app ships a known version, so every shipped model is supported by
+   *  construction. Kept as metadata (and for a future picker that might
+   *  surface "needs Claude Code ≥ X" if the bundled version is ever
+   *  decoupled from the model set). Not enforced anywhere. */
   minClaudeVersion?: string;
 }
 

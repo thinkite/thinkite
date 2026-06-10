@@ -61,7 +61,6 @@ import type {
   ImageAttachment,
   ToolCallDetail,
 } from "@sidecodeapp/protocol";
-import { getClaudeStatus } from "../claude-binary.js";
 import {
   attachOutputToDetail,
   buildDetailFromInput,
@@ -196,6 +195,15 @@ export interface SessionLoopOptions {
    *  `setSessionSelection` RPC, which issues
    *  `runtime.query.applyFlagSettings({ model })`. */
   model?: string;
+  /**
+   * Fresh OAuth access token for the bundled claude binary, handed in via
+   * env (`CLAUDE_CODE_OAUTH_TOKEN`). The caller ensures freshness
+   * (OAuthRefreshManager.ensureFresh) right before this spawn — the binary
+   * treats an env token as inference-only and won't self-refresh, so it's
+   * valid for this spawn's lifetime only. Omitted on the test path
+   * (`queryFactory` set), which never spawns a real binary.
+   */
+  oauthToken?: string;
   /** Test seam: override the SDK's `query()` factory. */
   queryFactory?: typeof query;
 }
@@ -225,18 +233,26 @@ export function ensureSessionLoop(
   // the timer — the gap that pure ensureSessionLoop-entry-cancel missed.
   if (runtime.loopPromise) return runtime.loopPromise;
 
-  // Fail fast if the Claude Code executable is unresolved: surface the concrete
-  // reason as turn_failed (the SDK would otherwise throw a cryptic spawn error,
-  // and we don't ship a bundled binary to fall back to). NOT stored as
-  // loopPromise, so a later sendPrompt retries once the user fixes claude +
-  // the daemon rechecks (recheckClaudeBinary). A test queryFactory bypasses the
-  // real spawn, so it doesn't need a resolved binary.
-  const claude = getClaudeStatus();
-  if (!claude.ok && !options.queryFactory) {
-    runtime.addEvent({ kind: "turn_failed", error: claude.error });
-    return Promise.resolve();
-  }
-  const claudeExecutable = claude.ok ? claude.path : undefined;
+  // We spawn the SDK's OWN bundled claude binary (no
+  // pathToClaudeCodeExecutable → the SDK require.resolve's its per-platform
+  // package) and authenticate it by handing the user's OAuth access token via
+  // env. The token is ensured fresh by the caller (OAuthRefreshManager) right
+  // before this call. The test path (`queryFactory`) spawns nothing, so it
+  // gets no env and needs no token.
+  //
+  // env REPLACES (not merges) the child env when set, so we spread
+  // process.env to keep PATH/HOME/etc. CLAUDE_CODE_ENTRYPOINT stays
+  // remote_mobile (resume-picker visible; we deliberately don't use the
+  // binary's allowlisted refresh pipe — see reference_bundled_claude memory).
+  const spawnEnv =
+    options.queryFactory === undefined && options.oauthToken !== undefined
+      ? ({
+          ...process.env,
+          CLAUDE_CODE_OAUTH_TOKEN: options.oauthToken,
+          CLAUDE_CODE_ENTRYPOINT: "remote_mobile",
+        } as Record<string, string>)
+      : undefined;
+  const envOption = spawnEnv ? { env: spawnEnv } : {};
 
   const channel = createAsyncMessageInput<SDKUserMessage>();
   runtime.inputChannel = channel;
@@ -273,7 +289,7 @@ export function ensureSessionLoop(
           sessionId: runtime.sessionId,
           includePartialMessages: true as const,
           cwd: options.cwd,
-          pathToClaudeCodeExecutable: claudeExecutable,
+          ...envOption,
         }
       : {
           ...bypassFlags,
@@ -281,7 +297,7 @@ export function ensureSessionLoop(
           resume: runtime.sessionId,
           includePartialMessages: true as const,
           cwd: options.cwd,
-          pathToClaudeCodeExecutable: claudeExecutable,
+          ...envOption,
         };
   const q: Query = factory({
     prompt: channel.iterable,
@@ -325,6 +341,16 @@ export function ensureSessionLoop(
       // instead of seeing an unexplained gap in the stream — unless the
       // user interrupted (some SDK paths throw rather than yielding an
       // error result; the router already emitted turn_canceled).
+      //
+      // KNOWN LIMITATION (bundled-binary auth): the env OAuth token is fixed
+      // for this loop's lifetime; a loop alive past the token's expiry 401s
+      // ("Failed to authenticate. API Error: 401") and KEEPS failing (same
+      // process, same stale token) until the loop is disposed + respawned
+      // (idle teardown, or daemon restart). Narrow window (loop must stay
+      // actively alive > access-token TTL; idle teardown caps it). Self-heal
+      // when needed: detect the 401 here → `runtime.disposeQuery()` so the
+      // next sendPrompt respawns with a fresh ensureFresh() token. Deferred
+      // (string-matching the SDK error is fragile; trigger is rare).
       if (!runtime.interrupted) {
         runtime.addEvent({
           kind: "turn_failed",

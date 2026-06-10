@@ -10,12 +10,6 @@ import {
   reattachBridgedSessions,
   summarizeReattach,
 } from "./bridge/startup-reattach.js";
-import {
-  type ClaudeStatus,
-  getClaudeStatus,
-  recheckClaudeBinary,
-  resolveClaudeBinary,
-} from "./claude-binary.js";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
 import { GitWatcherRegistry } from "./git-watch.js";
 import { resolveSidecodeHome } from "./home.js";
@@ -50,18 +44,6 @@ export interface Daemon {
   pairedClientCount(): number;
   /** Number of currently authenticated WebRTC peers. */
   authenticatedPeerCount(): number;
-  /**
-   * Status of the Claude Code executable the SDK spawns (SIDECODE_CLAUDE_PATH
-   * → PATH). The menubar reads this to show a version / "not found" prompt;
-   * queries fail fast with the reason when not ok. Cached — see
-   * recheckClaudeBinary() to force a re-resolve after the user installs claude.
-   */
-  claudeStatus(): ClaudeStatus;
-  /**
-   * Force a fresh resolve of the Claude Code executable (the menubar's
-   * "Recheck", e.g. after the user installs it). Updates the cache + returns it.
-   */
-  recheckClaudeBinary(): ClaudeStatus;
   /**
    * Mint a fresh pair offer pointing at this daemon. Pure: derived from the
    * daemon's identity + the given serviceName — no per-offer state, no
@@ -101,20 +83,14 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   const identity = loadOrCreateIdentity(home);
   const knownClients = KnownClients.load(home);
 
-  // Resolve the Claude Code executable the SDK will spawn (SIDECODE_CLAUDE_PATH
-  // → PATH). Non-fatal: if unresolved the daemon still starts and surfaces it
-  // via claudeStatus() so the menubar can prompt; queries fail fast with the
-  // reason. Relies on process.env reflecting the user's shell env — the menubar
-  // inherits it before start() (Finder-launched GUI apps get launchd's minimal
-  // PATH; terminal-launched `sidecode up` already has it).
-  const claude = resolveClaudeBinary();
-  if (claude.ok) {
-    console.log(
-      `claude: ${claude.path}${claude.version ? ` (${claude.version})` : ""} [${claude.source}]`,
-    );
-  } else {
-    console.warn(`claude: UNRESOLVED — ${claude.error}`);
-  }
+  // sidecode spawns the SDK's OWN bundled claude binary (shipped in the .app)
+  // and authenticates it by passing the user's keychain OAuth token via env at
+  // spawn time (run-query + OAuthRefreshManager). No system-claude resolution,
+  // no PATH probing — we ship the version. The one prerequisite is that the
+  // user has logged in to Claude Code once (keychain `Claude Code-credentials`,
+  // via `claude /login` or Claude Desktop); a missing login surfaces per-turn
+  // as a `turn_failed` with a "run claude /login" message.
+  //
   // Mark sidecode-driven sessions with a remote-mobile entrypoint (not the SDK
   // default `sdk-ts`) so they stay visible in the user's `claude --resume`
   // picker, which hides sessions whose entrypoint is in the SDK set. Respect a
@@ -191,7 +167,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     // against claude.ai's own copy (dedup-by-uuid verified — no double
     // bubble, no origin tracking). Wiring this also flips every attached
     // transport to bidirectional.
-    onInboundPrompt: (sessionId, prompt) => {
+    onInboundPrompt: async (sessionId, prompt) => {
       const runtime = runtimeManager.get(sessionId);
       if (runtime === undefined) {
         // No local runtime for this bridged session. Linking a cse_ to a
@@ -210,9 +186,17 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       // refinement is M3. pushPrompt is UNCHANGED from the local/iOS path —
       // bridge / local / iOS prompts share one code path.
       try {
-        ensureSessionLoop(runtime, { mode: "resume" });
+        // Same per-spawn token as the iOS/local path — the bundled binary
+        // gets it via env. A creds failure surfaces as turn_failed (forwarded
+        // to claude.ai by the bridge mirror) rather than a silent drop.
+        const oauthToken = await oauth.ensureFresh();
+        ensureSessionLoop(runtime, { mode: "resume", oauthToken });
         pushPrompt(runtime, prompt.text, prompt.images, prompt.uuid);
       } catch (err) {
+        runtime.addEvent({
+          kind: "turn_failed",
+          error: err instanceof Error ? err.message : String(err),
+        });
         console.log(
           `[sidecode] bridge inbound prompt failed for ${sessionId}: ${
             err instanceof Error ? err.message : String(err)
@@ -342,6 +326,9 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     },
     listSidecodeSessions: (opts) => listSidecodeSessions(home, opts),
     isShuttingDown: () => shuttingDown,
+    // Per-spawn OAuth token for the bundled binary — same shared keychain
+    // manager the CCR bridge uses (one keeper per process).
+    ensureFreshToken: () => oauth.ensureFresh(),
     gitWatchers,
     epoch,
   });
@@ -417,8 +404,6 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     fingerprint: identity.fingerprint,
     pairedClientCount: () => knownClients.list().length,
     authenticatedPeerCount: () => webrtc.authenticatedCount(),
-    claudeStatus: () => getClaudeStatus(),
-    recheckClaudeBinary: () => recheckClaudeBinary(),
     createPairOffer: (serviceName) => {
       const { encoded } = createPairOffer(identity, serviceName);
       return { encoded };

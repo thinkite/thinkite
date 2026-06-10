@@ -21,21 +21,18 @@ module.exports = {
     buildResources: "build",
   },
   // Production node_modules are collected automatically; this filter scopes app
-  // source. We spawn the user's SYSTEM claude (daemon passes
-  // pathToClaudeCodeExecutable), so the SDK's bundled per-platform `claude`
-  // binary (~205MB) is dead weight — drop it (dmg ~178MB → ~118MB). The main
-  // @anthropic-ai/claude-agent-sdk JS package is kept.
-  files: [
-    "dist/**/*",
-    "dist-electron/**/*",
-    "assets/**/*",
-    "package.json",
-    "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
-  ],
+  // source. The SDK's per-platform `claude` SEA binary (~212MB) IS bundled —
+  // sidecode spawns it (Desktop-style) instead of resolving a system claude,
+  // feeding it the keychain OAuth token via env (see daemon bridge/credentials).
+  files: ["dist/**/*", "dist-electron/**/*", "assets/**/*", "package.json"],
   asar: true,
-  // node-datachannel ships a prebuilt .node — must live OUTSIDE the asar to be
-  // dlopen-able. It's the only native runtime module in the dep tree.
-  asarUnpack: ["**/node_modules/node-datachannel/**"],
+  // Executables can't run from inside the asar archive:
+  //  - node-datachannel ships a prebuilt .node (must be dlopen-able)
+  //  - the claude SEA binary must be spawnable
+  asarUnpack: [
+    "**/node_modules/node-datachannel/**",
+    "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
+  ],
   // node-datachannel is prebuilt; don't rebuild native modules against Electron.
   npmRebuild: false,
   mac: {

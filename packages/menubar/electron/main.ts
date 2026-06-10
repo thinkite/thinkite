@@ -11,7 +11,6 @@ import {
   shell,
   Tray,
 } from "electron";
-import { inheritShellEnv } from "./shell-env";
 import {
   checkForUpdates,
   getUpdateState,
@@ -86,44 +85,7 @@ function symbolIcon(name: string): Electron.NativeImage {
   return img;
 }
 
-// Claude Code setup/install docs — opened from the "not found" submenu.
-const CLAUDE_CODE_SETUP_URL = "https://code.claude.com/docs/en/setup";
-
 // --- Menu builder ---
-
-// The engine-health row: which `claude` the daemon resolved + its version, or a
-// prominent "not found" with install / recheck actions. State-adaptive; rebuilt
-// on every tray open (refreshMenu), so it reflects the live daemon.claudeStatus().
-function claudeStatusItem(): Electron.MenuItemConstructorOptions | null {
-  const status = daemon?.claudeStatus();
-  if (!status) return null; // daemon not ready yet — omit the row
-  const recheck: Electron.MenuItemConstructorOptions = {
-    label: "Recheck",
-    click: () => {
-      daemon?.recheckClaudeBinary();
-      refreshMenu();
-    },
-  };
-  if (status.ok) {
-    return {
-      label: `Claude Code · ${status.version ?? "installed"}`,
-      icon: symbolIcon("checkmark.circle"),
-      submenu: [{ label: status.path, enabled: false }, recheck],
-    };
-  }
-  return {
-    label: "Claude Code not found",
-    icon: symbolIcon("exclamationmark.triangle"),
-    submenu: [
-      { label: status.error, enabled: false },
-      {
-        label: "Install Claude Code…",
-        click: () => void shell.openExternal(CLAUDE_CODE_SETUP_URL),
-      },
-      recheck,
-    ],
-  };
-}
 
 // State-adaptive update row driven by electron-updater (electron/updater.ts).
 // Shown only when there's something to convey; idle/error fall back to the
@@ -220,11 +182,6 @@ function buildMenu(): Electron.Menu {
     },
     { type: "separator" },
   ];
-
-  // Engine-health row pinned to the top: quiet version line when ok, prominent
-  // warning when claude is unresolved (the app can't run sessions without it).
-  const claudeItem = claudeStatusItem();
-  if (claudeItem) items.unshift(claudeItem, { type: "separator" });
 
   const updateItem = updateMenuItem();
   if (updateItem) items.push(updateItem);
@@ -326,11 +283,6 @@ app.on("window-all-closed", () => {});
 
 app.whenReady().then(async () => {
   app.dock?.hide();
-
-  // Finder/launchd launches give us a minimal env. Pull in the user's shell
-  // environment (PATH, SIDECODE_CLAUDE_PATH, ...) BEFORE starting the daemon so
-  // its claude resolution + anything we spawn see what a terminal would.
-  await inheritShellEnv();
 
   // Register an application-level menu so Cmd+Q works when the Pair window
   // has focus. The menu doesn't render visually (LSUIElement app via
