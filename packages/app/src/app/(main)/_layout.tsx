@@ -19,7 +19,7 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  * probes and the drawer routes all stay at the same paths.
  */
 export default function MainLayout() {
-  const { isUnpaired } = useDaemonClient();
+  const { isUnpaired, isProtocolBlocked } = useDaemonClient();
   const scheme = useColorScheme() ?? "light";
   return (
     <Stack screenOptions={{ headerShown: false }}>
@@ -28,7 +28,17 @@ export default function MainLayout() {
             in-app QR scanner and paste-payload fallback. */}
         <Stack.Screen name="onboarding" />
       </Stack.Protected>
-      <Stack.Protected guard={!isUnpaired}>
+      <Stack.Protected guard={!isUnpaired && isProtocolBlocked}>
+        {/* Protocol-mismatch gate. A version mismatch is TERMINAL (no
+            retry fixes it) and the main UI is a dead shell behind it
+            (every RPC would hang), so the whole surface gates rather
+            than badges. This does NOT violate the identity-axis rule —
+            that rule keeps TRANSIENT health states (connecting/offline)
+            off the route gate; a terminal mismatch is stable until the
+            user updates, retries successfully, or unpairs. */}
+        <Stack.Screen name="update-required" />
+      </Stack.Protected>
+      <Stack.Protected guard={!isUnpaired && !isProtocolBlocked}>
         {/* (drawer) is a route group hosting the main app: Drawer with
             custom session-list sidebar, plus the new-session create page
             (index) and session detail. */}

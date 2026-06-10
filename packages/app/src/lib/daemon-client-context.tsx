@@ -131,6 +131,10 @@ interface DaemonClientContextValue {
   client: DaemonClient;
   state: DaemonState;
   paired: PairedDaemon | null;
+  /** Sticky protocol-mismatch record — survives retry windows (where
+   *  `state` flips to `connecting`). Non-null ⟺ the update-required
+   *  route gate is up. Cleared on successful handshake or unpair(). */
+  protocolError: IncompatibleProtocolError | null;
   initialized: boolean;
   reset: () => void;
   /**
@@ -192,6 +196,14 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   // `offline` / reconnect-loop windows so settings UI keeps showing
   // hostname / fingerprint / addresses while the WS is dropped.
   const [paired, setPaired] = useState<PairedDaemon | null>(null);
+  // Sticky protocol-mismatch record. Set when a handshake fails with
+  // IncompatibleProtocolError; cleared ONLY on a successful handshake or
+  // unpair(). Deliberately NOT derived from `state` — a retry flips
+  // `state` to `connecting` (error gone) and the update-required route
+  // guard would flicker back to the main UI mid-retry. The screen stays
+  // up through retries and reads the LAST mismatch's direction/copy.
+  const [protocolError, setProtocolError] =
+    useState<IncompatibleProtocolError | null>(null);
   // Bumped on every (re)connect / pair / unpair. In-flight async work
   // detects supersession by comparing its captured epoch to the current
   // value; mismatch = bail out without touching state.
@@ -309,6 +321,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
             // still show host context, like the offline path.
             if (err instanceof IncompatibleProtocolError) {
               shouldReconnectRef.current = false;
+              setProtocolError(err);
               setState({ status: "error", error: err });
               setInitialized(true);
               return;
@@ -344,6 +357,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
           // transport (with sinceCursor + sinceEpoch hints for
           // incremental resume).
           facade._attachTransport(transport);
+          setProtocolError(null);
           setState({ status: "ready" });
           setInitialized(true);
         } catch (err) {
@@ -416,6 +430,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
         transportRef.current = transport;
         facade._attachTransport(transport);
         setPaired(loaded);
+        setProtocolError(null);
         setState({ status: "ready" });
         setInitialized(true);
       } catch (err) {
@@ -446,6 +461,7 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
     prevTransport?.close();
     await clearPairedDaemon();
     setPaired(null);
+    setProtocolError(null);
     setState({ status: "unpaired" });
   }, [clearReconnectTimer]);
 
@@ -465,8 +481,17 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
   const reset = useCallback(() => connect(0), [connect]);
 
   const value = useMemo<DaemonClientContextValue>(
-    () => ({ client: facade, state, paired, initialized, reset, pair, unpair }),
-    [state, paired, initialized, reset, pair, unpair],
+    () => ({
+      client: facade,
+      state,
+      paired,
+      protocolError,
+      initialized,
+      reset,
+      pair,
+      unpair,
+    }),
+    [state, paired, protocolError, initialized, reset, pair, unpair],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -501,6 +526,14 @@ interface UseDaemonClientResult {
    *  or error). Use this for one-shot UX like the splash gate. */
   isInitialized: boolean;
   error: Error | null;
+  /** True while a protocol mismatch blocks this pairing — the
+   *  update-required route gate keys off this (alongside `isUnpaired`).
+   *  Sticky through retry windows, unlike `error`; details (direction,
+   *  copy, versions) are on `protocolError`. */
+  isProtocolBlocked: boolean;
+  /** The mismatch record behind `isProtocolBlocked` — `outdatedSide`
+   *  picks the update-required screen's copy + primary action. */
+  protocolError: IncompatibleProtocolError | null;
   /**
    * 4-tone status for UI badges (connecting / online / offline / error).
    * `null` when there's nothing to show (`unpaired` — pair screen is
@@ -522,7 +555,16 @@ export function useDaemonClient(): UseDaemonClientResult {
       "useDaemonClient must be used inside <DaemonClientProvider>",
     );
   }
-  const { client, state, paired, initialized, reset, pair, unpair } = v;
+  const {
+    client,
+    state,
+    paired,
+    protocolError,
+    initialized,
+    reset,
+    pair,
+    unpair,
+  } = v;
   return {
     client,
     paired,
@@ -534,6 +576,8 @@ export function useDaemonClient(): UseDaemonClientResult {
     isUnpaired: paired === null,
     isInitialized: initialized,
     error: state.status === "error" ? state.error : null,
+    isProtocolBlocked: protocolError !== null,
+    protocolError,
     // No credential → nothing to badge (the pair screen is up); otherwise
     // the live health tone. Mirrors `isUnpaired` keying off identity.
     connectionStatus: paired === null ? null : deriveConnectionStatus(state),

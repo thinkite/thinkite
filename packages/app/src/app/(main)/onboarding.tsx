@@ -1,5 +1,17 @@
-import { Button, Column, Host, Text as UIText } from "@expo/ui";
-import { controlSize, frame, tint } from "@expo/ui/swift-ui/modifiers";
+// Button from swift-ui, not universal: universal Button's variant prop
+// injects a buttonStyle at modifier index 0 (SwiftUI-innermost, wins),
+// so glass styles can't be expressed through it. House CTA style is
+// `glassProminent` primary + `bordered` secondary (plain `glass` is
+// near-invisible on flat content-layer backgrounds). Host/Column/Text
+// stay universal — thin swift-ui wrappers, same native tree.
+import { Column, Host, Text as UIText } from "@expo/ui";
+import { Button } from "@expo/ui/swift-ui";
+import {
+  buttonStyle,
+  controlSize,
+  frame,
+  tint,
+} from "@expo/ui/swift-ui/modifiers";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { router, Stack } from "expo-router";
 import { useCallback, useRef, useState } from "react";
@@ -26,9 +38,10 @@ import { SidecodeMark } from "@/components/sidecode-mark";
  *
  * UI is hybrid: RN owns the layout, text, brand mark, and the footer link
  * (flexbox + uniwind `dark:` theming, `Pressable`/`Image` do links + logos
- * naturally). ONLY the CTA bar is an `@expo/ui` (universal) Host, so the
- * Buttons render the native iOS 26 control look (Liquid Glass) that RN can't
- * reproduce — plain `variant="filled"/"outlined"`, no explicit buttonStyle.
+ * naturally). ONLY the CTA bar is an `@expo/ui` Host island, so the
+ * Buttons render the native iOS 26 control look that RN can't reproduce —
+ * house style `buttonStyle("glassProminent")` primary + `"bordered"`
+ * secondary (see import note).
  * The Host self-sizes its height via `matchContents={{ vertical: true }}`
  * (effective on iOS) and `alignSelf:"stretch"` gives it RN's full width;
  * `ignoreSafeArea="keyboard"` stops the Alert.prompt keyboard from shoving
@@ -158,9 +171,12 @@ export default function OnboardingRoute() {
         >
           <Column spacing={8}>
             <Button
-              variant="filled"
               onPress={handleScan}
-              modifiers={[controlSize("extraLarge"), tint("#EE5722")]}
+              modifiers={[
+                buttonStyle("glassProminent"),
+                controlSize("extraLarge"),
+                tint("#EE5722"),
+              ]}
             >
               <UIText
                 textStyle={{
@@ -173,9 +189,12 @@ export default function OnboardingRoute() {
               </UIText>
             </Button>
             <Button
-              variant="outlined"
               onPress={handlePaste}
-              modifiers={[controlSize("extraLarge"), tint("#EE5722")]}
+              modifiers={[
+                buttonStyle("bordered"),
+                controlSize("extraLarge"),
+                tint("#EE5722"),
+              ]}
             >
               <UIText
                 textStyle={{

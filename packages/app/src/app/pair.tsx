@@ -1,5 +1,16 @@
-import { Button, Column, Host, Icon, Spacer, Text } from "@expo/ui";
-import { controlSize, frame, tint } from "@expo/ui/swift-ui/modifiers";
+// Button from swift-ui, not universal (universal's variant prop blocks
+// glass styles — its injected buttonStyle sits innermost and wins). House
+// CTA style: `glassProminent` primary + `bordered` secondary. Note
+// swift-ui Button has no `disabled` PROP — it's the `disabled()` modifier.
+import { Column, Host, Icon, Spacer, Text } from "@expo/ui";
+import { Button } from "@expo/ui/swift-ui";
+import {
+  buttonStyle,
+  controlSize,
+  disabled,
+  frame,
+  tint,
+} from "@expo/ui/swift-ui/modifiers";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useMemo, useState } from "react";
 import { decodePairOffer, type PairOffer } from "@/lib/daemon-client";
@@ -34,17 +45,17 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  *   - Native iOS sheet header with X close button (top-right)
  *   - Computer SF Symbol, title and body text top-leading
  *   - Two full-width stacked buttons pinned to the bottom (primary
- *     filled + secondary outlined)
+ *     glassProminent + secondary bordered)
  *
  * Implementation:
- * - Universal `@expo/ui` components (variant="filled"/"outlined" map
- *   to SwiftUI .borderedProminent/.bordered on iOS; same shape will
- *   render via Compose on Android once we add modifiers).
- * - SwiftUI escape hatch only where Universal can't reach: button
- *   `controlSize("large")` and the `.frame(maxWidth: .infinity)` on
- *   the label Text that triggers the "Button hugs label, so widen
- *   label" SwiftUI idiom for full-width sheet CTAs.
- * - When Android lands (V0.5+), mirror the modifier paths via
+ * - Universal `@expo/ui` components for layout/text; Buttons are
+ *   swift-ui with house CTA styles (glassProminent / bordered — see
+ *   import note).
+ * - SwiftUI modifiers where Universal can't reach: `controlSize`,
+ *   `disabled`, and the `.frame(maxWidth: .infinity)` on the label
+ *   Text that triggers the "Button hugs label, so widen label"
+ *   SwiftUI idiom for full-width sheet CTAs.
+ * - When Android lands (V0.5+), mirror via
  *   `@expo/ui/jetpack-compose/modifiers` in a `pair.android.tsx`.
  *
  * Layout structure: single Host + Stack.Toolbar wrapping the route,
@@ -174,10 +185,13 @@ export default function PairModal() {
           modifiers={[frame({ maxWidth: Infinity, alignment: "topLeading" })]}
         >
           <Button
-            variant="filled"
             onPress={primaryAction.onPress}
-            disabled={primaryAction.disabled}
-            modifiers={[controlSize("extraLarge"), tint("#EE5722")]}
+            modifiers={[
+              buttonStyle("glassProminent"),
+              controlSize("extraLarge"),
+              tint("#EE5722"),
+              disabled(primaryAction.disabled === true),
+            ]}
           >
             <Text
               textStyle={{
@@ -192,10 +206,13 @@ export default function PairModal() {
           </Button>
           {secondary && (
             <Button
-              variant="outlined"
               onPress={secondary.onPress}
-              disabled={busy}
-              modifiers={[controlSize("extraLarge"), tint("#EE5722")]}
+              modifiers={[
+                buttonStyle("bordered"),
+                controlSize("extraLarge"),
+                tint("#EE5722"),
+                disabled(busy),
+              ]}
             >
               <Text
                 textStyle={{ fontSize: 17, textAlign: "center" }}

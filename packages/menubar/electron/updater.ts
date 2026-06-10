@@ -22,6 +22,10 @@ let state: UpdateState = { status: "idle" };
 let pendingVersion = "";
 let onChange: (() => void) | null = null;
 
+// 6h: frequent enough to keep the protocol-mismatch window to hours, rare
+// enough to be invisible in network logs.
+const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 export function getUpdateState(): UpdateState {
   return state;
 }
@@ -57,6 +61,11 @@ export function initUpdater(opts: { onStateChange: () => void }): void {
   );
 
   checkForUpdates();
+  // Menu bar apps run for weeks; a startup-only check would let the Mac
+  // side drift behind an auto-updating iOS app until the next reboot —
+  // exactly the window that puts the phone on the update-required gate.
+  // autoDownload + autoInstallOnAppQuit keep each periodic hit silent.
+  setInterval(checkForUpdates, RECHECK_INTERVAL_MS).unref();
 }
 
 export function checkForUpdates(): void {
