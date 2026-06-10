@@ -2,6 +2,7 @@
   "name": "@sidecodeapp/signaling",
   "version": "0.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Cloudflare Workers + Durable Objects WebRTC signaling server for sidecode peers",
   "type": "module",
   "scripts": {

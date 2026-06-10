@@ -73,6 +73,7 @@
     "typescript": "~6.0.3"
   },
   "private": true,
+  "license": "Apache-2.0",
   "expo": {
     "install": {
       "exclude": [

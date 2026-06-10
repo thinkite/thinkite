@@ -2,6 +2,7 @@
   "name": "@sidecodeapp/daemon",
   "version": "0.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "macOS daemon for sidecode — wraps Claude Agent SDK and exposes it to mobile clients",
   "type": "module",
   "main": "./dist/index.js",

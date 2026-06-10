@@ -1300,7 +1300,7 @@ export const getFilesystemRootsResponse = z.object({
   type: z.literal("getFilesystemRoots.response"),
   requestId: z.string(),
   /** Daemon machine's HOME directory absolute path (e.g.
-   *  "/Users/yangyueqian"). Always populated — every OS has $HOME. */
+   *  "/Users/you"). Always populated — every OS has $HOME. */
   home: z.string(),
   /** `${home}/Desktop` if it exists on disk. Optional because Desktop
    *  is not universal (Linux headless servers / non-standard XDG

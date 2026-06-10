@@ -2,6 +2,7 @@
   "name": "@sidecodeapp/protocol",
   "version": "0.0.1",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Wire protocol shared between sidecode daemon and clients",
   "type": "module",
   "main": "./dist/index.js",
