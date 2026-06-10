@@ -16,6 +16,7 @@ import {
   interruptCommand,
   interruptResponse,
   isProtocolCompatible,
+  outdatedSide,
   PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
   pairOfferFrame,
@@ -48,28 +49,21 @@ describe("isProtocolCompatible", () => {
     expect(isProtocolCompatible(PROTOCOL_VERSION)).toBe(true);
   });
 
-  it("npm caret semantics for 0.0.x: exact-match only (every change is breaking)", () => {
-    // npm convention: ^0.0.0 → >=0.0.0 <0.0.1. No upgrades allowed
-    // because at 0.0.x every change is potentially breaking. We surface
-    // this through `^PROTOCOL_VERSION`. If PROTOCOL_VERSION is in this
-    // range, anything other than exact-match is rejected.
-    if (PROTOCOL_VERSION.startsWith("0.0.")) {
-      const [, , patch] = PROTOCOL_VERSION.split(".").map(Number);
-      expect(isProtocolCompatible(`0.0.${patch + 1}`)).toBe(false);
-      expect(isProtocolCompatible(`0.1.0`)).toBe(false);
-      expect(isProtocolCompatible(`1.0.0`)).toBe(false);
-    }
-  });
-
-  it("npm caret semantics for 0.x.y (x≥1): same minor + patch ≥ local", () => {
-    // ^0.5.3 → >=0.5.3 <0.6.0. Patch upgrades OK, minor bump breaking.
-    if (
-      PROTOCOL_VERSION.startsWith("0.") &&
-      !PROTOCOL_VERSION.startsWith("0.0.")
-    ) {
+  it("same breaking line during 0.x: patch differences compatible BOTH directions", () => {
+    // Bump policy: patch = additive only, old peers harmlessly ignore.
+    // The check is symmetric same-`0.minor`-line — deliberately NOT npm
+    // caret (which rejects a remote with a LOWER patch than ours).
+    if (PROTOCOL_VERSION.startsWith("0.")) {
       const [, minor, patch] = PROTOCOL_VERSION.split(".").map(Number);
       expect(isProtocolCompatible(`0.${minor}.${patch + 5}`)).toBe(true);
+      if (patch > 0) {
+        expect(isProtocolCompatible(`0.${minor}.${patch - 1}`)).toBe(true);
+      }
       expect(isProtocolCompatible(`0.${minor + 1}.0`)).toBe(false);
+      if (minor > 0) {
+        expect(isProtocolCompatible(`0.${minor - 1}.0`)).toBe(false);
+      }
+      expect(isProtocolCompatible(`1.0.0`)).toBe(false);
     }
   });
 
@@ -86,6 +80,33 @@ describe("isProtocolCompatible", () => {
     expect(isProtocolCompatible("not-a-version")).toBe(false);
     expect(isProtocolCompatible("")).toBe(false);
     expect(isProtocolCompatible("1")).toBe(false);
+  });
+});
+
+describe("outdatedSide", () => {
+  it("semver-lower remote → remote is the outdated side", () => {
+    const [major, minor, patch] = PROTOCOL_VERSION.split(".").map(Number);
+    expect(outdatedSide(`${major}.${minor}.${patch + 1}`)).toBe("local");
+    expect(outdatedSide(`${major}.${minor + 1}.0`)).toBe("local");
+    expect(outdatedSide(`${major + 1}.0.0`)).toBe("local");
+    if (patch > 0) {
+      expect(outdatedSide(`${major}.${minor}.${patch - 1}`)).toBe("remote");
+    }
+    if (minor > 0) {
+      expect(outdatedSide(`${major}.${minor - 1}.0`)).toBe("remote");
+    }
+    if (major > 0) {
+      expect(outdatedSide(`${major - 1}.0.0`)).toBe("remote");
+    }
+  });
+
+  it("equal version → null (a peer rejecting us at OUR version is misbehaving, not outdated)", () => {
+    expect(outdatedSide(PROTOCOL_VERSION)).toBe(null);
+  });
+
+  it("garbage input → null (caller falls back to direction-neutral copy)", () => {
+    expect(outdatedSide("not-a-version")).toBe(null);
+    expect(outdatedSide("")).toBe(null);
   });
 });
 
@@ -442,6 +463,20 @@ describe("error frame", () => {
         message: "client v=2 outside daemon range [1, 1]",
       }).code,
     ).toBe("incompatible_protocol");
+  });
+
+  it("preserves the sender's protocolVersion on incompatible_protocol", () => {
+    // The field must be in the schema — z.object strips unknown keys, so
+    // a zod-parsed path would silently drop it and iOS couldn't tell
+    // which side is outdated.
+    expect(
+      errorFrame.parse({
+        type: "error",
+        code: "incompatible_protocol",
+        message: "client protocol 0.1.0 is not compatible with daemon 0.2.0",
+        protocolVersion: "0.2.0",
+      }).protocolVersion,
+    ).toBe("0.2.0");
   });
 });
 

@@ -303,9 +303,10 @@ export function DaemonClientProvider({ children }: { children: ReactNode }) {
             if (!shouldReconnectRef.current) return;
             // Protocol mismatch is TERMINAL — retrying can't change a
             // version check. Stop the auto-reconnect loop and surface a
-            // terminal `error` (red, "update both"); the user re-attempts
-            // via reset() after updating. KEEP `paired` so the update
-            // screen can still show host context, like the offline path.
+            // terminal `error` (the message names which side is outdated
+            // via `err.outdatedSide`); the user re-attempts via reset()
+            // after updating. KEEP `paired` so the update screen can
+            // still show host context, like the offline path.
             if (err instanceof IncompatibleProtocolError) {
               shouldReconnectRef.current = false;
               setState({ status: "error", error: err });

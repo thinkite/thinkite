@@ -70,30 +70,54 @@ export const PROTOCOL_VERSION: string = pkg.version;
 /**
  * True iff a remote peer reporting `remote` speaks a wire-compatible
  * schema set with this build's PROTOCOL_VERSION. Compatible means
- * `remote` satisfies a caret range over PROTOCOL_VERSION:
+ * "same breaking line", per the bump policy above:
  *
- *   - `^0.5.7` → compatible with `0.5.x` (any patch), not `0.6.0`
- *   - `^1.2.3` → compatible with `1.x.y` (any minor or patch ≥ 1.2.3)
+ *   - during 0.x the minor is the breaking axis → same `0.minor` line
+ *     (`0.5.1` ↔ `0.5.9` compatible in both directions, `0.6.0` not)
+ *   - ≥1.0 the major is the breaking axis → same major
+ *   - pre-release on either side → exact match only (mid-development
+ *     schemas churn; two builds are only known-compatible if identical)
  *
- * This is npm's standard caret semantics — same rule npm uses to decide
- * which versions satisfy a `^x.y.z` dependency. The semver package
- * handles pre-release tags / build metadata / edge cases correctly,
- * which a hand-rolled major-comparison would miss.
+ * Deliberately NOT npm caret semantics. `satisfies(remote, ^local)` is
+ * asymmetric — it rejects a remote with a LOWER patch on the same
+ * breaking line, but the bump policy says patch bumps are additive and
+ * old peers harmlessly ignore them. Symmetric same-line comparison is
+ * the faithful implementation, and it guarantees the daemon (which
+ * checks `hello` first) always rejects before iOS gets a chance to —
+ * iOS's `server_info` re-check is pure drift defense.
  *
  * Returns `false` on unparseable input (defensive — we'd rather refuse
  * than blunder on with an unknown version that might or might not be
  * compatible).
  */
 export function isProtocolCompatible(remote: string): boolean {
-  if (!semver.valid(remote) || !semver.valid(PROTOCOL_VERSION)) return false;
-  return semver.satisfies(remote, `^${PROTOCOL_VERSION}`, {
-    // includePrerelease: false — pre-release versions don't satisfy
-    // a caret range over a stable version. This is npm's default and
-    // it's the right call: a 1.2.0-beta.1 daemon shouldn't be
-    // considered compatible with a 1.0.0 client (the beta may have
-    // incompatible schemas mid-development).
-    includePrerelease: false,
-  });
+  const r = semver.parse(remote);
+  const local = semver.parse(PROTOCOL_VERSION);
+  if (!r || !local) return false;
+  if (r.prerelease.length > 0 || local.prerelease.length > 0) {
+    return semver.eq(r, local);
+  }
+  if (r.major !== local.major) return false;
+  return local.major === 0 ? r.minor === local.minor : true;
+}
+
+/**
+ * Which side is outdated, given the version an INCOMPATIBLE remote
+ * reported. Only meaningful after `isProtocolCompatible(remote)`
+ * returned false — incompatible versions are never equal, so the
+ * semver-lower side is the one that needs updating.
+ *
+ * Returns from the caller's perspective: `"remote"` → the peer is
+ * older (iOS calling this → tell the user to update the Mac app),
+ * `"local"` → this build is older. Returns `null` when the input is
+ * unparseable or equal to ours (a peer that rejected us while
+ * reporting our own version is misbehaving, not outdated) — callers
+ * fall back to direction-neutral "update both" copy.
+ */
+export function outdatedSide(remote: string): "local" | "remote" | null {
+  if (!semver.valid(remote) || !semver.valid(PROTOCOL_VERSION)) return null;
+  if (semver.eq(remote, PROTOCOL_VERSION)) return null;
+  return semver.lt(remote, PROTOCOL_VERSION) ? "remote" : "local";
 }
 
 // ─── Pair offer ────────────────────────────────────────────────────────────
@@ -1320,15 +1344,23 @@ export const errorFrame = z.object({
     "not_a_directory",
   ]),
   message: z.string(),
+  /** Sender's PROTOCOL_VERSION. Set on `incompatible_protocol` VERSION-
+   *  mismatch rejections so the receiver can run `outdatedSide()` and
+   *  name the side that needs updating. Deliberately absent on the
+   *  other `incompatible_protocol` use (frame-before-hello, a protocol-
+   *  misuse rejection where versions may well be EQUAL and direction is
+   *  meaningless) and on all other codes. */
+  protocolVersion: z.string().optional(),
 });
 
 // ─── Hello / server_info (wire-version handshake on DataChannel open) ─────
 //
 // iOS sends `hello` immediately after DC.open carrying its PROTOCOL_VERSION.
 // Daemon checks compatibility via `isProtocolCompatible` and responds with
-// its own `server_info` (or with `error{code:"incompatible_protocol"}` +
-// DC close on mismatch). iOS treats `server_info` as the "ready" signal —
-// application commands may only flow after it arrives.
+// its own `server_info` (or with `error{code:"incompatible_protocol",
+// protocolVersion}` + DC close on mismatch — the version lets iOS name
+// which side is outdated via `outdatedSide`). iOS treats `server_info` as
+// the "ready" signal — application commands may only flow after it arrives.
 //
 // Single field exchanged each way. There's no separate "app release
 // version" / "daemon release version" — the protocol package owns the

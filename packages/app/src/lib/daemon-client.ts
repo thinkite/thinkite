@@ -11,6 +11,7 @@ import {
   type ImageAttachment,
   isChunkEnvelope,
   isProtocolCompatible,
+  outdatedSide,
   PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
   type SessionState,
@@ -26,26 +27,40 @@ import { WebRTCPeer } from "./webrtc-peer";
 
 /**
  * Thrown by the connect handshake when the daemon and app speak
- * wire-incompatible protocol versions (either side too old — the caret
- * compat gate is symmetric, so we can't tell which from here, and it
- * doesn't matter: "update both to latest" is always-correct guidance).
+ * wire-incompatible protocol versions. The daemon's rejection frame (and
+ * `server_info`) carry its PROTOCOL_VERSION, so `outdatedSide` names the
+ * side that needs updating — the semver-lower side — and the message is
+ * tailored to it. `"unknown"` (→ direction-neutral "update both" copy)
+ * only happens when the version is missing or unparseable, e.g. the
+ * frame-before-hello misuse rejection which deliberately omits it.
  *
  * Unlike a transient unreachable-daemon failure, this is TERMINAL: no
  * amount of retrying changes the version check. `DaemonClientProvider`
  * routes it to a terminal `error` state and stops the auto-reconnect loop
- * (the user re-attempts via `reset()` after updating). `daemonProtocolVersion`
- * is best-effort for diagnostics — null when the daemon rejected our `hello`
- * before we could read its version; the user-facing copy never names a side.
+ * (the user re-attempts via `reset()` after updating).
  */
 export class IncompatibleProtocolError extends Error {
   readonly appProtocolVersion = PROTOCOL_VERSION;
   readonly daemonProtocolVersion: string | null;
+  /** Which side is too old. `"daemon"` → update the Mac app, `"app"` →
+   *  update this app, `"unknown"` → no usable daemon version, update both. */
+  readonly outdatedSide: "app" | "daemon" | "unknown";
   constructor(daemonProtocolVersion: string | null = null) {
+    const side =
+      daemonProtocolVersion === null
+        ? null
+        : outdatedSide(daemonProtocolVersion);
     super(
-      "Sidecode is out of date. Update both the iPhone app and the Mac app to the latest version, then try again.",
+      side === "remote"
+        ? "The Mac app is out of date. Update Sidecode on your Mac, then try again."
+        : side === "local"
+          ? "This app is out of date. Update Sidecode from the App Store, then try again."
+          : "Sidecode is out of date. Update both the iPhone app and the Mac app to the latest version, then try again.",
     );
     this.name = "IncompatibleProtocolError";
     this.daemonProtocolVersion = daemonProtocolVersion;
+    this.outdatedSide =
+      side === "remote" ? "daemon" : side === "local" ? "app" : "unknown";
   }
 }
 
@@ -416,9 +431,10 @@ export class Transport {
                   `daemon reported incompatible_protocol: ${frame.message}`,
                 );
               }
-              // Daemon's error frame carries no structured version (only the
-              // freetext message above), so direction is unknown — fine, the
-              // copy never names a side.
+              // Version-mismatch rejections carry the daemon's structured
+              // protocolVersion → the error names which side is outdated.
+              // The frame-before-hello misuse rejection omits it → falls
+              // back to the direction-neutral "update both" copy.
               fail(
                 new IncompatibleProtocolError(frame.protocolVersion ?? null),
               );

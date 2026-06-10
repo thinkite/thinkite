@@ -522,6 +522,9 @@ export class WebRTCPeerServer {
           type: "error",
           code: "incompatible_protocol",
           message: `client protocol ${frame.protocolVersion} is not compatible with daemon ${PROTOCOL_VERSION}`,
+          // Structured copy of our version so iOS can tell WHICH side is
+          // outdated (`outdatedSide`) and name it in the error copy.
+          protocolVersion: PROTOCOL_VERSION,
         });
         this.closePeer(slot, "incompatible wire protocol");
         return;
