@@ -1,4 +1,4 @@
-import { app } from "electron";
+import { app, dialog } from "electron";
 // electron-updater is CJS; default-import + destructure is the safe ESM interop.
 import electronUpdater from "electron-updater";
 
@@ -22,6 +22,13 @@ let state: UpdateState = { status: "idle" };
 let pendingVersion = "";
 let onChange: (() => void) | null = null;
 
+// Sparkle's convention, adopted here: a USER-initiated check must always
+// answer with visible UI (dialog), while scheduled background checks stay
+// silent (menu rows + tray title only). This flag marks the in-flight check
+// as user-initiated; each terminal outcome (up to date / downloaded / error)
+// consumes it.
+let interactiveCheck = false;
+
 // 6h: frequent enough to keep the protocol-mismatch window to hours, rare
 // enough to be invisible in network logs.
 const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -44,9 +51,20 @@ export function initUpdater(opts: { onStateChange: () => void }): void {
   autoUpdater.on("checking-for-update", () => set({ status: "checking" }));
   autoUpdater.on("update-available", (info) => {
     pendingVersion = info.version;
+    // No dialog here even for interactive checks: the tray title starts
+    // showing live "⬇ N%" immediately (right where the user just clicked),
+    // and the flag survives until update-downloaded prompts the restart.
     set({ status: "downloading", version: info.version, percent: 0 });
   });
-  autoUpdater.on("update-not-available", () => set({ status: "idle" }));
+  autoUpdater.on("update-not-available", () => {
+    set({ status: "idle" });
+    if (consumeInteractive()) {
+      showDialog({
+        message: "You're up to date",
+        detail: `Sidecode ${app.getVersion()} is the latest version.`,
+      });
+    }
+  });
   autoUpdater.on("download-progress", (p) =>
     set({
       status: "downloading",
@@ -54,12 +72,41 @@ export function initUpdater(opts: { onStateChange: () => void }): void {
       percent: Math.round(p.percent),
     }),
   );
-  autoUpdater.on("update-downloaded", (info) =>
-    set({ status: "downloaded", version: info.version }),
-  );
-  autoUpdater.on("error", (err) =>
-    set({ status: "error", message: err?.message ?? String(err) }),
-  );
+  autoUpdater.on("update-downloaded", (info) => {
+    set({ status: "downloaded", version: info.version });
+    // A user who manually checked almost certainly wants to install right
+    // away — offer the restart instead of making them reopen the menu.
+    // (electron-updater re-fires this immediately for an already-cached
+    // download, so a manual re-check while in "downloaded" lands here too.)
+    if (consumeInteractive()) {
+      app.focus({ steal: true }); // see showDialog
+      void dialog
+        .showMessageBox({
+          type: "info",
+          message: `Sidecode ${info.version} is ready`,
+          detail: "Restart now to finish updating?",
+          buttons: ["Restart Now", "Later"],
+          defaultId: 0,
+          cancelId: 1,
+        })
+        .then(({ response }) => {
+          if (response === 0) quitAndInstall();
+        });
+    }
+  });
+  autoUpdater.on("error", (err) => {
+    const message = err?.message ?? String(err);
+    set({ status: "error", message });
+    // Background-check failures (laptop offline, feed hiccup) stay silent —
+    // the 6h cadence retries on its own.
+    if (consumeInteractive()) {
+      showDialog({
+        type: "warning",
+        message: "Couldn't check for updates",
+        detail: message,
+      });
+    }
+  });
 
   checkForUpdates();
   // Menu bar apps run for weeks; a startup-only check would let the Mac
@@ -69,7 +116,8 @@ export function initUpdater(opts: { onStateChange: () => void }): void {
   setInterval(checkForUpdates, RECHECK_INTERVAL_MS).unref();
 }
 
-export function checkForUpdates(): void {
+export function checkForUpdates(opts: { interactive?: boolean } = {}): void {
+  if (opts.interactive) interactiveCheck = true;
   // Failures also fire the "error" event; this catch just prevents an unhandled
   // rejection when no feed is reachable (e.g. dev without a real dev-app-update.yml).
   autoUpdater.checkForUpdates().catch((err) => {
@@ -81,6 +129,28 @@ export function checkForUpdates(): void {
 
 export function quitAndInstall(): void {
   autoUpdater.quitAndInstall();
+}
+
+function consumeInteractive(): boolean {
+  const was = interactiveCheck;
+  interactiveCheck = false;
+  return was;
+}
+
+function showDialog(opts: {
+  type?: "info" | "warning";
+  message: string;
+  detail: string;
+}): void {
+  // LSUIElement app (no Dock presence): without an explicit focus steal the
+  // dialog can open behind whatever app is frontmost.
+  app.focus({ steal: true });
+  void dialog.showMessageBox({
+    type: opts.type ?? "info",
+    message: opts.message,
+    detail: opts.detail,
+    buttons: ["OK"],
+  });
 }
 
 function set(next: UpdateState): void {

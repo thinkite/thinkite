@@ -194,7 +194,10 @@ function buildMenu(): Electron.Menu {
         { label: `Version ${app.getVersion()}`, enabled: false },
         {
           label: "Check for updates",
-          click: () => checkForUpdates(),
+          // interactive: a user-initiated check always answers with a
+          // dialog (up to date / restart prompt / error) — Sparkle
+          // convention; scheduled checks stay silent.
+          click: () => checkForUpdates({ interactive: true }),
         },
         {
           label: "View on GitHub",
@@ -217,6 +220,12 @@ function buildMenu(): Electron.Menu {
 
 function refreshMenu() {
   tray?.setContextMenu(buildMenu());
+  // Download progress lives in the tray TITLE (text beside the icon) — the
+  // one surface a menu bar app can update that's visible without opening
+  // anything. macOS doesn't repaint an already-open NSMenu, so the menu row
+  // alone would only show progress on the next open.
+  const s = getUpdateState();
+  tray?.setTitle(s.status === "downloading" ? ` ${s.percent}%` : "");
 }
 
 // --- Pair window ---
