@@ -7,11 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": [
-      "**",
-      "!**/*.astro",
-      "!packages/app/src/uniwind-types.d.ts"
-    ]
+    "includes": ["**", "!**/*.astro", "!packages/app/src/uniwind-types.d.ts"]
   },
   "formatter": {
     "enabled": true,
