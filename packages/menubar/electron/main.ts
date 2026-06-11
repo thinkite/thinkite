@@ -59,18 +59,17 @@ function formatPercent(util: number): string {
   return `${Math.round(util)}%`;
 }
 
-function formatCountdown(resetsAt: string): string {
+// Coarse single-unit countdown: "resets 42m" / "resets 7h" / "resets 3d".
+// Ceil everywhere so the label never understates the wait ("resets 0m"
+// while 30s remain would read as a bug).
+function formatResets(resetsAt: string): string {
   const ms = new Date(resetsAt).getTime() - Date.now();
-  if (ms <= 0) return "0:00";
-  const totalMin = Math.floor(ms / 60000);
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  return `${h}:${m.toString().padStart(2, "0")}`;
-}
-
-function formatResetDate(resetsAt: string): string {
-  const d = new Date(resetsAt);
-  return `${d.getMonth() + 1}月${d.getDate()}日`;
+  if (ms <= 0) return "resets now";
+  const min = Math.ceil(ms / 60_000);
+  if (min < 60) return `resets ${min}m`;
+  const hours = Math.ceil(min / 60);
+  if (hours < 24) return `resets ${hours}h`;
+  return `resets ${Math.ceil(hours / 24)}d`;
 }
 
 // SF Symbol → 16x16 template image (auto-tints to follow menu fg color,
@@ -126,19 +125,19 @@ function planUsageItems(): Electron.MenuItemConstructorOptions[] {
       const row = (
         name: string,
         w: PlanUsageWindow | undefined,
-        reset?: (resetsAt: string) => string,
+        showReset = false,
       ): Electron.MenuItemConstructorOptions | null =>
         w
           ? {
               label: `${name} - ${formatPercent(w.utilization)}${
-                reset && w.resetsAt ? ` · ${reset(w.resetsAt)}` : ""
+                showReset && w.resetsAt ? ` · ${formatResets(w.resetsAt)}` : ""
               }`,
               enabled: false,
             }
           : null;
       const rows = [
-        row("5h", u.fiveHour, formatCountdown),
-        row("Weekly", u.sevenDay, formatResetDate),
+        row("5h", u.fiveHour, true),
+        row("Weekly", u.sevenDay, true),
         row("Opus", u.sevenDayOpus),
         row("Sonnet", u.sevenDaySonnet),
       ].filter((r) => r !== null);
