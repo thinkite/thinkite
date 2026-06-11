@@ -64,6 +64,30 @@ jobs:
           pnpm -r typecheck
           pnpm test
 
+      # Pre-create the draft release BEFORE electron-builder runs. Its GitHub
+      # publisher spins up one instance per artifact; when no draft exists yet
+      # they race to create one and the v0.0.2 run ended with TWO drafts and
+      # the assets split between them. A pre-existing draft (matching tag +
+      # version-named title) is found by every instance — no race. The body is
+      # the commit log since the previous tag (direct-to-main workflow means
+      # GitHub's PR-based auto-notes would be empty); hand-write a short
+      # user-facing What's New above it before publishing.
+      - name: Create draft release with commit-log notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          RANGE="${PREV:+$PREV..}$TAG"
+          {
+            echo "<!-- Add a short user-facing What's New above the commit list before publishing. -->"
+            echo ""
+            echo "## Commits${PREV:+ since $PREV}"
+            echo ""
+            git log --no-merges --pretty='- %s' "$RANGE"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --draft --title "${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md"
+
       - name: Write App Store Connect API key
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -84,23 +108,3 @@ jobs:
           pnpm --filter '@sidecodeapp/menubar...' run build
           pnpm --filter @sidecodeapp/menubar exec electron-builder --mac --arm64 --publish always
 
-      # electron-builder creates the draft with an empty body; fill it with the
-      # commit log since the previous tag. Direct-to-main workflow means GitHub's
-      # PR-based auto-notes would be empty — the commit subjects ARE the
-      # changelog here. Hand-write a short "What's new" above the list before
-      # publishing.
-      - name: Attach commit log to the draft release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="$GITHUB_REF_NAME"
-          PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
-          RANGE="${PREV:+$PREV..}$TAG"
-          {
-            echo "<!-- Add a short user-facing What's New above the commit list before publishing. -->"
-            echo ""
-            echo "## Commits${PREV:+ since $PREV}"
-            echo ""
-            git log --no-merges --pretty='- %s' "$RANGE"
-          } > "$RUNNER_TEMP/notes.md"
-          gh release edit "$TAG" --draft=true --notes-file "$RUNNER_TEMP/notes.md"
