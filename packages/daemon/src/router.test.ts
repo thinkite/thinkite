@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import type {
@@ -1792,8 +1798,16 @@ describe("createCommandHandler — getFilesystemRoots", () => {
       throw new Error("expected response");
     const home = homedir();
     expect(sent[0].home).toBe(home);
-    expect(sent[0].desktop).toBe(path.join(home, "Desktop"));
-    expect(sent[0].documents).toBe(path.join(home, "Documents"));
+    // Desktop/Documents are OPTIONAL by contract: present iff the dir
+    // exists on disk (macOS always has both; Linux CI runners have
+    // neither). Mirror the handler's existence filter instead of
+    // assuming a macOS-shaped $HOME.
+    const desktop = path.join(home, "Desktop");
+    expect(sent[0].desktop).toBe(existsSync(desktop) ? desktop : undefined);
+    const documents = path.join(home, "Documents");
+    expect(sent[0].documents).toBe(
+      existsSync(documents) ? documents : undefined,
+    );
     expect(sent[0].recentCwds).toEqual([]); // no sessions = no recents
   });
 
