@@ -9,8 +9,11 @@ dist/
 web-build/
 expo-env.d.ts
 
-# uniwind regenerates this on every metro start
-src/uniwind-types.d.ts
+# src/uniwind-types.d.ts is uniwind-generated but TRACKED: its content is
+# derived from the (rarely changing) uniwind themes config, and without it
+# `tsc --noEmit` fails on every fresh clone / CI runner (no className types
+# on RN components) until someone runs metro once. If uniwind regenerates
+# it differently after a config change, commit the diff.
 
 # Native
 .kotlin/
