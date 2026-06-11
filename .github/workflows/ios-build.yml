@@ -1,9 +1,12 @@
 name: EAS iOS build + submit
 
 # Triggers an EAS *cloud* build of the iOS app and auto-submits to TestFlight.
-# The build runs on EAS infrastructure (sharp's source-build is avoided via
-# SHARP_IGNORE_GLOBAL_LIBVIPS in the build profile env), so this job only runs
-# the eas-cli trigger — no macOS runner, Xcode, or local install needed.
+# The compile runs on EAS infrastructure (sharp's source-build is avoided via
+# SHARP_IGNORE_GLOBAL_LIBVIPS in the build profile env) — no macOS runner or
+# Xcode here. node_modules ARE still required on this runner though: eas-cli
+# resolves app.config.ts (expo-router & co. config plugins) locally before
+# uploading the project archive, and fails with "Failed to resolve plugin"
+# without an install.
 #
 # Required secret: EXPO_TOKEN (expo.dev > Account settings > Access tokens).
 # iOS signing credentials + the App Store Connect API key are EAS-managed.
@@ -16,9 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4 # version from root package.json `packageManager`
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
 
       - run: npm install -g eas-cli
 
