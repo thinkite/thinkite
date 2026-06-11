@@ -24,6 +24,16 @@ module.exports = {
   // source. The SDK's per-platform `claude` SEA binary (~212MB) IS bundled —
   // sidecode spawns it (Desktop-style) instead of resolving a system claude,
   // feeding it the keychain OAuth token via env (see daemon bridge/credentials).
+  //
+  // Two electron-builder build warnings are EXPECTED with this setup:
+  //  - "platform-specific optional dependencies not bundled" (darwin-x64 /
+  //    linux-* / win32-* SDK binaries): pnpm installs only the host platform's
+  //    binary and V0 ships arm64-mac only — darwin-arm64 IS bundled, the rest
+  //    are intentionally absent. Revisit only if we ever add an x64 target.
+  //  - "duplicate dependency references": pnpm's nested layout makes some deps
+  //    reachable via multiple paths (menubar → daemon link → shared deps);
+  //    informational, worst case a few duplicated JS copies in the asar —
+  //    noise next to the 212MB SEA binary.
   files: ["dist/**/*", "dist-electron/**/*", "assets/**/*", "package.json"],
   asar: true,
   // Executables can't run from inside the asar archive:
