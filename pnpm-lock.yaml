@@ -232,9 +232,6 @@ importers:
       '@sidecodeapp/daemon':
         specifier: workspace:*
         version: link:../daemon
-      '@tanstack/react-query':
-        specifier: ^5.94.0
-        version: 5.100.5(react@19.2.6)
       electron-updater:
         specifier: ^6.8.9
         version: 6.8.9
@@ -2848,9 +2845,6 @@ packages:
     resolution: {integrity: sha512-eQ1MyLKCHyXiH7NbdmB80W77OhiMgGBUb+qDx/8WMGbwg5Lf/NlfD0TfNYAqY77i8V3AxoDoYdICrQE5ADw4Yw==}
     engines: {node: '>=18'}
 
-  '@tanstack/query-core@5.100.5':
-    resolution: {integrity: sha512-t20KrhKkf0HXzqQkPbJ5erhFesup68BAbwFgYmTrS7bxMF7O5MdmL8jUkik4thsG7Hg00fblz30h6yF1d5TxGg==}
-
   '@tanstack/query-core@5.101.0':
     resolution: {integrity: sha512-cQetA74EB+seWySv1TTKr828TnP0u39m6LykwDXIo84SNortpDkp30TMEjkqtYCNP9c40uT/iwl6MLiufEt0Ow==}
 
@@ -2858,11 +2852,6 @@ packages:
     resolution: {integrity: sha512-s/8Iv5IrJd0jGeVwX/x3fn7GrPwCGkakzdfxvp2ju2o267uvV5YC2+MviVo9UIGZ+cCLdFAHjxY6P9+WZWTRAg==}
     peerDependencies:
       react: '>=16.8.0'
-
-  '@tanstack/react-query@5.100.5':
-    resolution: {integrity: sha512-aNwj1mi2v2bQ9IxkyR1grLOUkv3BYWoykHy9KDyLNbjC3tsahbOHJibK+Wjtr1wRhG59/AvJhiJG5OlthaCgJA==}
-    peerDependencies:
-      react: ^18 || ^19
 
   '@tanstack/react-query@5.101.0':
     resolution: {integrity: sha512-rLlJXSpkqfizLWgkR5+eLeIk0MvTx/meEIR7LRjxic+qxiQP8zVjq7BqQkiCMNLQBlLfuOLqqr6KO5GtrDlmSg==}
@@ -10011,8 +10000,6 @@ snapshots:
 
   '@tanstack/pacer-lite@0.2.2': {}
 
-  '@tanstack/query-core@5.100.5': {}
-
   '@tanstack/query-core@5.101.0': {}
 
   '@tanstack/react-db@0.1.86(react@19.2.3)(typescript@6.0.3)':
@@ -10022,11 +10009,6 @@ snapshots:
       use-sync-external-store: 1.6.0(react@19.2.3)
     transitivePeerDependencies:
       - typescript
-
-  '@tanstack/react-query@5.100.5(react@19.2.6)':
-    dependencies:
-      '@tanstack/query-core': 5.100.5
-      react: 19.2.6
 
   '@tanstack/react-query@5.101.0(react@19.2.3)':
     dependencies:
