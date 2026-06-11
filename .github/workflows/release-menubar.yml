@@ -1,0 +1,105 @@
+name: Release menubar
+
+# Tag-driven release of the Mac menu bar app, draft-first:
+#
+#   git tag v0.0.2 && git push origin v0.0.2
+#     → this workflow builds, signs, notarizes, and uploads
+#       dmg + zip + blockmap + latest-mac.yml to a DRAFT GitHub release
+#     → smoke-test the draft's dmg locally, then click "Publish release"
+#
+# electron-updater only sees PUBLISHED releases, so the draft is the safety
+# gate: installed apps' periodic checks (electron/updater.ts, 6h) start
+# picking the version up only at the moment of manual publish. A bad build
+# never reaches users — delete the draft and re-tag.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   CSC_LINK           base64 of the Developer ID Application .p12 export
+#   CSC_KEY_PASSWORD   password chosen at .p12 export
+#   APPLE_API_KEY_P8   base64 of the App Store Connect API .p8 key
+#   APPLE_API_KEY_ID   the key's ID
+#   APPLE_API_ISSUER   the ASC issuer UUID
+# (electron-builder imports the cert into a temp keychain via CSC_LINK and
+# notarizes via notarytool with the API key — same env contract as the local
+# `package:mac:notarize` script's .env.local.)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the draft release + upload assets
+
+jobs:
+  release:
+    runs-on: macos-15 # Apple Silicon — we ship arm64-only (V0)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags for the commit-log release notes
+
+      - uses: pnpm/action-setup@v4 # version from root package.json `packageManager`
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The feed (latest-mac.yml) advertises the package.json version; if the
+      # tag disagrees, installed apps would update to something other than
+      # what the tag claims. Fail fast instead.
+      - name: Assert tag matches menubar package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./packages/menubar/package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME but packages/menubar/package.json is $PKG_VERSION — bump the package version (or re-tag) so the update feed stays truthful"
+            exit 1
+          fi
+
+      - name: Typecheck + tests
+        run: |
+          pnpm -r typecheck
+          pnpm test
+
+      - name: Write App Store Connect API key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc-api-key.p8"
+          echo "APPLE_API_KEY=$RUNNER_TEMP/asc-api-key.p8" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize, upload to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # APPLE_API_KEY exported by the previous step; its presence flips
+          # electron-builder.cjs's `notarize` gate on.
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          pnpm --filter '@sidecodeapp/menubar...' run build
+          pnpm --filter @sidecodeapp/menubar exec electron-builder --mac --arm64 --publish always
+
+      # electron-builder creates the draft with an empty body; fill it with the
+      # commit log since the previous tag. Direct-to-main workflow means GitHub's
+      # PR-based auto-notes would be empty — the commit subjects ARE the
+      # changelog here. Hand-write a short "What's new" above the list before
+      # publishing.
+      - name: Attach commit log to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          RANGE="${PREV:+$PREV..}$TAG"
+          {
+            echo "<!-- Add a short user-facing What's New above the commit list before publishing. -->"
+            echo ""
+            echo "## Commits${PREV:+ since $PREV}"
+            echo ""
+            git log --no-merges --pretty='- %s' "$RANGE"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --draft=true --notes-file "$RUNNER_TEMP/notes.md"

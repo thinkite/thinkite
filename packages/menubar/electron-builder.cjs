@@ -53,15 +53,25 @@ module.exports = {
     // (Squirrel.Mac) requires a signed AND notarized build to install.
     notarize,
   },
-  // electron-updater feed. Generic = any static host; generating this makes the
-  // build emit latest-mac.yml + .blockmap (differential updates). The packaged
-  // app's embedded app-update.yml bakes in whatever url is set at BUILD time.
-  // SIDECODE_UPDATE_URL overrides the feed at build time (e.g. point a test
-  // build at a local static server); otherwise the real R2 host (TODO).
-  publish: {
-    provider: "generic",
-    url:
-      process.env.SIDECODE_UPDATE_URL || "https://REPLACE_WITH_R2_PUBLIC_URL",
-    channel: "latest",
-  },
+  // electron-updater feed. The packaged app's embedded app-update.yml bakes in
+  // whatever is set at BUILD time:
+  //  - default: GitHub Releases (latest-mac.yml + .blockmap published as release
+  //    assets; electron-updater polls the latest PUBLISHED release anonymously —
+  //    this is why drafts are the release pipeline's safety gate).
+  //  - SIDECODE_UPDATE_URL: generic-provider override for pointing a local test
+  //    build at a static server (e.g. `npx serve release/`).
+  // `releaseType: "draft"` means CI's `--publish always` creates a DRAFT release;
+  // installed apps only see it once it's manually published.
+  publish: process.env.SIDECODE_UPDATE_URL
+    ? {
+        provider: "generic",
+        url: process.env.SIDECODE_UPDATE_URL,
+        channel: "latest",
+      }
+    : {
+        provider: "github",
+        owner: "sidecodeapp",
+        repo: "sidecode",
+        releaseType: "draft",
+      },
 };

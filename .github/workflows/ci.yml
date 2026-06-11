@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # version from root package.json `packageManager`
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: biome
+        run: pnpm exec biome ci .
+
+      - name: Typecheck (workspace)
+        run: pnpm -r typecheck
+
+      # The app package has no typecheck script (`pnpm -r` skips it) — run
+      # tsc directly so daemon-client / UI changes are covered too.
+      - name: Typecheck (app)
+        working-directory: packages/app
+        run: npx tsc --noEmit
+
+      - name: Tests
+        run: pnpm test
+
+  # Guard for sidecodeapp/sidecode#7: the wire contract's version IS
+  # packages/protocol/package.json `version` (PROTOCOL_VERSION reads it at
+  # module load). A schema change without a bump means two ends running
+  # different wire shapes still pass the handshake and break in opaque ways.
+  # This enforces the cheap invariant: protocol src changed → version changed.
+  # (Judging patch-vs-minor correctness stays a human call — see the bump
+  # policy comment in packages/protocol/src/index.ts; closed z.enum case-adds
+  # are the documented trap.)
+  protocol-version-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Protocol src changed → version must be bumped
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            BASE="origin/$GITHUB_BASE_REF"
+            git fetch --quiet origin "$GITHUB_BASE_REF"
+            RANGE="$(git merge-base "$BASE" HEAD)..HEAD"
+          else
+            BEFORE="${{ github.event.before }}"
+            # Zero SHA = branch creation / force-push without a usable base;
+            # nothing meaningful to diff against.
+            if [ "$BEFORE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BEFORE" 2>/dev/null; then
+              echo "no usable base commit — skipping"
+              exit 0
+            fi
+            RANGE="$BEFORE..HEAD"
+          fi
+
+          if ! git diff --name-only "$RANGE" -- 'packages/protocol/src/**' | grep -q .; then
+            echo "protocol src untouched — ok"
+            exit 0
+          fi
+
+          # Escape hatch for comment-only / pure-refactor changes that don't
+          # alter the wire shape: put [skip-proto-bump] in any commit message
+          # in the range.
+          if git log --format=%B "$RANGE" | grep -qF "[skip-proto-bump]"; then
+            echo "[skip-proto-bump] present — skipping"
+            exit 0
+          fi
+
+          if git diff "$RANGE" -- packages/protocol/package.json | grep -q '^[-+]  "version"'; then
+            echo "protocol src changed and version bumped — ok"
+            exit 0
+          fi
+
+          echo "::error::packages/protocol/src changed but packages/protocol/package.json version was not bumped. Bump it (patch = additive, minor = breaking during 0.x — see the bump policy in packages/protocol/src/index.ts), or add [skip-proto-bump] to the commit message for wire-neutral changes."
+          exit 1

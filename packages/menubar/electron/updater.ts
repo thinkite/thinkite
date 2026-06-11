@@ -33,8 +33,9 @@ export function getUpdateState(): UpdateState {
 export function initUpdater(opts: { onStateChange: () => void }): void {
   // Auto-update only runs in packaged builds — Squirrel.Mac needs the installed
   // .app, and the feed is the embedded app-update.yml (from electron-builder.cjs
-  // publish.url). In dev it's inert; test via a packaged build pointed at a feed
-  // with SIDECODE_UPDATE_URL.
+  // `publish`: GitHub Releases by default, latest PUBLISHED release only). In dev
+  // it's inert; test via a packaged build pointed at a static feed with
+  // SIDECODE_UPDATE_URL.
   if (!app.isPackaged) return;
   onChange = opts.onStateChange;
   autoUpdater.autoDownload = true;
