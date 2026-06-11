@@ -1,0 +1,11 @@
+# Paths @expo/fingerprint should NOT hash into the runtime version.
+# Keep this list minimal — every entry trades OTA-vs-native safety for
+# less fingerprint churn. Things that look like noise but MUST stay
+# fingerprinted: package.json scripts (eas-build-* hooks live there),
+# patches/, and every config-referenced asset (icon/splash compile into
+# the native binary).
+#
+# .gitignore only affects which files get collected — it has zero effect
+# on the native build, but hashing it flipped the fingerprint when an
+# unrelated ignore rule changed (the v0.0.2-era TestFlight OTA miss).
+.gitignore
