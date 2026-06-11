@@ -18,6 +18,7 @@ import { KnownClients } from "./known-clients.js";
 import { foldEventDelta } from "./messages/fold.js";
 import { extractLatestUsage, normalize } from "./messages/normalize.js";
 import { createPairOffer } from "./pairing.js";
+import { createPlanUsageFetcher, type PlanUsageResult } from "./plan-usage.js";
 import { createCommandHandler } from "./router.js";
 import { ensureSessionLoop, pushPrompt } from "./runtime/run-query.js";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
@@ -35,6 +36,12 @@ export interface DaemonOptions {
   signalingHost?: string;
   signalingScheme?: "ws" | "wss";
 }
+
+export type {
+  PlanUsage,
+  PlanUsageResult,
+  PlanUsageWindow,
+} from "./plan-usage.js";
 
 export interface Daemon {
   stop(): Promise<void>;
@@ -76,6 +83,14 @@ export interface Daemon {
    * normal operation until a session is bridged.
    */
   readonly bridgeService: BridgeService;
+  /**
+   * Plan-utilization snapshot for the menubar's "Claude Plan Usage" rows
+   * (5h / weekly / per-model % + reset times). Never throws — returns a
+   * closed result union (`ok` / `signed_out` / `error`); single-flight +
+   * 30s cache inside, so call freely on every tray click. The OAuth token
+   * stays inside the daemon; callers get parsed numbers only.
+   */
+  fetchPlanUsage(): Promise<PlanUsageResult>;
 }
 
 export async function start(options: DaemonOptions = {}): Promise<Daemon> {
@@ -404,6 +419,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     fingerprint: identity.fingerprint,
     pairedClientCount: () => knownClients.list().length,
     authenticatedPeerCount: () => webrtc.authenticatedCount(),
+    fetchPlanUsage: createPlanUsageFetcher(oauth),
     createPairOffer: (serviceName) => {
       const { encoded } = createPairOffer(identity, serviceName);
       return { encoded };

@@ -1,6 +1,11 @@
 import { hostname } from "node:os";
 import path from "node:path";
-import { type Daemon, start as startDaemon } from "@sidecodeapp/daemon";
+import {
+  type Daemon,
+  type PlanUsageResult,
+  type PlanUsageWindow,
+  start as startDaemon,
+} from "@sidecodeapp/daemon";
 import {
   app,
   BrowserWindow,
@@ -24,29 +29,34 @@ let isQuitting = false;
 let daemon: Daemon | null = null;
 let keepAwakeId: number | null = null;
 
-// --- Mock data (replace with real fetches before V0 ship) ---
+// --- Plan usage (daemon-fetched, menu-cached) ---
+//
+// Last fetch result, rendered by buildMenu. Refresh is fire-and-forget on
+// tray click + once at startup: macOS doesn't repaint an open NSMenu, so a
+// click shows the previous snapshot and the fetch lands for the next open
+// (the daemon's 30s cache + single-flight make spamming clicks free).
+// Token Stats was CUT from V0: its planned source (stats-cache.json) turned
+// out to be lazily written — only when the user runs /stats — so honest
+// numbers require Desktop-style JSONL aggregation; deferred.
+let planUsage: PlanUsageResult | null = null;
 
-const MOCK_PLAN_USAGE = {
-  fiveHour: { utilization: 0.91, resetsAt: nowPlus(6 * 3600 + 31 * 60) },
-  sevenDay: { utilization: 0.99, resetsAt: nowPlus(7 * 86400) },
-  sevenDayOpus: { utilization: 0.45 },
-  sevenDaySonnet: { utilization: 0.99 },
-};
-
-const MOCK_USAGE_STATS = {
-  allTime: { tokens: 3_200_000 },
-  last7d: { tokens: 850_000 },
-  last30d: { tokens: 2_100_000 },
-};
-
-function nowPlus(seconds: number): string {
-  return new Date(Date.now() + seconds * 1000).toISOString();
+function refreshPlanUsage(): void {
+  if (!daemon) return;
+  void daemon.fetchPlanUsage().then((result) => {
+    // Keep showing the last good snapshot through transient failures —
+    // a flaky network shouldn't blank the section.
+    if (result.status === "error" && planUsage?.status === "ok") return;
+    planUsage = result;
+    refreshMenu();
+  });
 }
 
 // --- Formatters ---
 
+// The usage endpoint returns utilization as 0..100 already (live-verified:
+// `71` = 71%), NOT a 0..1 fraction — do not multiply.
 function formatPercent(util: number): string {
-  return `${Math.round(util * 100)}%`;
+  return `${Math.round(util)}%`;
 }
 
 function formatCountdown(resetsAt: string): string {
@@ -61,16 +71,6 @@ function formatCountdown(resetsAt: string): string {
 function formatResetDate(resetsAt: string): string {
   const d = new Date(resetsAt);
   return `${d.getMonth() + 1}月${d.getDate()}日`;
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
-  return String(n);
-}
-
-function formatUsageLine(tokens: number): string {
-  return formatTokens(tokens);
 }
 
 // SF Symbol → 16x16 template image (auto-tints to follow menu fg color,
@@ -108,42 +108,51 @@ function updateMenuItem(): Electron.MenuItemConstructorOptions | null {
   }
 }
 
-function buildMenu(): Electron.Menu {
-  const plan = MOCK_PLAN_USAGE;
-  const usage = MOCK_USAGE_STATS;
+// One disabled info row per available rate window. Windows the endpoint
+// didn't return (enterprise/org accounts) are skipped, never shown as 0%.
+function planUsageItems(): Electron.MenuItemConstructorOptions[] {
+  if (planUsage === null) {
+    return [{ label: "Loading…", enabled: false }];
+  }
+  switch (planUsage.status) {
+    case "signed_out":
+      return [{ label: "Not signed in — run `claude /login`", enabled: false }];
+    case "error":
+      // Only reached when there's no last-good snapshot to keep showing
+      // (refreshPlanUsage drops transient errors otherwise).
+      return [{ label: "Usage unavailable", enabled: false }];
+    case "ok": {
+      const u = planUsage.usage;
+      const row = (
+        name: string,
+        w: PlanUsageWindow | undefined,
+        reset?: (resetsAt: string) => string,
+      ): Electron.MenuItemConstructorOptions | null =>
+        w
+          ? {
+              label: `${name} - ${formatPercent(w.utilization)}${
+                reset && w.resetsAt ? ` · ${reset(w.resetsAt)}` : ""
+              }`,
+              enabled: false,
+            }
+          : null;
+      const rows = [
+        row("5h", u.fiveHour, formatCountdown),
+        row("Weekly", u.sevenDay, formatResetDate),
+        row("Opus", u.sevenDayOpus),
+        row("Sonnet", u.sevenDaySonnet),
+      ].filter((r) => r !== null);
+      return rows.length > 0
+        ? rows
+        : [{ label: "No usage data for this plan", enabled: false }];
+    }
+  }
+}
 
+function buildMenu(): Electron.Menu {
   const items: Electron.MenuItemConstructorOptions[] = [
     { label: "Claude Plan Usage", type: "header" },
-    {
-      label: `5h - ${formatPercent(plan.fiveHour.utilization)} · ${formatCountdown(plan.fiveHour.resetsAt)}`,
-      enabled: false,
-    },
-    {
-      label: `Weekly - ${formatPercent(plan.sevenDay.utilization)} · ${formatResetDate(plan.sevenDay.resetsAt)}`,
-      enabled: false,
-    },
-    {
-      label: `Opus - ${formatPercent(plan.sevenDayOpus.utilization)}`,
-      enabled: false,
-    },
-    {
-      label: `Sonnet - ${formatPercent(plan.sevenDaySonnet.utilization)}`,
-      enabled: false,
-    },
-    { type: "separator" },
-    { label: "Token Stats", type: "header" },
-    {
-      label: `All - ${formatUsageLine(usage.allTime.tokens)}`,
-      enabled: false,
-    },
-    {
-      label: `7d - ${formatUsageLine(usage.last7d.tokens)}`,
-      enabled: false,
-    },
-    {
-      label: `30d - ${formatUsageLine(usage.last30d.tokens)}`,
-      enabled: false,
-    },
+    ...planUsageItems(),
     { type: "separator" },
     {
       label: "Pair new device",
@@ -329,9 +338,17 @@ app.whenReady().then(async () => {
   );
   trayIcon.setTemplateImage(true);
   tray = new Tray(trayIcon);
-  tray.on("click", refreshMenu);
-  tray.on("right-click", refreshMenu);
+  // Order matters: kick the async usage refresh FIRST (lands by the next
+  // open), then rebuild synchronously so this open gets the latest cached
+  // snapshot.
+  const onTrayOpen = () => {
+    refreshPlanUsage();
+    refreshMenu();
+  };
+  tray.on("click", onTrayOpen);
+  tray.on("right-click", onTrayOpen);
 
+  refreshPlanUsage();
   refreshMenu();
   console.log("[main] tray + menu ready");
 
