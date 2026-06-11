@@ -34,9 +34,15 @@ jobs:
 
       # The app package has no typecheck script (`pnpm -r` skips it) — run
       # tsc directly so daemon-client / UI changes are covered too.
+      # expo-env.d.ts is expo-generated and gitignored per expo's own
+      # guidance; recreate its documented one-line content (the expo/types
+      # reference carries the `*.css` module declaration that the
+      # `@/global.css` side-effect import needs).
       - name: Typecheck (app)
         working-directory: packages/app
-        run: npx tsc --noEmit
+        run: |
+          echo '/// <reference types="expo/types" />' > expo-env.d.ts
+          npx tsc --noEmit
 
       - name: Tests
         run: pnpm test
