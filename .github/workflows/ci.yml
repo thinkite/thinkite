@@ -23,6 +23,12 @@ jobs:
       - name: biome
         run: pnpm exec biome ci .
 
+      # worker-configuration.d.ts (workerd runtime globals: Env/Response/...)
+      # is gitignored as a regenerable artifact — generate it or the
+      # signaling typecheck has no runtime types.
+      - name: Generate workerd types (signaling)
+        run: pnpm --filter @sidecodeapp/signaling run cf-typegen
+
       - name: Typecheck (workspace)
         run: pnpm -r typecheck
 

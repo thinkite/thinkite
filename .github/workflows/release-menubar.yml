@@ -60,6 +60,7 @@ jobs:
 
       - name: Typecheck + tests
         run: |
+          pnpm --filter @sidecodeapp/signaling run cf-typegen # gitignored workerd types
           pnpm -r typecheck
           pnpm test
 
