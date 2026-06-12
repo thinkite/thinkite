@@ -1,7 +1,6 @@
 import type { ImageAttachment } from "@sidecodeapp/protocol";
 import * as Crypto from "expo-crypto";
-import { router, Stack, useNavigation } from "expo-router";
-import { DrawerActions } from "expo-router/react-navigation";
+import { router, Stack } from "expo-router";
 import { useCallback, useState } from "react";
 import { Alert, Pressable, Text, View } from "react-native";
 import {
@@ -12,6 +11,7 @@ import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
+import { useDrawerUI } from "@/lib/drawer-ui";
 import { createSession } from "@/lib/sessions-collection";
 
 /**
@@ -53,7 +53,7 @@ import { createSession } from "@/lib/sessions-collection";
  * dodge the cursor race window; the daemon-side seed removes that need.)
  */
 export default function NewSessionScreen() {
-  const navigation = useNavigation();
+  const { openDrawer } = useDrawerUI();
 
   // Default cwd: client-side "last used" wins; otherwise fall back to
   // server's most-recent activity. Both can be undefined on a brand-
@@ -138,10 +138,6 @@ export default function NewSessionScreen() {
     },
     [cwd, setLastUsedCwd, createBridged],
   );
-
-  const openDrawer = useCallback(() => {
-    navigation.dispatch(DrawerActions.openDrawer());
-  }, [navigation]);
 
   const openCwdPicker = useCallback(() => {
     // Push the cwd-picker modal route. The sheet runs `setLastUsedCwd`

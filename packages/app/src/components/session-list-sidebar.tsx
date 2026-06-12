@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SessionRow } from "@/components/session-row";
 import { useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { useSessions } from "@/hooks/use-sessions";
+import { useDrawerUI } from "@/lib/drawer-ui";
 import { dayKey, formatDaySection } from "@/lib/format";
 import type { SessionRow as SessionRowData } from "@/lib/sessions-collection";
 
@@ -71,11 +72,8 @@ const HEADER_CONTENT_HEIGHT = 52;
  * inner Stack). Tap the header gear → router.push("/settings") → root Stack
  * pushes the modal sheet over (drawer).
  *
- * Drawer's `navigation` prop only needs `closeDrawer`; full
- * `DrawerContentComponentProps` shape lives at
- * `node_modules/expo-router/build/react-navigation/drawer/types.d.ts:178` but
- * isn't re-exported from a clean public path — typing inline keeps the import
- * surface small.
+ * Drawer control comes from `useDrawerUI()` (the bare-drawer-layout state
+ * owned by `(drawer)/_layout.tsx`) — no navigator props.
  *
  * Header chrome: a plain absolute View floats over the list with a
  * linear-gradient scrim (`experimental_backgroundImage`) + the brand title and
@@ -95,17 +93,10 @@ const HEADER_CONTENT_HEIGHT = 52;
  * as flat — so we keep this simple gradient. See memory
  * `project_sidebar_scrolledge_spike`.
  */
-interface SidebarNavigation {
-  closeDrawer: () => void;
-}
-
-export function SessionListSidebar({
-  navigation,
-}: {
-  navigation: SidebarNavigation;
-}) {
+export function SessionListSidebar() {
   const insets = useSafeAreaInsets();
   const scheme = useColorScheme() ?? "light";
+  const { closeDrawer } = useDrawerUI();
 
   // Full floating-header band = status-bar inset + content height. Shared with
   // the list's contentContainerStyle.paddingTop (see Body) so row 1 starts
@@ -143,33 +134,29 @@ export function SessionListSidebar({
     // the project the user just opened. Mutation is fire-and-forget;
     // the navigation below shouldn't wait on SecureStore I/O.
     setLastUsedCwd.mutate(session.cwd);
-    navigation.closeDrawer();
-    // Defer the route swap one frame so the drawer-close animation kicks off on
-    // clean frames first — closing before the swap protects the animation's
-    // startup, since the destination's heavy first render (ChatPanel +
-    // LegendList bootstrap + transcript) is JS-thread work that would otherwise
-    // share the frame closeDrawer dispatches on. (requestAnimationFrame, not the
-    // deprecated InteractionManager.)
-    requestAnimationFrame(() => {
-      router.replace({
-        pathname: "/session/[cliSessionId]",
-        params: {
-          cliSessionId: session.cliSessionId,
-          // No title param — the detail screen reads it from the session's
-          // collection row (filtered live query), so it stays correct as
-          // the daemon's canonical title lands.
-          //
-          // Pass cwd so the session screen can hand it to sendPrompt — the
-          // SDK derives the project key from cwd to locate the JSONL for
-          // `claude --resume`.
-          cwd: session.cwd,
-        },
-      });
+    // closeDrawer flips `transitioning` in the same batch, so the route
+    // swap below mounts only the cheap TranscriptLoading — the session
+    // screen's drawer-settle gate holds the heavy ChatPanel mount until
+    // the close animation finishes. No frame-deferral needed.
+    closeDrawer();
+    router.replace({
+      pathname: "/session/[cliSessionId]",
+      params: {
+        cliSessionId: session.cliSessionId,
+        // No title param — the detail screen reads it from the session's
+        // collection row (filtered live query), so it stays correct as
+        // the daemon's canonical title lands.
+        //
+        // Pass cwd so the session screen can hand it to sendPrompt — the
+        // SDK derives the project key from cwd to locate the JSONL for
+        // `claude --resume`.
+        cwd: session.cwd,
+      },
     });
   };
 
   const handleNewSession = () => {
-    navigation.closeDrawer();
+    closeDrawer();
     // Replace, not push: the new-session page is a sibling of the detail
     // inside the same inner Stack ((drawer)/(stack)/index → URL "/"), so
     // switching to it from a detail screen is a top-of-Stack swap (no

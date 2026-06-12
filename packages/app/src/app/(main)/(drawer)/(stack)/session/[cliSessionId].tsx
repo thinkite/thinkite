@@ -1,12 +1,12 @@
 import { eq, useLiveQuery } from "@tanstack/react-db";
-import { Stack, useLocalSearchParams, useNavigation } from "expo-router";
-import { DrawerActions } from "expo-router/react-navigation";
-import { useCallback, useEffect, useMemo } from "react";
+import { Stack, useLocalSearchParams } from "expo-router";
+import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { SessionBridgeToolbar } from "@/components/session-bridge-toolbar";
 import { ChatPanel } from "@/components/transcript/chat-panel";
 import { TranscriptLoading } from "@/components/transcript/transcript-loading";
 import { useSessionTranscript } from "@/hooks/use-session-transcript";
+import { useDrawerUI } from "@/lib/drawer-ui";
 import { sessionStateCollection } from "@/lib/sessions-collection";
 import { flattenToBlocks } from "@/lib/transcript-blocks";
 
@@ -58,7 +58,26 @@ export default function SessionDetailScreen() {
     new?: string;
   }>();
   const session = useSessionTranscript(cliSessionId, newFlag === "1");
-  const navigation = useNavigation();
+
+  // Drawer-settle gate. Mounting ChatPanel is heavy on the MAIN thread
+  // (native view inflation + enriched's dispatch_sync measure), which the
+  // drawer-close animation (Reanimated, UI thread) directly competes with —
+  // JS fps can look fine while the close visibly stutters. While the drawer
+  // is animating (sidebar tap → closeDrawer flips `transitioning` in the
+  // same batch as the route swap), render the cheap TranscriptLoading;
+  // mount ChatPanel once the animation ends. Keyed by cliSessionId so
+  // switching sessions through the drawer re-gates each time; entries with
+  // no drawer animation (new-session replace, deep links) settle on the
+  // first effect pass. Plain context state — no timers, no params, no
+  // navigation events (see drawer-ui.tsx).
+  const { transitioning, openDrawer } = useDrawerUI();
+  const [settledFor, setSettledFor] = useState<string | null>(
+    transitioning ? null : cliSessionId,
+  );
+  const drawerSettled = settledFor === cliSessionId;
+  useEffect(() => {
+    if (!transitioning) setSettledFor(cliSessionId);
+  }, [transitioning, cliSessionId]);
 
   // Log turn-failure errors. UI is intentionally absent for V0 —
   // surfacing assistant errors well needs design work we haven't done
@@ -69,10 +88,6 @@ export default function SessionDetailScreen() {
       console.error("[session] turn failed:", session.lastError);
     }
   }, [session.lastError]);
-
-  const openDrawer = useCallback(() => {
-    navigation.dispatch(DrawerActions.openDrawer());
-  }, [navigation]);
 
   const blocks = useMemo(() => flattenToBlocks(session.items), [session.items]);
 
@@ -111,7 +126,7 @@ export default function SessionDetailScreen() {
       {/* ToolCallSheetProvider lives in (stack)/_layout.tsx so its resident
           webview + worker pool are shared across session switches. */}
       <View className="flex-1 bg-white dark:bg-black">
-        {session.isInitialLoading ? (
+        {session.isInitialLoading || !drawerSettled ? (
           <TranscriptLoading />
         ) : session.error ? (
           <View className="flex-1 items-center justify-center px-6">
