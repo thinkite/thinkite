@@ -17,7 +17,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import * as Crypto from "expo-crypto";
 import { useHeaderHeight } from "expo-router/react-navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useColorScheme, View, type ViewProps } from "react-native";
+import {
+  useColorScheme,
+  useWindowDimensions,
+  View,
+  type ViewProps,
+} from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import Animated, {
   useAnimatedProps,
@@ -39,6 +44,14 @@ import {
   type OrderedTimelineItem,
   sendUserMessage,
 } from "@/lib/transcript-collection-factory";
+
+// ToolBlock row height, derived from its styles (keep in sync with
+// tool-block.tsx): Pressable py-1.5 (12) + one text-base line (lineHeight
+// 24, the tallest child — ToolChip is ~18). Both Bash and chip branches are
+// single-line by construction (numberOfLines={1}). The text line scales
+// with Dynamic Type; the vertical padding doesn't.
+const TOOL_ROW_PADDING_V = 12;
+const TOOL_ROW_LINE_HEIGHT = 24;
 
 type ChatPanelProps = {
   cliSessionId: string;
@@ -109,7 +122,21 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
+  const { fontScale } = useWindowDimensions();
   const listRef = useRef<LegendListRef>(null);
+
+  // Authoritative height for tool rows (v3's getFixedItemSize — trusted as
+  // KNOWN, not an estimate, so it must be exact). Pinning the most numerous
+  // row kind removes it from size estimation entirely, shrinking the
+  // correction shifts that cause transient row overlap when scrolling up
+  // through unmeasured content. Text rows return undefined → measured.
+  const getFixedItemSize = useCallback(
+    (item: RenderBlock) =>
+      item.kind === "tool"
+        ? TOOL_ROW_PADDING_V + Math.round(TOOL_ROW_LINE_HEIGHT * fontScale)
+        : undefined,
+    [fontScale],
+  );
   const composerRef = useRef<View>(null);
   const isDark = useColorScheme() === "dark";
   // Tap the workspace status bar → open the working-tree diff in the shared
@@ -296,6 +323,7 @@ export function ChatPanel({
         // → fewer "convergence bounds" warns). Also keys the recycle pool so a
         // text row isn't recycled into a tool.
         getItemType={(item) => (item.kind === "text" ? item.role : item.kind)}
+        getFixedItemSize={getFixedItemSize}
         // Disable iOS's automatic contentInset adjustments — they
         // fight KeyboardChatScrollView's own inset management and end
         // up double-counting safe area. Per react-native-keyboard-
@@ -370,7 +398,16 @@ export function ChatPanel({
         maintainVisibleContentPosition={{ size: true, data: false }}
         // iOS pull-down-to-dismiss for the keyboard.
         keyboardDismissMode="interactive"
-        recycleItems
+        // Recycling DISABLED (verified on device 2026-06-12): with it on,
+        // scrolling up through rows with large height variance (tool rows
+        // ~36pt vs assistant chunks up to thousands) produced visible row
+        // overlap — a recycled container carries the previous item's
+        // size/position for a beat before the new content's layout lands
+        // (LegendApp/legend-list#301 is the same combo). Off = every
+        // entering row is a fresh mount (enriched parse + TextInput);
+        // scroll fps acceptable on device. Revisit only with an upstream
+        // fix in hand, verified against the same long-session repro.
+        recycleItems={false}
         // Only push the list up by the keyboard height when the user
         // is already pinned at the bottom; anywhere else the keyboard
         // floats over the content so what they're reading stays put.

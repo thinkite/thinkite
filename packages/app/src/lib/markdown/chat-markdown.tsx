@@ -24,11 +24,11 @@ import {
  *   - `streamingAnimation` — fades in newly appended tokens as patch_text
  *     deltas arrive (every ~200ms during a turn, per envelope from the
  *     SDK iterator).
- *   - `streamingConfig.tableMode: 'hidden'` — hides incomplete GFM tables
- *     during streaming, then reveals them at boundary completion. Avoids
- *     the single-digit-fps reparse cost we measured on 0.5.0 stable.
- *     (See project_streaming_markdown_w3.md for the perf observation +
- *     decision history.)
+ *   - `streamingConfig.tableMode: 'progressive'` — renders GFM tables
+ *     incrementally as rows stream in (0.6 made this viable; 0.5.0's
+ *     full-reparse path measured single-digit fps, which is why V0
+ *     originally shipped 'hidden'. See project_streaming_markdown_w3.md
+ *     for the decision history.)
  *   - `flavor: 'github'` — enables GFM extensions; commonmark-only would
  *     drop tables which Claude responses occasionally include.
  *
