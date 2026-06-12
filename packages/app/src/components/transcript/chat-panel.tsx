@@ -194,11 +194,23 @@ export function ChatPanel({
   // Written by the list on the UI thread (reanimated integration) — drives the
   // scroll-to-end FAB without a single JS-side re-render.
   const isNearEnd = useSharedValue(true);
+  // Gates the FAB until the list's initial scroll settles. During boot the
+  // list sits at the top for a few frames, so checkAtBottom legitimately
+  // reports isNearEnd=false (the library's hasActiveInitialScroll skip only
+  // guards isEndReached, not isNearEnd) — without this gate the FAB flashes
+  // on every session open. `onLoad` fires exactly once, when containers have
+  // laid out AND the initial scroll finished.
+  const fabReady = useSharedValue(false);
   const scrollFabStyle = useAnimatedStyle(() => ({
-    opacity: withTiming(isNearEnd.value ? 0 : 1, { duration: 160 }),
+    opacity: withTiming(fabReady.value && !isNearEnd.value ? 1 : 0, {
+      duration: 160,
+    }),
   }));
   const scrollFabProps = useAnimatedProps<ViewProps>(() => ({
-    pointerEvents: isNearEnd.value ? ("none" as const) : ("box-none" as const),
+    pointerEvents:
+      fabReady.value && !isNearEnd.value
+        ? ("box-none" as const)
+        : ("none" as const),
   }));
 
   // The "real send" handed to InputBar. InputBar already intercepts slash
@@ -347,6 +359,10 @@ export function ChatPanel({
         // List → UI-thread state mirror (reanimated integration). `isNearEnd`
         // gates the scroll-to-end FAB; no JS re-render involved.
         sharedValues={{ isNearEnd }}
+        // Initial render + initial scroll settled → un-gate the FAB.
+        onLoad={() => {
+          fabReady.set(true);
+        }}
         // Stabilize the visible position on size/layout changes (keyboard
         // toggle, streaming item growth) but NOT on data adds — with
         // maintainScrollAtEnd gone, new data moves nothing by design: the

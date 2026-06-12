@@ -101,10 +101,19 @@ const TokenLine = memo(
 const CodeBlockSegment = memo(function CodeBlockSegment({
   lang,
   code,
+  isFirst,
+  isLast,
   onTokenizeMs,
 }: {
   lang: string;
   code: string;
+  /** Margins only face NEIGHBORING segments: a message that starts or
+   *  ends with a code block keeps its outer edge flush, matching how
+   *  enriched messages start/end (their first/last block margins don't
+   *  add outer padding either). `isLast` flips once when more content
+   *  streams in after the block — a single cheap re-render. */
+  isFirst: boolean;
+  isLast: boolean;
   onTokenizeMs?: (ms: number) => void;
 }) {
   const hl = useHighlighter();
@@ -122,7 +131,9 @@ const CodeBlockSegment = memo(function CodeBlockSegment({
 
   return (
     <View
-      className="my-3 rounded-lg overflow-hidden"
+      className={`rounded-lg overflow-hidden ${isFirst ? "" : "mt-3"} ${
+        isLast ? "" : "mb-3"
+      }`}
       style={{
         backgroundColor: palette.codeBlockBg,
       }}
@@ -195,6 +206,8 @@ export function ChunkedMarkdown({
               key={seg.key}
               lang={seg.lang}
               code={seg.code}
+              isFirst={i === 0}
+              isLast={i === lastIndex}
               onTokenizeMs={onTokenizeMs}
             />
           );
