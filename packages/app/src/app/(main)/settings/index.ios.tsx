@@ -129,6 +129,10 @@ export default function SettingsIndexScreen() {
                 label="KeyboardExtender spike"
                 onPress={() => router.push("/dev/keyboard-extender")}
               />
+              <DisclosureRow
+                label="Chunked markdown spike"
+                onPress={() => router.push("/dev/chunked-markdown")}
+              />
               <Button
                 label="Clear last cwd (test placeholder)"
                 onPress={onClearLastCwd}

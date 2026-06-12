@@ -44,8 +44,11 @@ import {
 // chat density compact rather than blog-like.
 const BODY_FONT_SIZE = 16;
 const BODY_LINE_HEIGHT = 22;
-const CODE_FONT_SIZE = 14;
-const CODE_LINE_HEIGHT = 19;
+// Exported: ChunkedMarkdown's broken-out CodeBlock must stay metric- and
+// palette-identical to the code blocks enriched renders, so inline code
+// (still enriched, inside runs) and block code (ours) read as one family.
+export const CODE_FONT_SIZE = 14;
+export const CODE_LINE_HEIGHT = 19;
 
 interface ColorPalette {
   text: string;
@@ -62,7 +65,7 @@ interface ColorPalette {
   tableBorder: string;
 }
 
-const LIGHT_PALETTE: ColorPalette = {
+export const LIGHT_PALETTE: ColorPalette = {
   text: "#0a0a0a",
   textMuted: "#404040",
   link: "#2563eb",
@@ -77,7 +80,7 @@ const LIGHT_PALETTE: ColorPalette = {
   tableBorder: "#ffffff",
 };
 
-const DARK_PALETTE: ColorPalette = {
+export const DARK_PALETTE: ColorPalette = {
   text: "#fafafa",
   textMuted: "#a1a1aa",
   link: "#60a5fa",

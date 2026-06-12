@@ -1,7 +1,7 @@
 import { Text, View } from "react-native";
 import { ImageStack } from "@/components/image-stack";
 import { materializeImagesSync } from "@/lib/image-cache";
-import { ChatMarkdown } from "@/lib/markdown";
+import { ChunkedMarkdown } from "@/lib/markdown";
 import type { TextRenderBlock } from "@/lib/transcript-blocks";
 
 /**
@@ -9,11 +9,16 @@ import type { TextRenderBlock } from "@/lib/transcript-blocks";
  * (~85% max width — the parent transcript container already provides
  * outer horizontal padding, so the bubble can use most of the inner
  * column). Assistant messages stream as full-width markdown via
- * `ChatMarkdown` (react-native-enriched-markdown) — Fabric component
- * that self-sizes via Yoga, so each row hits LegendList with its real
- * height on first layout. Avoids the async-measurement flicker a Nitro /
- * WebView renderer would have. See `ChatMarkdown.tsx` header for the full
- * chat-vs-tool-detail rationale.
+ * `ChunkedMarkdown` — text/table runs still go through enriched (Fabric,
+ * Yoga-self-sizing, so rows hit LegendList with real height on first
+ * layout), while code blocks break out into shiki-highlighted native
+ * Text. See `ChunkedMarkdown.tsx` header for the design.
+ *
+ * `streamDone` is hardcoded `true` for now: there is no per-message
+ * settle signal yet (daemon ignores content_block_stop), and `true` is
+ * exact parity with the previous whole-message ChatMarkdown (no remend).
+ * When a streaming derivation lands (isLast && activity running), wire
+ * it here to enable tail-run repair.
  *
  * Bubble shape mirrors Claude Desktop's user-message look — pale blue
  * background, dark navy text. Role labels (YOU / CLAUDE) are
@@ -56,7 +61,7 @@ export function TextBlock({ block }: { block: TextRenderBlock }) {
   }
   return (
     <View className="px-4 py-1.5">
-      <ChatMarkdown markdown={block.text} />
+      <ChunkedMarkdown markdown={block.text} streamDone />
     </View>
   );
 }
