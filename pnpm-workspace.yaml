@@ -16,3 +16,5 @@ allowBuilds:
   sharp: true
   workerd: true
 nodeLinker: hoisted
+patchedDependencies:
+  react-native-enriched-markdown: patches/react-native-enriched-markdown.patch
