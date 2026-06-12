@@ -302,8 +302,25 @@ export function ChatPanel({
         // triggering its recompute, which jumped the anchored message. Also
         // doubles as the gap below the last message.
         ListFooterComponent={<ThinkingIndicator active={isThinking} />}
-        renderItem={({ item }) => {
-          if (item.kind === "text") return <TextBlock block={item} />;
+        renderItem={({ item, index }) => {
+          if (item.kind === "text")
+            return (
+              <TextBlock
+                block={item}
+                // The streaming message = the LAST block, assistant role,
+                // while the daemon-pushed activity says the turn is
+                // running. No protocol settle signal exists; this
+                // derivation is correct at every boundary (tool_call
+                // append → no longer last; interrupt/idle → not running;
+                // cold resume → not running). Worst case of a wrong beat:
+                // one extra remend pass + a deferred exact re-measure.
+                streaming={
+                  isRunning &&
+                  item.role === "assistant" &&
+                  index === blocks.length - 1
+                }
+              />
+            );
           if (item.kind === "tool") return <ToolBlock block={item} />;
           // `compact_divider` — placeholder renders nothing for this
           // commit. Actual divider component (horizontal line + caption)

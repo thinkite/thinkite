@@ -4,6 +4,7 @@ import langDiff from "@shikijs/langs/diff";
 import langJson from "@shikijs/langs/json";
 import langJsonc from "@shikijs/langs/jsonc";
 import langKotlin from "@shikijs/langs/kotlin";
+import langMarkdown from "@shikijs/langs/markdown";
 import langPython from "@shikijs/langs/python";
 import langRust from "@shikijs/langs/rust";
 import langShellscript from "@shikijs/langs/shellscript";
@@ -14,7 +15,7 @@ import langTsx from "@shikijs/langs/tsx";
 import langYaml from "@shikijs/langs/yaml";
 import themeGithubDark from "@shikijs/themes/github-dark";
 import themeGithubLight from "@shikijs/themes/github-light";
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import {
   createNativeEngine,
   isNativeEngineAvailable,
@@ -27,7 +28,7 @@ import {
  *
  * Grammars are imported per-language — NEVER `@shikijs/langs` wholesale
  * (7.7MB) or `html` (silently chains javascript+css, ~291KB). Core set
- * ~470KB source, chosen by (a) sidecode's domain (TS/Swift/Kotlin) and
+ * ~535KB source, chosen by (a) sidecode's domain (TS/Swift/Kotlin) and
  * (b) what LLMs actually write in fence info-strings. One tsx grammar
  * covers the whole JS family via aliases (superset syntax; saves the
  * 180KB-each typescript/javascript grammars). Unknown languages degrade
@@ -42,7 +43,12 @@ let highlighter: HighlighterCore | null = null;
 let initStarted = false;
 const listeners = new Set<() => void>();
 
-function ensureHighlighter() {
+/** Kick off engine + grammar loading. Idempotent. Called from the root
+ *  layout once the launch settles (the engine README recommends app-start
+ *  init; the grammar JSON.parse burst (~535KB source) belongs in the
+ *  launch quiet window, not the first session-enter navigation). The
+ *  useHighlighter subscribe path keeps a deferred call as fallback. */
+export function initHighlighter() {
   if (initStarted) return;
   initStarted = true;
   if (!isNativeEngineAvailable()) {
@@ -66,6 +72,11 @@ function ensureHighlighter() {
       langJson,
       langJsonc,
       langDiff,
+      // 65KB standalone — its embedded-language list is LAZY (no chained
+      // grammar imports, unlike html). Nested fences inside a ```markdown
+      // block highlight for whatever grammars are loaded above; the rest
+      // render plain.
+      langMarkdown,
     ],
     engine: createNativeEngine(),
   })
@@ -82,7 +93,9 @@ export function useHighlighter(): HighlighterCore | null {
   return useSyncExternalStore(
     (cb) => {
       listeners.add(cb);
-      ensureHighlighter();
+      // Fallback only — the root layout already ran this at app launch in
+      // any real flow; idempotent no-op here.
+      initHighlighter();
       return () => listeners.delete(cb);
     },
     () => highlighter,
@@ -118,6 +131,8 @@ const LANG_ALIASES: Record<string, string> = {
   jsonc: "jsonc",
   diff: "diff",
   patch: "diff",
+  markdown: "markdown",
+  md: "markdown",
 };
 
 /** Info-strings that MEAN plain text — skip highlight without the
@@ -160,4 +175,34 @@ export function tokenizeCode(
     lang,
     theme: scheme === "dark" ? "github-dark" : "github-light",
   });
+}
+
+// ─── Tokenization hook ──────────────────────────────────────────────────────
+
+/** Tokenized lines for a code block, or null while the engine loads /
+ *  for unsupported languages (null → caller renders plain text with
+ *  identical metrics, so the colored flip is layout-neutral).
+ *
+ *  Deliberately SYNC on the render frame. A cached + time-sliced variant
+ *  was built and A/B-tested (2026-06-12) and removed as unneeded: the
+ *  drawer-settle gate in the session screen keeps mount bursts out of
+ *  animation windows, and per-block tokenize (~1-3.5ms measured) is within
+ *  budget at our session scale. Revisit (see
+ *  memory/project_transcript_chunked_markdown_plan) if profiling ever
+ *  shows tokenize back on a hot path. */
+export function useCodeTokens(
+  code: string,
+  infoString: string,
+  scheme: "light" | "dark",
+  onTokenizeMs?: (ms: number) => void,
+): TokenLines | null {
+  const hl = useHighlighter();
+  const langId = resolveLang(infoString);
+  return useMemo(() => {
+    if (hl === null || langId === null) return null;
+    const t0 = performance.now();
+    const lines = tokenizeCode(hl, code, langId, scheme);
+    onTokenizeMs?.(performance.now() - t0);
+    return lines;
+  }, [hl, langId, code, scheme, onTokenizeMs]);
 }

@@ -12,13 +12,15 @@ import type { TextRenderBlock } from "@/lib/transcript-blocks";
  * `ChunkedMarkdown` — text/table runs still go through enriched (Fabric,
  * Yoga-self-sizing, so rows hit LegendList with real height on first
  * layout), while code blocks break out into shiki-highlighted native
- * Text. See `ChunkedMarkdown.tsx` header for the design.
+ * Text. See `chunked-markdown.tsx` header for the design.
  *
- * `streamDone` is hardcoded `true` for now: there is no per-message
- * settle signal yet (daemon ignores content_block_stop), and `true` is
- * exact parity with the previous whole-message ChatMarkdown (no remend).
- * When a streaming derivation lands (isLast && activity running), wire
- * it here to enable tail-run repair.
+ * `streaming` comes from ChatPanel's derivation (last block && assistant
+ * && turn running — there is no protocol-level settle signal; daemon
+ * ignores content_block_stop). It gates three things downstream: tail-run
+ * remend repair, EOF fence-close marking, and — performance-critical —
+ * enriched's streamingAnimation, which must be FALSE for settled messages
+ * (measurement cache) and TRUE only for actively-changing content (see
+ * ChatMarkdownProps.streaming).
  *
  * Bubble shape mirrors Claude Desktop's user-message look — pale blue
  * background, dark navy text. Role labels (YOU / CLAUDE) are
@@ -31,7 +33,13 @@ import type { TextRenderBlock } from "@/lib/transcript-blocks";
  * the blue bubble entirely; text-only messages skip the stack. Both
  * paths share the outer `items-end` so alignment stays consistent.
  */
-export function TextBlock({ block }: { block: TextRenderBlock }) {
+export function TextBlock({
+  block,
+  streaming = false,
+}: {
+  block: TextRenderBlock;
+  streaming?: boolean;
+}) {
   if (block.role === "user") {
     // Materialize base64 → file:// URIs inline. Sync (new
     // expo-file-system API), cache-hit fast path on re-render so this
@@ -61,7 +69,7 @@ export function TextBlock({ block }: { block: TextRenderBlock }) {
   }
   return (
     <View className="px-4 py-1.5">
-      <ChunkedMarkdown markdown={block.text} streamDone />
+      <ChunkedMarkdown markdown={block.text} streamDone={!streaming} />
     </View>
   );
 }

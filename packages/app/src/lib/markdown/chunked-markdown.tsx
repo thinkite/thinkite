@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo } from "react";
 import {
   ScrollView,
   Text,
@@ -14,12 +14,7 @@ import {
   DARK_PALETTE,
   LIGHT_PALETTE,
 } from "./chat-markdown";
-import {
-  resolveLang,
-  type TokenLines,
-  tokenizeCode,
-  useHighlighter,
-} from "./code-highlighter";
+import { useCodeTokens } from "./code-highlighter";
 import type { ChunkStats } from "./markdown-chunking";
 import { type MarkdownSegment, useMarkdownBlocks } from "./markdown-chunking";
 import { useRemend } from "./remend";
@@ -66,13 +61,16 @@ const RunSegment = memo(function RunSegment({ raw }: { raw: string }) {
   );
 });
 
-/** Tail run while streaming: unterminated inline syntax gets repaired.
+/** Tail run while streaming: unterminated inline syntax gets repaired,
+ *  and this is the ONLY place `streaming` is true — enriched's bounds
+ *  fast path for cheap per-delta re-measures (see ChatMarkdownProps).
+ *  Completed runs render settled (measurement cache).
  *  Same load-bearing View wrapper as RunSegment (see comment there). */
 function TailRunSegment({ raw }: { raw: string }) {
   const processed = useRemend(raw);
   return (
     <View>
-      <ChatMarkdown markdown={processed} />
+      <ChatMarkdown markdown={processed} streaming />
     </View>
   );
 }
@@ -122,18 +120,11 @@ const CodeBlockSegment = memo(function CodeBlockSegment({
   code: string;
   onTokenizeMs?: (ms: number) => void;
 }) {
-  const hl = useHighlighter();
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const palette = scheme === "dark" ? DARK_PALETTE : LIGHT_PALETTE;
-  const langId = resolveLang(lang);
-
-  const lines = useMemo<TokenLines | null>(() => {
-    if (!hl || !langId) return null;
-    const t0 = performance.now();
-    const result = tokenizeCode(hl, code, langId, scheme);
-    onTokenizeMs?.(performance.now() - t0);
-    return result;
-  }, [hl, langId, code, scheme, onTokenizeMs]);
+  // Sync tokenize — see useCodeTokens for why (drawer-settle gate keeps
+  // mount bursts out of animation windows). null → plain, same metrics.
+  const lines = useCodeTokens(code, lang, scheme, onTokenizeMs);
 
   return (
     <View

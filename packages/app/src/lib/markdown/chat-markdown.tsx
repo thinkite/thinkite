@@ -226,9 +226,31 @@ const DARK_STYLE = buildStyle(DARK_PALETTE);
 export interface ChatMarkdownProps {
   /** Assistant message content. May be partial during streaming. */
   markdown: string;
+  /** True ONLY for content actively receiving deltas (in practice: the
+   *  tail run of the streaming message). Drives enriched's
+   *  `streamingAnimation`, which is a PERFORMANCE switch, not just a fade:
+   *
+   *  - `false` (settled) → enriched's measurement CACHE is active —
+   *    re-mounting a session is cache hits instead of mock-rendering every
+   *    message synchronously just to measure it (the dominant cost of the
+   *    session-enter jank, ~15→35+ JS fps measured 2026-06-12) — and the
+   *    view.bounds measure fast path never engages (the sub-pixel height
+   *    creep loop; see ShadowMeasurementUtils.h).
+   *  - `true` (streaming) → bounds fast path gives cheap re-measures
+   *    between deltas. NEVER use false here: every delta is a new string,
+   *    so the cache misses every tick and enriched would mock-render the
+   *    whole message per delta.
+   *
+   *  The true→false settle flip forces one exact re-measure upstream
+   *  (ENRMPropsNeedExactStreamingMeasurement), snapping away any rounding
+   *  drift accumulated while streaming. */
+  streaming?: boolean;
 }
 
-export function ChatMarkdown({ markdown }: ChatMarkdownProps) {
+export function ChatMarkdown({
+  markdown,
+  streaming = false,
+}: ChatMarkdownProps) {
   const colorScheme = useColorScheme() ?? "light";
   const markdownStyle = colorScheme === "dark" ? DARK_STYLE : LIGHT_STYLE;
   return (
@@ -238,7 +260,7 @@ export function ChatMarkdown({ markdown }: ChatMarkdownProps) {
         underline: true,
       }}
       flavor="github"
-      streamingAnimation
+      streamingAnimation={streaming}
       streamingConfig={{ tableMode: "progressive" }}
       markdownStyle={markdownStyle}
     />

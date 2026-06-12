@@ -25,6 +25,7 @@ import {
   DaemonClientProvider,
   useDaemonClient,
 } from "@/lib/daemon-client-context";
+import { initHighlighter } from "@/lib/markdown/code-highlighter";
 import { queryClient } from "@/lib/query-client";
 import { SafeAreaView } from "@/lib/styled";
 import { getThemePreference } from "@/lib/theme-preference";
@@ -61,6 +62,15 @@ export default function RootLayout() {
   // async, so we sit at system for a frame or two before a forced theme lands.
   useEffect(() => {
     void getThemePreference().then((pref) => Uniwind.setTheme(pref));
+  }, []);
+
+  // Shiki engine + grammar load (~10-50ms JSON.parse, once per run) at app
+  // start — the engine README's recommendation, and the upstream example's
+  // exact idiom (initialize() from the root component's effect). Launch is
+  // splash-covered, so the parse is invisible here; paying it lazily on the
+  // first session-enter navigation was visible jank.
+  useEffect(() => {
+    initHighlighter();
   }, []);
 
   return (
