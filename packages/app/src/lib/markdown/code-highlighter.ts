@@ -1,4 +1,10 @@
-import type { HighlighterCore, ThemedToken } from "@shikijs/core";
+import themePierreDark from "@pierre/theme/pierre-dark";
+import themePierreLight from "@pierre/theme/pierre-light";
+import type {
+  HighlighterCore,
+  ThemedToken,
+  ThemeRegistration,
+} from "@shikijs/core";
 import { createHighlighterCore } from "@shikijs/core";
 import langDiff from "@shikijs/langs/diff";
 import langJson from "@shikijs/langs/json";
@@ -13,8 +19,6 @@ import langSwift from "@shikijs/langs/swift";
 import langToml from "@shikijs/langs/toml";
 import langTsx from "@shikijs/langs/tsx";
 import langYaml from "@shikijs/langs/yaml";
-import themeGithubDark from "@shikijs/themes/github-dark";
-import themeGithubLight from "@shikijs/themes/github-light";
 import { useMemo, useSyncExternalStore } from "react";
 import {
   createNativeEngine,
@@ -43,6 +47,21 @@ let highlighter: HighlighterCore | null = null;
 let initStarted = false;
 const listeners = new Set<() => void>();
 
+/** @pierre/theme ships VS Code-shaped themes (`tokenColors`,
+ *  object-form `semanticTokenColors`); shiki's normalizeTheme handles
+ *  tokenColors at runtime (moves them → settings) but its ThemeInput TYPE
+ *  doesn't admit them — map explicitly. semanticTokenColors is dropped: a
+ *  VS Code/LSP semantic-highlighting feature shiki's textmate tokenizer
+ *  never reads. The copy is also load-bearing: normalizeTheme MUTATES its
+ *  input and the package exports are Object.freeze'd. */
+function toShikiTheme(
+  theme: typeof themePierreDark,
+  name: string,
+): ThemeRegistration {
+  const { tokenColors, semanticTokenColors: _drop, ...rest } = theme;
+  return { ...rest, name, settings: [...tokenColors] };
+}
+
 /** Kick off engine + grammar loading. Idempotent. Called from the root
  *  layout once the launch settles (the engine README recommends app-start
  *  init; the grammar JSON.parse burst (~535KB source) belongs in the
@@ -58,7 +77,14 @@ export function initHighlighter() {
     return;
   }
   createHighlighterCore({
-    themes: [themeGithubLight, themeGithubDark],
+    // Pierre theme (same package the Pierre diff webview renders with —
+    // chat code blocks and the tool-call diff sheet share one vocabulary),
+    // registered under the kebab ids pierre-view already uses (the exports
+    // carry display names, "Pierre Dark").
+    themes: [
+      toShikiTheme(themePierreLight, "pierre-light"),
+      toShikiTheme(themePierreDark, "pierre-dark"),
+    ],
     langs: [
       langTsx,
       langSwift,
@@ -149,9 +175,11 @@ const PLAIN_LANGS = new Set([
 
 const loggedMisses = new Set<string>();
 
-/** Markdown info-string → loaded grammar id (null = render plain). */
+/** Markdown info-string → loaded grammar id (null = render plain).
+ *  Only the FIRST word counts: marked's `.lang` is the entire info string
+ *  ("ts title=foo.ts"), and GFM defines the language as its first word. */
 export function resolveLang(infoString: string): string | null {
-  const norm = infoString.trim().toLowerCase();
+  const norm = infoString.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
   if (PLAIN_LANGS.has(norm)) return null;
   const id = LANG_ALIASES[norm] ?? null;
   if (id === null && __DEV__ && !loggedMisses.has(norm)) {
@@ -173,7 +201,7 @@ export function tokenizeCode(
 ): TokenLines {
   return hl.codeToTokensBase(code, {
     lang,
-    theme: scheme === "dark" ? "github-dark" : "github-light",
+    theme: scheme === "dark" ? "pierre-dark" : "pierre-light",
   });
 }
 

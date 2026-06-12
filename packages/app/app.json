@@ -74,7 +74,15 @@
       ],
       "expo-image",
       "expo-web-browser",
-      "expo-font",
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "../../node_modules/@expo-google-fonts/jetbrains-mono/400Regular/JetBrainsMono_400Regular.ttf",
+            "../../node_modules/@expo-google-fonts/jetbrains-mono/700Bold/JetBrainsMono_700Bold.ttf"
+          ]
+        }
+      ],
       "@config-plugins/react-native-webrtc"
     ],
     "experiments": {

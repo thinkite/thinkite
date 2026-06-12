@@ -9,6 +9,7 @@ import {
 
 import {
   ChatMarkdown,
+  CODE_FONT_FAMILY,
   CODE_FONT_SIZE,
   CODE_LINE_HEIGHT,
   DARK_PALETTE,
@@ -26,7 +27,7 @@ import { useRemend } from "./remend";
  *  - RUNS (text + tables) still render through enriched via ChatMarkdown
  *    — native attributed-text selection stays continuous across
  *    paragraphs and tables, and typography is byte-identical to before.
- *  - CODE BLOCKS break out into a horizontal-scroll Menlo code view with
+ *  - CODE BLOCKS break out into a horizontal-scroll JetBrains Mono view with
  *    react-native-shiki-engine STREAMING highlight: naive full
  *    re-tokenize per delta (~1-3.5ms measured on device for typical
  *    blocks) + per-line memo keyed on token content, so settled lines
@@ -38,7 +39,7 @@ import { useRemend } from "./remend";
  * UITextView, which gives PARTIAL selection with handles (RN iOS <Text
  * selectable> is select-all only, facebook/react-native#13938). All
  * highlight spans nest inside it as one attributed string. Spans are
- * color-only over the same Menlo metrics as the plain fallback → zero
+ * color-only over the same monospace metrics as the plain fallback → zero
  * layout shift when the highlighter comes online.
  *
  * `streamDone` gates tail-run remend repair and EOF fence-close marking.
@@ -131,6 +132,8 @@ const CodeBlockSegment = memo(function CodeBlockSegment({
       className="rounded-lg overflow-hidden"
       style={{
         backgroundColor: palette.codeBlockBg,
+        borderWidth: 1,
+        borderColor: palette.codeBlockBorder,
       }}
     >
       <ScrollView horizontal>
@@ -143,7 +146,7 @@ const CodeBlockSegment = memo(function CodeBlockSegment({
           // competes with the transcript list / horizontal ScrollView.
           scrollEnabled={false}
           style={{
-            fontFamily: "Menlo",
+            fontFamily: CODE_FONT_FAMILY,
             fontSize: CODE_FONT_SIZE,
             lineHeight: CODE_LINE_HEIGHT,
             color: palette.text,

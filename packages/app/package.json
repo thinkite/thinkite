@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^15.0.1",
+    "@expo-google-fonts/jetbrains-mono": "^0.4.1",
     "@expo/metro-runtime": "~56.0.15",
     "@expo/ui": "~56.0.17",
     "@legendapp/list": "3.0.4",
@@ -22,9 +23,9 @@
     "@noble/ed25519": "^3.1.0",
     "@noble/hashes": "^2.2.0",
     "@pierre/diffs": "^1.2.7",
+    "@pierre/theme": "^1.0.3",
     "@shikijs/core": "^4.2.0",
     "@shikijs/langs": "^4.2.0",
-    "@shikijs/themes": "^4.2.0",
     "@sidecodeapp/protocol": "workspace:*",
     "@swmansion/react-native-bottom-sheet": "0.14.1",
     "@tanstack/react-db": "^0.1.86",

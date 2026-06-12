@@ -49,6 +49,15 @@ const BODY_LINE_HEIGHT = 22;
 // (still enriched, inside runs) and block code (ours) read as one family.
 export const CODE_FONT_SIZE = 14;
 export const CODE_LINE_HEIGHT = 19;
+// JetBrains Mono, embedded at build time via the expo-font config plugin
+// (app.json; Regular + Bold TTFs from @expo-google-fonts/jetbrains-mono —
+// the package is only the TTF source, we deliberately do NOT use its
+// useFonts runtime loading: the transcript needs the font synchronously
+// at first native render, no flash-of-fallback). Family-name resolution:
+// both enriched (RCTFont via StyleConfig) and RN TextInput resolve
+// "JetBrains Mono" + weight against the embedded family. Matches the
+// Pierre diff webview, which already ships JetBrains Mono woff2.
+export const CODE_FONT_FAMILY = "JetBrains Mono";
 
 interface ColorPalette {
   text: string;
@@ -71,8 +80,11 @@ export const LIGHT_PALETTE: ColorPalette = {
   link: "#2563eb",
   inlineCodeBg: "#f4f4f5",
   inlineCodeBorder: "#f4f4f5",
-  codeBlockBg: "#f4f4f5",
-  codeBlockBorder: "#f4f4f5",
+  // Code blocks sit on the Pierre theme's own editor background (the
+  // same surface the Pierre diff sheet renders on) with a visible border
+  // carrying the block boundary — the bg matches the chat bg in both modes.
+  codeBlockBg: "#ffffff",
+  codeBlockBorder: "#e4e4e7",
   blockquoteBorder: "#d4d4d8",
   bullet: "#525252",
   tableHeaderBg: "#eeeeef",
@@ -86,8 +98,9 @@ export const DARK_PALETTE: ColorPalette = {
   link: "#60a5fa",
   inlineCodeBg: "#27272a",
   inlineCodeBorder: "#27272a",
-  codeBlockBg: "#18181b",
-  codeBlockBorder: "#18181b",
+  // pierre-dark editor.background; border = zinc-800 (see light note).
+  codeBlockBg: "#0a0a0a",
+  codeBlockBorder: "#27272a",
   blockquoteBorder: "#3f3f46",
   bullet: "#a1a1aa",
   tableHeaderBg: "#27272a", // zinc-800 — one shade lighter than chat bg
@@ -154,19 +167,20 @@ function buildStyle(p: ColorPalette): MarkdownStyle {
       marginBottom: 12,
     },
     code: {
-      fontFamily: "Menlo",
+      fontFamily: CODE_FONT_FAMILY,
       fontSize: CODE_FONT_SIZE,
       color: p.text,
       backgroundColor: p.inlineCodeBg,
       borderColor: p.inlineCodeBorder,
     },
     codeBlock: {
-      fontFamily: "Menlo",
+      fontFamily: CODE_FONT_FAMILY,
       fontSize: CODE_FONT_SIZE,
       lineHeight: CODE_LINE_HEIGHT,
       color: p.text,
       backgroundColor: p.codeBlockBg,
       borderColor: p.codeBlockBorder,
+      borderWidth: 1,
       borderRadius: 8,
       padding: 10,
       marginTop: 0,
