@@ -53,13 +53,28 @@ import { useRemend } from "./remend";
  */
 
 const RunSegment = memo(function RunSegment({ raw }: { raw: string }) {
-  return <ChatMarkdown markdown={raw} />;
+  // The plain View wrapper is LOAD-BEARING, not decoration: with enriched
+  // as a direct flex child of the segment column, repeated layout passes
+  // (e.g. swiping a sibling code block's ScrollView) inflate its measured
+  // height by ~0.5px per pass — visible as growing blank space inside the
+  // message. An ordinary View between the column and enriched breaks that
+  // measure→round→remeasure loop. Verified by A/B on device 2026-06-12.
+  return (
+    <View>
+      <ChatMarkdown markdown={raw} />
+    </View>
+  );
 });
 
-/** Tail run while streaming: unterminated inline syntax gets repaired. */
+/** Tail run while streaming: unterminated inline syntax gets repaired.
+ *  Same load-bearing View wrapper as RunSegment (see comment there). */
 function TailRunSegment({ raw }: { raw: string }) {
   const processed = useRemend(raw);
-  return <ChatMarkdown markdown={processed} />;
+  return (
+    <View>
+      <ChatMarkdown markdown={processed} />
+    </View>
+  );
 }
 
 function lineKeyOf(tokens: { content: string; color?: string }[]): string {
@@ -101,19 +116,10 @@ const TokenLine = memo(
 const CodeBlockSegment = memo(function CodeBlockSegment({
   lang,
   code,
-  isFirst,
-  isLast,
   onTokenizeMs,
 }: {
   lang: string;
   code: string;
-  /** Margins only face NEIGHBORING segments: a message that starts or
-   *  ends with a code block keeps its outer edge flush, matching how
-   *  enriched messages start/end (their first/last block margins don't
-   *  add outer padding either). `isLast` flips once when more content
-   *  streams in after the block — a single cheap re-render. */
-  isFirst: boolean;
-  isLast: boolean;
   onTokenizeMs?: (ms: number) => void;
 }) {
   const hl = useHighlighter();
@@ -131,9 +137,7 @@ const CodeBlockSegment = memo(function CodeBlockSegment({
 
   return (
     <View
-      className={`rounded-lg overflow-hidden ${isFirst ? "" : "mt-3"} ${
-        isLast ? "" : "mb-3"
-      }`}
+      className="rounded-lg overflow-hidden"
       style={{
         backgroundColor: palette.codeBlockBg,
       }}
@@ -198,7 +202,10 @@ export function ChunkedMarkdown({
 
   const lastIndex = segments.length - 1;
   return (
-    <View>
+    // Segment spacing via container gap (12) — only exists BETWEEN
+    // segments, so first/last code blocks stay flush with the message
+    // edges for free (no per-segment first/last margin bookkeeping).
+    <View className="gap-3">
       {segments.map((seg: MarkdownSegment, i: number) => {
         if (seg.kind === "code") {
           return (
@@ -206,8 +213,6 @@ export function ChunkedMarkdown({
               key={seg.key}
               lang={seg.lang}
               code={seg.code}
-              isFirst={i === 0}
-              isLast={i === lastIndex}
               onTokenizeMs={onTokenizeMs}
             />
           );
