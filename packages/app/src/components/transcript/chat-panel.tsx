@@ -1,3 +1,5 @@
+import { Button, Host, Image } from "@expo/ui/swift-ui";
+import { buttonBorderShape, buttonStyle } from "@expo/ui/swift-ui/modifiers";
 import {
   KeyboardAwareLegendList,
   useKeyboardChatComposerInset,
@@ -15,8 +17,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import * as Crypto from "expo-crypto";
 import { useHeaderHeight } from "expo-router/react-navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useColorScheme, View } from "react-native";
+import { useColorScheme, View, type ViewProps } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
+import Animated, {
+  useAnimatedProps,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
@@ -128,8 +136,8 @@ export function ChatPanel({
 
   // Idiomatic scroll-on-send (LegendList chat pattern). `scrollMessageToEnd`
   // brings the just-sent message into view no matter where the user had
-  // scrolled to; `freeze` (passed to the list) suspends maintainScrollAtEnd /
-  // maintainVisibleContentPosition during the animation so they don't fight it.
+  // scrolled to; `freeze` (passed to the list) suspends
+  // maintainVisibleContentPosition during the animation so it doesn't fight it.
   const { freeze, scrollMessageToEnd } = useKeyboardScrollToEnd({ listRef });
 
   // isThinking: the turn is running (daemon-pushed activity, #17) but the last
@@ -177,12 +185,21 @@ export function ChatPanel({
 
   // anchoredEndSpace anchor for the just-sent message: the streaming reply fills
   // reserved space below it instead of shoving the scroll target (overshoot fix).
-  // Set in rawSend at send time (the activity flag lags a round-trip); cleared
-  // when the turn goes idle.
+  // Set in rawSend at send time (the activity flag lags a round-trip) and kept
+  // ACROSS turns (the upstream AiChatExample idiom): clearing on idle collapses
+  // the reserved blank space below a short reply, which jumps the viewport.
+  // The next send simply re-anchors.
   const [anchorIndex, setAnchorIndex] = useState(-1);
-  useEffect(() => {
-    if (!isRunning) setAnchorIndex(-1);
-  }, [isRunning]);
+
+  // Written by the list on the UI thread (reanimated integration) — drives the
+  // scroll-to-end FAB without a single JS-side re-render.
+  const isNearEnd = useSharedValue(true);
+  const scrollFabStyle = useAnimatedStyle(() => ({
+    opacity: withTiming(isNearEnd.value ? 0 : 1, { duration: 160 }),
+  }));
+  const scrollFabProps = useAnimatedProps<ViewProps>(() => ({
+    pointerEvents: isNearEnd.value ? ("none" as const) : ("box-none" as const),
+  }));
 
   // The "real send" handed to InputBar. InputBar already intercepts slash
   // commands; only plain text + whitelisted passthroughs (/init, /review,
@@ -203,13 +220,15 @@ export function ChatPanel({
       }).isPersisted.promise.catch((err) => {
         console.error("sendPrompt failed", err);
       });
-      // Anchor the new message, then scroll to it next frame (after the optimistic
-      // insert reflows). closeKeyboard:false — dismissing mid-scroll fights the
-      // scroll target.
+      // Anchor the new message and scroll synchronously — scrollToEnd is
+      // "committed" since @legendapp/list 3.0.4: the list queues the scroll
+      // until the data commit lands and the anchored tail has measured, and
+      // the hook holds `freeze` until BOTH the scroll and the keyboard
+      // dismissal finish. No rAF needed; closeKeyboard:true is the supported
+      // pattern (the old "dismiss fights the scroll target" race is fixed
+      // upstream).
       setAnchorIndex(blocks.length);
-      requestAnimationFrame(() => {
-        void scrollMessageToEnd({ animated: true, closeKeyboard: false });
-      });
+      void scrollMessageToEnd({ animated: true, closeKeyboard: true });
     },
     [cliSessionId, cwd, blocks.length, scrollMessageToEnd],
   );
@@ -224,9 +243,9 @@ export function ChatPanel({
     <>
       <KeyboardAwareLegendList<RenderBlock>
         ref={listRef}
-        // Suspends maintainScrollAtEnd / maintainVisibleContentPosition while
-        // `scrollMessageToEnd` animates on send, so the chat-pattern scroll
-        // isn't fought by the resting scroll managers (LegendList chat guide).
+        // Suspends maintainVisibleContentPosition while `scrollMessageToEnd`
+        // animates on send, so the chat-pattern scroll isn't fought by the
+        // resting scroll manager (LegendList chat guide).
         freeze={freeze}
         // Reserve blank space below the just-sent user message for its turn so
         // the streaming response fills it without moving the anchor (fixes the
@@ -297,33 +316,41 @@ export function ChatPanel({
         // Without this the last message sits ~insets.bottom too low above
         // composer when the keyboard is shown.
         keyboardOffset={insets.bottom - 8}
-        // ChatGPT-style scrolling, NOT Telegram-style:
+        // ChatGPT-style scrolling, NOT Telegram-style (the upstream
+        // AiChatExample idiom):
         //   - initialScrollAtEnd: boot at the latest message on session
         //     re-open. Runs a per-frame rAF ticker that retargets to true
         //     end as items measure and the inset settles (LegendList
         //     retargets the initial scroll after inset changes).
-        //   - maintainScrollAtEnd: when user is already pinned at bottom,
-        //     new messages keep them pinned; scrolling up disengages.
+        //   - During a turn, anchoredEndSpace absorbs streaming growth: the
+        //     reply fills the reserved space below the anchored prompt and
+        //     the viewport NEVER auto-follows. Once the reply outgrows the
+        //     viewport it streams below the fold; the scroll-to-end FAB
+        //     (driven by `isNearEnd`) is the user's way down.
         //
-        // DELIBERATELY OMITTED: `alignItemsAtEnd`. That's a
-        // Telegram/iMessage idiom (sparse messages stick to the bottom of
-        // the viewport via `flexGrow:1 + justifyContent:flex-end` on the
-        // contentContainer). For our
-        // ChatGPT layout messages flow top-down from the header, and we
-        // got two bugs from enabling it: (1) contentContainer was forced
-        // to fill the viewport even with one short message, making the
-        // list scrollable into the composer inset zone; (2) the
-        // bottom-aligned single message rendered behind the composer
-        // backdrop because the alignment didn't account for
-        // `contentInsetEndAdjustment`.
+        // DELIBERATELY OMITTED:
+        //   - `maintainScrollAtEnd`: auto-follow-the-stream. It defeats the
+        //     anchored pattern the moment the reply outgrows the reserved
+        //     space (the anchor scrolls away mid-read). The upstream AI chat
+        //     example never used it — it belongs to the Telegram-style
+        //     ChatExample only.
+        //   - `alignItemsAtEnd`: a Telegram/iMessage idiom (sparse messages
+        //     stick to the bottom of the viewport via `flexGrow:1 +
+        //     justifyContent:flex-end`). For our ChatGPT layout messages
+        //     flow top-down from the header, and enabling it caused two
+        //     bugs: (1) contentContainer forced to fill the viewport even
+        //     with one short message, making the list scrollable into the
+        //     composer inset zone; (2) the bottom-aligned single message
+        //     rendered behind the composer backdrop because the alignment
+        //     didn't account for `contentInsetEndAdjustment`.
         initialScrollAtEnd
-        maintainScrollAtEnd={{ animated: true }}
-        // v3 migration: stabilize the visible position on size/layout
-        // changes (keyboard toggle, streaming item growth) but NOT on data
-        // adds — `data:false` hands pin-to-bottom-on-new-message to
-        // `maintainScrollAtEnd` above. This is the v3 guide's recommended chat
-        // config (and the v3 default); set explicitly to document intent. v2's
-        // bare boolean mapped to different defaults.
+        // List → UI-thread state mirror (reanimated integration). `isNearEnd`
+        // gates the scroll-to-end FAB; no JS re-render involved.
+        sharedValues={{ isNearEnd }}
+        // Stabilize the visible position on size/layout changes (keyboard
+        // toggle, streaming item growth) but NOT on data adds — with
+        // maintainScrollAtEnd gone, new data moves nothing by design: the
+        // anchored end space owns in-turn growth and the FAB owns catch-up.
         maintainVisibleContentPosition={{ size: true, data: false }}
         // iOS pull-down-to-dismiss for the keyboard.
         keyboardDismissMode="interactive"
@@ -346,11 +373,46 @@ export function ChatPanel({
           InputBar; future error banners / attachment rows should go
           inside this same wrapper so the list auto-adjusts.
           `collapsable={false}` is required for `measure` / `onLayout`
-          to fire reliably on Android. */}
+          to fire reliably on Android.
+
+          `pointerEvents="box-none"`: the KSV now also contains the
+          transparent FAB strip above the composer — the wrapper itself
+          must not eat list touches in that strip. */}
       <KeyboardStickyView
         offset={{ opened: insets.bottom - 8 }}
         style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
+        pointerEvents="box-none"
       >
+        {/* Scroll-to-end FAB — appears when the user is away from the end
+            (streaming continues below the fold by design; see the
+            maintainScrollAtEnd omission note above). Lives INSIDE the KSV,
+            laid out above the composer: it rides keyboard transitions for
+            free, and staying within the KSV's bounds keeps it tappable
+            (RN doesn't hit-test children outside parent bounds). NOT part
+            of `composerRef`, so it doesn't inflate the measured list
+            inset. Visibility + hit-testing both ride `isNearEnd` on the
+            UI thread. Liquid Glass circle via swift-ui Button (universal
+            Button injects its own innermost buttonStyle and eats `glass`
+            — see onboarding.tsx). */}
+        <Animated.View
+          animatedProps={scrollFabProps}
+          style={[{ alignItems: "center", paddingBottom: 12 }, scrollFabStyle]}
+        >
+          <Host matchContents>
+            <Button
+              onPress={() => {
+                void listRef.current?.scrollToEnd({ animated: true });
+              }}
+              modifiers={[buttonStyle("glass"), buttonBorderShape("circle")]}
+            >
+              <Image
+                systemName="arrow.down"
+                size={17}
+                color={isDark ? "#fafafa" : "#0a0a0a"}
+              />
+            </Button>
+          </Host>
+        </Animated.View>
         <View
           ref={composerRef}
           collapsable={false}
