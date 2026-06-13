@@ -574,6 +574,33 @@ describe("normalize — new tool variants", () => {
     expect(item.summary).toBe("Explore: Search code");
   });
 
+  it("Agent with explicit model override → '(model)' in summary", () => {
+    const item = detectAndPair(
+      "Agent",
+      {
+        subagent_type: "Explore",
+        description: "Search code",
+        prompt: "Find X",
+        model: "haiku",
+      },
+      "done",
+    );
+    if (item.detail.type !== "agent") throw new Error("expected agent");
+    expect(item.detail.model).toBe("haiku");
+    expect(item.summary).toBe("Explore (haiku): Search code");
+  });
+
+  it("Agent without subagent_type (SDK optional) → bare description summary", () => {
+    const item = detectAndPair(
+      "Agent",
+      { description: "Search code", prompt: "Find X" },
+      "done",
+    );
+    if (item.detail.type !== "agent") throw new Error("expected agent");
+    expect(item.detail.subagentType).toBe("");
+    expect(item.summary).toBe("Search code");
+  });
+
   it("WebFetch → web_fetch variant with host-only summary", () => {
     const item = detectAndPair(
       "WebFetch",
@@ -633,6 +660,8 @@ describe("normalize — new tool variants", () => {
     );
     if (item.detail.type !== "task_stop") throw new Error("expected task_stop");
     expect(item.detail.taskId).toBe("b3v2ethee");
+    // Object-only — the iOS row prepends "Stopped task".
+    expect(item.summary).toBe("#b3v2ethee");
   });
 
   it("AskUserQuestion → parses answers[] from tool_result", () => {

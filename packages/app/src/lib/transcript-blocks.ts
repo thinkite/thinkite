@@ -43,7 +43,8 @@ export interface ToolRenderBlock {
   callId: string;
   /** Raw SDK tool name (e.g. "Bash", "Edit", "WebFetch"). */
   name: string;
-  /** Daemon-computed chip label — basename, command summary, "5/12 todos", etc. */
+  /** Daemon-computed row object label — basename, command summary, pattern,
+   *  etc. Rendered after the past-tense verb from tool-verbs.ts. */
   summary: string;
   status: "completed" | "failed" | "running";
   /** Tool result error text when `status === "failed"`, null otherwise. */

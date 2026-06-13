@@ -432,9 +432,9 @@ export type GrepMode = z.infer<typeof grepMode>;
  * `output` blob, and edit/write diffs are computed via jsdiff from input
  * (Edit: old/new; Write: empty/content).
  *
- * `unknown` is the fallback for tools we don't specially-render in V0
- * (WebFetch, WebSearch, Agent, NotebookEdit, MCP*, etc.). iOS renders it as
- * `name` chip + accordion-revealed pretty-printed input + raw output text.
+ * `unknown` is the fallback for tools without a typed variant
+ * (NotebookEdit, MCP*, etc.). iOS renders it as a "Used <name>" row;
+ * the sheet shows pretty-printed input + raw output text.
  */
 export const toolCallDetail = z.discriminatedUnion("type", [
   z.object({
@@ -503,9 +503,15 @@ export const toolCallDetail = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("agent"),
     /** SDK `Agent.input.subagent_type` — registered subagent name (e.g.
-     *  "Explore", "Plan", "general-purpose"). */
+     *  "Explore", "Plan", "general-purpose"). SDK marks it optional;
+     *  daemon stores "" when absent (default catch-all agent). */
     subagentType: z.string(),
     description: z.string(),
+    /** SDK `Agent.input.model` — per-spawn model override ("haiku" etc.).
+     *  Only present when the parent explicitly overrode; the common
+     *  inherit-from-parent case has no model in input and is NOT
+     *  reconstructible (sidecar stripped), so absence ≠ default model. */
+    model: z.string().optional(),
     /** Original prompt handed to the subagent. May be long. */
     prompt: z.string(),
     /** Final text the subagent returned to the parent conversation.
@@ -601,7 +607,7 @@ export const toolCallDetail = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("unknown"),
-    /** Raw SDK tool name so iOS can show "WebFetch" / "Agent" / etc. on the chip. */
+    /** Raw SDK tool name — becomes the row summary ("Used <toolName>"). */
     toolName: z.string(),
     input: z.unknown(),
     output: z.string(),
@@ -615,7 +621,8 @@ const toolCallItem = z.object({
   callId: z.string(),
   /** Raw SDK tool name ("Bash", "Edit", "Read", "WebFetch", ...). */
   name: z.string(),
-  /** Daemon-derived chip label (e.g. "src/utils/foo.ts" for Edit, "TODO" for Grep). */
+  /** Daemon-derived row object label — iOS prepends a past-tense verb from
+   *  detail.type ("Edited foo.ts", 'Searched "TODO"'; see app tool-verbs.ts). */
   summary: z.string(),
   /**
    * V0 reads settled JSONL so most tool_calls arrive `completed` or `failed`.

@@ -1,6 +1,7 @@
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Text } from "react-native";
+import { toolVerb } from "@/lib/tool-verbs";
 import type { ToolRenderBlock } from "@/lib/transcript-blocks";
-import { ToolChip, useToolCallSheet } from "./tool-call-sheet";
+import { useToolCallSheet } from "./tool-call-sheet";
 
 /**
  * Trigger row for a paired tool_use+tool_result. Tap → opens the shared
@@ -19,50 +20,33 @@ import { ToolChip, useToolCallSheet } from "./tool-call-sheet";
  *      renderer (the Pierre webview) opened on demand — no per-row mounting,
  *      no virtualization pressure, no jitter.
  *
- * Bash gets a chip-less "Ran <description>" verb-led header to match
- * Claude Desktop. Other tools render `<chip> <summary>`.
+ * Row format = `<verb> <summary>` (claude.ai/code vocabulary, see
+ * tool-verbs.ts): muted past-tense verb + darker object, red verb on
+ * failure. Replaced the former uppercase tool-name chip (ToolChip) —
+ * Bash rows already rendered this way ("Ran <description>"); this is
+ * that pattern generalized to every tool.
  */
 export function ToolBlock({ block }: { block: ToolRenderBlock }) {
   const { openToolCall } = useToolCallSheet();
   const isError = block.status === "failed";
-  const isBash = block.name === "Bash";
 
   return (
-    <Pressable
-      onPress={() => openToolCall(block)}
-      className="flex-row items-center gap-2 px-4 py-1.5"
-    >
-      {isBash ? (
+    <Pressable onPress={() => openToolCall(block)} className="px-4 py-1.5">
+      <Text
+        numberOfLines={1}
+        className="text-base text-gray-700 dark:text-gray-300"
+      >
         <Text
-          numberOfLines={1}
-          className="flex-1 text-base text-gray-700 dark:text-gray-300"
+          className={
+            isError
+              ? "text-red-600 dark:text-red-400"
+              : "text-gray-500 dark:text-gray-400"
+          }
         >
-          <Text
-            className={
-              isError
-                ? "text-red-600 dark:text-red-400"
-                : "text-gray-500 dark:text-gray-400"
-            }
-          >
-            Ran{" "}
-          </Text>
-          {block.summary}
+          {toolVerb(block.detail)}
         </Text>
-      ) : (
-        <>
-          <ToolChip name={block.name} isError={isError} />
-          {block.summary ? (
-            <Text
-              numberOfLines={1}
-              className="flex-1 text-base text-gray-700 dark:text-gray-300"
-            >
-              {block.summary}
-            </Text>
-          ) : (
-            <View className="flex-1" />
-          )}
-        </>
-      )}
+        {block.summary ? ` ${block.summary}` : ""}
+      </Text>
     </Pressable>
   );
 }

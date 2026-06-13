@@ -47,9 +47,9 @@ import {
 
 // ToolBlock row height, derived from its styles (keep in sync with
 // tool-block.tsx): Pressable py-1.5 (12) + one text-base line (lineHeight
-// 24, the tallest child — ToolChip is ~18). Both Bash and chip branches are
-// single-line by construction (numberOfLines={1}). The text line scales
-// with Dynamic Type; the vertical padding doesn't.
+// 24). The verb+summary row is single-line by construction
+// (numberOfLines={1}). The text line scales with Dynamic Type; the
+// vertical padding doesn't.
 const TOOL_ROW_PADDING_V = 12;
 const TOOL_ROW_LINE_HEIGHT = 24;
 

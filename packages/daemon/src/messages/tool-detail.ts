@@ -10,7 +10,8 @@
  *     specially-render in V0
  *   - `attachOutputToDetail(detail, outputText)`: in-place plug of a textual
  *     tool_result into whichever field of the variant holds it
- *   - `summaryFor(detail, name)`: chip-label string the iOS row renders
+ *   - `summaryFor(detail, name)`: row object label the iOS row renders
+ *     after a past-tense verb (see app tool-verbs.ts)
  *   - `extractText(raw)`: pull text from a `tool_result.content` (string or
  *     ContentBlock[])
  *
@@ -132,9 +133,12 @@ const globInputSchema = z.object({
 // schema convention.
 
 const agentInputSchema = z.object({
-  subagent_type: z.string(),
+  // Optional per SDK AgentInput — omitted means the default catch-all agent.
+  subagent_type: z.string().optional(),
   description: z.string(),
   prompt: z.string(),
+  // Per-spawn model override; absent in the common inherit case.
+  model: z.string().optional(),
 });
 
 const webFetchInputSchema = z.object({
@@ -292,12 +296,15 @@ export function buildDetailFromInput(
     case "Agent": {
       const parsed = agentInputSchema.safeParse(rawInput);
       if (!parsed.success) return unknownDetail(name, rawInput);
-      const { subagent_type, description, prompt } = parsed.data;
+      const { subagent_type, description, prompt, model } = parsed.data;
       return {
         type: "agent",
-        subagentType: subagent_type,
+        // "" = SDK omitted subagent_type (default agent); summaryFor skips
+        // the empty head instead of rendering ": description".
+        subagentType: subagent_type ?? "",
         description,
         prompt,
+        model,
         output: "", // subagent's final text, populated by tool_result attachment
       };
     }
@@ -489,7 +496,7 @@ export function attachOutputToDetail(
     // TaskUpdate / TaskStop / ScheduleWakeup: tool_result is just a
     // confirmation string ("Updated task #1 status" / "Next wakeup
     // scheduled for …"). No useful structured fields to extract — UI
-    // shows the chip summary from the input alone.
+    // shows the row summary from the input alone.
     case "task_update":
     case "task_stop":
     case "schedule_wakeup":
@@ -498,7 +505,7 @@ export function attachOutputToDetail(
       // Input lacks taskId — SDK generates it and returns inline in the
       // confirmation message. Patch the placeholder "" in detail.taskId
       // (set by buildDetailFromInput) with the real id so subsequent
-      // TaskUpdate/TaskStop chips can reference it.
+      // TaskUpdate/TaskStop rows can reference it.
       const id = parseTaskCreatedId(output);
       if (id !== undefined) detail.taskId = id;
       return;
@@ -514,8 +521,15 @@ export function attachOutputToDetail(
   }
 }
 
-// ─── Summary (chip label) ───────────────────────────────────────────────
+// ─── Summary (row object label) ─────────────────────────────────────────
 
+/**
+ * The OBJECT part of the iOS transcript row. The app prepends a past-tense
+ * verb derived from detail.type (tool-verbs.ts: "Read" / "Edited" /
+ * "Searched" / …, claude.ai/code vocabulary), so summaries here must read
+ * as the verb's object — never restate the action ("#1 stopped" would
+ * render "Stopped task #1 stopped").
+ */
 export function summaryFor(detail: ToolCallDetail, name: string): string {
   switch (detail.type) {
     case "bash":
@@ -530,10 +544,19 @@ export function summaryFor(detail: ToolCallDetail, name: string): string {
         : `"${detail.pattern}"`;
     case "glob":
       return detail.pattern;
-    case "agent":
-      return `${detail.subagentType}: ${truncate(detail.description, 50)}`;
+    case "agent": {
+      // "Explore (haiku): Find usages" / "Explore: Find usages" /
+      // "(haiku): …" never happens — bare model becomes the head.
+      const head = detail.subagentType
+        ? detail.model
+          ? `${detail.subagentType} (${detail.model})`
+          : detail.subagentType
+        : (detail.model ?? "");
+      const desc = truncate(detail.description, 50);
+      return head ? `${head}: ${desc}` : desc;
+    }
     case "web_fetch": {
-      // Host only — full URL clutters the chip. Falls back to raw if
+      // Host only — full URL clutters the row. Falls back to raw if
       // URL.parse fails (shouldn't happen for SDK-issued URLs).
       try {
         return new URL(detail.url).host;
@@ -550,7 +573,7 @@ export function summaryFor(detail: ToolCallDetail, name: string): string {
         ? `#${detail.taskId} ${truncate(detail.activeForm, 40)}`
         : `#${detail.taskId}${detail.status ? `: ${detail.status}` : ""}`;
     case "task_stop":
-      return `#${detail.taskId} stopped`;
+      return `#${detail.taskId}`;
     case "ask_user": {
       const first = detail.questions[0];
       if (!first) return "Ask user";

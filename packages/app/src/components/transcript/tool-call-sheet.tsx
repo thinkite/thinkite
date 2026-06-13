@@ -23,6 +23,8 @@ import {
 import { KeyboardController } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkingTreeDiff } from "@/hooks/use-working-tree-diff";
+import { ChunkedMarkdown } from "@/lib/markdown/chunked-markdown";
+import { toolVerb } from "@/lib/tool-verbs";
 import type { ToolRenderBlock } from "@/lib/transcript-blocks";
 import workerPortableAsset from "../../../assets/pierre/worker-portable.pwt";
 import PierreView from "./pierre-view";
@@ -290,22 +292,23 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
         </View>
         <View className="flex-row items-center gap-2 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
           {showing?.kind === "tool" ? (
-            <>
-              <ToolChip
-                name={showing.block.name}
-                isError={showing.block.status === "failed"}
-              />
-              {showing.block.summary ? (
-                <Text
-                  numberOfLines={1}
-                  className="flex-1 text-base text-gray-700 dark:text-gray-300"
-                >
-                  {showing.block.summary}
-                </Text>
-              ) : (
-                <View className="flex-1" />
-              )}
-            </>
+            // Same `<verb> <summary>` line as the transcript row (ToolBlock),
+            // so the sheet header reads as a continuation of the tapped row.
+            <Text
+              numberOfLines={1}
+              className="flex-1 text-base text-gray-700 dark:text-gray-300"
+            >
+              <Text
+                className={
+                  showing.block.status === "failed"
+                    ? "text-red-600 dark:text-red-400"
+                    : "text-gray-500 dark:text-gray-400"
+                }
+              >
+                {toolVerb(showing.block.detail)}
+              </Text>
+              {showing.block.summary ? ` ${showing.block.summary}` : ""}
+            </Text>
           ) : showing?.kind === "gitDiff" ? (
             <Text
               numberOfLines={1}
@@ -406,9 +409,11 @@ type Descriptor =
   | { mode: "native"; node: ReactNode };
 
 /**
- * Map a tool block to how its body renders. Diff/code go to the Pierre webview;
- * errors, `unknown`, and empty output render natively (plain Text — no
- * react-native-diffs). Mirrors the old `DetailBody` dispatch.
+ * Map a tool block to how its body renders. Diffs and code-shaped output
+ * (bash/read/grep/glob/monitor) go to the Pierre webview; everything else —
+ * errors, empty output, markdown-bearing tools (web_fetch/agent via
+ * ChunkedMarkdown), field-shaped tools (tasks, schedule_wakeup, ask_user),
+ * and `unknown` — renders natively inside the sheet's ScrollView.
  */
 function describeDetail(block: ToolRenderBlock): Descriptor {
   const isError = block.status === "failed";
@@ -450,6 +455,7 @@ function describeDetail(block: ToolRenderBlock): Descriptor {
     }
     case "grep":
     case "glob":
+      if (isError) return errorNative(error ?? "Tool failed.");
       return detail.output.length === 0
         ? NATIVE_EMPTY
         : {
@@ -460,15 +466,61 @@ function describeDetail(block: ToolRenderBlock): Descriptor {
             noHeader: true,
             noLineNumbers: true,
           };
+    case "web_search":
+      // Result list (title + URL per line) — plain native text, no need
+      // for the webview's tokenizer or horizontal code scroll.
+      if (isError) return errorNative(error ?? "Search failed.");
+      return detail.output.length === 0
+        ? NATIVE_EMPTY
+        : { mode: "native", node: <FieldText>{detail.output}</FieldText> };
+    case "monitor": {
+      // Monitor is a watch command — same command+output body as Bash.
+      const body = formatBashBody(detail.command, detail.output);
+      return body.length === 0
+        ? NATIVE_EMPTY
+        : {
+            mode: "webview",
+            kind: "code",
+            content: body,
+            name: "command.sh",
+            noHeader: true,
+            noLineNumbers: true,
+          };
+    }
+    case "web_fetch":
+      if (isError) return errorNative(error ?? "Fetch failed.");
+      return { mode: "native", node: <WebFetchDetail detail={detail} /> };
+    case "agent":
+      if (isError) return errorNative(error ?? "Agent failed.");
+      return { mode: "native", node: <AgentDetail detail={detail} /> };
+    case "ask_user":
+      return { mode: "native", node: <AskUserDetail detail={detail} /> };
+    case "task_create":
+      return labeledFields([
+        ["Subject", detail.subject],
+        ["Description", detail.description],
+        ["Active form", detail.activeForm],
+        ["Task ID", detail.taskId ? `#${detail.taskId}` : undefined],
+      ]);
+    case "task_update":
+      return labeledFields([
+        ["Task ID", `#${detail.taskId}`],
+        ["Status", detail.status],
+        ["Active form", detail.activeForm],
+      ]);
+    case "task_stop":
+      return labeledFields([["Task ID", `#${detail.taskId}`]]);
+    case "schedule_wakeup":
+      return labeledFields([
+        ["Delay", `${detail.delaySeconds}s`],
+        ["Reason", detail.reason],
+        ["Prompt", detail.prompt],
+      ]);
     case "unknown":
       return {
         mode: "native",
         node: <UnknownDetail detail={detail} isError={isError} error={error} />,
       };
-    default:
-      // Long-tail types not specially rendered in V0 (web_fetch, agent, etc.) —
-      // render nothing, matching the old switch's implicit fall-through.
-      return { mode: "native", node: null };
   }
 }
 
@@ -546,6 +598,120 @@ function UnknownDetail({
   );
 }
 
+/** Monospace-ish selectable text block, same chrome as UnknownDetail input. */
+function FieldText({ children }: { children: string }) {
+  return (
+    <Text
+      selectable
+      className="rounded bg-gray-100 p-2 text-xs text-gray-900 dark:bg-gray-900 dark:text-gray-100"
+    >
+      {children}
+    </Text>
+  );
+}
+
+/** Labeled-fields native body; skips empty/undefined values. */
+function labeledFields(
+  fields: Array<[label: string, value: string | undefined]>,
+): Descriptor {
+  const visible = fields.filter(
+    (f): f is [string, string] => f[1] !== undefined && f[1].length > 0,
+  );
+  if (visible.length === 0) return NATIVE_EMPTY;
+  return {
+    mode: "native",
+    node: (
+      <View>
+        {visible.map(([label, value], i) => (
+          <View key={label} className={i > 0 ? "mt-3" : undefined}>
+            <SectionLabel>{label}</SectionLabel>
+            <FieldText>{value}</FieldText>
+          </View>
+        ))}
+      </View>
+    ),
+  };
+}
+
+function WebFetchDetail({
+  detail,
+}: {
+  detail: Extract<ToolCallDetail, { type: "web_fetch" }>;
+}) {
+  return (
+    <View>
+      <SectionLabel>URL</SectionLabel>
+      <FieldText>{detail.url}</FieldText>
+      <View className="mt-3">
+        <SectionLabel>Prompt</SectionLabel>
+        <FieldText>{detail.prompt}</FieldText>
+      </View>
+      <View className="mt-3">
+        <SectionLabel>Output</SectionLabel>
+        {/* WebFetch output is the fetch-side model's prose summary —
+            markdown, not raw page text. Render it like chat. */}
+        {detail.output.length > 0 ? (
+          <ChunkedMarkdown markdown={detail.output} streamDone />
+        ) : (
+          <EmptyOutput />
+        )}
+      </View>
+    </View>
+  );
+}
+
+function AgentDetail({
+  detail,
+}: {
+  detail: Extract<ToolCallDetail, { type: "agent" }>;
+}) {
+  return (
+    <View>
+      <SectionLabel>Prompt</SectionLabel>
+      <FieldText>{detail.prompt}</FieldText>
+      <View className="mt-3">
+        <SectionLabel>Output</SectionLabel>
+        {/* The subagent's final text — markdown prose, render like chat.
+            Its intermediate tool calls live in the subagent JSONL and are
+            not surfaced here (V0.5+ Background Tasks panel). */}
+        {detail.output.length > 0 ? (
+          <ChunkedMarkdown markdown={detail.output} streamDone />
+        ) : (
+          <EmptyOutput />
+        )}
+      </View>
+    </View>
+  );
+}
+
+function AskUserDetail({
+  detail,
+}: {
+  detail: Extract<ToolCallDetail, { type: "ask_user" }>;
+}) {
+  return (
+    <View>
+      {detail.questions.map((q, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: questions are positional and static
+        <View key={i} className={i > 0 ? "mt-3" : undefined}>
+          <SectionLabel>{q.header || `Question ${i + 1}`}</SectionLabel>
+          <Text
+            selectable
+            className="mb-1 text-sm text-gray-900 dark:text-gray-100"
+          >
+            {q.question}
+          </Text>
+          <Text className="text-sm text-gray-500 dark:text-gray-400">
+            {detail.answers?.[i]
+              ? `Answered: ${detail.answers[i]}`
+              : "(unanswered)"}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function SectionLabel({
   children,
   error,
@@ -563,34 +729,6 @@ function SectionLabel({
     >
       {children}
     </Text>
-  );
-}
-
-// ─── Shared chip (used by trigger row in tool-block.tsx and sheet header) ──
-
-export function ToolChip({
-  name,
-  isError,
-}: {
-  name: string;
-  isError: boolean;
-}) {
-  return (
-    <View
-      className={`rounded-md px-2 py-0.5 ${
-        isError ? "bg-red-100 dark:bg-red-900" : "bg-blue-100 dark:bg-blue-900"
-      }`}
-    >
-      <Text
-        className={`text-[11px] font-semibold uppercase tracking-wide ${
-          isError
-            ? "text-red-700 dark:text-red-200"
-            : "text-blue-700 dark:text-blue-200"
-        }`}
-      >
-        {name}
-      </Text>
-    </View>
   );
 }
 
