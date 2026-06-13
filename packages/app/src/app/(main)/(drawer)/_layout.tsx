@@ -19,9 +19,10 @@ const CARD_RADIUS = Platform.OS === "ios" ? 53 : 0;
  * and the navigator hid `open` inside navigation state — the close
  * animation could only be observed via parent-navigator event listeners
  * with no queryable "is animating" (which forced a safety timeout in the
- * session screen's mount gate). As plain React state + direct
- * onTransitionStart/End props, the gate is exact. Visuals are identical —
- * the navigator was a thin wrapper around this same component.
+ * session screen's mount gate). As a plain React `closing` flag (set in
+ * closeDrawer, cleared on the drawer's onTransitionEnd) the gate is exact.
+ * Visuals are identical — the navigator was a thin wrapper around this
+ * same component.
  *
  * Sole child is the `(stack)` group (see ./(stack)/_layout.tsx) — its
  * inner Stack contains both the new-session page (`index` → URL `/`) and
@@ -49,40 +50,46 @@ const CARD_RADIUS = Platform.OS === "ios" ? 53 : 0;
 export default function DrawerLayout() {
   const scheme = useColorScheme() ?? "light";
   const [open, setOpen] = useState(false);
-  const [transitioning, setTransitioning] = useState(false);
+  const [closing, setClosing] = useState(false);
 
+  // `closing` gates the session screen's ChatPanel mount against the close
+  // animation. It is set EAGERLY in closeDrawer (same batch as the `open`
+  // flip and the sidebar's router.replace) so the session being navigated
+  // TO observes it on its very first render — onTransitionStart would land
+  // a frame late, and doesn't fire at all for gesture-settled transitions
+  // (the source skips it when a velocity is passed). Only this programmatic,
+  // navigation-coupled close sets it; gesture/overlay-tap dismissals leave
+  // it false (they keep the current session mounted). openDrawer clears it:
+  // a close reversed back into an open before it lands is no longer closing.
+  //
   // The `open` guard matters: calling close while already closed must NOT
-  // set `transitioning` — no animation would run, so no onTransitionEnd
-  // would ever clear it. Setting `transitioning` EAGERLY (same batch as
-  // the open flip) is the gate's real mechanism: the component's own
-  // onTransitionStart lands a frame later AND doesn't fire at all for
-  // gesture-settled transitions (the source skips it when a velocity is
-  // passed), while the session screen must see the flag in the same batch
-  // as the route change that follows a sidebar tap.
+  // set `closing` — no animation would run, so no onTransitionEnd would
+  // ever clear it.
+  //
   // Haptics fire at the COMMIT point — the moment `open` actually flips
   // (tap here, gesture release in onOpen/onClose below) — not at the
   // drawer's transition events: onTransitionEnd waits for the spring's
-  // mathematical rest (an overdamped sub-pixel tail well past the
-  // perceived landing → buzz felt late), and both transition events also
-  // fire for the mount-time prop-sync toggle (→ spurious buzz on every
-  // reload). Gating on the `open` flip is immediate and skips all echoes.
+  // mathematical rest (an overdamped sub-pixel tail well past the perceived
+  // landing → buzz felt late), and it also fires for the mount-time
+  // prop-sync toggle (→ spurious buzz on every reload). Gating on the `open`
+  // flip is immediate and skips all echoes.
   const openDrawer = useCallback(() => {
     if (open) return;
     haptics.drawerToggle();
-    setTransitioning(true);
+    setClosing(false);
     setOpen(true);
   }, [open]);
 
   const closeDrawer = useCallback(() => {
     if (!open) return;
     haptics.drawerToggle();
-    setTransitioning(true);
+    setClosing(true);
     setOpen(false);
   }, [open]);
 
   const drawerUI = useMemo(
-    () => ({ open, transitioning, openDrawer, closeDrawer }),
-    [open, transitioning, openDrawer, closeDrawer],
+    () => ({ open, closing, openDrawer, closeDrawer }),
+    [open, closing, openDrawer, closeDrawer],
   );
 
   return (
@@ -93,29 +100,31 @@ export default function DrawerLayout() {
           // Gesture-driven open commits here, at release (programmatic
           // open came through openDrawer where `open` is already true —
           // and the mount/resync echoes arrive with `open` unchanged —
-          // so the state-change check dedupes all of them).
+          // so the state-change check dedupes all of them). Clear `closing`
+          // too: a swipe that reverses an in-flight close means we're
+          // opening now.
           if (!open) haptics.drawerToggle();
+          setClosing(false);
           setOpen(true);
         }}
         onClose={() => {
+          // Gesture / overlay-tap dismissals land here. They deliberately
+          // do NOT touch `closing` — the current session stays mounted, so
+          // gating it would only flicker ChatPanel back to loading. The
+          // navigation-coupled close already set `closing` in closeDrawer.
           if (open) haptics.drawerToggle();
           setOpen(false);
         }}
-        onTransitionStart={() => setTransitioning(true)}
         onTransitionEnd={(closing) => {
-          // Direction match — only the end event whose direction agrees
-          // with the current target state may clear `transitioning`. A
-          // spring that completes (finished=true) right as the OPPOSITE
-          // transition is requested delivers its end callback via runOnJS
-          // AFTER the new eager setTransitioning(true) — captured on
-          // device 2026-06-12: tapping a session row in the same frame the
-          // open animation landed let the stale "open ended" event clear
-          // the close transition's flag; the gate then released ChatPanel
-          // mid-close and the mount choke froze the drawer half-open. A
-          // stale end is always opposite-direction (that's what makes it
-          // stale), so the check closes the race exactly.
-          if (closing !== !open) return;
-          setTransitioning(false);
+          // Only a completed CLOSE clears the gate. Open-end events carry
+          // closing=false and are ignored — including a stale one delivered
+          // via runOnJS AFTER a new close was already requested (captured on
+          // device 2026-06-12: a row tapped in the same frame the open
+          // landed let the "open ended" callback clear the close's flag,
+          // releasing ChatPanel mid-close and freezing the drawer
+          // half-open). Acting only on closing=true closes that race with no
+          // direction-match against `open`.
+          if (closing) setClosing(false);
         }}
         drawerType="back"
         overlayStyle={{ backgroundColor: "transparent" }}

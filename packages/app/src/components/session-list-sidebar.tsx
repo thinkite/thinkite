@@ -134,10 +134,10 @@ export function SessionListSidebar() {
     // the project the user just opened. Mutation is fire-and-forget;
     // the navigation below shouldn't wait on SecureStore I/O.
     setLastUsedCwd.mutate(session.cwd);
-    // closeDrawer flips `transitioning` in the same batch, so the route
-    // swap below mounts only the cheap TranscriptLoading — the session
-    // screen's drawer-settle gate holds the heavy ChatPanel mount until
-    // the close animation finishes. No frame-deferral needed.
+    // closeDrawer flips `closing` in the same batch, so the route swap
+    // below mounts only the cheap TranscriptLoading — the session screen's
+    // drawer-settle gate holds the heavy ChatPanel mount until the close
+    // animation finishes. No frame-deferral needed.
     closeDrawer();
     router.replace({
       pathname: "/session/[cliSessionId]",

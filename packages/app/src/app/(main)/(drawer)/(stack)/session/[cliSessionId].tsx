@@ -1,6 +1,6 @@
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { Stack, useLocalSearchParams } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { Text, View } from "react-native";
 import { SessionBridgeToolbar } from "@/components/session-bridge-toolbar";
 import { ChatPanel } from "@/components/transcript/chat-panel";
@@ -62,22 +62,18 @@ export default function SessionDetailScreen() {
   // Drawer-settle gate. Mounting ChatPanel is heavy on the MAIN thread
   // (native view inflation + enriched's dispatch_sync measure), which the
   // drawer-close animation (Reanimated, UI thread) directly competes with —
-  // JS fps can look fine while the close visibly stutters. While the drawer
-  // is animating (sidebar tap → closeDrawer flips `transitioning` in the
-  // same batch as the route swap), render the cheap TranscriptLoading;
-  // mount ChatPanel once the animation ends. Keyed by cliSessionId so
-  // switching sessions through the drawer re-gates each time; entries with
-  // no drawer animation (new-session replace, deep links) settle on the
-  // first effect pass. Plain context state — no timers, no params, no
-  // navigation events (see drawer-ui.tsx).
-  const { transitioning, openDrawer } = useDrawerUI();
-  const [settledFor, setSettledFor] = useState<string | null>(
-    transitioning ? null : cliSessionId,
-  );
-  const drawerSettled = settledFor === cliSessionId;
-  useEffect(() => {
-    if (!transitioning) setSettledFor(cliSessionId);
-  }, [transitioning, cliSessionId]);
+  // JS fps can look fine while the close visibly stutters. A sidebar tap
+  // flips `closing` (in closeDrawer) in the same batch as the route swap, so
+  // the session being navigated TO mounts with `closing === true` and shows
+  // the cheap TranscriptLoading; ChatPanel mounts once the close lands
+  // (onTransitionEnd clears `closing`). Every other entry path — deep link,
+  // new-session replace, the drawer merely opening over an already-settled
+  // session — has `closing === false`. Because `closing` is scoped to
+  // navigation-coupled closes (see drawer-ui.tsx) it never flips true under a
+  // mounted session, so the gate is just a derived boolean: no state, no
+  // effect, no per-session keying.
+  const { closing, openDrawer } = useDrawerUI();
+  const drawerSettled = !closing;
 
   // Log turn-failure errors. UI is intentionally absent for V0 —
   // surfacing assistant errors well needs design work we haven't done
