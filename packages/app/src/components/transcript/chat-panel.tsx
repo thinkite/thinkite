@@ -287,8 +287,10 @@ export function ChatPanel({
         // resting scroll manager (LegendList chat guide).
         freeze={freeze}
         // Reserve blank space below the just-sent user message for its turn so
-        // the streaming response fills it without moving the anchor (fixes the
-        // scroll overshoot). Undefined when idle → normal layout.
+        // the agent's reply has a full initial display area to render into (the
+        // prompt pinned near the top), instead of starting cramped above the
+        // composer. maintainScrollAtEnd then follows the reply's growth to the
+        // bottom. Undefined when idle → normal layout.
         anchoredEndSpace={
           anchorIndex >= 0
             ? { anchorIndex, anchorOffset: headerHeight }
@@ -373,24 +375,20 @@ export function ChatPanel({
         // Without this the last message sits ~insets.bottom too low above
         // composer when the keyboard is shown.
         keyboardOffset={insets.bottom - 8}
-        // ChatGPT-style scrolling, NOT Telegram-style (the upstream
-        // AiChatExample idiom):
+        // Scrolling model:
         //   - initialScrollAtEnd: boot at the latest message on session
         //     re-open. Runs a per-frame rAF ticker that retargets to true
         //     end as items measure and the inset settles (LegendList
         //     retargets the initial scroll after inset changes).
-        //   - During a turn, anchoredEndSpace absorbs streaming growth: the
-        //     reply fills the reserved space below the anchored prompt and
-        //     the viewport NEVER auto-follows. Once the reply outgrows the
-        //     viewport it streams below the fold; the scroll-to-end FAB
-        //     (driven by `isNearEnd`) is the user's way down.
+        //   - maintainScrollAtEnd (above): during a turn the viewport follows
+        //     the streaming reply to the bottom (stick-to-bottom). anchoredEnd-
+        //     Space reserves the reply's initial display area below the just-sent
+        //     prompt (prompt pinned near the top) so it renders into a full
+        //     viewport instead of cramped above the composer; maintainScrollAtEnd
+        //     then follows that growth down. The scroll-to-end FAB (`isNearEnd`)
+        //     is the way back down after the user scrolls up.
         //
         // DELIBERATELY OMITTED:
-        //   - `maintainScrollAtEnd`: auto-follow-the-stream. It defeats the
-        //     anchored pattern the moment the reply outgrows the reserved
-        //     space (the anchor scrolls away mid-read). The upstream AI chat
-        //     example never used it — it belongs to the Telegram-style
-        //     ChatExample only.
         //   - `alignItemsAtEnd`: a Telegram/iMessage idiom (sparse messages
         //     stick to the bottom of the viewport via `flexGrow:1 +
         //     justifyContent:flex-end`). For our ChatGPT layout messages
@@ -401,6 +399,14 @@ export function ChatPanel({
         //     rendered behind the composer backdrop because the alignment
         //     didn't account for `contentInsetEndAdjustment`.
         initialScrollAtEnd
+        // maintainScrollAtEnd: keep the viewport pinned to the bottom as the
+        // streaming reply grows (stick-to-bottom). Bare = true = all triggers
+        // (dataChange/itemLayout/layout) → also follows late row-measure growth
+        // and inset/layout changes back to the end. Internally gated to
+        // near-the-end, so it takes priority there and coexists with
+        // anchoredEndSpace without a fight (verified smooth on device
+        // 2026-06-13: maintainScrollAtEnd wins near the end, no jitter).
+        maintainScrollAtEnd
         // List → UI-thread state mirror (reanimated integration). `isNearEnd`
         // gates the scroll-to-end FAB; no JS re-render involved.
         sharedValues={{ isNearEnd }}
