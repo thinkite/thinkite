@@ -16,7 +16,6 @@ import {
   LIGHT_PALETTE,
 } from "./chat-markdown";
 import { useCodeTokens } from "./code-highlighter";
-import type { ChunkStats } from "./markdown-chunking";
 import { type MarkdownSegment, useMarkdownBlocks } from "./markdown-chunking";
 import { useRemend } from "./remend";
 
@@ -32,8 +31,8 @@ import { useRemend } from "./remend";
  *    re-tokenize per delta (~1-3.5ms measured on device for typical
  *    blocks) + per-line memo keyed on token content, so settled lines
  *    skip reconciliation and only the streaming line re-renders.
- *  - Prefix-diff in useMarkdownBlocks guarantees completed segments
- *    never re-render while the tail streams.
+ *  - Positional keys + per-segment `raw` memo keep completed segments
+ *    from re-rendering while the tail streams.
  *
  * The code container is `TextInput multiline editable={false}` — a real
  * UITextView, which gives PARTIAL selection with handles (RN iOS <Text
@@ -115,17 +114,15 @@ const TokenLine = memo(
 const CodeBlockSegment = memo(function CodeBlockSegment({
   lang,
   code,
-  onTokenizeMs,
 }: {
   lang: string;
   code: string;
-  onTokenizeMs?: (ms: number) => void;
 }) {
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const palette = scheme === "dark" ? DARK_PALETTE : LIGHT_PALETTE;
   // Sync tokenize — see useCodeTokens for why (drawer-settle gate keeps
   // mount bursts out of animation windows). null → plain, same metrics.
-  const lines = useCodeTokens(code, lang, scheme, onTokenizeMs);
+  const lines = useCodeTokens(code, lang, scheme);
 
   return (
     <View
@@ -176,23 +173,13 @@ const CodeBlockSegment = memo(function CodeBlockSegment({
 export function ChunkedMarkdown({
   markdown,
   streamDone,
-  onStats,
-  onTokenizeMs,
 }: {
   markdown: string;
   /** No settle signal available? Pass `true` — exact parity with
    *  whole-message ChatMarkdown (no remend, EOF fences counted closed). */
   streamDone: boolean;
-  /** Dev instrumentation. Called inline during render with the latest
-   *  chunk stats — consumers must only write to a ref (no setState). */
-  onStats?: (stats: ChunkStats) => void;
-  /** Dev instrumentation. Per-tokenize timing from code blocks (ref-write
-   *  only, same rule). Must be referentially stable or the CodeBlock memo
-   *  breaks. */
-  onTokenizeMs?: (ms: number) => void;
 }) {
-  const { segments, stats } = useMarkdownBlocks(markdown, streamDone);
-  onStats?.(stats);
+  const segments = useMarkdownBlocks(markdown, streamDone);
 
   const lastIndex = segments.length - 1;
   return (
@@ -203,12 +190,7 @@ export function ChunkedMarkdown({
       {segments.map((seg: MarkdownSegment, i: number) => {
         if (seg.kind === "code") {
           return (
-            <CodeBlockSegment
-              key={seg.key}
-              lang={seg.lang}
-              code={seg.code}
-              onTokenizeMs={onTokenizeMs}
-            />
+            <CodeBlockSegment key={seg.key} lang={seg.lang} code={seg.code} />
           );
         }
         // Tail run streams → remend; completed runs are frozen + memo'd.

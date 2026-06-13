@@ -222,15 +222,11 @@ export function useCodeTokens(
   code: string,
   infoString: string,
   scheme: "light" | "dark",
-  onTokenizeMs?: (ms: number) => void,
 ): TokenLines | null {
   const hl = useHighlighter();
   const langId = resolveLang(infoString);
   return useMemo(() => {
     if (hl === null || langId === null) return null;
-    const t0 = performance.now();
-    const lines = tokenizeCode(hl, code, langId, scheme);
-    onTokenizeMs?.(performance.now() - t0);
-    return lines;
-  }, [hl, langId, code, scheme, onTokenizeMs]);
+    return tokenizeCode(hl, code, langId, scheme);
+  }, [hl, langId, code, scheme]);
 }

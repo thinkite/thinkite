@@ -1,6 +1,6 @@
 import type { Token, Tokens } from "marked";
 import { lexer } from "marked";
-import { useMemo, useRef } from "react";
+import { useMemo } from "react";
 
 /**
  * Chunked markdown for the native transcript
@@ -44,13 +44,6 @@ export type MarkdownSegment =
       code: string;
       closed: boolean;
     };
-
-export interface ChunkStats {
-  lexMs: number;
-  segmentCount: number;
-  /** First segment index whose raw changed vs the previous call (-1 = none). */
-  firstChangedIndex: number;
-}
 
 /** Fence closer must sit on its own line — `foo\`\`\`` inside content is
  *  NOT a closer. Unclosed fences swallow to EOF (CommonMark), so only the
@@ -232,28 +225,9 @@ export function chunkMarkdown(
 export function useMarkdownBlocks(
   markdown: string,
   streamDone: boolean,
-): { segments: MarkdownSegment[]; stats: ChunkStats } {
-  const prevRef = useRef<MarkdownSegment[]>([]);
-  return useMemo(() => {
-    const t0 = performance.now();
-    const segments = chunkMarkdown(markdown, streamDone);
-    const lexMs = performance.now() - t0;
-
-    const prev = prevRef.current;
-    let firstChangedIndex = -1;
-    const max = Math.max(segments.length, prev.length);
-    for (let i = 0; i < max; i++) {
-      const a = segments[i];
-      const b = prev[i];
-      if (!a || !b || a.raw !== b.raw || a.kind !== b.kind) {
-        firstChangedIndex = i;
-        break;
-      }
-    }
-    prevRef.current = segments;
-    return {
-      segments,
-      stats: { lexMs, segmentCount: segments.length, firstChangedIndex },
-    };
-  }, [markdown, streamDone]);
+): MarkdownSegment[] {
+  return useMemo(
+    () => chunkMarkdown(markdown, streamDone),
+    [markdown, streamDone],
+  );
 }
