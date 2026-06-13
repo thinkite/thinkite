@@ -418,38 +418,74 @@ function unknownDetail(name: string, rawInput: unknown): ToolCallDetail {
 }
 
 /**
- * Compose a clean unified-diff string of just `@@...@@` hunks, ready for
- * MarkdownView's auto-detect diff renderer (no fence needed iOS-side).
+ * Compose a git-style unified diff (`diff --git` + `---`/`+++` headers +
+ * `@@` hunks), shaped for Pierre's PatchDiff (iOS tool-call sheet).
+ *
+ * The headers are REQUIRED, not cosmetic: Pierre's `parsePatchFiles`
+ * needs file boundaries — a hunks-only string parses as metadata with
+ * ZERO files, and `getSingularPatch` (inside `<PatchDiff>`) throws "must
+ * contain exactly 1 file diff". This was exactly the iOS sheet crash on
+ * every Edit/Write detail (found 2026-06-12).
+ *
+ * The GIT form specifically (not plain `--- x`/`+++ x` headers) is
+ * load-bearing too: in non-git mode Pierre splits files on `^---\s+\S`
+ * ANYWHERE in the patch, and a deleted content line that itself starts
+ * with `-- ` (SQL/Lua/Haskell comments) renders as `--- foo` in the hunk
+ * body — a phantom second file → same throw. Git mode only splits on
+ * `diff --git` lines, and hunk-body lines always carry a +/-/space/\\
+ * prefix, so no content can forge that boundary. Mirrors git-watch's
+ * synthesizeAddPatch, which is why the working-tree path never crashed.
+ *
+ * Basename (not the absolute path) in all three header lines — drives
+ * shiki language inference by extension and avoids leaking `/Users/...`
+ * into the rendered header. Verified against @pierre/diffs@1.2.7:
+ * `--- a/<name>` / `+++ b/<name>` parse via FILENAME_HEADER_REGEX_GIT
+ * (prefixes stripped, spaces in names fine).
  *
  * We use jsdiff's `structuredPatch` rather than `createPatch` to skip the
- * full-file boilerplate (`Index:`, `===`, `--- file`, `+++ file`) that:
- *   - CommonMark would otherwise mis-parse (`Index: foo\n====` becomes a
- *     setext h1; `+`-prefixed lines become bullet lists)
- *   - is cosmetic noise — MarkdownView's diff render already shows the
- *     filename in the chip / accordion summary; repeating the path in a
- *     `--- /Users/.../file` row above every diff is redundant.
+ * `Index:` / `===` boilerplate Pierre doesn't need.
  *
  * Output for a small Edit:
+ *   diff --git a/foo.ts b/foo.ts
+ *   --- a/foo.ts
+ *   +++ b/foo.ts
  *   @@ -1,3 +1,3 @@
  *   -const x = 1;
  *   +const x = 2;
  *    const y = 3;
  *
- * Empty oldString === newString produces an empty string (no hunks).
+ * Empty oldString === newString produces an empty string (no hunks — the
+ * sheet shows "(no output)" instead of an empty diff shell).
  */
 function makeUnifiedDiff(
   filePath: string,
   oldString: string,
   newString: string,
 ): string {
-  const patch = structuredPatch(filePath, filePath, oldString, newString);
-  return patch.hunks
-    .map(
-      (h) =>
-        `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@\n` +
-        h.lines.join("\n"),
-    )
-    .join("\n");
+  // Suppress jsdiff's "\ No newline at end of file" markers by padding a
+  // final newline onto both sides (line content is unchanged). The marker
+  // asserts something about the FILE end, but Edit diffs compare file
+  // FRAGMENTS — a snippet ending without \n says nothing about the file —
+  // so the marker is noise stated as fact (and Pierre renders it as a
+  // dedicated row). Claude's own UIs drop it too. "" stays "" (Write's
+  // create-from-empty diff must keep the empty side truly empty).
+  const a =
+    oldString === "" || oldString.endsWith("\n") ? oldString : `${oldString}\n`;
+  const b =
+    newString === "" || newString.endsWith("\n") ? newString : `${newString}\n`;
+  const patch = structuredPatch(filePath, filePath, a, b);
+  if (patch.hunks.length === 0) return "";
+  const name = basenameOf(filePath);
+  return (
+    `diff --git a/${name} b/${name}\n--- a/${name}\n+++ b/${name}\n` +
+    patch.hunks
+      .map(
+        (h) =>
+          `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@\n` +
+          h.lines.join("\n"),
+      )
+      .join("\n")
+  );
 }
 
 /**

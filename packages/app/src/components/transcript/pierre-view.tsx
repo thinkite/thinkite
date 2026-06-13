@@ -9,15 +9,8 @@ import {
   WorkerPoolContextProvider,
 } from "@pierre/diffs/react";
 import type { DOMProps } from "expo/dom";
-import {
-  Component,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ErrorBoundary } from "react-error-boundary";
 import { JETBRAINS_MONO_CSS } from "./jetbrains-mono-font";
 
 /**
@@ -109,33 +102,25 @@ export interface PierreViewProps {
   dom?: DOMProps;
 }
 
-/** Surfaces a render-phase throw instead of a silent blank webview. */
-class RenderBoundary extends Component<
-  { children: ReactNode },
-  { err: string | null }
-> {
-  state = { err: null as string | null };
-  static getDerivedStateFromError(e: unknown) {
-    return { err: e instanceof Error ? e.message : String(e) };
-  }
-  render() {
-    if (this.state.err) {
-      return (
-        <pre
-          style={{
-            color: "#dc2626",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-            font: "11px ui-monospace, monospace",
-            padding: 8,
-          }}
-        >
-          {this.state.err}
-        </pre>
-      );
-    }
-    return this.props.children;
-  }
+/** Fallback for the render boundary: surfaces a render-phase throw instead
+ *  of a silent blank webview. Hosted by react-error-boundary's
+ *  <ErrorBoundary> with `resetKeys=[decoded]` — the boundary lives inside
+ *  the RESIDENT webview, so without that reset one bad payload would leave
+ *  every subsequent sheet open stuck on the same error. */
+function RenderErrorFallback({ error }: { error: unknown }) {
+  return (
+    <pre
+      style={{
+        color: "#dc2626",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+        font: "11px ui-monospace, monospace",
+        padding: 8,
+      }}
+    >
+      {error instanceof Error ? error.message : String(error)}
+    </pre>
+  );
 }
 
 export default function PierreView({
@@ -202,7 +187,7 @@ export default function PierreView({
   );
 
   // Backstop per content change: if Pierre never commits (e.g. it throws before
-  // first render and RenderBoundary takes over), onPostRender never fires — open
+  // first render and the error boundary takes over), onPostRender never fires — open
   // anyway after a timeout so the sheet can't hang. Empty content is ready now.
   useEffect(() => {
     if (decoded.length === 0) {
@@ -299,7 +284,10 @@ export default function PierreView({
   );
 
   const tree = (
-    <RenderBoundary>
+    <ErrorBoundary
+      FallbackComponent={RenderErrorFallback}
+      resetKeys={[decoded]}
+    >
       {kind === "diff" ? (
         // Single-file diff scrolls the webview document. With WKWebView's auto
         // content-inset disabled (contentInsetAdjustmentBehavior:"never"), pad
@@ -367,7 +355,7 @@ export default function PierreView({
           />
         </div>
       )}
-    </RenderBoundary>
+    </ErrorBoundary>
   );
 
   return (

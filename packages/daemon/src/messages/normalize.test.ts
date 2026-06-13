@@ -198,7 +198,7 @@ describe("normalize", () => {
     expect(item.summary).toBe("foo.ts");
   });
 
-  it("Edit unifiedDiff is hunk-only (`@@ ... @@\\n+/-/space lines`) with no Index/===/---/+++ preamble", () => {
+  it("Edit unifiedDiff carries git-style basename headers (Pierre needs them to detect the file)", () => {
     const out = normalize([
       assistantMsg("a-1", [
         {
@@ -216,11 +216,96 @@ describe("normalize", () => {
     const item = out[0];
     if (item?.type !== "tool_call") throw new Error("expected tool_call");
     if (item.detail.type !== "edit") throw new Error("expected edit detail");
-    expect(item.detail.unifiedDiff.startsWith("@@")).toBe(true);
+    // A hunks-only diff parses as 0 files in Pierre and PatchDiff throws
+    // (the iOS sheet crash of 2026-06-12). The GIT header form is required
+    // (see makeUnifiedDiff docblock); basename keeps /Users/... out of the
+    // rendered header and drives language inference.
+    expect(
+      item.detail.unifiedDiff.startsWith(
+        "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@",
+      ),
+    ).toBe(true);
     expect(item.detail.unifiedDiff).not.toContain("Index:");
     expect(item.detail.unifiedDiff).not.toContain("===");
-    expect(item.detail.unifiedDiff).not.toContain("--- ");
-    expect(item.detail.unifiedDiff).not.toContain("+++ ");
+    expect(item.detail.unifiedDiff).not.toContain("/abs/");
+  });
+
+  it("deleting a '-- comment' line cannot forge a Pierre file boundary (git headers)", () => {
+    // In Pierre's NON-git mode, files split on `^---\s+\S` anywhere — and a
+    // deleted SQL/Lua/Haskell comment line `-- old` renders as `--- old` in
+    // the hunk body, forging a phantom second file (getSingularPatch throws).
+    // Git mode splits only on `diff --git` lines; hunk-body lines always
+    // carry a +/-/space/\ prefix, so content can never forge that.
+    const out = normalize([
+      assistantMsg("a-1", [
+        {
+          type: "tool_use",
+          id: "tu-1",
+          name: "Edit",
+          input: {
+            file_path: "/abs/query.sql",
+            old_string: "SELECT 1;\n-- old comment\nSELECT 2;",
+            new_string: "SELECT 1;\nSELECT 2;",
+          },
+        },
+      ]),
+    ]);
+    const item = out[0];
+    if (item?.type !== "tool_call") throw new Error("expected tool_call");
+    if (item.detail.type !== "edit") throw new Error("expected edit detail");
+    expect(item.detail.unifiedDiff.startsWith("diff --git ")).toBe(true);
+    // The deleted comment is one hunk line — and must NOT be preceded by a
+    // newline-`---`-space sequence parseable as a file header in git mode.
+    expect(item.detail.unifiedDiff).toContain("\n--- old comment");
+    expect((item.detail.unifiedDiff.match(/^diff --git /gm) ?? []).length).toBe(
+      1,
+    );
+  });
+
+  it("Edit unifiedDiff has no '\\ No newline' markers (snippets say nothing about the file end)", () => {
+    const out = normalize([
+      assistantMsg("a-1", [
+        {
+          type: "tool_use",
+          id: "tu-1",
+          name: "Edit",
+          input: {
+            file_path: "/tmp/probe.md",
+            // Neither side ends with \n — raw jsdiff would emit the marker
+            // for both; the daemon pads a final newline to suppress it.
+            old_string: "hello sidecode",
+            new_string: "hello sidecode world",
+          },
+        },
+      ]),
+    ]);
+    const item = out[0];
+    if (item?.type !== "tool_call") throw new Error("expected tool_call");
+    if (item.detail.type !== "edit") throw new Error("expected edit detail");
+    expect(item.detail.unifiedDiff).toBe(
+      "diff --git a/probe.md b/probe.md\n--- a/probe.md\n+++ b/probe.md\n@@ -1,1 +1,1 @@\n-hello sidecode\n+hello sidecode world",
+    );
+  });
+
+  it("Edit with old === new produces an empty diff (no headers-only shell)", () => {
+    const out = normalize([
+      assistantMsg("a-1", [
+        {
+          type: "tool_use",
+          id: "tu-1",
+          name: "Edit",
+          input: {
+            file_path: "/abs/foo.ts",
+            old_string: "same",
+            new_string: "same",
+          },
+        },
+      ]),
+    ]);
+    const item = out[0];
+    if (item?.type !== "tool_call") throw new Error("expected tool_call");
+    if (item.detail.type !== "edit") throw new Error("expected edit detail");
+    expect(item.detail.unifiedDiff).toBe("");
   });
 
   it("Write produces an all-add diff against empty (we lack prior content)", () => {
