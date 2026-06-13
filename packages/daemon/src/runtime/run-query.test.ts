@@ -1439,6 +1439,9 @@ describe("ensureSessionLoop — mode parameter passes correct option to SDK", ()
       sessionId: "created-uuid",
       cwd: "/proj",
       includePartialMessages: true,
+      // V0 has no iOS answer UI — the tool is hidden from the model so a
+      // turn never blocks on a question the app can't deliver.
+      disallowedTools: ["AskUserQuestion"],
     });
     expect((capturedOptions as { resume?: string }).resume).toBeUndefined();
   });
@@ -1461,6 +1464,7 @@ describe("ensureSessionLoop — mode parameter passes correct option to SDK", ()
     expect(capturedOptions).toMatchObject({
       resume: "existing-uuid",
       includePartialMessages: true,
+      disallowedTools: ["AskUserQuestion"],
     });
     expect(
       (capturedOptions as { sessionId?: string }).sessionId,

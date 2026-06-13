@@ -268,6 +268,13 @@ export function ensureSessionLoop(
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true as const,
   };
+  // Removed from the model's context entirely (not just permission-denied):
+  //   - AskUserQuestion: V0 iOS has no answer UI — if the model called it,
+  //     the turn would sit waiting on input the app can't deliver. Hiding
+  //     the tool makes the model phrase questions as plain text instead.
+  // The ask_user detail/render path stays: resumed Desktop sessions can
+  // still contain historical AskUserQuestion calls.
+  const disallowedTools = ["AskUserQuestion"];
   // SDK requires sessionId XOR resume — they're mutually exclusive
   // (sdk.d.ts:1538-1540 — "Cannot be used with continue or resume unless
   // forkSession is also set"). We use sessionId for new sessions (so the
@@ -285,6 +292,7 @@ export function ensureSessionLoop(
     options.mode === "create"
       ? {
           ...bypassFlags,
+          disallowedTools,
           ...modelOption,
           sessionId: runtime.sessionId,
           includePartialMessages: true as const,
@@ -293,6 +301,7 @@ export function ensureSessionLoop(
         }
       : {
           ...bypassFlags,
+          disallowedTools,
           ...modelOption,
           resume: runtime.sessionId,
           includePartialMessages: true as const,
