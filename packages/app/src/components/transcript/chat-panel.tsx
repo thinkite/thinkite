@@ -84,8 +84,9 @@ type ChatPanelProps = {
  *      toggled keyboard.)
  *
  *   2. The composer-inset SharedValue (via `useKeyboardChatComposerInset`) is
- *      seeded with a deliberate near-miss of the measured composer height — not
- *      0, not the exact value; see the call site for why.
+ *      measured from the composer wrapper in a mount-time useLayoutEffect
+ *      (before paint) and reported as the list's bottom inset; see the call
+ *      site for the seed history.
  *
  *   3. KeyboardChatScrollView vs. iOS automatic contentInset
  *      adjustments: must disable both
@@ -158,14 +159,15 @@ export function ChatPanel({
   // visual padding) and an imperative `reportContentInset` (drives LegendList
   // virtualization). No manual `+ insets.bottom`: the composer owns its
   // safe-area band via `pb-safe`, so its measured height already includes it.
-  // 180 is a deliberate near-miss of the measured composer height: close enough
-  // that initialScrollAtEnd's bootstrap converges in its frame budget, but ≠ the
-  // exact value and ≠ 0. An exact seed makes the post-measure inset delta zero →
-  // the bootstrap retarget AND KCSV's useAnimatedReaction both no-op (convergence-
-  // bounds abort + inset lost on session switch-back); 0 is the other extreme —
-  // its delta is too large to converge in budget.
+  // Seed defaults to 0 — the real composer height lands in the hook's mount-time
+  // useLayoutEffect (before paint) and on every onComposerLayout thereafter. We
+  // used to seed a near-miss (180) to force the post-measure inset delta non-zero
+  // so initialScrollAtEnd's bootstrap retarget converged within its frame budget;
+  // that budget was only ever starved by the drawer-close animation competing for
+  // frames, and the drawer-settle gate (transitioningSessionId) now defers this
+  // mount until after the close lands — so a 0 seed converges fine.
   const { contentInsetEndAdjustment, onComposerLayout } =
-    useKeyboardChatComposerInset(listRef, composerRef, 180);
+    useKeyboardChatComposerInset(listRef, composerRef);
 
   // Idiomatic scroll-on-send (LegendList chat pattern). `scrollMessageToEnd`
   // brings the just-sent message into view no matter where the user had
