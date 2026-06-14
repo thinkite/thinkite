@@ -23,8 +23,9 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  *   1. **Universal Link** — Camera app scans
  *      `https://sidecode.app/pair?o=<base64url>` and cold-launches us
  *      straight here. `Stack.Protected` shows `/onboarding` underneath
- *      for an unpaired user, or the drawer screen for a paired user
- *      adding another Mac (V0.5+).
+ *      for an unpaired user, or the drawer underneath for an
+ *      already-paired user (see the paired sub-cases below — V0 holds one
+ *      daemon, so a fresh offer either no-ops or REPLACES the current one).
  *   2. **In-app scanner** (`/onboarding` "Scan QR code") — VisionKit
  *      modal returns the QR string; the onboarding screen extracts the
  *      payload and `router.push("/pair?o=...")`s here.
@@ -65,7 +66,7 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  */
 export default function PairModal() {
   const { o } = useLocalSearchParams<{ o?: string }>();
-  const { pair } = useDaemonClient();
+  const { pair, paired } = useDaemonClient();
 
   const decoded = useMemo(() => decode(o), [o]);
 
@@ -113,7 +114,14 @@ export default function PairModal() {
   // is shared across states, so we only vary the title / body / buttons.
   let title: string;
   let body: string;
-  let primaryAction: { label: string; onPress: () => void; disabled: boolean };
+  let primaryAction: {
+    label: string;
+    onPress: () => void;
+    disabled: boolean;
+    // Override the default orange CTA tint — red for the destructive
+    // "Replace" confirm. Defaults to "#EE5722" in the render below.
+    tint?: string;
+  };
   let secondary: { label: string; onPress: () => void } | null = null;
 
   if (decoded.status === "missing") {
@@ -125,6 +133,30 @@ export default function PairModal() {
     body =
       "This QR isn't a valid sidecode pair code, or it's expired. Get a fresh one from your Mac.";
     primaryAction = { label: "Close", onPress: handleCancel, disabled: false };
+  } else if (
+    paired?.daemonIdentityPublicKey === decoded.offer.daemonIdentityPublicKey
+  ) {
+    // Re-scanning the Mac we're ALREADY paired with. Don't re-run pair() —
+    // that would tear down a healthy transport just to rebuild an identical
+    // record (and flash a connecting state). Dead-end with a single Close.
+    title = "Already paired";
+    body = `You're already paired with ${paired.serviceName}.`;
+    primaryAction = { label: "Close", onPress: handleCancel, disabled: false };
+  } else if (paired !== null) {
+    // A DIFFERENT daemon than the one we hold. V0 is single-daemon, so
+    // confirming here REPLACES the current pairing — make the disconnect
+    // explicit (current name in the title, incoming name in the serviceName
+    // line below) and style the confirm destructively (red).
+    title = `Replace ${paired.serviceName}?`;
+    body =
+      "sidecode pairs with one Mac at a time. Pairing here disconnects the current Mac.";
+    primaryAction = {
+      label: busy ? "Pairing…" : "Replace",
+      onPress: handleConfirm,
+      disabled: busy,
+      tint: "#FF3B30",
+    };
+    secondary = { label: "Cancel", onPress: handleCancel };
   } else {
     title = "Pair with this Mac?";
     // No countdown: the daemon's pair-window-open gate (not the QR) is
@@ -189,7 +221,7 @@ export default function PairModal() {
             modifiers={[
               buttonStyle("glassProminent"),
               controlSize("extraLarge"),
-              tint("#EE5722"),
+              tint(primaryAction.tint ?? "#EE5722"),
               disabled(primaryAction.disabled === true),
             ]}
           >
