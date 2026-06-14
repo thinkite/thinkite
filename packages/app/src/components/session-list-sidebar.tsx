@@ -97,6 +97,14 @@ export function SessionListSidebar() {
   const insets = useSafeAreaInsets();
   const scheme = useColorScheme() ?? "light";
   const { closeDrawer } = useDrawerUI();
+  // Active session id (the focused detail route's path param) — lets
+  // handleOpenSession no-op a tap on the already-open session. useGlobalSearch-
+  // Params (not Local: the sidebar isn't a route screen) re-renders this on
+  // nav, but the parent already re-renders on every drawer toggle via
+  // useDrawerUI, so on the drawer-switch path it costs nothing extra.
+  const { cliSessionId: activeSessionId } = useGlobalSearchParams<{
+    cliSessionId?: string;
+  }>();
 
   // Full floating-header band = status-bar inset + content height. Shared with
   // the list's contentContainerStyle.paddingTop (see Body) so row 1 starts
@@ -130,15 +138,23 @@ export function SessionListSidebar() {
   // they don't expect to "go back" to.
   const setLastUsedCwd = useSetLastUsedCwd();
   const handleOpenSession = (session: SessionRowData) => {
+    // Tapping the already-open session: just close the drawer. router.replace
+    // to the same path-param route still mints a fresh route key → remounts
+    // ChatPanel + flashes Loading, for no actual navigation. Skip it.
+    if (session.cliSessionId === activeSessionId) {
+      closeDrawer();
+      return;
+    }
     // Record the current focus so the next "New session" defaults to
     // the project the user just opened. Mutation is fire-and-forget;
     // the navigation below shouldn't wait on SecureStore I/O.
     setLastUsedCwd.mutate(session.cwd);
-    // closeDrawer flips `closing` in the same batch, so the route swap
-    // below mounts only the cheap TranscriptLoading — the session screen's
-    // drawer-settle gate holds the heavy ChatPanel mount until the close
-    // animation finishes. No frame-deferral needed.
-    closeDrawer();
+    // closeDrawer(targetId) records the gate target in the same batch as the
+    // route swap below, so the session navigated TO mounts the cheap
+    // TranscriptLoading first — the session screen's drawer-settle gate holds
+    // the heavy ChatPanel mount until the close animation finishes. No
+    // frame-deferral needed.
+    closeDrawer(session.cliSessionId);
     router.replace({
       pathname: "/session/[cliSessionId]",
       params: {

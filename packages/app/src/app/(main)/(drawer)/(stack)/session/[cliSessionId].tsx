@@ -59,21 +59,21 @@ export default function SessionDetailScreen() {
   }>();
   const session = useSessionTranscript(cliSessionId, newFlag === "1");
 
-  // Drawer-settle gate. Mounting ChatPanel is heavy on the MAIN thread
-  // (native view inflation + enriched's dispatch_sync measure), which the
-  // drawer-close animation (Reanimated, UI thread) directly competes with —
-  // JS fps can look fine while the close visibly stutters. A sidebar tap
-  // flips `closing` (in closeDrawer) in the same batch as the route swap, so
-  // the session being navigated TO mounts with `closing === true` and shows
-  // the cheap TranscriptLoading; ChatPanel mounts once the close lands
-  // (onTransitionEnd clears `closing`). Every other entry path — deep link,
+  // Drawer-settle gate. Mounting ChatPanel is heavy on the MAIN thread (native
+  // view inflation + enriched's dispatch_sync measure), which the drawer-close
+  // animation (Reanimated, UI thread) directly competes with — JS fps can look
+  // fine while the close visibly stutters. A sidebar tap records THIS session's
+  // id as the drawer's `transitioningSessionId` (in closeDrawer) in the same
+  // batch as the route swap, so the session being navigated TO mounts gated and
+  // shows the cheap TranscriptLoading; ChatPanel mounts once the close lands
+  // (onTransitionEnd clears the id). Every other entry path — deep link,
   // new-session replace, the drawer merely opening over an already-settled
-  // session — has `closing === false`. Because `closing` is scoped to
-  // navigation-coupled closes (see drawer-ui.tsx) it never flips true under a
-  // mounted session, so the gate is just a derived boolean: no state, no
-  // effect, no per-session keying.
-  const { closing, openDrawer } = useDrawerUI();
-  const drawerSettled = !closing;
+  // session — has `transitioningSessionId !== cliSessionId`. Carrying the id
+  // (vs a bare `closing` boolean) means only the target session gates, and it
+  // lets the sidebar no-op a tap on the already-open session (handleOpenSession).
+  // The gate is a derived boolean: no state, no effect, no per-session keying.
+  const { transitioningSessionId, openDrawer } = useDrawerUI();
+  const drawerSettled = transitioningSessionId !== cliSessionId;
 
   // Log turn-failure errors. UI is intentionally absent for V0 —
   // surfacing assistant errors well needs design work we haven't done

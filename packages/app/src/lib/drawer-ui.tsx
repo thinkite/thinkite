@@ -2,30 +2,40 @@ import { createContext, useContext } from "react";
 
 /**
  * UI state for the session-list drawer (bare react-native-drawer-layout —
- * deliberately NOT a drawer navigator: the drawer hosts no routes, and
- * owning `open`/`closing` as plain React state is what lets the session
+ * deliberately NOT a drawer navigator: the drawer hosts no routes, and owning
+ * `open`/`transitioningSessionId` as plain React state is what lets the session
  * screen gate its heavy ChatPanel mount on the close animation with zero
- * timers, params, or navigation-event plumbing. Provided by the (drawer)
- * group layout.
+ * timers, params, or navigation-event plumbing. Provided by the (drawer) group
+ * layout.
  *
- * `closing` is true only while a programmatic, navigation-coupled close is
- * animating — i.e. the close `closeDrawer` fires from a sidebar tap, paired
- * in the same batch with the `router.replace` to the new session. It is set
- * eagerly in `closeDrawer` (so the screen being navigated TO sees it on its
- * first render) and cleared on the matching onTransitionEnd, or earlier if
- * the close reverses back into an open (openDrawer/onOpen). It is
- * deliberately NOT set for gesture / overlay-tap dismissals or for open
- * transitions: those keep the current session mounted, so a plain
- * `!closing` is all the gate needs (see the session screen). Tracking only
- * the close direction also dissolves the old stale-end race — an open-end
- * callback carries closing=false and is simply ignored.
+ * The context exposes the imperative controls (`openDrawer` from the session +
+ * new-session hamburger, `closeDrawer` from the sidebar) plus
+ * `transitioningSessionId`. `open` itself stays local to the layout (it drives
+ * the `<Drawer open>` prop); nothing outside reads it.
+ *
+ * `transitioningSessionId` names the session a navigation-coupled close is
+ * animating TOWARD: `closeDrawer(toSessionId)` fires from a sidebar tap, in the
+ * same batch as the `router.replace` to that session, and records the id here
+ * (so the session being navigated TO sees it on its first render). The detail
+ * screen gates its ChatPanel mount while this equals its own id, then
+ * onTransitionEnd clears it to null — or openDrawer/onOpen clears it if the
+ * close reverses into an open. It is deliberately NOT set for gesture /
+ * overlay-tap dismissals or for the new-session "+" (which closes toward `/`,
+ * not a session): those pass no id, so every mounted session has
+ * `transitioningSessionId !== its id` and isn't gated. Carrying the id (vs a
+ * bare `closing` boolean) also lets the sidebar skip the whole dance when you
+ * tap the already-open session — see handleOpenSession.
  */
 export interface DrawerUI {
-  open: boolean;
-  /** A navigation-coupled drawer-close animation is in flight. */
-  closing: boolean;
+  /** The session a navigation-coupled drawer-close is animating toward, or null
+   *  when none is in flight. The detail screen gates its ChatPanel mount while
+   *  this equals its own id. */
+  transitioningSessionId: string | null;
   openDrawer: () => void;
-  closeDrawer: () => void;
+  /** Close the drawer. `toSessionId` records which session is being navigated
+   *  to so its detail screen can gate its mount until the close lands; omit it
+   *  for gesture dismissals and the new-session "+" (closes toward `/`). */
+  closeDrawer: (toSessionId?: string) => void;
 }
 
 export const DrawerUIContext = createContext<DrawerUI | null>(null);
