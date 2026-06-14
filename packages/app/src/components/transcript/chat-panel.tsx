@@ -106,13 +106,19 @@ type ChatPanelProps = {
  *      and leaves the last message ~8pt above the keyboard top. Without it
  *      the last message sits a touch low above the composer.
  *
+ * Per-session lifecycle: because this whole surface mounts fresh per
+ * session (the detail screen swaps it on the loading→ready transition),
+ * `initialScrollAtEnd`, the composer-inset measurement, the KCSV keyboard
+ * scroll-state, and the daemon live-fanout registration all start clean on
+ * every switch — no cross-mount state to reset by hand. (A persistent
+ * ChatPanel was tried and removed: it saved the mount cost but left
+ * LegendList/KCSV's per-mount keyboard + scroll state stale across
+ * switches, which couldn't be re-seeded from outside the wrapper.)
+ *
  * Trade-off: brief no-composer flash during the loading transition
  * (typically <300ms for an in-flight subscribe). Mirror of how
  * Claude Desktop / ChatGPT handle session-switch loading — input is
- * hidden until the session is ready to receive it. The alternative —
- * keeping composer mounted across loading — required ad-hoc fixes
- * for the inset hook state and initialScrollAtEnd that weren't
- * reliable.
+ * hidden until the session is ready to receive it.
  */
 export function ChatPanel({
   cliSessionId,
@@ -289,8 +295,9 @@ export function ChatPanel({
         // Reserve blank space below the just-sent user message for its turn so
         // the agent's reply has a full initial display area to render into (the
         // prompt pinned near the top), instead of starting cramped above the
-        // composer. maintainScrollAtEnd then follows the reply's growth to the
-        // bottom. Undefined when idle → normal layout.
+        // composer. The reply fills this reserved space without moving the
+        // scroll (no stick-to-bottom); the FAB jumps to the latest on demand.
+        // Undefined when idle → normal layout.
         anchoredEndSpace={
           anchorIndex >= 0
             ? { anchorIndex, anchorOffset: headerHeight }
@@ -379,14 +386,15 @@ export function ChatPanel({
         //   - initialScrollAtEnd: boot at the latest message on session
         //     re-open. Runs a per-frame rAF ticker that retargets to true
         //     end as items measure and the inset settles (LegendList
-        //     retargets the initial scroll after inset changes).
-        //   - maintainScrollAtEnd (above): during a turn the viewport follows
-        //     the streaming reply to the bottom (stick-to-bottom). anchoredEnd-
-        //     Space reserves the reply's initial display area below the just-sent
-        //     prompt (prompt pinned near the top) so it renders into a full
-        //     viewport instead of cramped above the composer; maintainScrollAtEnd
-        //     then follows that growth down. The scroll-to-end FAB (`isNearEnd`)
-        //     is the way back down after the user scrolls up.
+        //     retargets the initial scroll after inset changes). Re-fires
+        //     per session because the whole surface mounts fresh each switch.
+        //   - on send: anchoredEndSpace reserves the reply's initial display
+        //     area below the just-sent prompt (prompt pinned near the top) so
+        //     it renders into a full viewport instead of cramped above the
+        //     composer. The scroll does NOT auto-follow the streaming reply
+        //     (deliberately no maintainScrollAtEnd — see below) — you read the
+        //     reply from the prompt downward; the scroll-to-end FAB
+        //     (`isNearEnd`) is the way to jump to the latest.
         //
         // DELIBERATELY OMITTED:
         //   - `alignItemsAtEnd`: a Telegram/iMessage idiom (sparse messages
@@ -399,14 +407,14 @@ export function ChatPanel({
         //     rendered behind the composer backdrop because the alignment
         //     didn't account for `contentInsetEndAdjustment`.
         initialScrollAtEnd
-        // maintainScrollAtEnd: keep the viewport pinned to the bottom as the
-        // streaming reply grows (stick-to-bottom). Bare = true = all triggers
-        // (dataChange/itemLayout/layout) → also follows late row-measure growth
-        // and inset/layout changes back to the end. Internally gated to
-        // near-the-end, so it takes priority there and coexists with
-        // anchoredEndSpace without a fight (verified smooth on device
-        // 2026-06-13: maintainScrollAtEnd wins near the end, no jitter).
-        maintainScrollAtEnd
+        // maintainScrollAtEnd DELIBERATELY OMITTED — no stick-to-bottom. We
+        // tried it (84ca2a9) for follow-the-stream, but for a coding assistant
+        // the long structured replies read better from the TOP: anchoredEndSpace
+        // pins the just-sent prompt near the top and the reply renders downward
+        // into the reserved area below it; the FAB jumps to the latest on
+        // demand. (It also collided with MVCP + KCSV's keyboard lift over the
+        // same scroll offset.) The viewport only moves on send (anchoredEndSpace)
+        // and via the FAB — never auto-chasing the stream tail.
         // List → UI-thread state mirror (reanimated integration). `isNearEnd`
         // gates the scroll-to-end FAB; no JS re-render involved.
         sharedValues={{ isNearEnd }}
@@ -415,9 +423,10 @@ export function ChatPanel({
           fabReady.set(true);
         }}
         // Stabilize the visible position on size/layout changes (keyboard
-        // toggle, streaming item growth) but NOT on data adds — with
-        // maintainScrollAtEnd gone, new data moves nothing by design: the
-        // anchored end space owns in-turn growth and the FAB owns catch-up.
+        // toggle, streaming item growth) but NOT on data adds — new data moves
+        // nothing by design: the anchored end space owns in-turn growth (the
+        // reply renders into the reserved area below the pinned prompt) and the
+        // FAB owns catch-up to the latest.
         maintainVisibleContentPosition={{ size: true, data: false }}
         // iOS pull-down-to-dismiss for the keyboard.
         keyboardDismissMode="interactive"

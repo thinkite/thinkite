@@ -199,13 +199,14 @@ export default function NewSessionScreen() {
             home indicator (KSV is absolutely-positioned at bottom: 0,
             which is below the safe area); `offset.opened: -8` leaves an
             8pt visual gap above the keyboard.
-            NOTE: tried collapsing to a single KeyboardAvoidingView so
-            heading + composer move together — turned out to interact
-            badly with iOS IME candidate-bar frame updates and SwiftUI
-            Menu's Host async measurement, leaving the InputBar's `+`
-            button misaligned on first keyboard show until the user
-            switched IMEs. Reverting to the KSV pattern matches the
-            detail page (chat-panel.tsx) and avoids the regression. */}
+            NOTE (likely stale — kept as history): an earlier attempt to
+            collapse this into a single KeyboardAvoidingView misaligned the
+            InputBar's `+` button on first keyboard show. The cause was
+            @expo/ui's SwiftUI Menu Host async measurement + an iOS IME
+            candidate-bar bug — BOTH now moot: the `+`/model pickers moved to
+            the Nitro menu (@yyq1025/react-native-nitro-menu, pure UIKit, no
+            Host), and the @expo/ui Host keyboard bug was fixed upstream. So
+            this caveat probably no longer applies. */}
           <View>
             <GitStatusBar
               cwd={cwd}
