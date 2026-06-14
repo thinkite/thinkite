@@ -67,6 +67,20 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
 ];
 
 /**
+ * How long the daemon reuses a minted TURN cred before re-minting. The
+ * worker requests a 12h TTL from Cloudflare; we refresh at 10h so a
+ * connection never gets a cred that's about to expire mid-session.
+ */
+const TURN_CACHE_TTL_MS = 10 * 60 * 60 * 1000;
+/**
+ * Negative-cache window when minting fails (TURN unconfigured / outage).
+ * Without it every `peer.joined` would re-hit `/turn-credentials` and pay
+ * a round-trip before falling back to STUN; 60s lets an outage self-heal
+ * fast while sparing the common steady-state from per-connection minting.
+ */
+const TURN_NEGATIVE_TTL_MS = 60_000;
+
+/**
  * Max time from `peer.joined` to `authenticated` (= DataChannel open).
  * Normal path completes in well under 5s on a clean network; 30s gives
  * generous headroom for TURN-relayed sessions over flaky links while
@@ -146,7 +160,15 @@ export class WebRTCPeerServer {
   private readonly isPairing: () => boolean;
   private readonly signalingHost: string;
   private readonly signalingScheme: "ws" | "wss";
+  /** STUN-only fallback list used when TURN minting is unavailable. */
   private readonly iceServers: RTCIceServer[];
+  /** Cached minted TURN ICE-server list (+ expiry). Null until first
+   *  fetch; on mint failure holds the STUN fallback with a short TTL. */
+  private turnCache: { iceServers: RTCIceServer[]; expiresAt: number } | null =
+    null;
+  /** Single-flight guard so concurrent `peer.joined` events share one
+   *  mint round-trip instead of each firing their own. */
+  private turnInFlight: Promise<RTCIceServer[]> | null = null;
 
   constructor(options: WebRTCPeerServerOptions) {
     this.identity = options.identity;
@@ -197,6 +219,12 @@ export class WebRTCPeerServer {
         error: (e as ErrorEvent)?.message ?? "unknown",
       });
     });
+
+    // Warm the TURN cache so the first `peer.joined` doesn't eat a mint
+    // round-trip in its setup budget. Fire-and-forget — getIceServers never
+    // throws (degrades to STUN), and a failure here just means the first
+    // connection re-attempts the mint.
+    void this.getIceServers();
 
     // Fire-and-forget. Daemon shouldn't refuse to start just because
     // signaling.sidecode.app is momentarily unreachable — PartySocket's
@@ -313,7 +341,11 @@ export class WebRTCPeerServer {
       this.log("peer.paired", { clientId: peer.id, fingerprint });
     }
 
-    const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    // Mint/reuse TURN creds for THIS connection and reuse the exact same
+    // list for the client (relayed in the offer below) so both ends agree
+    // on relays. Falls back to STUN-only if minting is unavailable.
+    const iceServers = await this.getIceServers();
+    const pc = new RTCPeerConnection({ iceServers });
     const slot: PeerSlot = {
       clientId: peer.id,
       clientPubkey: peer.pubkey,
@@ -383,8 +415,13 @@ export class WebRTCPeerServer {
         Buffer.from(dtlsFingerprintTranscript(fp)),
         this.identity.privateKey,
       ).toString("base64url");
+      // Relay the SAME ICE-server list (incl. minted TURN creds) the daemon
+      // used — the client is not a verified party so it never mints its own;
+      // it just uses what the signed daemon hands it. fpSig still pins the
+      // DTLS identity, so a tampering signaling worker can't swap in a
+      // malicious relay without breaking the fingerprint signature.
       this.signaling?.send(
-        JSON.stringify({ to: peer.id, type: "offer", sdp, fpSig }),
+        JSON.stringify({ to: peer.id, type: "offer", sdp, fpSig, iceServers }),
       );
     } catch (err) {
       this.log("peer.offer.error", {
@@ -651,6 +688,86 @@ export class WebRTCPeerServer {
     }
     this.peers.delete(slot.clientId);
     this.log("peer.closed", { clientId: slot.clientId, reason });
+  }
+
+  // ─── TURN credentials ───────────────────────────────────────────
+
+  /**
+   * Effective ICE-server list for a new peer connection: minted TURN
+   * (STUN + relay) when available, else the STUN-only fallback. Cached +
+   * single-flighted so a burst of `peer.joined` events shares one mint.
+   * Never throws — a TURN outage degrades to STUN, it doesn't break
+   * connections (they just won't traverse symmetric NAT).
+   */
+  private getIceServers(): Promise<RTCIceServer[]> {
+    const now = Date.now();
+    if (this.turnCache && this.turnCache.expiresAt > now) {
+      return Promise.resolve(this.turnCache.iceServers);
+    }
+    if (this.turnInFlight) return this.turnInFlight;
+
+    const p = this.fetchTurnCredentials().then((turn) => {
+      if (turn) {
+        this.turnCache = {
+          iceServers: turn,
+          expiresAt: Date.now() + TURN_CACHE_TTL_MS,
+        };
+        return turn;
+      }
+      // Negative-cache the STUN fallback briefly so an outage / unconfigured
+      // TURN doesn't re-mint on every connection.
+      this.turnCache = {
+        iceServers: this.iceServers,
+        expiresAt: Date.now() + TURN_NEGATIVE_TTL_MS,
+      };
+      return this.iceServers;
+    });
+    this.turnInFlight = p;
+    void p.finally(() => {
+      if (this.turnInFlight === p) this.turnInFlight = null;
+    });
+    return p;
+  }
+
+  /**
+   * Mint TURN credentials from the signaling worker's `/turn-credentials`
+   * endpoint. The daemon is the SOLE minter (clients get creds relayed in
+   * the offer), so we prove pubkey ownership with an Ed25519 signature over
+   * a `turn/v1/...` domain-tagged message — distinct from the signaling-
+   * connect signature so neither is replayable as the other. Returns the
+   * one-element ICE-server list on success, or null on any failure.
+   */
+  private async fetchTurnCredentials(): Promise<RTCIceServer[] | null> {
+    const scheme = this.signalingScheme === "wss" ? "https" : "http";
+    const url = `${scheme}://${this.signalingHost}/turn-credentials`;
+    const ts = Date.now();
+    const sig = cryptoSign(
+      null,
+      Buffer.from(`turn/v1/${this.identity.publicKeyB64}/${ts}`),
+      this.identity.privateKey,
+    ).toString("base64url");
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          pubkey: this.identity.publicKeyB64,
+          ts,
+          sig,
+        }),
+      });
+      if (!res.ok) {
+        this.log("turn.mint_unavailable", { status: res.status });
+        return null;
+      }
+      const data = (await res.json()) as { iceServers?: RTCIceServer };
+      if (!data.iceServers) return null;
+      this.log("turn.minted");
+      return [data.iceServers];
+    } catch (err) {
+      this.log("turn.fetch_error", { error: (err as Error).message });
+      return null;
+    }
   }
 
   // ─── Helpers ────────────────────────────────────────────────────

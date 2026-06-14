@@ -39,8 +39,16 @@ export interface SignalingClientCallbacks {
   onPeerLeft?: (peer: SignalingPeer) => void;
   /** Daemon → client SDP offer. `fpSig` is the daemon's Ed25519 signature
    *  over the SDP's DTLS fingerprint; the owner MUST verify it against
-   *  the QR-known daemon pubkey before calling setRemoteDescription. */
-  onOffer?: (from: string, sdp: string, fpSig: string) => void;
+   *  the QR-known daemon pubkey before calling setRemoteDescription.
+   *  `iceServers` carries the daemon-minted TURN creds (the daemon is the
+   *  sole minter); the owner builds its peer connection with them. Absent
+   *  when the daemon couldn't mint — owner falls back to its STUN default. */
+  onOffer?: (
+    from: string,
+    sdp: string,
+    fpSig: string,
+    iceServers?: RTCIceServer[],
+  ) => void;
   /** Trickle-ICE candidate from a peer. */
   onCandidate?: (from: string, candidate: unknown) => void;
   /** Worker-side error (`peer_not_found`, `missing_to`, etc.). */
@@ -193,7 +201,12 @@ export class SignalingClient {
           typeof msg.sdp === "string" &&
           typeof msg.fpSig === "string"
         ) {
-          this.opts.onOffer?.(msg.from, msg.sdp, msg.fpSig);
+          // Daemon-relayed TURN creds (optional). Worker forwards the offer
+          // envelope verbatim, so this is whatever the daemon attached.
+          const iceServers = Array.isArray(msg.iceServers)
+            ? (msg.iceServers as RTCIceServer[])
+            : undefined;
+          this.opts.onOffer?.(msg.from, msg.sdp, msg.fpSig, iceServers);
         }
         return;
       }

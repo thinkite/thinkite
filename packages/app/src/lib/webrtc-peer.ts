@@ -142,9 +142,21 @@ export class WebRTCPeer {
   async handleOffer(
     offerSdp: string,
     daemonFpSig: string,
+    iceServers?: RTCIceServer[],
   ): Promise<{ answerSdp: string; fpSig: string }> {
     if (this.closed) throw new Error("WebRTCPeer is closed");
     this.setState("received-offer");
+
+    // 0. Apply the daemon-relayed TURN creds BEFORE we createAnswer — that's
+    //    when this (answerer) side starts ICE gathering, so the relay must be
+    //    in the config by now for our candidates to include it. The daemon is
+    //    the sole minter; absent creds (mint unavailable) we keep the
+    //    STUN-only default the constructor set. The fpSig check below still
+    //    pins DTLS identity, so a tampering worker can't swap in a hostile
+    //    relay without invalidating the signature.
+    if (iceServers && iceServers.length > 0) {
+      this.pc.setConfiguration({ iceServers });
+    }
 
     // 1. Verify daemon's signature over the SDP fingerprint before we
     //    even acknowledge the offer. If signaling DO was compromised and

@@ -237,23 +237,20 @@ export class Signaling extends Server<Env> {
 }
 
 /**
- * Verify a daemon's claim to own the room's Ed25519 pubkey.
- *
- * Wire format (URL query):
- *   ?role=daemon&ts=<unix-ms>&sig=<base64url>
- *
- * Signature covers: `signaling/v1/${roomPubkey}/${ts}` (UTF-8 bytes).
+ * Verify an Ed25519 signature over a UTF-8 `message` against `pubkeyB64`.
  *
  * Workers' Web Crypto supports Ed25519 natively as of compatibility_date
- * 2023-08-01 — no third-party crypto lib needed.
+ * 2023-08-01 — no third-party crypto lib needed. Domain-tagged messages
+ * (`signaling/v1/...` vs `turn/v1/...`) keep a signature minted for one
+ * purpose from being replayable as another.
  */
-async function verifyDaemonSig(
-  roomPubkey: string,
-  ts: number,
+async function verifyEd25519(
+  pubkeyB64: string,
+  message: string,
   sigB64Url: string,
 ): Promise<boolean> {
   try {
-    const pubKeyBytes = base64UrlDecode(roomPubkey);
+    const pubKeyBytes = base64UrlDecode(pubkeyB64);
     if (pubKeyBytes.byteLength !== 32) return false; // Ed25519 pubkey is 32 bytes
     const sigBytes = base64UrlDecode(sigB64Url);
     if (sigBytes.byteLength !== 64) return false; // Ed25519 signature is 64 bytes
@@ -265,12 +262,81 @@ async function verifyDaemonSig(
       false,
       ["verify"],
     );
-    const message = new TextEncoder().encode(
-      `signaling/v1/${roomPubkey}/${ts}`,
+    return await crypto.subtle.verify(
+      "Ed25519",
+      key,
+      sigBytes,
+      new TextEncoder().encode(message),
     );
-    return await crypto.subtle.verify("Ed25519", key, sigBytes, message);
   } catch {
     return false;
+  }
+}
+
+/**
+ * Verify a daemon's claim to own the room's Ed25519 pubkey.
+ *
+ * Wire format (URL query): `?role=daemon&ts=<unix-ms>&sig=<base64url>`
+ * Signature covers: `signaling/v1/${roomPubkey}/${ts}`.
+ */
+function verifyDaemonSig(
+  roomPubkey: string,
+  ts: number,
+  sigB64Url: string,
+): Promise<boolean> {
+  return verifyEd25519(
+    roomPubkey,
+    `signaling/v1/${roomPubkey}/${ts}`,
+    sigB64Url,
+  );
+}
+
+/** TURN credential TTL requested from Cloudflare (seconds). 12h gives a
+ *  daemon a long-lived cred it can reuse across reconnects; the daemon
+ *  re-mints before expiry. Long enough to keep mint volume low, short
+ *  enough that a leaked cred self-expires within a day. */
+const TURN_CRED_TTL_SECONDS = 12 * 60 * 60;
+
+/** Ed25519 message a daemon signs to mint TURN creds. Distinct domain tag
+ *  from the signaling-connect signature so the two aren't interchangeable. */
+function turnSigMessage(pubkey: string, ts: number): string {
+  return `turn/v1/${pubkey}/${ts}`;
+}
+
+/** RTCIceServer shape Cloudflare's generate-ice-servers returns. */
+interface TurnIceServers {
+  urls: string[];
+  username?: string;
+  credential?: string;
+}
+
+/**
+ * Mint short-lived TURN credentials from Cloudflare Realtime TURN. Returns
+ * the ICE-server block (STUN + TURN urls + ephemeral username/credential)
+ * or null on any failure — caller turns null into a 5xx so the daemon
+ * gracefully falls back to STUN-only.
+ */
+async function mintTurnCredentials(
+  keyId: string,
+  apiToken: string,
+): Promise<TurnIceServers | null> {
+  try {
+    const res = await fetch(
+      `https://rtc.live.cloudflare.com/v1/turn/keys/${keyId}/credentials/generate-ice-servers`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ttl: TURN_CRED_TTL_SECONDS }),
+      },
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as { iceServers?: TurnIceServers };
+    return data.iceServers ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -342,6 +408,54 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
       return Response.json({ status: "ok" });
+    }
+
+    // TURN credential mint. The (Ed25519-verified) daemon is the SOLE
+    // minter — it relays the creds to its iOS clients over the signaling
+    // DataChannel, so clients never hit this endpoint. That keeps minting
+    // (which feeds a billable relay) tied to a key whose ownership we can
+    // actually prove. Order: rate-limit (cheap) → ts skew → sig verify →
+    // mint. Body: { pubkey, ts, sig } with sig over `turn/v1/<pubkey>/<ts>`.
+    if (url.pathname === "/turn-credentials") {
+      if (request.method !== "POST") {
+        return new Response("method_not_allowed", { status: 405 });
+      }
+      let body: { pubkey?: unknown; ts?: unknown; sig?: unknown };
+      try {
+        body = await request.json();
+      } catch {
+        return new Response("bad_json", { status: 400 });
+      }
+      const pubkey = typeof body.pubkey === "string" ? body.pubkey : "";
+      const ts = Number(body.ts);
+      const sig = typeof body.sig === "string" ? body.sig : "";
+      if (!pubkey || !Number.isFinite(ts) || !sig) {
+        return new Response("missing_fields", { status: 400 });
+      }
+      // Backstop cap before the (more expensive) signature verify, keyed by
+      // daemon pubkey so one key can't drain the shared mint budget.
+      const rl = await env.RL_TURN.limit({ key: `turn:${pubkey}` });
+      if (!rl.success) {
+        return new Response("rate_limited", { status: 429 });
+      }
+      if (Math.abs(Date.now() - ts) > MAX_TS_SKEW_MS) {
+        return new Response("stale_timestamp", { status: 401 });
+      }
+      if (!(await verifyEd25519(pubkey, turnSigMessage(pubkey, ts), sig))) {
+        return new Response("bad_signature", { status: 401 });
+      }
+      // Secrets (set via `wrangler secret put`) aren't in the generated Env
+      // type; read them via a localized cast. Unset → 503 so the daemon
+      // logs it and falls back to STUN-only rather than hard-failing.
+      const { TURN_KEY_ID, TURN_API_TOKEN } = env;
+      if (!TURN_KEY_ID || !TURN_API_TOKEN) {
+        return new Response("turn_not_configured", { status: 503 });
+      }
+      const iceServers = await mintTurnCredentials(TURN_KEY_ID, TURN_API_TOKEN);
+      if (!iceServers) {
+        return new Response("turn_mint_failed", { status: 502 });
+      }
+      return Response.json({ iceServers });
     }
 
     // Connect-rate cap applied at the outer fetch boundary so it runs

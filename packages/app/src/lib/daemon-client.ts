@@ -515,10 +515,13 @@ export class Transport {
         onPeerJoined: (peer) => {
           if (peer.role === "daemon") onDaemonAvailable(peer);
         },
-        onOffer: (from, sdp, fpSig) => {
+        onOffer: (from, sdp, fpSig, iceServers) => {
           daemonPeerId = from;
+          // `iceServers` carries the daemon-minted TURN creds (it's the sole
+          // minter). handleOffer applies them before it gathers ICE so our
+          // candidates include the relay; absent them we stay STUN-only.
           void peer
-            .handleOffer(sdp, fpSig)
+            .handleOffer(sdp, fpSig, iceServers)
             .then(({ answerSdp, fpSig: ourSig }) => {
               signaling.send(from, "answer", { sdp: answerSdp, fpSig: ourSig });
             })
