@@ -344,8 +344,22 @@ export class WebRTCPeerServer {
     // Mint/reuse TURN creds for THIS connection and reuse the exact same
     // list for the client (relayed in the offer below) so both ends agree
     // on relays. Falls back to STUN-only if minting is unavailable.
-    const iceServers = await this.getIceServers();
-    const pc = new RTCPeerConnection({ iceServers });
+    let iceServers = await this.getIceServers();
+    let pc: RTCPeerConnection;
+    try {
+      pc = new RTCPeerConnection({ iceServers });
+    } catch (err) {
+      // A malformed ICE config must NEVER crash the peer loop (node-datachannel
+      // throws synchronously on a bad entry). Drop the suspect cache, fall back
+      // to STUN-only, and relay that same fallback so both ends stay consistent.
+      this.log("peer.ice_config_invalid", {
+        error: (err as Error).message,
+        count: iceServers.length,
+      });
+      this.turnCache = null;
+      iceServers = this.iceServers;
+      pc = new RTCPeerConnection({ iceServers });
+    }
     const slot: PeerSlot = {
       clientId: peer.id,
       clientPubkey: peer.pubkey,
@@ -760,10 +774,26 @@ export class WebRTCPeerServer {
         this.log("turn.mint_unavailable", { status: res.status });
         return null;
       }
-      const data = (await res.json()) as { iceServers?: RTCIceServer };
-      if (!data.iceServers) return null;
-      this.log("turn.minted");
-      return [data.iceServers];
+      // Cloudflare returns `iceServers` as an ARRAY of RTCIceServer objects
+      // (a STUN entry + a TURN entry, each with a `urls` list) — NOT a single
+      // object. Pass it through as-is, but keep only well-formed entries so a
+      // shape change can never feed node-datachannel an entry without `urls`
+      // (which throws "IceServer config should be a string Or an object").
+      const data = (await res.json()) as { iceServers?: RTCIceServer[] };
+      const servers = Array.isArray(data.iceServers) ? data.iceServers : [];
+      const valid = servers.filter(
+        (s): s is RTCIceServer =>
+          !!s &&
+          (typeof s.urls === "string"
+            ? s.urls.length > 0
+            : Array.isArray(s.urls) && s.urls.length > 0),
+      );
+      if (valid.length === 0) {
+        this.log("turn.mint_empty");
+        return null;
+      }
+      this.log("turn.minted", { servers: valid.length });
+      return valid;
     } catch (err) {
       this.log("turn.fetch_error", { error: (err as Error).message });
       return null;

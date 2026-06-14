@@ -303,8 +303,8 @@ function turnSigMessage(pubkey: string, ts: number): string {
   return `turn/v1/${pubkey}/${ts}`;
 }
 
-/** RTCIceServer shape Cloudflare's generate-ice-servers returns. */
-interface TurnIceServers {
+/** One RTCIceServer entry as Cloudflare's generate-ice-servers returns. */
+interface TurnIceServer {
   urls: string[];
   username?: string;
   credential?: string;
@@ -312,14 +312,15 @@ interface TurnIceServers {
 
 /**
  * Mint short-lived TURN credentials from Cloudflare Realtime TURN. Returns
- * the ICE-server block (STUN + TURN urls + ephemeral username/credential)
- * or null on any failure — caller turns null into a 5xx so the daemon
- * gracefully falls back to STUN-only.
+ * the ICE-server LIST (an ARRAY: a STUN entry + a TURN entry with ephemeral
+ * username/credential) or null on any failure — caller turns null into a
+ * 5xx so the daemon gracefully falls back to STUN-only. NOTE: Cloudflare
+ * returns `iceServers` as an array, not a single object.
  */
 async function mintTurnCredentials(
   keyId: string,
   apiToken: string,
-): Promise<TurnIceServers | null> {
+): Promise<TurnIceServer[] | null> {
   try {
     const res = await fetch(
       `https://rtc.live.cloudflare.com/v1/turn/keys/${keyId}/credentials/generate-ice-servers`,
@@ -333,8 +334,8 @@ async function mintTurnCredentials(
       },
     );
     if (!res.ok) return null;
-    const data = (await res.json()) as { iceServers?: TurnIceServers };
-    return data.iceServers ?? null;
+    const data = (await res.json()) as { iceServers?: TurnIceServer[] };
+    return Array.isArray(data.iceServers) ? data.iceServers : null;
   } catch {
     return null;
   }
