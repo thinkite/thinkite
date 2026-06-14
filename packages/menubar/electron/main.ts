@@ -31,14 +31,23 @@ let keepAwakeId: number | null = null;
 
 // --- Plan usage (daemon-fetched, menu-cached) ---
 //
-// Last fetch result, rendered by buildMenu. Refresh is fire-and-forget on
-// tray click + once at startup: macOS doesn't repaint an open NSMenu, so a
-// click shows the previous snapshot and the fetch lands for the next open
-// (the daemon's 30s cache + single-flight make spamming clicks free).
+// Last fetch result, rendered by buildMenu. macOS doesn't repaint an open
+// NSMenu, so the open itself can only ever paint an ALREADY-cached snapshot —
+// a tray click can't show its own in-flight fetch. A background poll
+// (PLAN_USAGE_POLL_MS) keeps the cache warm so each open shows near-current
+// data; without it an open showed the *previous* open's snapshot. The
+// startup + per-open `refreshPlanUsage()` calls stay (the daemon's 30s cache
+// + single-flight make the extra fetches free), but the poll is what makes
+// the displayed number fresh.
 // Token Stats was CUT from V0: its planned source (stats-cache.json) turned
 // out to be lazily written — only when the user runs /stats — so honest
 // numbers require Desktop-style JSONL aggregation; deferred.
 let planUsage: PlanUsageResult | null = null;
+// Background poller handle, cleared on quit. 2 min: the daemon's 30s TTL
+// coalesces anything faster, and plan usage drifts slowly, so a tighter
+// interval would just burn requests for no visible gain.
+const PLAN_USAGE_POLL_MS = 2 * 60_000;
+let planUsageTimer: ReturnType<typeof setInterval> | null = null;
 
 function refreshPlanUsage(): void {
   if (!daemon) return;
@@ -349,6 +358,10 @@ app.whenReady().then(async () => {
 
   refreshPlanUsage();
   refreshMenu();
+  // Keep the cached snapshot warm independent of tray opens, so the next
+  // open paints current data instead of the previous open's (NSMenu can't
+  // repaint while open). Cleared in before-quit.
+  planUsageTimer = setInterval(refreshPlanUsage, PLAN_USAGE_POLL_MS);
   console.log("[main] tray + menu ready");
 
   // electron-updater: auto-download + drive the update menu items. Rebuilds the
@@ -360,6 +373,7 @@ app.on("before-quit", (event: Electron.Event) => {
   if (isQuitting) return;
   event.preventDefault();
   isQuitting = true;
+  if (planUsageTimer) clearInterval(planUsageTimer);
   console.log("[main] before-quit: stopping daemon...");
   const stopPromise = daemon ? daemon.stop() : Promise.resolve();
   void stopPromise.then(() => {
