@@ -29,6 +29,28 @@ let isQuitting = false;
 let daemon: Daemon | null = null;
 let keepAwakeId: number | null = null;
 
+// Absolute path to the SDK's bundled `claude` SEA binary, handed to the daemon
+// so its spawn survives asar packaging. This lives HERE (the Electron layer)
+// because packaging is our concern, not the daemon's: electron-builder.cjs
+// `asarUnpack`s the SDK platform package to `Resources/app.asar.unpacked/...`,
+// a fixed location we can name directly. If we let the SDK resolve the binary
+// itself, it would point INSIDE `app.asar` (sdk.mjs lives there) — and since
+// app.asar is a file, `child_process.spawn` of a path through it throws
+// `spawn ENOTDIR`. Dev (unpackaged) returns undefined → the SDK resolves its
+// platform package from node_modules itself (no asar, real path).
+//
+// Keep the `asarUnpack` glob in electron-builder.cjs and this layout in sync.
+function bundledClaudePath(): string | undefined {
+  if (!app.isPackaged) return undefined;
+  return path.join(
+    process.resourcesPath,
+    "app.asar.unpacked",
+    "node_modules",
+    `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`,
+    "claude",
+  );
+}
+
 // --- Plan usage (daemon-fetched, menu-cached) ---
 //
 // Last fetch result, rendered by buildMenu. macOS doesn't repaint an open
@@ -323,7 +345,7 @@ app.whenReady().then(async () => {
   );
 
   console.log("[main] starting daemon...");
-  daemon = await startDaemon();
+  daemon = await startDaemon({ claudeExecutablePath: bundledClaudePath() });
   console.log(
     `[main] daemon ready (fingerprint ${daemon.fingerprint}, ${daemon.pairedClientCount()} paired clients)`,
   );

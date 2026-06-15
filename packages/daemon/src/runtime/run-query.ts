@@ -204,6 +204,17 @@ export interface SessionLoopOptions {
    * (`queryFactory` set), which never spawns a real binary.
    */
   oauthToken?: string;
+  /**
+   * Absolute path to the bundled `claude` SEA binary to spawn
+   * (`pathToClaudeCodeExecutable`). Computed by the Electron layer (menubar),
+   * which owns packaging: inside the packaged .app the binary is `asarUnpack`'d
+   * to a fixed `Resources/app.asar.unpacked/...` location, and the SDK's own
+   * resolution would otherwise point INSIDE `app.asar` (a file) and spawn with
+   * `ENOTDIR`. Undefined in dev / tests → the SDK resolves its platform package
+   * from node_modules itself (no asar, so that path is real). The daemon stays
+   * electron-agnostic: it just forwards whatever the host computed.
+   */
+  claudeExecutablePath?: string;
   /** Test seam: override the SDK's `query()` factory. */
   queryFactory?: typeof query;
 }
@@ -254,6 +265,13 @@ export function ensureSessionLoop(
       : undefined;
   const envOption = spawnEnv ? { env: spawnEnv } : {};
 
+  // Spawn the host-supplied binary path when present (packaged app, where the
+  // SDK's own resolution would hit `app.asar` → ENOTDIR). Absent in dev/tests,
+  // where the SDK resolves its platform package itself. See SessionLoopOptions.
+  const execOption = options.claudeExecutablePath
+    ? { pathToClaudeCodeExecutable: options.claudeExecutablePath }
+    : {};
+
   const channel = createAsyncMessageInput<SDKUserMessage>();
   runtime.inputChannel = channel;
 
@@ -298,6 +316,7 @@ export function ensureSessionLoop(
           includePartialMessages: true as const,
           cwd: options.cwd,
           ...envOption,
+          ...execOption,
         }
       : {
           ...bypassFlags,
@@ -307,6 +326,7 @@ export function ensureSessionLoop(
           includePartialMessages: true as const,
           cwd: options.cwd,
           ...envOption,
+          ...execOption,
         };
   const q: Query = factory({
     prompt: channel.iterable,

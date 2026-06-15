@@ -35,6 +35,16 @@ export interface DaemonOptions {
   /** Override signaling host (for `wrangler dev`). */
   signalingHost?: string;
   signalingScheme?: "ws" | "wss";
+  /**
+   * Absolute path to the bundled `claude` SEA binary to spawn. The Electron
+   * host (menubar) computes this because it owns packaging: in the packaged
+   * .app the binary is `asarUnpack`'d to a fixed `Resources/app.asar.unpacked/`
+   * location, and the SDK's own resolution would otherwise point INSIDE
+   * `app.asar` (a file) → `spawn ENOTDIR`. Omit in dev: the SDK resolves its
+   * platform package from node_modules itself (no asar). The daemon stays
+   * electron-agnostic and just forwards this into every claude spawn.
+   */
+  claudeExecutablePath?: string;
 }
 
 export type {
@@ -205,7 +215,11 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
         // gets it via env. A creds failure surfaces as turn_failed (forwarded
         // to claude.ai by the bridge mirror) rather than a silent drop.
         const oauthToken = await oauth.ensureFresh();
-        ensureSessionLoop(runtime, { mode: "resume", oauthToken });
+        ensureSessionLoop(runtime, {
+          mode: "resume",
+          oauthToken,
+          claudeExecutablePath: options.claudeExecutablePath,
+        });
         pushPrompt(runtime, prompt.text, prompt.images, prompt.uuid);
       } catch (err) {
         runtime.addEvent({
@@ -344,6 +358,8 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     // Per-spawn OAuth token for the bundled binary — same shared keychain
     // manager the CCR bridge uses (one keeper per process).
     ensureFreshToken: () => oauth.ensureFresh(),
+    // Host-computed binary path (packaged app) — forwarded into every spawn.
+    claudeExecutablePath: options.claudeExecutablePath,
     gitWatchers,
     epoch,
   });

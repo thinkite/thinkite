@@ -117,6 +117,13 @@ export interface RouterDeps {
    */
   ensureFreshToken?: () => Promise<string>;
   /**
+   * Absolute path to the bundled `claude` binary to spawn, computed by the
+   * Electron host (see SessionLoopOptions.claudeExecutablePath — needed so the
+   * spawn survives asar packaging). Forwarded verbatim into each spawn.
+   * Undefined in dev / tests → the SDK resolves its platform package itself.
+   */
+  claudeExecutablePath?: string;
+  /**
    * Per-daemon registry of `GitWatcher`s keyed by `cwd`. Shared across
    * connections so two iOS clients on the same project re-use one watch
    * + cache. Daemon disposes the whole registry on shutdown.
@@ -785,6 +792,7 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             cwd: cmd.cwd,
             model: cmd.model,
             oauthToken,
+            claudeExecutablePath: deps.claudeExecutablePath,
             queryFactory: deps.queryFactory,
           });
           // pushPrompt emits turn_started synchronously before the SDK
