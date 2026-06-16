@@ -6,11 +6,14 @@
 export const links = {
   // Set to "" to render the linked buttons as visually disabled
   // (pointer-events:none + dimmed). Restore the URL here to re-enable.
-  github: "",
-  appStore: "",
-  // Mac DMG download URL. Once releases are on GitHub, this will be:
-  //   https://github.com/sidecodeapp/sidecode/releases/latest/download/sidecode.dmg
-  download: "",
+  github: "https://github.com/sidecodeapp/sidecode",
+  // iOS app — the /ios route redirects to TestFlight (see public/_redirects).
+  // It's a TestFlight beta, NOT the App Store, so button copy should say
+  // "TestFlight", not "App Store".
+  appStore: "/ios",
+  // macOS app — the /mac route (Worker) resolves the latest .dmg from the
+  // GitHub Releases API and 302s to it; never hard-code a versioned URL here.
+  download: "/mac",
   contactEmail: "contact@sidecode.app",
 } as const;
 

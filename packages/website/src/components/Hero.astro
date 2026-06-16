@@ -6,47 +6,68 @@ import { links } from "../config";
   <div class="wrap">
     <div class="hero-grid">
       <div>
-        <div class="eyebrow">/ Public beta · Coming soon</div>
-        <h1>
-          By your<br />
-          side<span style="color:var(--accent)">.</span><br />
-          <span class="mute">Code anywhere</span><br />
-          <span class="mute">with </span><span class="ital">Claude.</span>
-        </h1>
+        <div data-show-on="desktop ios">
+          <h1>
+            By your<br />
+            side<span style="color:var(--accent)">.</span><br />
+            <span class="mute">Run Claude Code</span><br />
+            <span class="mute">from your </span><span class="ital">phone.</span>
+          </h1>
+        </div>
+        <div data-show-on="android">
+          <h1>
+            By your<br />
+            side<span style="color:var(--accent)">.</span><br />
+            <span class="mute">Run Claude Code</span><br />
+            <span class="mute">on </span><span class="ital">iOS first.</span>
+          </h1>
+        </div>
       </div>
 
       <aside class="hero-side">
         <div data-show-on="desktop">
-          <p>Lives in your menu bar.<br />Code from your iPhone, iPad, and (soon) Fold.</p>
+          <p>
+            A macOS menu-bar daemon and an iOS app. Start, stream, and steer
+            Claude Code sessions on your Mac — peer-to-peer, private by default.
+          </p>
           <div class="hero-actions">
             <a class="btn btn-primary" href={links.download}>
               Download for macOS <span class="arr">↓</span>
             </a>
-            <a class="btn btn-ghost" href={links.github} target="_blank" rel="noopener">
-              View source <span class="arr">↗</span>
+            <a class="btn btn-ghost" href={links.appStore}>
+              iOS · TestFlight <span class="arr">↗</span>
             </a>
+          </div>
+          <div class="hero-note">
+            Free &amp; open source · no signup · Apple Silicon + iOS
           </div>
         </div>
 
         <div data-show-on="ios">
           <p>
-            <strong style="font-weight:500;color:var(--ink)">Companion to sidecode for Mac.</strong>
-            <br />Install here — pair from your Mac to start coding.
+            This is the iOS companion. Install it from TestFlight, then pair with
+            the sidecode app on your Mac — and start, stream, and steer Claude
+            Code sessions from your phone.
           </p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href={links.appStore} target="_blank" rel="noopener">
-              Get on the App Store <span class="arr">↗</span>
+            <a class="btn btn-primary" href={links.appStore}>
+              Get on TestFlight <span class="arr">↗</span>
             </a>
-            <a class="btn btn-ghost" href="#download">
-              On a Mac? <span class="arr">↓</span>
+            <a class="btn btn-ghost" href={links.download}>
+              On a Mac? Start here <span class="arr">↓</span>
             </a>
+          </div>
+          <div class="hero-note">
+            TestFlight beta · requires the macOS app · free &amp; open source
           </div>
         </div>
 
         <div data-show-on="android">
           <p>
-            <strong style="font-weight:500;color:var(--ink)">macOS + iOS today.</strong>
-            <br />Android is on the roadmap — the iOS app is built on <code>@expo/ui</code>, so the port is approachable. Star the repo to hear when it ships.
+            <strong style="font-weight:500;color:var(--ink)"
+              >macOS and iOS today — Android isn't here yet.</strong
+            ><br />sidecode is free and open source, so an Android port is on the
+            table. Star the repo to hear when it ships.
           </p>
           <div class="hero-actions">
             <a class="btn btn-primary" href={links.github} target="_blank" rel="noopener">
@@ -55,6 +76,9 @@ import { links } from "../config";
             <a class="btn btn-ghost" href="#faq">
               Why iOS first <span class="arr">↓</span>
             </a>
+          </div>
+          <div class="hero-note">
+            Android: not yet · macOS (Apple Silicon) + iOS available
           </div>
         </div>
       </aside>

@@ -1,24 +1,28 @@
 ---
 const faqs = [
   {
-    q: "Does sidecode cost anything?",
-    a: "No. Apache 2.0 licensed, free and open source.",
+    q: "What does it cost?",
+    a: "Nothing. sidecode is free and open source under Apache 2.0 — no signup, no accounts. Usage bills against your existing Claude plan, exactly like running Claude Code yourself.",
   },
   {
-    q: "Where does my data go?",
-    a: "Nowhere. Pairing and sessions run device-to-device over your local network (or Tailscale, if you've set it up). There is no sidecode server.",
+    q: "How private is it, really?",
+    a: "Your phone and Mac connect device-to-device over a DTLS-encrypted WebRTC DataChannel. A Cloudflare signaling server only brokers the initial handshake and never sees session content; when a direct link isn't possible, an encrypted TURN relay is the fallback.",
   },
   {
-    q: "Do I need to log in or sign up?",
-    a: "No. sidecode uses your existing Claude Code authentication. You need a Claude Pro or Max plan.",
+    q: "Do I need an account?",
+    a: "No. sidecode uses your existing Claude login from the macOS keychain — your credentials never leave your Mac.",
   },
   {
-    q: "Can I approve permission requests from my phone?",
-    a: "Yes — for sessions you've sent prompts to from sidecode. Sessions you're only observing still route approval to Claude Desktop or your terminal. This is deliberate: if your phone is unreachable, we don't want to freeze a session.",
+    q: "Does it use my Claude Desktop sessions?",
+    a: "No — sidecode owns its own sessions. You can opt in to <em>bridge</em> a session to <code>claude.ai</code> and Claude Desktop per session, but nothing is read from Desktop by default.",
   },
   {
-    q: "Is there an Android version?",
-    a: "Not yet. The iOS app uses <code>@expo/ui</code>, so the path is clear — but iPad mini and iPhone Fold come first. Open source, contributions welcome.",
+    q: "Can I approve permission prompts from my phone?",
+    a: "Not in this version. Sessions run with permissions bypassed, so there's no on-phone approval step yet.",
+  },
+  {
+    q: "What do I need to run it?",
+    a: "A Mac on Apple Silicon for the menu-bar app, and an iPhone for the iOS app — currently in TestFlight beta. Android isn't available yet.",
   },
 ];
 ---

@@ -12,6 +12,7 @@ import { links } from "../config";
 
     <div class="nav-cta">
       <div data-show-on="desktop">
+        <a href={links.appStore}>iOS · TestFlight</a>
         <a href={links.github} target="_blank" rel="noopener">GitHub ↗</a>
         <a class="btn btn-primary" href={links.download}>
           Download <span class="arr">↓</span>
@@ -19,14 +20,16 @@ import { links } from "../config";
       </div>
 
       <div data-show-on="ios">
+        <a href={links.download}>macOS app</a>
         <a href={links.github} target="_blank" rel="noopener">GitHub ↗</a>
-        <a class="btn btn-primary" href={links.appStore} target="_blank" rel="noopener">
-          App Store <span class="arr">↗</span>
+        <a class="btn btn-primary" href={links.appStore}>
+          Get on TestFlight <span class="arr">↗</span>
         </a>
       </div>
 
       <div data-show-on="android">
-        <a href="#faq">FAQ</a>
+        <a href={links.download}>macOS app</a>
+        <a href="#faq">Why iOS first</a>
         <a class="btn btn-primary" href={links.github} target="_blank" rel="noopener">
           Star on GitHub <span class="arr">↗</span>
         </a>

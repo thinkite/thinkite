@@ -1,33 +1,52 @@
 ---
 const features = [
   {
-    title: "Open it like any Mac app.",
-    body: "Click the icon for your numbers, click Pair to add a phone. That's the whole app — no npm install, no config file, no terminal window left running.",
+    ix: "01 · remote start",
+    title: "Start a session from your phone.",
+    body: "Pick any folder on your Mac and kick off a fresh Claude Code session remotely — not just resume one that's already running.",
   },
   {
-    title: "Same sessions as Desktop.",
-    body: "Reads Desktop's local session store directly — no export, no copy-paste, no second account. Approvals follow whichever device sent the last prompt. <em>(Soon: changes sync back.)</em>",
+    ix: "02 · private",
+    title: "Peer-to-peer, private by default.",
+    body: "Your phone talks straight to your Mac over a DTLS-encrypted WebRTC channel. The signaling server only brokers the connection — it never sees your session.",
   },
   {
-    title: 'Same numbers as <code>/status</code>.',
-    body: "5h / weekly / Design / Sonnet usage and token totals — straight from the same local cache your CLI already uses. No JSONL re-parsing, no fork-counting errors.",
+    ix: "03 · real-time",
+    title: "Real-time, resilient streaming.",
+    body: "Responses stream token-by-token. Lose signal mid-response and sidecode reconnects, replaying only the events you missed.",
+  },
+  {
+    ix: "04 · bridge",
+    title: "Bridge on demand.",
+    body: "Opt in per session to mirror it to <code>claude.ai</code> and Claude Desktop for cross-client control. Everything else stays private, P2P.",
+  },
+  {
+    ix: "05 · native",
+    title: "Mobile-native rendering.",
+    body: "Streaming markdown that's selectable and syntax-highlighted, plus a fast diff viewer for every tool call.",
+  },
+  {
+    ix: "06 · auth",
+    title: "Local-first auth.",
+    body: "Uses your existing Claude login from the keychain. Credentials never leave your Mac, and usage bills against your plan — just like running Claude Code yourself.",
   },
 ];
 ---
 
-<section class="section" id="why">
+<section class="section" id="features">
   <div class="wrap">
     <div class="section-head is-stacked">
-      <div class="eyebrow">/ why sidecode</div>
+      <div class="eyebrow">/ what it does</div>
       <div>
-        <h2>It's just a <span class="ital">menu bar.</span></h2>
+        <h2>Claude Code, <span class="ital">from your pocket.</span></h2>
       </div>
     </div>
 
-    <div class="features">
+    <div class="features is-grid">
       {
         features.map((feature) => (
           <div class="feature">
+            <div class="ix">{feature.ix}</div>
             <h3 set:html={feature.title} />
             <p set:html={feature.body} />
           </div>

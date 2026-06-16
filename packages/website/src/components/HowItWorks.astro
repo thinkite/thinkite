@@ -1,24 +1,19 @@
 ---
-import PictPlaceholder from "./PictPlaceholder.astro";
-
 const steps = [
   {
     n: "01",
     title: "Install",
-    body: "One click to download. Drag sidecode into Applications. No installer, no settings.",
-    desc: "Applications folder · sidecode.app drop",
+    body: "Download for macOS, drag sidecode into Applications, and it lives in your menu bar. No installer, no config, no terminal left running.",
   },
   {
     n: "02",
     title: "Pair",
-    body: "Click <em style='font-style:normal'>Pair</em>, scan the QR with your iPhone. The link opens sidecode — or the App Store on first scan.",
-    desc: "Pair sheet with QR · menu bar context",
+    body: "Click <em style='font-style:normal'>Pair</em> and scan the QR with the iOS app from TestFlight. Your phone and Mac connect directly — peer-to-peer.",
   },
   {
     n: "03",
-    title: "Pick up",
-    body: "Open sidecode and your work is right there. Send a prompt, start a fresh one, or just watch the agent work — wherever you are.",
-    desc: "iPhone in hand · session resumed",
+    title: "Start a session",
+    body: "Pick any folder on your Mac and kick off a fresh Claude Code session — or jump into a running one. Responses stream back token-by-token, wherever you are.",
   },
 ];
 ---
@@ -28,7 +23,7 @@ const steps = [
     <div class="section-head is-stacked">
       <div class="eyebrow">/ three steps</div>
       <div>
-        <h2>Install. Pair. <span class="ital">Done.</span></h2>
+        <h2>Install. Pair. <span class="ital">Drive.</span></h2>
       </div>
     </div>
 
@@ -42,7 +37,6 @@ const steps = [
             </div>
             <h3>{step.title}</h3>
             <p set:html={step.body} />
-            <PictPlaceholder desc={step.desc} />
           </div>
         ))
       }

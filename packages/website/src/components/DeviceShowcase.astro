@@ -1,5 +1,7 @@
 ---
-import PictPlaceholder from "./PictPlaceholder.astro";
+import { Image } from "astro:assets";
+import menubar from "../assets/menubar.png";
+import iosSession from "../assets/ios-session.png";
 ---
 
 <div class="wrap showcase-wrap">
@@ -7,45 +9,32 @@ import PictPlaceholder from "./PictPlaceholder.astro";
     <div class="showcase-inner">
       {/* macOS menu bar */}
       <div class="showcase-cell">
-        <span class="showcase-tag">01 · macOS</span>
-        <PictPlaceholder
-          variant="showcase"
-          desc="Menu bar dropdown · plan + tokens + Pair"
-        />
-      </div>
-
-      {/* iPhone */}
-      <div class="showcase-cell">
-        <span class="showcase-tag">02 · iPhone</span>
+        <span class="showcase-tag">01 · macOS menu bar</span>
         <div
-          class="phone"
+          class="menu-shot"
           role="img"
-          aria-label="iPhone frame with placeholder for screenshot"
+          aria-label="sidecode macOS menu bar dropdown"
         >
-          <div class="phone-screen phone-todo">
-            <div class="phone-statusbar">
-              <span>9:41</span>
-              <span class="dots">
-                <i></i><i></i><i></i><i class="lo"></i>
-              </span>
-            </div>
-            <div class="pict-tag">TODO · image</div>
-            <div class="pict-desc">iOS session view · transcript or list</div>
-          </div>
+          <Image
+            src={menubar}
+            alt="sidecode menu bar dropdown — Claude plan usage, Pair new device, and app controls"
+          />
         </div>
       </div>
 
-      {/* iPad mini landscape */}
+      {/* iOS app */}
       <div class="showcase-cell">
-        <span class="showcase-tag">03 · iPad</span>
+        <span class="showcase-tag">02 · iOS app</span>
         <div
-          class="ipad"
+          class="phone has-shot"
           role="img"
-          aria-label="iPad mini landscape frame with placeholder for screenshot"
+          aria-label="sidecode iOS session view"
         >
-          <div class="ipad-screen phone-todo">
-            <div class="pict-tag">TODO · image</div>
-            <div class="pict-desc">iPad · landscape session view</div>
+          <div class="phone-screen">
+            <Image
+              src={iosSession}
+              alt="sidecode iOS app — a Claude Code session streaming markdown, a code snippet and a diff on iPhone"
+            />
           </div>
         </div>
       </div>
