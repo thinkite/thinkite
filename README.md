@@ -1,0 +1,196 @@
+# Sidecode
+
+> Spin up and drive Claude Code sessions on your Mac — from your phone, peer-to-peer.
+
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/2c0ddbf5-c364-4b09-a652-70e64ad2fbcf" width="720" autoplay loop muted playsinline controls></video>
+</p>
+
+<p align="center">
+  <img alt="platform: macOS + iOS" src="https://img.shields.io/badge/platform-macOS%20%2B%20iOS-black" />
+  <img alt="license: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue" />
+  <img alt="status: early / V0" src="https://img.shields.io/badge/status-V0-orange" />
+</p>
+
+**Sidecode lets you start, stream, and steer Claude Code sessions on your Mac from your phone.**
+A lightweight daemon on your Mac orchestrates the sessions; the iOS app connects to it **directly,
+peer-to-peer** over a WebRTC link, so your prompts, responses, and diffs stream straight between
+your own devices — no third-party server in the data path.
+
+---
+
+## Features
+
+- **Start sessions from your phone** — pick any folder on your Mac and kick off a fresh
+  Claude Code session remotely. You don't have to be at your desk to begin.
+- **Real-time** — responses stream token-by-token to your phone as Claude works.
+- **Peer-to-peer & private** — session traffic flows device-to-device over a DTLS-encrypted
+  WebRTC DataChannel. A Cloudflare TURN relay is used only as a NAT fallback, and even then
+  it only ever forwards already-encrypted bytes.
+- **Bridge to the cloud, on demand** — keep a session private P2P, or flip a single session to
+  also mirror onto **claude.ai and Claude Desktop** for cross-client control — then flip it back.
+  Your choice, per session.
+- **Resilient streaming** — drop your connection mid-response and reconnect; the daemon replays
+  exactly the events you missed.
+- **Real mobile rendering** — Claude's markdown stays both **text-selectable and syntax-highlighted**;
+  tool diffs open in a fast, syntax-highlighted diff view.
+- **Every session at a glance** — a live drawer shows the status of all your sessions.
+
+---
+
+## How it works
+
+```
+                  QR pair (Ed25519 pubkey, out-of-band trust root)
+   ┌──────────────┐ ──────────────────────────────────────────► ┌─────────────────────┐
+   │   iOS app    │                                              │     macOS daemon     │
+   │  (Expo / RN) │ ◄════════ WebRTC DataChannel (P2P) ════════► │   (Node + TS)        │
+   └──────┬───────┘             DTLS, end-to-end                 │   orchestrates       │
+          │                                                      │   Claude Code via    │
+          │                                                      │   the Agent SDK      │
+          ▼                                                      └─────────────────────┘
+   ┌────────────────────────────────┐
+   │ Cloudflare Worker + Durable     │ ──── SDP/ICE signaling + TURN NAT fallback ────►
+   │ Object  (connection broker)     │      (brokers the handshake only; never sees
+   └────────────────────────────────┘       your session data)
+```
+
+The Mac **daemon** is the orchestration layer: it spawns and supervises Claude Code via the
+Claude Agent SDK, manages session lifecycle, and exposes sessions to paired clients over a
+typed wire protocol. The **iOS app** is a thin, real-time client. A **Cloudflare Worker +
+Durable Object** brokers the initial WebRTC handshake (and provides a TURN fallback), then
+steps out of the way — application traffic is peer-to-peer.
+
+> Sessions are private P2P by default. Any session can opt in to a **cloud mirror** (Remote
+> Control), making it controllable from claude.ai and Claude Desktop too — the session keeps
+> running over WebRTC; the mirror is *added*, not swapped.
+
+### Under the hood
+
+- **Private by default, mirror on demand** — sessions run over a P2P WebRTC mesh; a bridged
+  session tees the same event stream to Anthropic's cloud (claude.ai / Claude Desktop) without
+  dropping the local P2P link.
+- **Authenticated pairing** — pairing exchanges an Ed25519 public key via QR; the WebRTC DTLS
+  fingerprint is signed under that key, so even a compromised signaling server can't MITM the
+  connection.
+- **Resumable protocol** — a cursor + epoch-fenced event stream lets reconnecting clients replay
+  only missed events, with a full-snapshot fallback when the daemon restarts.
+- **Hybrid markdown renderer** — native attributed-string prose (selectable) + custom components
+  for syntax-highlighted code, bridging a tradeoff pure-native and WebView renderers can't.
+- **Pre-warmed diff view** — a resident, pre-warmed WebView hosting the Shiki-based
+  [`@pierre/diffs`](https://diffs.com) renderer keeps tool-diff opens fast.
+
+---
+
+## Security & privacy
+
+- **End-to-end encryption.** Session traffic rides a WebRTC DataChannel secured with DTLS,
+  encrypted between your two devices.
+- **The relay can't read your data.** The Cloudflare signaling server only brokers connection
+  setup (SDP/ICE); it is never in the data path. The TURN fallback only ever relays
+  already-encrypted bytes.
+- **Tamper-evident pairing.** The pairing QR carries the daemon's Ed25519 public key as an
+  out-of-band trust root; the DTLS fingerprint is signed under it.
+- **Your credentials stay on your Mac.** The daemon uses your existing Claude login from the
+  system keychain. Sidecode never reads, stores, or transmits your tokens.
+- **Cloud mirroring is opt-in and per-session.** A session is private P2P unless you explicitly
+  bridge it; bridging is confirmed each time and can be turned off.
+
+---
+
+## Getting started
+
+**Prerequisites**
+
+- macOS (Apple Silicon)
+- A logged-in Claude account — sign in once with the Claude Code CLI (`claude /login`) or Claude Desktop
+- An iPhone
+
+**Install**
+
+1. **[Download Sidecode for macOS](https://sidecode.app/mac)** and drag it to Applications.
+2. Launch Sidecode — it lives in your menu bar and starts the daemon automatically.
+3. **[Get the iOS app](https://sidecode.app/ios)** (TestFlight).
+4. In the menu bar, open **Pair** and scan the QR with the app.
+5. Create a session (pick a project folder) and start prompting.
+
+---
+
+## Project structure
+
+This is a pnpm monorepo:
+
+| Package | What it is |
+|---|---|
+| `packages/app` | iOS client — Expo / React Native |
+| `packages/daemon` | macOS daemon — wraps the Claude Agent SDK, WebRTC peer, session orchestration, cloud bridge |
+| `packages/menubar` | Electron menu-bar app — bundles and supervises the daemon |
+| `packages/protocol` | Shared wire protocol — zod schemas, version negotiation, chunking |
+| `packages/signaling` | Cloudflare Worker + Durable Object signaling server |
+| `packages/website` | Landing page (Astro) |
+
+---
+
+## Development
+
+```bash
+# prerequisites: Node >= 24, pnpm >= 11
+pnpm install
+
+pnpm -r typecheck
+pnpm test            # vitest
+
+# run the daemon in dev
+pnpm --filter @sidecodeapp/daemon dev
+
+# run the iOS app
+pnpm --filter @sidecodeapp/app ios
+```
+
+---
+
+## Tech stack
+
+TypeScript · Node.js · React Native (Expo) · WebRTC · Cloudflare Workers / Durable Objects ·
+Claude Agent SDK · Electron · zod
+
+---
+
+## Status
+
+Sidecode is an early (V0) project under active development. Core flows — pairing, starting and
+streaming P2P sessions, optional cloud bridging, tool diffs, and mid-response reconnect — work
+today on macOS (Apple Silicon) and iOS. Expect rough edges; interfaces may change.
+
+---
+
+## FAQ
+
+**Does this use my Claude plan?**
+Yes. Sidecode runs Claude Code locally with your existing Claude login; usage counts against
+your Claude plan exactly as if you ran Claude Code yourself.
+
+**Is it secure?**
+Session traffic is end-to-end encrypted (DTLS) over a direct P2P link, pairing is authenticated
+with Ed25519, and your credentials never leave your Mac. See [Security & privacy](#security--privacy).
+
+**Do I need Claude Desktop?**
+No — you just need a Claude login, which you can create with the Claude Code CLI or Claude Desktop.
+
+**Is it macOS-only?**
+The daemon currently targets macOS (Apple Silicon). The mobile client is iOS.
+
+---
+
+## License
+
+[Apache-2.0](LICENSE)
+
+---
+
+## Acknowledgments
+
+Diff and code rendering is powered by [`@pierre/diffs`](https://diffs.com) and [Shiki](https://shiki.style).
+
+> **Disclaimer:** Sidecode is an independent, open-source project. It is not affiliated with,
+> endorsed by, or sponsored by Anthropic. "Claude" and "Claude Code" are trademarks of Anthropic.
