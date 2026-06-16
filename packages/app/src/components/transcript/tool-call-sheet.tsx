@@ -250,12 +250,14 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
       nativeNode = <DiffNote text="Loading diff…" spinner />;
     }
   }
-  // Keep the webview LAID OUT (not display:none) whenever it must paint — always
-  // in gitDiff mode (it paints behind the loading overlay so onReady fires), and
-  // in tool mode unless a native body replaces it.
-  const webviewLaidOut = !(
-    showing?.kind === "tool" && toolDesc?.mode === "native"
-  );
+  // The resident webview is ALWAYS laid out — never display:none. A native body
+  // hides it by overlaying an opaque cover (below), NOT by un-laying-it-out.
+  // Reason: a display:none → flex toggle makes WKWebView reveal its last
+  // *composited* frame (e.g. the startup WARMUP `// warm`) and skip recompositing
+  // the freshly-swapped payload until a forced relayout — so opening a webview
+  // tool right after a native one showed stale `// warm` until the sheet closed
+  // (close scrolls via the `collapsed` effect, which forces the recomposite).
+  // Keeping it permanently laid out removes that transition entirely.
 
   const surface = (
     <View
@@ -326,14 +328,10 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
         </View>
 
         <View className="flex-1">
-          {/* Resident webview — stays mounted/warm; hidden only under a tool
-              native body. For gitDiff it paints behind the loading overlay. */}
-          <View
-            style={{
-              flex: 1,
-              display: webviewLaidOut ? "flex" : "none",
-            }}
-          >
+          {/* Resident webview — stays mounted/warm + ALWAYS laid out. A native
+              body or the gitDiff loader hides it by overlaying an opaque cover
+              (below), never via display:none (see the note above). */}
+          <View style={{ flex: 1 }}>
             <PierreView
               kind={webview.kind}
               content={encodeURIComponent(webview.content)}

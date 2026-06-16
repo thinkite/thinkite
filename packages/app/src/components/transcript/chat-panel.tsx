@@ -393,10 +393,9 @@ export function ChatPanel({
         //   - on send: anchoredEndSpace reserves the reply's initial display
         //     area below the just-sent prompt (prompt pinned near the top) so
         //     it renders into a full viewport instead of cramped above the
-        //     composer. The scroll does NOT auto-follow the streaming reply
-        //     (deliberately no maintainScrollAtEnd — see below) — you read the
-        //     reply from the prompt downward; the scroll-to-end FAB
-        //     (`isNearEnd`) is the way to jump to the latest.
+        //     composer. From there maintainScrollAtEnd (see below) follows the
+        //     stream tail while you're at the end; the scroll-to-end FAB
+        //     (`isNearEnd`) jumps to the latest when you've scrolled up.
         //
         // DELIBERATELY OMITTED:
         //   - `alignItemsAtEnd`: a Telegram/iMessage idiom (sparse messages
@@ -409,14 +408,20 @@ export function ChatPanel({
         //     rendered behind the composer backdrop because the alignment
         //     didn't account for `contentInsetEndAdjustment`.
         initialScrollAtEnd
-        // maintainScrollAtEnd DELIBERATELY OMITTED — no stick-to-bottom. We
-        // tried it (84ca2a9) for follow-the-stream, but for a coding assistant
-        // the long structured replies read better from the TOP: anchoredEndSpace
-        // pins the just-sent prompt near the top and the reply renders downward
-        // into the reserved area below it; the FAB jumps to the latest on
-        // demand. (It also collided with MVCP + KCSV's keyboard lift over the
-        // same scroll offset.) The viewport only moves on send (anchoredEndSpace)
-        // and via the FAB — never auto-chasing the stream tail.
+        // Stick-to-bottom: while the user is at (or near) the end, keep the
+        // viewport pinned to the tail as the reply streams in (follow-the-stream).
+        // History: omitted before — tried in 84ca2a9 and reverted because it
+        // collided with MVCP + KCSV's keyboard lift fighting over the same scroll
+        // offset, and we preferred read-from-top for long coding replies. Re-
+        // enabled per product call. anchoredEndSpace still pins the just-sent
+        // prompt near the top on send (you're not at the end then, so this stays
+        // dormant until you scroll/jump to the tail), and the FAB still catches up
+        // on demand. Re-verified on device 2026-06-16: the old MVCP/keyboard-lift
+        // collision no longer reproduces on @legendapp/list 3.0.4 (keyboard
+        // open/close + streaming item growth stay stable). If the stream ever
+        // stops following the tail, MVCP's `data: false` blocking the per-add
+        // retarget is the first suspect → try `data: true`.
+        maintainScrollAtEnd
         // List → UI-thread state mirror (reanimated integration). `isNearEnd`
         // gates the scroll-to-end FAB; no JS re-render involved.
         sharedValues={{ isNearEnd }}
@@ -471,8 +476,8 @@ export function ChatPanel({
         pointerEvents="box-none"
       >
         {/* Scroll-to-end FAB — appears when the user is away from the end
-            (streaming continues below the fold by design; see the
-            maintainScrollAtEnd omission note above). Lives INSIDE the KSV,
+            (at the end, maintainScrollAtEnd follows the stream; this catches
+            you up once you've scrolled up off the tail). Lives INSIDE the KSV,
             laid out above the composer: it rides keyboard transitions for
             free, and staying within the KSV's bounds keeps it tappable
             (RN doesn't hit-test children outside parent bounds). NOT part
