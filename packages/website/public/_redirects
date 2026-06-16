@@ -1,0 +1,12 @@
+# Flat download entry points — kept flat to match shipped app copy
+# (sidecode.app/mac, sidecode.app/ios).
+#
+# /ios is a static redirect to TestFlight, handled here at the assets layer
+# (no Worker invocation).
+#
+# /mac is dynamic — it resolves the latest macOS .dmg via the GitHub Releases
+# API and is handled by the Worker (src/worker.ts). It is deliberately NOT
+# listed here, so the request falls through to the Worker instead of being
+# caught at the assets layer.
+
+/ios   https://testflight.apple.com/join/76e24ZVU   302
