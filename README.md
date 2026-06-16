@@ -2,8 +2,11 @@
 
 > Spin up and drive Claude Code sessions on your Mac — from your phone, peer-to-peer.
 
+https://github.com/user-attachments/assets/2c0ddbf5-c364-4b09-a652-70e64ad2fbcf
+
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/2c0ddbf5-c364-4b09-a652-70e64ad2fbcf" width="720" autoplay loop muted playsinline controls></video>
+  <a href="https://sidecode.app/mac"><img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS-000000?style=for-the-badge&logo=apple&logoColor=white" /></a>
+  <a href="https://sidecode.app/ios"><img alt="iOS via TestFlight" src="https://img.shields.io/badge/iOS-TestFlight-0D96F6?style=for-the-badge&logo=apple&logoColor=white" /></a>
 </p>
 
 <p align="center">
