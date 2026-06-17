@@ -11,10 +11,11 @@
  * Why hardcoded instead of fetched from SDK at runtime:
  *   - SDK's `query.supportedModels()` requires spawning a Claude
  *     subprocess (heavy) and only returns three aliases (`default` /
- *     `sonnet` / `haiku`) — not the canonical-with-suffix names that
- *     Desktop session metadata persists (e.g. `claude-opus-4-7[1m]`).
- *   - We need to display old/deprecated models that appear in user's
- *     historical session files even after Anthropic stops listing them.
+ *     `sonnet` / `haiku`) — not the canonical names session metadata
+ *     persists (e.g. `claude-opus-4-8`).
+ *   - We need to render old/deprecated models that appear in a user's
+ *     historical sidecode session files even after Anthropic stops
+ *     listing them.
  *   - Anthropic ships new Claude models roughly quarterly — a sidecode
  *     release-per-launch cadence is acceptable for this list.
  *
@@ -29,11 +30,26 @@
  *       to `DEFAULT_MODEL` via an init function (no bootstrap useEffect
  *       reading null on first mount).
  *
+ * On the `[1m]` suffix (legacy): the 1M context window used to be an
+ * opt-in beta you requested with a `claude-…[1m]` suffix. Current-gen
+ * models (Opus 4.6/4.7/4.8, Sonnet 4.6, Fable 5) are natively 1M on the
+ * Claude API with NO suffix, and the bundled CLI auto-strips `[1m]` for
+ * them (CLI ≥ 2.1.173). So this table carries bare ids only; `prettyModel`
+ * normalizes any residual `…[1m]` id (from a pre-change session file) by
+ * stripping the suffix before lookup. See memory `project_opus_1m_default`.
+ *
+ * Sonnet 1M is deliberately NOT supported: its 1M variant is gated behind
+ * "extra usage" overage billing (off by default), so the picker offers the
+ * 200K `claude-sonnet-4-6` only — no `[1m]` Sonnet entry, ever.
+ *
  * Update policy on Claude model launches — search `@[MODEL LAUNCH]`:
- *   1. Add a new entry for the new canonical ID (and `[1m]` variant if any)
- *   2. Move the previous-generation entry's `isDefault` to the new one
- *   3. Mark the displaced previous-generation entry as `deprecated: true`
- *      (DON'T delete — historical sessions still reference it on disk)
+ *   1. Add ONE new entry for the new canonical id. Current-gen Opus is
+ *      natively 1M, so it's a bare id with `contextWindow: 1_000_000` —
+ *      no `[1m]` variant.
+ *   2. Move the previous-generation entry's `isDefault` to the new one.
+ *   3. Mark the displaced previous-generation entry `deprecated: true`
+ *      (DON'T delete — historical *sidecode* sessions still reference it
+ *      on disk, and `prettyModel` renders their label from this table).
  *
  * Effort levels deliberately NOT modeled here. sidecode V0 trusts the
  * SDK's adaptive thinking + per-account `Settings.effortLevel` default;
@@ -47,7 +63,7 @@
  *  as use cases land. */
 export interface ModelMetadata {
   /** Required. UI-facing label — session list rows, detail header,
-   *  picker entries. e.g. `"Opus 4.7 1M"`. */
+   *  picker entries. e.g. `"Opus 4.8"`. */
   displayName: string;
 
   /** Exactly ONE entry in `MODEL_METADATA` should set this `true`. Marks
@@ -61,7 +77,7 @@ export interface ModelMetadata {
   description?: string;
 
   /** When `true`, the picker filters this entry out of the new-session
-   *  list. The entry is KEPT in this table though — historical Desktop
+   *  list. The entry is KEPT in this table though — historical sidecode
    *  sessions persisted with this model still need to render their label
    *  in the session list / detail header. */
   deprecated?: boolean;
@@ -76,36 +92,29 @@ export interface ModelMetadata {
    *  deprecated out so iOS only sees current entries.
    *
    *  Anthropic context window reference (verify before adding new
-   *  entries): https://docs.anthropic.com/en/docs/about-claude/models.
-   *  Defaults to 200_000 for current Claude 4.x models; `[1m]` variants
-   *  opt into the 1M-context beta. */
+   *  entries): https://docs.claude.com/en/docs/about-claude/models.
+   *  Current-gen Opus (4.6+) and Sonnet 4.6 are 1M by default; older
+   *  models are 200_000. */
   contextWindow?: number;
 }
 
 /**
  * @[MODEL LAUNCH] update this table when Anthropic ships a new Claude.
  *
- * Keys are the raw strings as they appear in Desktop session metadata
- * (`local_*.json` `model` field) and as CLI `--model` flag accepts them.
- * Includes both standard and `[1m]` 1M-context variants as separate
- * entries since they render with different labels.
+ * Keys are the raw strings as they appear in session metadata (`model`
+ * field) and as the CLI `--model` flag accepts them. Bare ids only —
+ * `[1m]` is a legacy opt-in suffix current-gen models don't need (see
+ * the header comment).
  */
 export const MODEL_METADATA: Record<string, ModelMetadata> = {
   // ─── Current models ─────────────────────────────────────────────────
-  "claude-opus-4-8[1m]": {
-    displayName: "Opus 4.8 1M",
+  "claude-opus-4-8": {
+    displayName: "Opus 4.8",
     isDefault: true,
     contextWindow: 1_000_000,
   },
-  "claude-opus-4-8": {
-    displayName: "Opus 4.8",
-    contextWindow: 200_000,
-  },
-  // Sonnet 4.6 1M intentionally NOT listed — the 1M-context variant
-  // requires opting into "extra usage" billing (overage credits) which is
-  // off by default. Users who have it enabled can still resume Desktop
-  // sessions saved with this model id; `prettyModel` will fall through
-  // to the raw string. We just don't surface it in the picker.
+  // Sonnet 4.6 1M omitted: gated behind extra-usage billing (off by
+  // default), so the picker offers the 200K variant only.
   "claude-sonnet-4-6": {
     displayName: "Sonnet 4.6",
     contextWindow: 200_000,
@@ -115,26 +124,16 @@ export const MODEL_METADATA: Record<string, ModelMetadata> = {
     contextWindow: 200_000,
   },
 
-  // ─── Deprecated (still present in historical Desktop session files) ─
-  "claude-opus-4-7[1m]": {
-    displayName: "Opus 4.7 1M",
-    deprecated: true,
-    contextWindow: 1_000_000,
-  },
+  // ─── Deprecated (still present in historical sidecode session files) ─
   "claude-opus-4-7": {
     displayName: "Opus 4.7",
-    deprecated: true,
-    contextWindow: 200_000,
-  },
-  "claude-opus-4-6[1m]": {
-    displayName: "Opus 4.6 1M",
     deprecated: true,
     contextWindow: 1_000_000,
   },
   "claude-opus-4-6": {
     displayName: "Opus 4.6",
     deprecated: true,
-    contextWindow: 200_000,
+    contextWindow: 1_000_000,
   },
   "claude-sonnet-4-5-20250929": {
     displayName: "Sonnet 4.5",
@@ -168,10 +167,10 @@ export const MODEL_METADATA: Record<string, ModelMetadata> = {
  *  the iOS picker / list-row label lookup so call sites don't churn
  *  during the protocol-bundled migration. */
 export interface ModelEntry {
-  /** Raw key as it appears in Desktop session metadata + CLI `--model`
-   *  flag, e.g. `"claude-opus-4-7[1m]"`. */
+  /** Raw key as it appears in session metadata + CLI `--model` flag,
+   *  e.g. `"claude-opus-4-8"`. */
   model: string;
-  /** Human-readable label, e.g. `"Opus 4.7 1M"`. */
+  /** Human-readable label, e.g. `"Opus 4.8"`. */
   displayName: string;
   /** Exactly one entry in `MODELS` has this `true`. Picker uses it for
    *  new-session bootstrap when SessionState.model is null. */
@@ -215,14 +214,25 @@ export const DEFAULT_MODEL: ModelEntry = (() => {
 })();
 
 /**
- * Convert a raw model string (from Desktop metadata or SDK options) into
+ * Convert a raw model string (from session metadata or SDK options) into
  * the human-readable label for UI. Unknown models fall through to the raw
  * string — at least the user sees something informative (e.g. a brand-new
  * Anthropic release that sidecode hasn't been updated for).
+ *
+ * Normalizes the legacy `[1m]` suffix: an id like `claude-opus-4-8[1m]`
+ * persisted by an older sidecode build resolves to its bare entry's label
+ * (mirrors the CLI's own auto-strip), so historical sessions don't
+ * regress to a raw-string label after the table dropped `[1m]` variants.
  */
 export function prettyModel(raw: string): string {
   if (!raw) return "";
-  return MODEL_METADATA[raw]?.displayName ?? raw;
+  const direct = MODEL_METADATA[raw]?.displayName;
+  if (direct) return direct;
+  if (raw.endsWith("[1m]")) {
+    const bare = MODEL_METADATA[raw.slice(0, -"[1m]".length)]?.displayName;
+    if (bare) return bare;
+  }
+  return raw;
 }
 
 /**

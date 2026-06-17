@@ -64,8 +64,7 @@ export interface SidecodeSessionMetadata {
   titleSource: "auto" | "user";
   permissionMode: "bypassPermissions" | "default";
   /** Last model the user picked for this session, raw SDK key (e.g.
-   *  `claude-opus-4-7[1m]`). Schema-aligned with Desktop's `local_*.json`
-   *  `model` field. Optional because pre-feature sidecode session files
+   *  `claude-opus-4-8`). Optional because pre-feature sidecode session files
    *  on disk won't have it; daemon treats absent as "unknown, use SDK
    *  default on next sendPrompt". */
   model?: string;
