@@ -390,6 +390,15 @@ export function ChatPanel({
         //     end as items measure and the inset settles (LegendList
         //     retargets the initial scroll after inset changes). Re-fires
         //     per session because the whole surface mounts fresh each switch.
+        //     This same boot path caused sidecode#22: on a NON-first mount the
+        //     initial settle landed before the async contentInset commit, so
+        //     KCSV's internal scroll tracker stayed stale by insets.bottom and
+        //     the FIRST keyboard-open over-scrolled a safe-area gap above the
+        //     composer (self-healed on the 2nd open). Fixed by the
+        //     @legendapp/list 3.1.x initialScrollAtEnd timing rework (now on
+        //     3.2.0) — NOT by keyboard-controller: its PR #1496 (shipped in
+        //     1.21.12) only swallows the mount {0,0} contentOffset clobber,
+        //     which #22 had already shown doesn't touch the keyboard-lift path.
         //   - on send: anchoredEndSpace reserves the reply's initial display
         //     area below the just-sent prompt (prompt pinned near the top) so
         //     it renders into a full viewport instead of cramped above the
