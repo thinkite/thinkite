@@ -6,22 +6,15 @@ import { links } from "../config";
   <div class="wrap">
     <div class="hero-grid">
       <div>
-        <div data-show-on="desktop ios">
-          <h1>
-            By your<br />
-            side<span style="color:var(--accent)">.</span><br />
-            <span class="mute">Run Claude Code</span><br />
-            <span class="mute">from your </span><span class="ital">phone.</span>
-          </h1>
-        </div>
-        <div data-show-on="android">
-          <h1>
-            By your<br />
-            side<span style="color:var(--accent)">.</span><br />
-            <span class="mute">Run Claude Code</span><br />
-            <span class="mute">on </span><span class="ital">iOS first.</span>
-          </h1>
-        </div>
+        <!-- Single canonical h1 for all platforms (SEO: one h1/page). The
+             Android-specific "on iOS first." messaging lives in the aside copy
+             below, not in a second h1. -->
+        <h1>
+          By your<br />
+          side<span style="color:var(--accent)">.</span><br />
+          <span class="mute">Run Claude Code</span><br />
+          <span class="mute">from your </span><span class="ital">phone.</span>
+        </h1>
       </div>
 
       <aside class="hero-side">
