@@ -1,0 +1,4 @@
+dist/
+deno.lock
+*.app/
+*.dmg

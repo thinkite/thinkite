@@ -1,0 +1,19 @@
+/* Official Astryx + Tailwind v4 recipe (from @astryxdesign/core/tailwind-theme.css):
+   the @layer statement pins the cascade so Tailwind's preflight (base) sits
+   BELOW Astryx component styles — importing "tailwindcss" wholesale after
+   astryx.css would let preflight flatten buttons/inputs. */
+@layer reset, theme, base, astryx-base, astryx-theme, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "@astryxdesign/core/reset.css";
+@import "@astryxdesign/core/astryx.css";
+@import "@astryxdesign/theme-neutral/theme.css";
+@import "@astryxdesign/core/tailwind-theme.css";
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* Pierre reads --diffs-font-family across its shadow boundary; match the
+   terminal (Menlo 13px in TerminalPane). */
+:root {
+  --diffs-font-family: Menlo, ui-monospace, monospace;
+}

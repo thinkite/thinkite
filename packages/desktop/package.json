@@ -1,0 +1,43 @@
+{
+  "name": "@sidecodeapp/desktop",
+  "version": "0.0.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Sidecode desktop GUI — Deno Desktop (WKWebView) + Vite + React 19 + Astryx",
+  "author": "sidecode",
+  "type": "module",
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "SIDECODE_DESKTOP_VITE=http://localhost:5183 deno desktop --hmr -A --minimum-dependency-age=0 main.ts",
+    "dev:web": "vite",
+    "dev:static": "deno desktop --hmr -A --minimum-dependency-age=0 main.ts",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@astryxdesign/core": "^0.1.2",
+    "@astryxdesign/theme-neutral": "^0.1.2",
+    "@pierre/diffs": "^1.2.12",
+    "@tanstack/react-router": "^1.170.17",
+    "@xterm/addon-fit": "0.12.0-beta.288",
+    "@xterm/addon-unicode-graphemes": "0.5.0-beta.288",
+    "@xterm/xterm": "6.1.0-beta.288",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.2",
+    "@tanstack/router-plugin": "^1.168.19",
+    "tailwindcss": "^4.3.2",
+    "@types/react": "^19.2",
+    "@types/react-dom": "^19.2",
+    "@vitejs/plugin-react": "^6.0.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.2"
+  }
+}

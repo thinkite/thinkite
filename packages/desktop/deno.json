@@ -1,0 +1,10 @@
+{
+  "nodeModulesDir": "manual",
+  "desktop": {
+    "app": {
+      "name": "Sidecode",
+      "identifier": "app.sidecode.desktop"
+    },
+    "backend": "webview"
+  }
+}
