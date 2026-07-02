@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   getSessionInfo,
   getSessionMessages,
@@ -311,7 +310,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // and to fall back to the cold-path full snapshot. See RouterDeps.epoch
   // for the longer rationale. UUID is plenty of entropy; we never log
   // or surface this to the user.
-  const epoch = randomUUID();
+  const epoch = crypto.randomUUID();
 
   const commandHandler = createCommandHandler({
     getMessages: async (cliSessionId, cwd) => {

@@ -47,7 +47,6 @@
  * coexist in the iOS view, so the divergence is acceptable for V0.
  */
 
-import { randomUUID } from "node:crypto";
 import {
   type Query,
   query,
@@ -467,7 +466,7 @@ export function pushPrompt(
   // optimistic insert all share one id — the client dedupes by key, no
   // double bubble. Falls back to a fresh uuid when the client didn't send
   // one (new-session first send: no optimistic insert to reconcile).
-  const userMsgUuid = userMessageUuid ?? randomUUID();
+  const userMsgUuid = userMessageUuid ?? crypto.randomUUID();
   runtime.addEvent({
     kind: "append",
     item: {
