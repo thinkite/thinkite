@@ -5,6 +5,7 @@ import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
 import { DiffPanel } from "../../components/DiffPanel";
 import { TerminalPane } from "../../components/TerminalPane";
+import { TranscriptPanel } from "../../components/TranscriptPanel";
 
 interface SessionRow {
   id: string;
@@ -28,11 +29,11 @@ export const Route = createFileRoute("/session/$sessionId")({
 function Session() {
   const session = Route.useLoaderData();
   const [tab, setTab] = useState("terminal");
-  // Mount DiffPanel on first visit, keep it mounted after (preserves scroll
-  // position; refetch-on-activation is its own concern). The terminal stays
-  // mounted always — unmounting would drop the xterm buffer and re-replay
-  // the scrollback ring on every tab switch.
-  const [diffVisited, setDiffVisited] = useState(false);
+  // Mount Diff/Transcript on first visit, keep them mounted after (preserves
+  // scroll position; refetch-on-activation is each panel's own concern). The
+  // terminal stays mounted always — unmounting would drop the xterm buffer
+  // and re-replay the scrollback ring on every tab switch.
+  const [visited, setVisited] = useState<Record<string, boolean>>({});
 
   return (
     <div className="flex h-screen flex-col">
@@ -50,10 +51,11 @@ function Session() {
             size="sm"
             onChange={(v) => {
               setTab(v);
-              if (v === "diff") setDiffVisited(true);
+              setVisited((prev) => ({ ...prev, [v]: true }));
             }}
           >
             <Tab value="terminal" label="Terminal" />
+            <Tab value="transcript" label="Transcript" />
             <Tab value="diff" label="Diff" />
           </TabList>
         </div>
@@ -61,7 +63,12 @@ function Session() {
       <div className={tab === "terminal" ? "min-h-0 flex-1 p-2" : "hidden"}>
         <TerminalPane sessionId={session.id} />
       </div>
-      {diffVisited || tab === "diff" ? (
+      {visited.transcript || tab === "transcript" ? (
+        <div className={tab === "transcript" ? "min-h-0 flex-1" : "hidden"}>
+          <TranscriptPanel active={tab === "transcript"} dir={session.cwd} />
+        </div>
+      ) : null}
+      {visited.diff || tab === "diff" ? (
         <div className={tab === "diff" ? "min-h-0 flex-1" : "hidden"}>
           <DiffPanel active={tab === "diff"} dir={session.cwd} />
         </div>

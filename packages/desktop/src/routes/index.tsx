@@ -81,6 +81,18 @@ function Home() {
     void reload();
   };
 
+  // Native folder picker (server-side NSOpenPanel — see /api/pick-dir).
+  // Picking a folder opens a session directly, same as clicking a candidate.
+  const browse = async () => {
+    try {
+      const res = await fetch("/api/pick-dir", { method: "POST" });
+      const r = (await res.json()) as { path?: string; canceled?: boolean };
+      if (r.path) void create(r.path);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   // Don't re-offer cwds that already have a session.
   const sessionCwds = new Set((sessions ?? []).map((s) => s.cwd));
   const candidates = projects.filter((p) => !sessionCwds.has(p.cwd)).slice(0, 6);
@@ -182,6 +194,12 @@ function Home() {
               onChange={(v) => setCustomPath(v)}
             />
           </div>
+          <Button
+            label="Browse…"
+            variant="secondary"
+            isDisabled={busy}
+            onClick={() => void browse()}
+          />
           <Button
             label="Open"
             type="submit"

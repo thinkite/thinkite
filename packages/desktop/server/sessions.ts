@@ -104,10 +104,33 @@ async function listProjects(): Promise<ProjectCandidate[]> {
   return out.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
 }
 
+/** Native macOS folder picker (NSOpenPanel via osascript) — the webview can't
+ *  do this itself: File objects in WKWebView never expose absolute paths, and
+ *  laufey has no file-dialog binding (only alert/confirm/prompt). Blocks
+ *  until the user picks or cancels. */
+async function pickDirectory(): Promise<Response> {
+  // No custom prompt: StandardAdditions' default panel text is fully
+  // localized by the system; a hardcoded English prompt isn't.
+  const out = await new Deno.Command("osascript", {
+    args: ["-e", "POSIX path of (choose folder)"],
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  if (!out.success) return Response.json({ canceled: true }); // user canceled
+  const path = new TextDecoder()
+    .decode(out.stdout)
+    .trim()
+    .replace(/\/+$/, "");
+  return Response.json({ path });
+}
+
 export async function handleSessionsApi(req: Request): Promise<Response> {
   const url = new URL(req.url);
   if (url.pathname === "/api/projects" && req.method === "GET") {
     return Response.json(await listProjects());
+  }
+  if (url.pathname === "/api/pick-dir" && req.method === "POST") {
+    return await pickDirectory();
   }
   const m = url.pathname.match(/^\/api\/sessions(?:\/([A-Za-z0-9-]+))?$/);
   if (!m) return new Response("not found", { status: 404 });

@@ -17,6 +17,7 @@ import {
   handleSessionsApi,
   touchSession,
 } from "./server/sessions.ts";
+import { handleTranscript } from "./server/transcript.ts";
 
 // PTY ↔ session-store wiring (kept out of the modules to avoid a two-way
 // import between two top-level-awaiting modules).
@@ -59,6 +60,12 @@ Deno.serve({ port: 0, onListen() {} }, async (req) => {
   }
   if (url.pathname === "/api/diff") {
     return await handleDiff(req);
+  }
+  if (
+    url.pathname === "/api/transcript" ||
+    url.pathname === "/api/claude-sessions"
+  ) {
+    return await handleTranscript(req);
   }
   if (url.pathname.startsWith("/api/")) {
     return await handleSessionsApi(req);

@@ -35,7 +35,7 @@ rm -rf "$APP" "$DMG"
 # --include dist:   main.ts serves the SPA from import.meta.dirname/dist
 # --include vendor: server/pty.ts loads the pty dylib from ../vendor (a signed
 #                   .app must never download binaries at runtime)
-deno desktop -A --minimum-dependency-age=0 \
+deno desktop -A \
   --include dist --include vendor \
   --output "$APP" main.ts
 
