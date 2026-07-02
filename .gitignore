@@ -26,3 +26,7 @@ worker-configuration.d.ts
 # CCR/bridge capability spikes — throwaway probes against api.anthropic.com,
 # hardcode local paths + hit a real account. Reference only, not shipped code.
 spikes/
+# deno desktop build output (packages/desktop)
+deno.lock
+*.app/
+*.dmg
