@@ -1,6 +1,6 @@
 packages:
   - "packages/*"
-minimumReleaseAge: 360
+minimumReleaseAge: 0
 minimumReleaseAgeExclude:
   # Glob also covers the per-platform binary sub-packages (-darwin-arm64,
   # -linux-x64, …) introduced in SDK 0.3.170.
