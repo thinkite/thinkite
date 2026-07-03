@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isIpv6CandidateAddress,
   isPrivateCandidateAddress,
   normalizeIceServersForWerift,
 } from "./webrtc-peer.js";
@@ -91,5 +92,24 @@ describe("isPrivateCandidateAddress", () => {
   it("returns false for malformed candidate strings", () => {
     expect(isPrivateCandidateAddress("")).toBe(false);
     expect(isPrivateCandidateAddress("candidate:1 1 udp")).toBe(false);
+  });
+});
+
+// Cloudflare TURN issues IPv4 relay addresses only — an IPv6 peer target in
+// CreatePermission fails (443 family mismatch) and poisons werift's turn
+// protocol, so relay-only mode must drop ALL v6 remotes, public included.
+describe("isIpv6CandidateAddress", () => {
+  const cand = (addr: string) =>
+    `candidate:1 1 udp 2130706431 ${addr} 54706 typ host generation 0`;
+
+  it.each([
+    ["2607:fb90:1234::1", true], // public cellular v6 — the field-failure case
+    ["fe80::1805:c657:40f2:82f0", true],
+    ["::1", true],
+    ["172.58.167.5", false],
+    ["104.30.147.63", false],
+    ["abcd1234.local", false], // not v6 (mDNS name; the private check owns it)
+  ])("%s → %s", (addr, expected) => {
+    expect(isIpv6CandidateAddress(cand(addr))).toBe(expected);
   });
 });

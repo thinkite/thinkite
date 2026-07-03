@@ -94,6 +94,17 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
  * 5th SDP token (`candidate:<f> <comp> <proto> <prio> <ADDR> <port> ...`).
  * mDNS `.local` names count as private: the relay can't route to them.
  */
+/** True when the candidate's connection address is IPv6. Cloudflare TURN
+ *  issues IPv4 relay addresses only (documented), so an IPv6 peer target in
+ *  CreatePermission comes back 443 (family mismatch) — and one failed
+ *  transaction poisons werift's whole TurnProtocol (rejected
+ *  `creatingPermission` is re-awaited by every later caller and the address
+ *  is optimistically marked permitted, never retried). */
+export function isIpv6CandidateAddress(candidate: string): boolean {
+  const addr = candidate.trim().split(/\s+/)[4];
+  return !!addr && addr.includes(":");
+}
+
 export function isPrivateCandidateAddress(candidate: string): boolean {
   const addr = candidate.trim().split(/\s+/)[4]?.toLowerCase();
   if (!addr) return false;
@@ -407,10 +418,15 @@ export class WebRTCPeerServer {
       const candStr =
         (msg.candidate as { candidate?: string })?.candidate ?? "";
       const remoteTyp = / typ (\w+)/.exec(candStr)?.[1];
-      if (this.relayOnly && isPrivateCandidateAddress(candStr)) {
+      if (
+        this.relayOnly &&
+        (isPrivateCandidateAddress(candStr) ||
+          isIpv6CandidateAddress(candStr))
+      ) {
         this.log("peer.candidate.remote_private_dropped", {
           clientId: peer.clientId,
           typ: remoteTyp,
+          v6: isIpv6CandidateAddress(candStr) || undefined,
         });
         return;
       }
