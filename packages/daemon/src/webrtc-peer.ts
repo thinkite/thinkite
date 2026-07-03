@@ -406,11 +406,21 @@ export class WebRTCPeerServer {
     // The client gets the ORIGINAL Cloudflare shape (urls lists incl.
     // turns:/tcp variants — libwebrtc uses every fallback); the local pc
     // gets the werift-normalized subset (see normalizeIceServersForWerift).
+    // Dev knob: SIDECODE_ICE_POLICY=relay forces TURN-only on the daemon
+    // side (werift maps it to forceTurn — host/srflx gathering is skipped
+    // entirely and non-relay pairs are filtered), so the relay path can be
+    // exercised deterministically instead of hoping ICE happens to pick it.
+    const iceTransportPolicy =
+      process.env.SIDECODE_ICE_POLICY === "relay" ? "relay" : "all";
+    if (iceTransportPolicy === "relay") {
+      this.log("peer.ice_policy_relay_only", { clientId: peer.id });
+    }
     let iceServers = await this.getIceServers();
     let pc: RTCPeerConnection;
     try {
       pc = new RTCPeerConnection({
         iceServers: normalizeIceServersForWerift(iceServers),
+        iceTransportPolicy,
       });
     } catch (err) {
       // A malformed ICE config must NEVER crash the peer loop (werift
@@ -425,6 +435,7 @@ export class WebRTCPeerServer {
       iceServers = this.iceServers;
       pc = new RTCPeerConnection({
         iceServers: normalizeIceServersForWerift(iceServers),
+        iceTransportPolicy,
       });
     }
     const slot: PeerSlot = {
@@ -455,6 +466,14 @@ export class WebRTCPeerServer {
           typeof candidate.toJSON === "function"
             ? candidate.toJSON()
             : candidate;
+        // Log the candidate type (host/srflx/relay) — the observable for
+        // the TURN gate: under SIDECODE_ICE_POLICY=relay every local
+        // candidate must be `relay`, and any successful connection proves
+        // the relay leg end to end.
+        const typ = / typ (\w+)/.exec(
+          (cand as { candidate?: string }).candidate ?? "",
+        )?.[1];
+        this.log("peer.candidate.local", { clientId: peer.id, typ });
         this.signaling.send(
           JSON.stringify({ to: peer.id, type: "candidate", candidate: cand }),
         );
