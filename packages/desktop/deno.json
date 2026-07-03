@@ -11,8 +11,8 @@
   "imports": {
     "@anthropic-ai/claude-agent-sdk": "npm:@anthropic-ai/claude-agent-sdk@^0.3.198",
     "@anthropic-ai/claude-agent-sdk/bridge": "npm:@anthropic-ai/claude-agent-sdk@^0.3.198/bridge",
-    "@sidecodeapp/daemon": "../daemon/src/index.ts",
-    "@sidecodeapp/protocol": "../protocol/src/index.ts",
+    "@sidecodeapp/daemon": "./vendor/workspace/daemon/src/index.ts",
+    "@sidecodeapp/protocol": "./vendor/workspace/protocol/src/index.ts",
     "node-datachannel": "./vendor/node-datachannel/dist/esm/lib/index.mjs",
     "node-datachannel/polyfill": "./vendor/node-datachannel/dist/esm/polyfill/index.mjs",
     "partysocket": "npm:partysocket@^1.1.19",
