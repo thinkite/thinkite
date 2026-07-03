@@ -17,11 +17,17 @@ import {
   isProtocolCompatible,
   PROTOCOL_VERSION,
 } from "@sidecodeapp/protocol";
+// werift (pure-TS WebRTC): no native addon, resolves as a plain npm dep
+// under every host (node/vitest, deno none-mode, deno desktop packaging).
+// Its API is W3C-shaped with two deliberate divergences we code around:
+// RTCSessionDescription's ctor is positional (we pass plain {type,sdp}
+// dicts instead) and addIceCandidate takes the candidate JSON directly.
+// Throughput ceiling ~8MB/s loopback (per-packet work in JS) — 10x+ above
+// this transport's control-plane traffic.
 import {
-  RTCIceCandidate,
   RTCPeerConnection,
-  RTCSessionDescription,
-} from "node-datachannel/polyfill";
+  type RTCDataChannel as WeriftDataChannel,
+} from "werift";
 import PartySocket from "partysocket";
 import type { CommandContext, CommandHandler } from "./command.js";
 import type { Identity } from "./identity.js";
@@ -65,6 +71,55 @@ const DEFAULT_SIGNALING_HOST = "signaling.sidecode.app";
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.cloudflare.com:3478" },
 ];
+
+/**
+ * Flatten an RTCIceServer list into the subset werift actually parses.
+ *
+ * werift's config reader is far narrower than libwebrtc's: it expects
+ * `urls` to be a STRING (an array never matches its `urls.includes("turn:")`
+ * probe — the TURN entry would be silently dropped and the connection
+ * degrades to STUN-only), it uses only the FIRST turn: entry, it has no
+ * turns:/TCP support, and it naive-parses `host:port` off the url (so a
+ * `?transport=udp` query would ride along into the port). Keep: every
+ * stun: url as its own entry, plus the first UDP-capable turn: url with
+ * its credentials, query string stripped.
+ *
+ * The un-normalized list still gets relayed to the client, which runs
+ * libwebrtc and benefits from the full fallback set.
+ */
+export interface WeriftIceServer {
+  urls: string;
+  username?: string;
+  credential?: string;
+}
+
+export function normalizeIceServersForWerift(
+  servers: RTCIceServer[],
+): WeriftIceServer[] {
+  const flat: { url: string; username?: string; credential?: string }[] = [];
+  for (const s of servers) {
+    const urls = typeof s.urls === "string" ? [s.urls] : s.urls ?? [];
+    for (const url of urls) {
+      flat.push({ url, username: s.username, credential: s.credential });
+    }
+  }
+  const out: WeriftIceServer[] = flat
+    .filter((e) => e.url.startsWith("stun:"))
+    .map((e) => ({ urls: e.url }));
+  const turn = flat.find(
+    (e) =>
+      e.url.startsWith("turn:") &&
+      !/[?&]transport=(tcp|tls)/.test(e.url),
+  );
+  if (turn) {
+    out.push({
+      urls: turn.url.split("?")[0],
+      username: turn.username,
+      credential: turn.credential,
+    });
+  }
+  return out;
+}
 
 /**
  * How long the daemon reuses a minted TURN cred before re-minting. The
@@ -130,7 +185,7 @@ interface PeerSlot {
   /** Short hex fingerprint for log + CommandContext compatibility. */
   fingerprint: string;
   pc: RTCPeerConnection;
-  dc: RTCDataChannel | null;
+  dc: WeriftDataChannel | null;
   /** True once DTLS+DataChannel is up (= peer has been cryptographically
    *  bound to clientPubkey). */
   authenticated: boolean;
@@ -294,8 +349,11 @@ export class WebRTCPeerServer {
       const peer = this.peers.get(msg.from);
       if (!peer) return;
       try {
+        // Candidate init dict straight through — werift validates the
+        // `candidate` string itself (its RTCIceCandidate ctor is not the
+        // W3C one, so no wrapper class here).
         await peer.pc.addIceCandidate(
-          new RTCIceCandidate(msg.candidate as RTCIceCandidateInit),
+          msg.candidate as RTCIceCandidateInit,
         );
       } catch (err) {
         this.log("peer.candidate.error", {
@@ -344,21 +402,30 @@ export class WebRTCPeerServer {
     // Mint/reuse TURN creds for THIS connection and reuse the exact same
     // list for the client (relayed in the offer below) so both ends agree
     // on relays. Falls back to STUN-only if minting is unavailable.
+    //
+    // The client gets the ORIGINAL Cloudflare shape (urls lists incl.
+    // turns:/tcp variants — libwebrtc uses every fallback); the local pc
+    // gets the werift-normalized subset (see normalizeIceServersForWerift).
     let iceServers = await this.getIceServers();
     let pc: RTCPeerConnection;
     try {
-      pc = new RTCPeerConnection({ iceServers });
+      pc = new RTCPeerConnection({
+        iceServers: normalizeIceServersForWerift(iceServers),
+      });
     } catch (err) {
-      // A malformed ICE config must NEVER crash the peer loop (node-datachannel
-      // throws synchronously on a bad entry). Drop the suspect cache, fall back
-      // to STUN-only, and relay that same fallback so both ends stay consistent.
+      // A malformed ICE config must NEVER crash the peer loop (werift
+      // throws synchronously on a bad entry). Drop the suspect cache, fall
+      // back to STUN-only, and relay that same fallback so both ends stay
+      // consistent.
       this.log("peer.ice_config_invalid", {
         error: (err as Error).message,
         count: iceServers.length,
       });
       this.turnCache = null;
       iceServers = this.iceServers;
-      pc = new RTCPeerConnection({ iceServers });
+      pc = new RTCPeerConnection({
+        iceServers: normalizeIceServersForWerift(iceServers),
+      });
     }
     const slot: PeerSlot = {
       clientId: peer.id,
@@ -490,9 +557,10 @@ export class WebRTCPeerServer {
     }
 
     try {
-      await peer.pc.setRemoteDescription(
-        new RTCSessionDescription({ type: "answer", sdp }),
-      );
+      // Plain description dict — werift's RTCSessionDescription ctor is
+      // positional (sdp, type), so the W3C init-object form would silently
+      // misassign; setRemoteDescription itself reads {type, sdp} fine.
+      await peer.pc.setRemoteDescription({ type: "answer", sdp });
     } catch (err) {
       this.log("peer.answer.set_remote_error", {
         clientId: peer.clientId,
@@ -777,7 +845,7 @@ export class WebRTCPeerServer {
       // Cloudflare returns `iceServers` as an ARRAY of RTCIceServer objects
       // (a STUN entry + a TURN entry, each with a `urls` list) — NOT a single
       // object. Pass it through as-is, but keep only well-formed entries so a
-      // shape change can never feed node-datachannel an entry without `urls`
+      // shape change can never feed the peer stack an entry without `urls`
       // (which throws "IceServer config should be a string Or an object").
       const data = (await res.json()) as { iceServers?: RTCIceServer[] };
       const servers = Array.isArray(data.iceServers) ? data.iceServers : [];
