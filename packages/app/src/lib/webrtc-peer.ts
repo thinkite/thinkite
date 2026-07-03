@@ -87,6 +87,13 @@ export class WebRTCPeer {
   private dc: RTCDataChannel | null = null;
   private state: WebRTCPeerState = "idle";
   private closed = false;
+  /** Trickled candidates that arrived before setRemoteDescription finished.
+   *  handleOffer's async prefix (fpSig verify) loses the race against the
+   *  daemon's candidate frames; addIceCandidate before the remote
+   *  description throws — and under relay-only the daemon sends exactly ONE
+   *  candidate, so silently losing it kills the connection outright. */
+  private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
+  private remoteDescriptionSet = false;
   private readonly opts: WebRTCPeerOptions;
   // Separately mutable so callers (DaemonClient) can swap the listener
   // when the meaning of "failed/closed" changes between connect-time
@@ -172,10 +179,16 @@ export class WebRTCPeer {
       );
     }
 
-    // 2. Accept daemon's offer.
+    // 2. Accept daemon's offer, then flush candidates that raced ahead of
+    //    it (the fpSig verify above is async — daemon candidate frames
+    //    routinely arrive mid-verify).
     await this.pc.setRemoteDescription(
       new RTCSessionDescription({ type: "offer", sdp: offerSdp }),
     );
+    this.remoteDescriptionSet = true;
+    for (const candidate of this.pendingRemoteCandidates.splice(0)) {
+      await this.addRemoteCandidate(candidate);
+    }
 
     // 3. Generate our answer.
     const answer = await this.pc.createAnswer();
@@ -192,15 +205,21 @@ export class WebRTCPeer {
     return { answerSdp, fpSig };
   }
 
-  /** Apply a remote ICE candidate (from the daemon). */
+  /** Apply a remote ICE candidate (from the daemon). Queued until the
+   *  remote description lands — addIceCandidate before it throws, and a
+   *  swallowed throw silently discards the candidate forever. */
   async addRemoteCandidate(candidate: RTCIceCandidateInit): Promise<void> {
     if (this.closed) return;
+    if (!this.remoteDescriptionSet) {
+      this.pendingRemoteCandidates.push(candidate);
+      return;
+    }
     try {
       await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch {
-      // ICE failures here are usually benign — typically end-of-candidates
-      // (null) on platforms that don't filter it, or duplicates. The PC's
-      // own state machine reflects connection health.
+      // Post-description failures are benign — end-of-candidates (null) on
+      // platforms that don't filter it, or duplicates. The PC's own state
+      // machine reflects connection health.
     }
   }
 
