@@ -262,6 +262,9 @@ importers:
       '@astryxdesign/theme-neutral':
         specifier: ^0.1.2
         version: 0.1.2(@astryxdesign/core@0.1.2(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)
+      '@heroicons/react':
+        specifier: ^2.2.0
+        version: 2.2.0(react@19.2.7)
       '@pierre/diffs':
         specifier: ^1.2.12
         version: 1.2.12(@shikijs/themes@4.2.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -2023,6 +2026,11 @@ packages:
   '@expo/xcpretty@4.4.4':
     resolution: {integrity: sha512-4aQzz9vgxcNXFfo/iyNgDDYfsU5XGKKxWxZopw0cVotHiW+U8IJbIxMaxsINs6bHhtkG3StKNPcOrn3eBuxKPw==}
     hasBin: true
+
+  '@heroicons/react@2.2.0':
+    resolution: {integrity: sha512-LMcepvRaS9LYHJGsF0zzmgKCUim/X3N/DQKc4jepAXJ7l8QxJ1PmxJzqplF2Z3FE4PqBAIGyJAQ/w4B5dsqbtQ==}
+    peerDependencies:
+      react: '>= 16 || ^19.0.0-rc'
 
   '@hono/node-server@1.19.14':
     resolution: {integrity: sha512-GwtvgtXxnWsucXvbQXkRgqksiH2Qed37H9xHZocE5sA3N8O8O8/8FA3uclQXxXVzc9XBZuEOMK7+r02FmSpHtw==}
@@ -9751,6 +9759,10 @@ snapshots:
       '@babel/code-frame': 7.29.7
       chalk: 4.1.2
       js-yaml: 4.1.1
+
+  '@heroicons/react@2.2.0(react@19.2.7)':
+    dependencies:
+      react: 19.2.7
 
   '@hono/node-server@1.19.14(hono@4.12.25)':
     dependencies:
