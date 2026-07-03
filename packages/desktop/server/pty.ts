@@ -10,13 +10,14 @@
 // · {t:"ack",n} flow control (bytes consumed by xterm's write callback).
 // Server→client frames are raw PTY text; first frame after attach = ring replay.
 //
-// @yyq/pty-ffi = our maintained fork of @sigma/pty-ffi (upstream dormant; we
-// fixed the reader thread dying on split UTF-8 codepoints and added a BYTES
-// API): the pty stream stays raw bytes end-to-end — xterm decodes on the
-// client — so codepoint splits and interior NULs are structurally a non-issue.
-// The dylib stays VENDORED (vendor/libpty_arm64.dylib): a signed .app must
-// never download binaries at runtime. Packaged: `--include vendor` (T-Gate 2).
-import { instantiate, libName, Pty } from "jsr:@yyq/pty-ffi@0.40.0/noinit";
+// Upstream merged our split-UTF-8 reader fix + BYTES API in 0.40.0, so we're
+// back on @sigma/pty-ffi proper (the @yyq fork is archived). The pty stream
+// stays raw bytes end-to-end — xterm decodes on the client — so codepoint
+// splits and interior NULs are structurally a non-issue.
+// The dylib stays VENDORED (vendor/libpty_arm64.dylib, byte-for-byte the
+// upstream 0.40.0 release asset): a signed .app must never download binaries
+// at runtime. Packaged: `--include vendor` (T-Gate 2).
+import { instantiate, libName, Pty } from "jsr:@sigma/pty-ffi@0.40.0/noinit";
 
 const vendored = new URL(`../vendor/${libName()}`, import.meta.url);
 await instantiate(
