@@ -87,6 +87,42 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
  * The un-normalized list still gets relayed to the client, which runs
  * libwebrtc and benefits from the full fallback set.
  */
+/**
+ * True when an ICE candidate string's connection address is private /
+ * link-local / loopback — the ranges Cloudflare TURN refuses to mint
+ * permissions for (and that a relay can never reach anyway). Parses the
+ * 5th SDP token (`candidate:<f> <comp> <proto> <prio> <ADDR> <port> ...`).
+ * mDNS `.local` names count as private: the relay can't route to them.
+ */
+export function isPrivateCandidateAddress(candidate: string): boolean {
+  const addr = candidate.trim().split(/\s+/)[4]?.toLowerCase();
+  if (!addr) return false;
+  if (addr.endsWith(".local")) return true;
+  // IPv6: loopback, link-local (fe80::/10), unique-local (fc00::/7)
+  if (addr.includes(":")) {
+    return (
+      addr === "::1" ||
+      addr.startsWith("fe8") ||
+      addr.startsWith("fe9") ||
+      addr.startsWith("fea") ||
+      addr.startsWith("feb") ||
+      addr.startsWith("fc") ||
+      addr.startsWith("fd")
+    );
+  }
+  // IPv4: 10/8, 127/8, 169.254/16, 172.16-31/12, 192.168/16
+  const octets = addr.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((n) => Number.isNaN(n))) return false;
+  const [a, b] = octets;
+  return (
+    a === 10 ||
+    a === 127 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  );
+}
+
 export interface WeriftIceServer {
   urls: string;
   username?: string;
@@ -358,14 +394,26 @@ export class WebRTCPeerServer {
     if (msg.type === "candidate" && typeof msg.from === "string") {
       const peer = this.peers.get(msg.from);
       if (!peer) return;
-      // NOTE: remote candidates are NOT filtered in relay-only mode — W3C
-      // iceTransportPolicy semantics restrict LOCAL candidates only. A
-      // daemon-relay ↔ client-srflx pair is a legitimate relayed path (the
-      // client punches its NAT toward the relay address), and field-testing
-      // showed the client may not gather relay candidates at all.
-      const remoteTyp = / typ (\w+)/.exec(
-        (msg.candidate as { candidate?: string })?.candidate ?? "",
-      )?.[1];
+      // Remote candidates are NOT type-filtered in relay-only mode — W3C
+      // iceTransportPolicy semantics restrict LOCAL candidates only, and a
+      // daemon-relay ↔ client-srflx pair is a legitimate relayed path.
+      //
+      // But PRIVATE-address remotes are dropped under relay-only: they can
+      // never pair with a relay candidate (Cloudflare can't reach them), and
+      // worse, Cloudflare TURN *denies* CreatePermission/ChannelBind for
+      // private ranges (documented) — and werift lets that one failed
+      // transaction cascade into tearing down checks for the valid targets
+      // too (werift#414 family). No private targets, no poison.
+      const candStr =
+        (msg.candidate as { candidate?: string })?.candidate ?? "";
+      const remoteTyp = / typ (\w+)/.exec(candStr)?.[1];
+      if (this.relayOnly && isPrivateCandidateAddress(candStr)) {
+        this.log("peer.candidate.remote_private_dropped", {
+          clientId: peer.clientId,
+          typ: remoteTyp,
+        });
+        return;
+      }
       this.log("peer.candidate.remote", {
         clientId: peer.clientId,
         typ: remoteTyp,

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { normalizeIceServersForWerift } from "./webrtc-peer.js";
+import {
+  isPrivateCandidateAddress,
+  normalizeIceServersForWerift,
+} from "./webrtc-peer.js";
 
 // werift's ICE config parser is much narrower than libwebrtc's: string-only
 // `urls`, first turn: entry only, no turns:/tcp, naive host:port parsing.
@@ -54,5 +57,39 @@ describe("normalizeIceServersForWerift", () => {
     expect(out).toEqual([
       { urls: "turn:t.example:3478", username: "u", credential: "c" },
     ]);
+  });
+});
+
+// Cloudflare TURN denies CreatePermission/ChannelBind for private ranges;
+// these tests pin which candidate addresses the relay-only path must drop
+// before werift ever asks for a permission.
+describe("isPrivateCandidateAddress", () => {
+  const cand = (addr: string) =>
+    `candidate:1 1 udp 2130706431 ${addr} 54706 typ host generation 0`;
+
+  it.each([
+    ["10.20.30.40", true],
+    ["192.168.86.56", true],
+    ["172.16.0.9", true],
+    ["172.31.255.1", true],
+    ["169.254.10.10", true],
+    ["127.0.0.1", true],
+    ["abcd1234.local", true], // mDNS-obfuscated (iOS libwebrtc)
+    ["fe80::1805:c657:40f2:82f0", true],
+    ["fda1:7e14:5a29:fbb::1", true],
+    ["::1", true],
+    // public — cellular CGNAT-adjacent publics and CF relay ranges stay
+    ["172.58.167.5", false], // 172.32+ is public (T-Mobile)
+    ["104.30.147.63", false],
+    ["208.88.200.199", false],
+    ["48.43.173.217", false],
+    ["2607:fb90::1", false],
+  ])("%s → %s", (addr, expected) => {
+    expect(isPrivateCandidateAddress(cand(addr))).toBe(expected);
+  });
+
+  it("returns false for malformed candidate strings", () => {
+    expect(isPrivateCandidateAddress("")).toBe(false);
+    expect(isPrivateCandidateAddress("candidate:1 1 udp")).toBe(false);
   });
 });
