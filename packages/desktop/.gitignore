@@ -2,3 +2,7 @@ dist/
 deno.lock
 *.app/
 *.dmg
+
+# vendored prebuilt deps ship their own dist (none-mode imports map targets)
+!vendor/**/dist/
+!vendor/**/dist/**
