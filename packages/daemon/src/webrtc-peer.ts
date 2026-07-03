@@ -217,6 +217,16 @@ export class WebRTCPeerServer {
   private readonly signalingScheme: "ws" | "wss";
   /** STUN-only fallback list used when TURN minting is unavailable. */
   private readonly iceServers: RTCIceServer[];
+  /**
+   * SIDECODE_ICE_POLICY=relay — TURN-only test mode. werift's own
+   * forceTurn is leaky (in-flight host/srflx gathering isn't cancelled and
+   * its frozen-pair scheduling path skips the relay filter), so the hard
+   * guarantee lives here at the app layer: non-relay LOCAL candidates are
+   * never signaled to the client, and non-relay REMOTE candidates are never
+   * fed to the pc. No material, no pair.
+   */
+  private readonly relayOnly =
+    process.env.SIDECODE_ICE_POLICY === "relay";
   /** Cached minted TURN ICE-server list (+ expiry). Null until first
    *  fetch; on mint failure holds the STUN fallback with a short TTL. */
   private turnCache: { iceServers: RTCIceServer[]; expiresAt: number } | null =
@@ -348,6 +358,16 @@ export class WebRTCPeerServer {
     if (msg.type === "candidate" && typeof msg.from === "string") {
       const peer = this.peers.get(msg.from);
       if (!peer) return;
+      const remoteTyp = / typ (\w+)/.exec(
+        (msg.candidate as { candidate?: string })?.candidate ?? "",
+      )?.[1];
+      if (this.relayOnly && remoteTyp !== "relay") {
+        this.log("peer.candidate.remote_dropped", {
+          clientId: peer.clientId,
+          typ: remoteTyp,
+        });
+        return;
+      }
       try {
         // Candidate init dict straight through — werift validates the
         // `candidate` string itself (its RTCIceCandidate ctor is not the
@@ -406,13 +426,11 @@ export class WebRTCPeerServer {
     // The client gets the ORIGINAL Cloudflare shape (urls lists incl.
     // turns:/tcp variants — libwebrtc uses every fallback); the local pc
     // gets the werift-normalized subset (see normalizeIceServersForWerift).
-    // Dev knob: SIDECODE_ICE_POLICY=relay forces TURN-only on the daemon
-    // side (werift maps it to forceTurn — host/srflx gathering is skipped
-    // entirely and non-relay pairs are filtered), so the relay path can be
-    // exercised deterministically instead of hoping ICE happens to pick it.
-    const iceTransportPolicy =
-      process.env.SIDECODE_ICE_POLICY === "relay" ? "relay" : "all";
-    if (iceTransportPolicy === "relay") {
+    // TURN-only test mode: pass the policy to werift (its scheduler skips
+    // relay-ineligible pairs) AND enforce it at the candidate-exchange layer
+    // (see `relayOnly`) since werift's forceTurn alone is leaky.
+    const iceTransportPolicy = this.relayOnly ? "relay" : "all";
+    if (this.relayOnly) {
       this.log("peer.ice_policy_relay_only", { clientId: peer.id });
     }
     let iceServers = await this.getIceServers();
@@ -473,6 +491,13 @@ export class WebRTCPeerServer {
         const typ = / typ (\w+)/.exec(
           (cand as { candidate?: string }).candidate ?? "",
         )?.[1];
+        if (this.relayOnly && typ !== "relay") {
+          this.log("peer.candidate.local_dropped", {
+            clientId: peer.id,
+            typ,
+          });
+          return;
+        }
         this.log("peer.candidate.local", { clientId: peer.id, typ });
         this.signaling.send(
           JSON.stringify({ to: peer.id, type: "candidate", candidate: cand }),
