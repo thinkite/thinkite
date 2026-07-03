@@ -17,3 +17,13 @@
 :root {
   --diffs-font-family: Menlo, ui-monospace, monospace;
 }
+
+/* Kill the macOS trackpad rubber-band bounce. The app is a fixed shell
+   (AppShell height=fill) whose scrolling all happens in inner containers;
+   `none` (unlike `contain`) disables both the local elastic bounce and the
+   inner→document scroll chaining that triggers it. WebKit supports
+   overscroll-behavior since Safari 16. */
+html,
+body {
+  overscroll-behavior: none;
+}

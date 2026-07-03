@@ -98,6 +98,10 @@ export function TerminalPane({ sessionId }: { sessionId: string }) {
     term.onResize(sendSize);
 
     const ro = new ResizeObserver(() => {
+      // Skip while effectively invisible (tool panel closed zeroes our width)
+      // — fitting then would clamp cols to ~2 and make the server reflow the
+      // whole scrollback into confetti; the observer fires again on reopen.
+      if (host.clientWidth < 80 || host.clientHeight < 40) return;
       try {
         fit.fit();
       } catch {
