@@ -358,16 +358,18 @@ export class WebRTCPeerServer {
     if (msg.type === "candidate" && typeof msg.from === "string") {
       const peer = this.peers.get(msg.from);
       if (!peer) return;
+      // NOTE: remote candidates are NOT filtered in relay-only mode — W3C
+      // iceTransportPolicy semantics restrict LOCAL candidates only. A
+      // daemon-relay ↔ client-srflx pair is a legitimate relayed path (the
+      // client punches its NAT toward the relay address), and field-testing
+      // showed the client may not gather relay candidates at all.
       const remoteTyp = / typ (\w+)/.exec(
         (msg.candidate as { candidate?: string })?.candidate ?? "",
       )?.[1];
-      if (this.relayOnly && remoteTyp !== "relay") {
-        this.log("peer.candidate.remote_dropped", {
-          clientId: peer.clientId,
-          typ: remoteTyp,
-        });
-        return;
-      }
+      this.log("peer.candidate.remote", {
+        clientId: peer.clientId,
+        typ: remoteTyp,
+      });
       try {
         // Candidate init dict straight through — werift validates the
         // `candidate` string itself (its RTCIceCandidate ctor is not the
