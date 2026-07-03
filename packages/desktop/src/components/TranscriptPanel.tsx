@@ -3,10 +3,11 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { Text } from "@astryxdesign/core/Text";
 
-// Offline transcript replay for the Claude sessions of this project dir.
-// List = /api/claude-sessions (SDK listSessions — only sessions whose JSONL
-// still exists; Claude Code GC's 30-day-old transcripts, so an empty list is
-// the honest state). Body = /api/transcript rows (server-side normalize).
+// Offline transcript replay for ONE Claude session — the daemon record's
+// cliSessionId keys the JSONL directly (/api/transcript, SDK
+// getSessionMessages), no listSessions enumeration. A 404 means the JSONL was
+// GC'd (Claude Code cleans transcripts after ~30 days) or the session ran on
+// another machine — rendered as a notice, not an error.
 //
 // Virtualization follows TanStack Virtual's chat guide verbatim: normal
 // top-to-bottom order (NO column-reverse — WKWebView reading-position trap),
@@ -14,13 +15,6 @@ import { Text } from "@astryxdesign/core/Text";
 // overflow-anchor), stable uuid keys, measureElement for dynamic heights,
 // scrollToEnd() once content lands. followOnAppend stays off — this is
 // static replay; it turns on when live streaming arrives with the daemon.
-
-interface ClaudeSessionRow {
-  id: string;
-  title: string;
-  lastModified: number;
-  sizeBytes: number;
-}
 
 interface TranscriptRow {
   uuid: string;
@@ -31,53 +25,39 @@ interface TranscriptRow {
 }
 
 export function TranscriptPanel({
-  active,
   dir,
+  claudeSessionId,
 }: {
-  active: boolean;
   dir: string;
+  claudeSessionId: string;
 }) {
-  const [sessions, setSessions] = useState<ClaudeSessionRow[] | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
   const [rows, setRows] = useState<TranscriptRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
 
-  // Load the session list on first activation (once per dir).
   useEffect(() => {
-    if (!active || sessions !== null) return;
-    void (async () => {
-      try {
-        const res = await fetch(
-          `/api/claude-sessions?dir=${encodeURIComponent(dir)}`,
-        );
-        if (!res.ok) throw new Error(await res.text());
-        const list = (await res.json()) as ClaudeSessionRow[];
-        setSessions(list);
-        if (list.length > 0) setSelected(list[0].id);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    })();
-  }, [active, dir, sessions]);
-
-  // Load the transcript whenever the selected session changes.
-  useEffect(() => {
-    if (!selected) return;
     setRows(null);
+    setNotice(null);
     void (async () => {
       try {
         const res = await fetch(
-          `/api/transcript?session=${selected}&dir=${encodeURIComponent(dir)}`,
+          `/api/transcript?session=${claudeSessionId}&dir=${encodeURIComponent(dir)}`,
         );
+        if (res.status === 404) {
+          setRows([]);
+          setNotice(
+            "No transcript on this machine — it may have been cleaned up (30-day GC) or created on another device.",
+          );
+          return;
+        }
         if (!res.ok) throw new Error(await res.text());
         setRows((await res.json()) as TranscriptRow[]);
-        setError(null);
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setRows([]);
+        setNotice(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [selected, dir]);
+  }, [claudeSessionId, dir]);
 
   const count = rows?.length ?? 0;
   const virtualizer = useVirtualizer({
@@ -103,74 +83,59 @@ export function TranscriptPanel({
   useLayoutEffect(() => {
     if (count > 0) virtualizer.scrollToEnd();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fire per content load
-  }, [count > 0, selected]);
+  }, [count > 0, claudeSessionId]);
+
+  if (rows === null) {
+    return (
+      <div className="p-4">
+        <Text size="sm" color="secondary">
+          Loading transcript…
+        </Text>
+      </div>
+    );
+  }
+
+  if (notice || rows.length === 0) {
+    // The SDK returns [] for a missing JSONL rather than throwing, so empty
+    // and absent are indistinguishable — and a real session always has at
+    // least its first prompt, so treat both as "not on this machine".
+    return (
+      <div className="p-4">
+        <Text size="sm" color="secondary">
+          {notice ??
+            "No transcript on this machine — it may have been cleaned up (30-day GC) or created on another device."}
+        </Text>
+      </div>
+    );
+  }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-3 border-b px-3 py-1.5">
-        {sessions === null ? (
-          <Text size="sm">Loading…</Text>
-        ) : sessions.length === 0 ? (
-          <Text size="sm" color="secondary">
-            No Claude sessions found for this project (transcripts older than
-            30 days are cleaned up by Claude Code).
-          </Text>
-        ) : (
-          <>
-            <select
-              className="min-w-0 max-w-[32rem] flex-1 truncate rounded-md border px-2 py-1 text-sm"
-              value={selected ?? ""}
-              onChange={(e) => setSelected(e.target.value)}
+    <div ref={parentRef} className="h-full min-h-0 overflow-auto">
+      <div
+        style={{
+          height: virtualizer.getTotalSize(),
+          position: "relative",
+          width: "100%",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((item) => {
+          const row = rows![item.index];
+          return (
+            <div
+              key={item.key}
+              ref={virtualizer.measureElement}
+              data-index={item.index}
+              style={{
+                position: "absolute",
+                transform: `translateY(${item.start}px)`,
+                width: "100%",
+              }}
             >
-              {sessions.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {new Date(s.lastModified).toLocaleDateString()} ·{" "}
-                  {s.title || s.id.slice(0, 8)}
-                </option>
-              ))}
-            </select>
-            <Text size="sm" color="secondary">
-              {rows === null ? "…" : `${rows.length} messages`}
-            </Text>
-          </>
-        )}
+              <TranscriptRowView row={row} />
+            </div>
+          );
+        })}
       </div>
-
-      {error ? (
-        <div className="p-3">
-          <Text size="sm" className="text-red-600">
-            {error}
-          </Text>
-        </div>
-      ) : (
-        <div ref={parentRef} className="min-h-0 flex-1 overflow-auto">
-          <div
-            style={{
-              height: virtualizer.getTotalSize(),
-              position: "relative",
-              width: "100%",
-            }}
-          >
-            {virtualizer.getVirtualItems().map((item) => {
-              const row = rows![item.index];
-              return (
-                <div
-                  key={item.key}
-                  ref={virtualizer.measureElement}
-                  data-index={item.index}
-                  style={{
-                    position: "absolute",
-                    transform: `translateY(${item.start}px)`,
-                    width: "100%",
-                  }}
-                >
-                  <TranscriptRowView row={row} />
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

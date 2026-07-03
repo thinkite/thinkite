@@ -1,6 +1,9 @@
 // Claude session transcripts, read via the agent SDK (same reader the daemon
-// uses): `listSessions({dir})` + `getSessionMessages(id, {dir})` — pure JS
-// over `~/.claude/projects/<encoded-dir>/*.jsonl`, no claude subprocess.
+// uses): `getSessionMessages(id, {dir})` — pure JS over
+// `~/.claude/projects/<encoded-dir>/*.jsonl`, no claude subprocess. The id
+// comes from the daemon record's cliSessionId (server/sessions.ts) — we never
+// enumerate via the SDK's listSessions (automation/test noise; the sidecode
+// store is the curated list).
 //
 // The SDK is a deno.json dependency (imports map → `npm:`, resolved from
 // deno's GLOBAL npm cache — `nodeModulesDir: "none"`). Each runtime declares
@@ -12,12 +15,11 @@
 // the SDK's internal `createRequire` (ajv etc.) resolves inside the cache.
 //
 // GC note: Claude Code deletes transcripts whose mtime is older than
-// `cleanupPeriodDays` (default 30). `listSessions` only returns sessions
-// whose JSONL still exists, so "metadata alive, body gone" can't happen here
-// — an empty list is the honest state.
+// `cleanupPeriodDays` (default 30). Daemon metadata outlives that, so
+// "record alive, JSONL gone" is a real state here — surfaced as a 404 the
+// panel renders as an empty-transcript notice.
 import {
   getSessionMessages,
-  listSessions,
   type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 
@@ -105,25 +107,16 @@ export async function handleTranscript(req: Request): Promise<Response> {
     return new Response("dir must be absolute", { status: 400 });
   }
 
-  if (url.pathname === "/api/claude-sessions") {
-    const sessions = await listSessions({ dir });
-    return Response.json(
-      sessions
-        .sort((a, b) => b.lastModified - a.lastModified)
-        .map((s) => ({
-          id: s.sessionId,
-          title: s.summary,
-          lastModified: s.lastModified,
-          sizeBytes: s.fileSize ?? 0,
-        })),
-    );
-  }
-
   // /api/transcript?session=<uuid>&dir=<abs>
   const sid = url.searchParams.get("session") ?? "";
   if (!/^[0-9a-f-]{36}$/.test(sid)) {
     return new Response("bad session id", { status: 400 });
   }
-  const messages = await getSessionMessages(sid, { dir });
-  return Response.json(normalize(messages));
+  try {
+    const messages = await getSessionMessages(sid, { dir });
+    return Response.json(normalize(messages));
+  } catch {
+    // JSONL cleaned up (30-day GC) or session never ran on this machine.
+    return new Response("transcript not found", { status: 404 });
+  }
 }

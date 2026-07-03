@@ -12,18 +12,16 @@
 import { serveDir } from "jsr:@std/http/file-server";
 import { handleDiff } from "./server/diff.ts";
 import { handlePty, setSessionHooks } from "./server/pty.ts";
-import {
-  getSession,
-  handleSessionsApi,
-  touchSession,
-} from "./server/sessions.ts";
+import { getSessionCwd, handleSessionsApi } from "./server/sessions.ts";
 import { handleTranscript } from "./server/transcript.ts";
 
 // PTY ↔ session-store wiring (kept out of the modules to avoid a two-way
-// import between two top-level-awaiting modules).
+// import between two top-level-awaiting modules). Sessions are the daemon's
+// (read-only mirror), so PTY activity no longer touches any store — daemon
+// metadata records Claude activity, not shell keystrokes.
 setSessionHooks({
-  getCwd: (id) => getSession(id)?.cwd ?? null,
-  onActivity: touchSession,
+  getCwd: getSessionCwd,
+  onActivity: () => {},
 });
 
 // Two possible dist/ roots:
@@ -61,10 +59,7 @@ Deno.serve({ port: 0, onListen() {} }, async (req) => {
   if (url.pathname === "/api/diff") {
     return await handleDiff(req);
   }
-  if (
-    url.pathname === "/api/transcript" ||
-    url.pathname === "/api/claude-sessions"
-  ) {
+  if (url.pathname === "/api/transcript") {
     return await handleTranscript(req);
   }
   if (url.pathname.startsWith("/api/")) {
