@@ -119,7 +119,9 @@ export type BridgeAttachErrorKind =
 
 export class BridgeAttachError extends Error {
   readonly kind: BridgeAttachErrorKind;
-  readonly cause?: unknown;
+  // `override`: ES2022 Error already declares `cause`; the desktop host's
+  // deno check runs with noImplicitOverride (the tsc build does not).
+  override readonly cause?: unknown;
   constructor(kind: BridgeAttachErrorKind, message: string, cause?: unknown) {
     super(message);
     this.name = "BridgeAttachError";

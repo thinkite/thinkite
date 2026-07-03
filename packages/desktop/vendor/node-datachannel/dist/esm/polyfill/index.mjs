@@ -1,3 +1,4 @@
+// @ts-self-types="../../types/polyfill/index.d.ts"
 import RTCCertificate from './RTCCertificate.mjs';
 import RTCDataChannel from './RTCDataChannel.mjs';
 import RTCDtlsTransport from './RTCDtlsTransport.mjs';

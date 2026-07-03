@@ -1,3 +1,4 @@
+// @ts-self-types="../../types/lib/index.d.ts"
 import nodeDataChannel from './node-datachannel.mjs';
 import DataChannelStream$1 from './datachannel-stream.mjs';
 import { WebSocketServer } from './websocket-server.mjs';
