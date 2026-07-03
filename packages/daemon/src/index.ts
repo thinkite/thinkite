@@ -52,6 +52,13 @@ export type {
   PlanUsageWindow,
 } from "./plan-usage.js";
 
+// Host-side single-instance guard: `start()` only WRITES the lock (liveness
+// record); a host that may coexist with another daemon (deno desktop while
+// the menubar app runs) checks before starting.
+export { readActiveDaemonLock } from "./daemon-lock.js";
+export type { DaemonLock } from "./daemon-lock.js";
+export { resolveSidecodeHome } from "./home.js";
+
 export interface Daemon {
   stop(): Promise<void>;
   /** Identity fingerprint, for status / pair display. */

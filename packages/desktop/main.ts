@@ -2,7 +2,10 @@
 // navigates to Deno.serve) — same shape as deno's own Vite framework-detection
 // entrypoint, kept explicit because P1+ mounts our own routes (PTY WebSocket,
 // search, git) on this same server, which detection's synthetic entry can't do.
-// No npm imports here (denoland/deno#35544 monorepo guard); jsr: is fine.
+// npm deps resolve through deno.json's imports map (none-mode, global cache);
+// the daemon workspace lib is mapped to its built dist. (A historical note
+// warned against npm imports here — denoland/deno#35544 — long since fine:
+// transcript.ts pulled the agent SDK into this graph in P2.)
 //
 // Dev:   pnpm build && deno desktop --hmr -A main.ts
 //        (or `pnpm dev:web` + SIDECODE_DESKTOP_VITE=http://localhost:5183
@@ -10,6 +13,12 @@
 // Pack:  vite build first, then `deno desktop --include dist -o Sidecode.app main.ts`
 //        + entitlements re-sign (sidecode#23) via the packaging script.
 import { serveDir } from "jsr:@std/http/file-server";
+import {
+  type Daemon,
+  readActiveDaemonLock,
+  resolveSidecodeHome,
+  start as startDaemon,
+} from "@sidecodeapp/daemon";
 import { handleDiff } from "./server/diff.ts";
 import { handlePty, setSessionHooks } from "./server/pty.ts";
 import { getSessionCwd, handleSessionsApi } from "./server/sessions.ts";
@@ -45,6 +54,55 @@ const fsRoot = await (async () => {
 
 const viteDev = Deno.env.get("SIDECODE_DESKTOP_VITE");
 
+// In-process daemon (D2): this process IS the sidecode daemon — same
+// identity, same ~/.sidecode home, same signaling presence the iOS app pairs
+// against. `start()` only writes the liveness lock, so the host checks it
+// first: if another daemon owns the home (e.g. the menubar app), the GUI
+// keeps working in local-only mode (PTY/transcript/diff read paths don't
+// need the daemon) rather than fighting over signaling with a twin identity.
+let daemon: Daemon | null = null;
+{
+  const home = resolveSidecodeHome(); // ensures the dir exists
+  const lock = readActiveDaemonLock(home);
+  if (lock) {
+    console.warn(
+      `[desktop] another daemon owns ${home} (pid ${lock.pid}) — starting GUI without in-process daemon`,
+    );
+  } else {
+    // Dev: spawn the repo's pnpm-installed claude binary (same seam
+    // run-query.ts forwards). cwd-relative like fsRoot — under --hmr,
+    // import.meta points at a temp compile dir. Packaged builds replace
+    // this with the embed+extract path in the packaging slice; undefined
+    // lets the SDK try its own resolution as a last resort.
+    const devClaude =
+      `${Deno.cwd()}/../../node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`;
+    const claudeExecutablePath = (await Deno.stat(devClaude).catch(() => null))
+      ? devClaude
+      : undefined;
+    daemon = await startDaemon({ claudeExecutablePath });
+    console.log(
+      `[desktop] daemon up — fingerprint ${daemon.fingerprint}, pairedClients ${daemon.pairedClientCount()}`,
+    );
+  }
+}
+
+// One shutdown path for every exit trigger (window close, SIGINT/SIGTERM):
+// drain the daemon (WebRTC peers, claude subprocesses, JSONL writes) before
+// the process dies. Idempotent — close + signal can both fire.
+let shuttingDown = false;
+async function shutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    await daemon?.stop();
+  } catch (e) {
+    console.error("[desktop] daemon stop failed:", e);
+  }
+  Deno.exit(0);
+}
+Deno.addSignalListener("SIGINT", () => void shutdown());
+Deno.addSignalListener("SIGTERM", () => void shutdown());
+
 // NOTE: deno desktop's runtime pre-allocates the serve port and IGNORES the
 // `port` option (publishes the real one via DENO_SERVE_ADDRESS) — fixed ports
 // are impossible here. The Vite proxy learns our real port via env instead.
@@ -55,6 +113,18 @@ Deno.serve({ port: 0, onListen() {} }, async (req) => {
     (req.headers.get("upgrade") ?? "").toLowerCase() === "websocket"
   ) {
     return handlePty(req);
+  }
+  if (url.pathname === "/api/daemon/status") {
+    return Response.json(
+      daemon
+        ? {
+            running: true,
+            fingerprint: daemon.fingerprint,
+            pairedClients: daemon.pairedClientCount(),
+            authenticatedPeers: daemon.authenticatedPeerCount(),
+          }
+        : { running: false },
+    );
   }
   if (url.pathname === "/api/diff") {
     return await handleDiff(req);
@@ -80,18 +150,26 @@ Deno.serve({ port: 0, onListen() {} }, async (req) => {
   return res;
 });
 
-const win = new Deno.BrowserWindow({
-  title: "Sidecode",
-  width: 1200,
-  height: 800,
-});
+// Headless guard: `deno run` (no desktop runtime) still boots the server +
+// daemon — the harness the D2 checks and future integration tests drive.
+const win = "BrowserWindow" in Deno
+  ? new Deno.BrowserWindow({
+      title: "Sidecode",
+      width: 1200,
+      height: 800,
+    })
+  : null;
+win?.addEventListener("close", () => void shutdown());
+if (!win) {
+  console.log("[desktop] no desktop runtime — headless mode (server + daemon only)");
+}
 
 // Full React HMR loop: spawn the Vite dev server ourselves (what deno's
 // framework-dev mode intends but hasn't wired up) and point the window at it.
 // Frontend edits → Vite ws HMR; main.ts HANDLER-BODY edits → V8 hot-swap +
 // auto page reload. Caveat (rt/hmr.rs): TOP-LEVEL main.ts changes can't
 // hot-swap ("blocked by top-level ES module change") — restart for those.
-if (viteDev) {
+if (viteDev && win) {
   const alive = async () => {
     try {
       await fetch(viteDev, { method: "HEAD" });
@@ -101,7 +179,9 @@ if (viteDev) {
     }
   };
   // Reuse an already-running dev server (e.g. a separate `pnpm dev:web`);
-  // otherwise spawn one and tie its lifetime to the window.
+  // otherwise spawn one and tie its lifetime to the window. The general
+  // close→shutdown listener (above) handles daemon drain + exit; this one
+  // only reaps the vite child first.
   if (!(await alive())) {
     // Tell Vite's proxy where our (runtime-chosen) server actually is.
     const serveAddr = Deno.env.get("DENO_SERVE_ADDRESS") ?? "";
@@ -118,7 +198,6 @@ if (viteDev) {
       } catch {
         // already gone
       }
-      Deno.exit(0);
     });
     for (let i = 0; i < 100 && !(await alive()); i++) {
       await new Promise((r) => setTimeout(r, 100));
