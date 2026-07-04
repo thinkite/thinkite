@@ -17,17 +17,17 @@ import {
   isProtocolCompatible,
   PROTOCOL_VERSION,
 } from "@sidecodeapp/protocol";
-// werift (pure-TS WebRTC): no native addon, resolves as a plain npm dep
-// under every host (node/vitest, deno none-mode, deno desktop packaging).
-// Its API is W3C-shaped with two deliberate divergences we code around:
-// RTCSessionDescription's ctor is positional (we pass plain {type,sdp}
-// dicts instead) and addIceCandidate takes the candidate JSON directly.
-// Throughput ceiling ~8MB/s loopback (per-packet work in JS) — 10x+ above
-// this transport's control-plane traffic.
-import {
+// node-datachannel (libdatachannel NAPI) through its W3C polyfill layer.
+// Loaded lazily: the native .node binding only exists where install
+// scripts ran (node/pnpm trees, deno auto-mode trees) — never in deno
+// none-mode's global cache. Deferring the import to first client contact
+// means a daemon that never sees a peer come online never touches the
+// binding, and a missing/broken binding downgrades to a per-connection
+// refusal instead of a boot crash.
+import type {
+  RTCDataChannel,
   RTCPeerConnection,
-  type RTCDataChannel as WeriftDataChannel,
-} from "werift";
+} from "node-datachannel/polyfill";
 import PartySocket from "partysocket";
 import type { CommandContext, CommandHandler } from "./command.js";
 import type { Identity } from "./identity.js";
@@ -73,21 +73,6 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
 ];
 
 /**
- * Flatten an RTCIceServer list into the subset werift actually parses.
- *
- * werift's config reader is far narrower than libwebrtc's: it expects
- * `urls` to be a STRING (an array never matches its `urls.includes("turn:")`
- * probe — the TURN entry would be silently dropped and the connection
- * degrades to STUN-only), it uses only the FIRST turn: entry, it has no
- * turns:/TCP support, and it naive-parses `host:port` off the url (so a
- * `?transport=udp` query would ride along into the port). Keep: every
- * stun: url as its own entry, plus the first UDP-capable turn: url with
- * its credentials, query string stripped.
- *
- * The un-normalized list still gets relayed to the client, which runs
- * libwebrtc and benefits from the full fallback set.
- */
-/**
  * True when an ICE candidate string's connection address is private /
  * link-local / loopback — the ranges Cloudflare TURN refuses to mint
  * permissions for (and that a relay can never reach anyway). Parses the
@@ -95,11 +80,13 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
  * mDNS `.local` names count as private: the relay can't route to them.
  */
 /** True when the candidate's connection address is IPv6. Cloudflare TURN
- *  issues IPv4 relay addresses only (documented), so an IPv6 peer target in
- *  CreatePermission comes back 443 (family mismatch) — and one failed
- *  transaction poisons werift's whole TurnProtocol (rejected
- *  `creatingPermission` is re-awaited by every later caller and the address
- *  is optimistically marked permitted, never retried). */
+ *  issues IPv4 relay addresses only (documented), so an IPv6 peer target
+ *  can never complete a relayed pair — filtering it under relay-only
+ *  saves CreatePermission round-trips that are guaranteed to fail.
+ *  (Historically this filter was load-bearing: werift's TURN layer let one
+ *  refused CreatePermission poison the whole allocation. libdatachannel
+ *  fails such pairs independently, so this is now hygiene — candidate for
+ *  removal after a relay-only A/B on device.) */
 export function isIpv6CandidateAddress(candidate: string): boolean {
   const addr = candidate.trim().split(/\s+/)[4];
   return !!addr && addr.includes(":");
@@ -134,38 +121,12 @@ export function isPrivateCandidateAddress(candidate: string): boolean {
   );
 }
 
-export interface WeriftIceServer {
-  urls: string;
-  username?: string;
-  credential?: string;
-}
-
-export function normalizeIceServersForWerift(
-  servers: RTCIceServer[],
-): WeriftIceServer[] {
-  const flat: { url: string; username?: string; credential?: string }[] = [];
-  for (const s of servers) {
-    const urls = typeof s.urls === "string" ? [s.urls] : s.urls ?? [];
-    for (const url of urls) {
-      flat.push({ url, username: s.username, credential: s.credential });
-    }
-  }
-  const out: WeriftIceServer[] = flat
-    .filter((e) => e.url.startsWith("stun:"))
-    .map((e) => ({ urls: e.url }));
-  const turn = flat.find(
-    (e) =>
-      e.url.startsWith("turn:") &&
-      !/[?&]transport=(tcp|tls)/.test(e.url),
-  );
-  if (turn) {
-    out.push({
-      urls: turn.url.split("?")[0],
-      username: turn.username,
-      credential: turn.credential,
-    });
-  }
-  return out;
+type WebrtcModule = typeof import("node-datachannel/polyfill");
+let webrtcModule: Promise<WebrtcModule> | null = null;
+/** Memoized dynamic import of the WebRTC stack; see the import-note above. */
+function loadWebrtc(): Promise<WebrtcModule> {
+  webrtcModule ??= import("node-datachannel/polyfill");
+  return webrtcModule;
 }
 
 /**
@@ -232,7 +193,7 @@ interface PeerSlot {
   /** Short hex fingerprint for log + CommandContext compatibility. */
   fingerprint: string;
   pc: RTCPeerConnection;
-  dc: WeriftDataChannel | null;
+  dc: RTCDataChannel | null;
   /** True once DTLS+DataChannel is up (= peer has been cryptographically
    *  bound to clientPubkey). */
   authenticated: boolean;
@@ -265,12 +226,12 @@ export class WebRTCPeerServer {
   /** STUN-only fallback list used when TURN minting is unavailable. */
   private readonly iceServers: RTCIceServer[];
   /**
-   * SIDECODE_ICE_POLICY=relay — TURN-only test mode. werift's own
-   * forceTurn is leaky (in-flight host/srflx gathering isn't cancelled and
-   * its frozen-pair scheduling path skips the relay filter), so the hard
-   * guarantee lives here at the app layer: non-relay LOCAL candidates are
-   * never signaled to the client, and non-relay REMOTE candidates are never
-   * fed to the pc. No material, no pair.
+   * SIDECODE_ICE_POLICY=relay — TURN-only test mode. iceTransportPolicy
+   * "relay" is also passed to libdatachannel, but the hard guarantee
+   * deliberately lives here at the app layer (defense-in-depth after
+   * werift's forceTurn proved leaky): non-relay LOCAL candidates are never
+   * signaled to the client, and non-relay REMOTE candidates are never fed
+   * to the pc. No material, no pair.
    */
   private readonly relayOnly =
     process.env.SIDECODE_ICE_POLICY === "relay";
@@ -410,11 +371,12 @@ export class WebRTCPeerServer {
       // daemon-relay ↔ client-srflx pair is a legitimate relayed path.
       //
       // But PRIVATE-address remotes are dropped under relay-only: they can
-      // never pair with a relay candidate (Cloudflare can't reach them), and
-      // worse, Cloudflare TURN *denies* CreatePermission/ChannelBind for
-      // private ranges (documented) — and werift lets that one failed
-      // transaction cascade into tearing down checks for the valid targets
-      // too (werift#414 family). No private targets, no poison.
+      // never pair with a relay candidate (Cloudflare can't reach them, and
+      // CF TURN denies CreatePermission/ChannelBind for private ranges), so
+      // feeding them in only buys guaranteed-to-fail permission traffic.
+      // (Was load-bearing under werift, whose TURN layer let one refused
+      // permission poison the allocation; libdatachannel fails pairs
+      // independently — hygiene now, A/B-removable.)
       const candStr =
         (msg.candidate as { candidate?: string })?.candidate ?? "";
       const remoteTyp = / typ (\w+)/.exec(candStr)?.[1];
@@ -435,9 +397,8 @@ export class WebRTCPeerServer {
         typ: remoteTyp,
       });
       try {
-        // Candidate init dict straight through — werift validates the
-        // `candidate` string itself (its RTCIceCandidate ctor is not the
-        // W3C one, so no wrapper class here).
+        // Candidate init dict straight through — W3C addIceCandidate takes
+        // RTCIceCandidateInit directly, no wrapper class needed.
         await peer.pc.addIceCandidate(
           msg.candidate as RTCIceCandidateInit,
         );
@@ -485,16 +446,29 @@ export class WebRTCPeerServer {
       this.log("peer.paired", { clientId: peer.id, fingerprint });
     }
 
+    // First client contact is what pulls in the WebRTC stack (see the
+    // lazy-import note at the top). A missing native binding (e.g. deno
+    // none-mode dev, where install scripts never ran) refuses this
+    // connection and leaves the daemon itself healthy.
+    let rtc: WebrtcModule;
+    try {
+      rtc = await loadWebrtc();
+    } catch (err) {
+      this.log("peer.webrtc_unavailable", {
+        clientId: peer.id,
+        error: (err as Error).message,
+      });
+      return;
+    }
+
     // Mint/reuse TURN creds for THIS connection and reuse the exact same
     // list for the client (relayed in the offer below) so both ends agree
-    // on relays. Falls back to STUN-only if minting is unavailable.
-    //
-    // The client gets the ORIGINAL Cloudflare shape (urls lists incl.
-    // turns:/tcp variants — libwebrtc uses every fallback); the local pc
-    // gets the werift-normalized subset (see normalizeIceServersForWerift).
-    // TURN-only test mode: pass the policy to werift (its scheduler skips
-    // relay-ineligible pairs) AND enforce it at the candidate-exchange layer
-    // (see `relayOnly`) since werift's forceTurn alone is leaky.
+    // on relays. Falls back to STUN-only if minting is unavailable. Both
+    // ends get the ORIGINAL Cloudflare shape (urls lists incl. turns:/tcp
+    // variants) — libdatachannel parses the full set, no normalization.
+    // TURN-only test mode: pass the policy to libdatachannel AND keep the
+    // bidirectional candidate filter (see `relayOnly`) as the app-layer
+    // hard guarantee + regression-tool backstop.
     const iceTransportPolicy = this.relayOnly ? "relay" : "all";
     if (this.relayOnly) {
       this.log("peer.ice_policy_relay_only", { clientId: peer.id });
@@ -502,25 +476,19 @@ export class WebRTCPeerServer {
     let iceServers = await this.getIceServers();
     let pc: RTCPeerConnection;
     try {
-      pc = new RTCPeerConnection({
-        iceServers: normalizeIceServersForWerift(iceServers),
-        iceTransportPolicy,
-      });
+      pc = new rtc.RTCPeerConnection({ iceServers, iceTransportPolicy });
     } catch (err) {
-      // A malformed ICE config must NEVER crash the peer loop (werift
-      // throws synchronously on a bad entry). Drop the suspect cache, fall
-      // back to STUN-only, and relay that same fallback so both ends stay
-      // consistent.
+      // A malformed ICE config must NEVER crash the peer loop
+      // (node-datachannel throws synchronously on a bad entry). Drop the
+      // suspect cache, fall back to STUN-only, and relay that same
+      // fallback so both ends stay consistent.
       this.log("peer.ice_config_invalid", {
         error: (err as Error).message,
         count: iceServers.length,
       });
       this.turnCache = null;
       iceServers = this.iceServers;
-      pc = new RTCPeerConnection({
-        iceServers: normalizeIceServersForWerift(iceServers),
-        iceTransportPolicy,
-      });
+      pc = new rtc.RTCPeerConnection({ iceServers, iceTransportPolicy });
     }
     const slot: PeerSlot = {
       clientId: peer.id,
@@ -667,9 +635,8 @@ export class WebRTCPeerServer {
     }
 
     try {
-      // Plain description dict — werift's RTCSessionDescription ctor is
-      // positional (sdp, type), so the W3C init-object form would silently
-      // misassign; setRemoteDescription itself reads {type, sdp} fine.
+      // Plain description dict — W3C setRemoteDescription takes an
+      // RTCSessionDescriptionInit, no wrapper class needed.
       await peer.pc.setRemoteDescription({ type: "answer", sdp });
     } catch (err) {
       this.log("peer.answer.set_remote_error", {

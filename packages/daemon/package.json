@@ -37,7 +37,7 @@
     "partysocket": "^1.1.19",
     "qrcode": "^1.5.4",
     "simple-git": "^3.36.0",
-    "werift": "^0.23.0",
+    "node-datachannel": "^0.32.3",
     "ws": "^8.18.0"
   },
   "devDependencies": {
