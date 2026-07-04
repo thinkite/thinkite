@@ -27,6 +27,5 @@ worker-configuration.d.ts
 # hardcode local paths + hit a real account. Reference only, not shipped code.
 spikes/
 # deno desktop build output (packages/desktop)
-deno.lock
 *.app/
 *.dmg

@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "license": "Apache-2.0",
-  "description": "Sidecode desktop GUI — Deno Desktop (WKWebView) + Vite + React 19 + Astryx",
+  "description": "Sidecode desktop GUI \u2014 Deno Desktop (WKWebView) + Vite + React 19 + Astryx",
   "author": "sidecode",
   "type": "module",
   "os": [
@@ -13,9 +13,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "SIDECODE_DESKTOP_VITE=http://localhost:5183 deno desktop --hmr -A main.ts",
+    "dev": "SIDECODE_DESKTOP_VITE=http://localhost:5183 deno desktop --hmr --node-modules-dir=none -A main.ts",
     "dev:web": "vite",
-    "dev:static": "deno desktop --hmr -A main.ts",
+    "dev:static": "deno desktop --hmr --node-modules-dir=none -A main.ts",
     "build": "vite build",
     "typecheck": "tsc --noEmit"
   },

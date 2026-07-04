@@ -1,14 +1,13 @@
 {
   "workspace": [
     "packages/desktop",
+    "packages/app",
     "packages/daemon",
     "packages/protocol"
   ],
-  "nodeModulesDir": "none",
+  "nodeModulesDir": "auto",
   "minimumDependencyAge": 0,
-  "unstable": [
-    "sloppy-imports"
-  ],
+  "unstable": ["sloppy-imports"],
   "compilerOptions": {
     "lib": [
       "esnext",
@@ -33,5 +32,6 @@
     "zod": "npm:zod@^4.4.3",
     "node-datachannel": "npm:node-datachannel@^0.32.3",
     "node-datachannel/polyfill": "npm:node-datachannel@^0.32.3/polyfill"
-  }
+  },
+  "allowScripts": ["npm:node-datachannel"]
 }

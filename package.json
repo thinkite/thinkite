@@ -6,18 +6,16 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "pnpm -r typecheck",
-    "build": "pnpm -r build",
+    "typecheck": "npm run typecheck --prefix packages/protocol && npm run typecheck --prefix packages/daemon && npm run typecheck --prefix packages/desktop && tsc --noEmit -p packages/app",
+    "build": "npm run build --prefix packages/protocol && npm run build --prefix packages/daemon",
     "lint": "biome check .",
     "format": "biome check --write ."
   },
   "keywords": [],
   "author": "",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@11.5.0",
   "engines": {
-    "node": ">=24",
-    "pnpm": ">=11"
+    "node": ">=24"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",

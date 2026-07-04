@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "Apache-2.0",
-  "description": "macOS daemon for sidecode — wraps Claude Agent SDK and exposes it to mobile clients",
+  "description": "macOS daemon for sidecode \u2014 wraps Claude Agent SDK and exposes it to mobile clients",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -21,8 +21,8 @@
     "darwin"
   ],
   "scripts": {
-    "dev": "tsx watch src/bin/sidecode.ts up",
-    "pair": "tsx src/bin/sidecode.ts pair",
+    "dev": "deno run -A --watch src/bin/sidecode.ts up",
+    "pair": "deno run -A src/bin/sidecode.ts pair",
     "build": "tsc -b tsconfig.json && chmod +x ./dist/bin/sidecode.js",
     "typecheck": "tsc -b tsconfig.json",
     "start": "node ./dist/bin/sidecode.js",
@@ -41,7 +41,6 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@types/node": "^24.12.2",
-    "tsx": "^4.21.0"
+    "@types/node": "^24.12.2"
   }
 }
