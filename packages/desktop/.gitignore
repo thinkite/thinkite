@@ -2,3 +2,4 @@ dist/
 deno.lock
 *.app/
 *.dmg
+out/
