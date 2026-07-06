@@ -151,7 +151,18 @@ export function handlePty(req: Request): Response {
       try {
         pty = new Pty(Deno.env.get("SHELL") ?? "/bin/zsh", {
           args: ["-l"],
-          env: Deno.env.toObject(),
+          env: {
+            // Finder-launched apps get a bare LaunchServices env: no LANG
+            // (shells fall back to the C locale) and no TERM (ZLE has no
+            // terminfo and garbles the prompt — a literal `?` before it).
+            // LANG is a fallback only; TERM is forced because the terminal
+            // the child actually talks to is xterm.js, not whatever
+            // launched this process.
+            LANG: "en_US.UTF-8",
+            ...Deno.env.toObject(),
+            TERM: "xterm-256color",
+            COLORTERM: "truecolor",
+          },
           ...(cwd ? { cwd } : {}),
         });
       } catch {
