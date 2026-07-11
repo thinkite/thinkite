@@ -241,7 +241,7 @@ function buildMenu(): Electron.Menu {
         {
           label: "View on GitHub",
           click: () => {
-            void shell.openExternal("https://github.com/sidecodeapp/sidecode");
+            void shell.openExternal("https://github.com/thinkite/thinkite");
           },
         },
       ],

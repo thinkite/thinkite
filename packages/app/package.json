@@ -60,7 +60,7 @@
     "react-error-boundary": "^6.1.2",
     "react-native": "0.86.0",
     "react-native-drawer-layout": "^4.2.5",
-    "react-native-enriched-markdown": "0.6.0",
+    "react-native-enriched-markdown": "0.8.0-nightly-20260709-99dfc50b2",
     "react-native-gesture-handler": "^2.32.0",
     "react-native-get-random-values": "~1.11.0",
     "react-native-keyboard-controller": "^1.21.12",

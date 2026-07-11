@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { ChatComposer, ChatComposerInput } from "@astryxdesign/core/Chat";
+import {
+  ChatComposer,
+  ChatComposerInput,
+  ChatLayout,
+} from "@astryxdesign/core/Chat";
 import { Heading } from "@astryxdesign/core/Heading";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
@@ -87,20 +91,24 @@ function Session() {
                 </Text>
               </div>
             </div>
-            <div className="min-h-0 flex-1">
+            {/* ChatLayout owns the transcript scroll container (stick-to-
+                bottom + scroll button) and docks the UI-only composer —
+                wired to the daemon chat pipeline later. */}
+            <ChatLayout
+              className="min-h-0 flex-1"
+              composer={
+                <ChatComposer
+                  onSubmit={() => {}}
+                  placeholder="Chat coming soon — use the terminal for now"
+                  input={<ChatComposerInput />}
+                />
+              }
+            >
               <TranscriptPanel
                 dir={session.cwd}
                 claudeSessionId={session.claudeSessionId}
               />
-            </div>
-            {/* UI-only composer — wired to the daemon chat pipeline later. */}
-            <div className="px-4 pb-4 pt-2">
-              <ChatComposer
-                onSubmit={() => {}}
-                placeholder="Chat coming soon — use the terminal for now"
-                input={<ChatComposerInput />}
-              />
-            </div>
+            </ChatLayout>
           </div>
         </LayoutContent>
       }

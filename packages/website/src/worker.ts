@@ -8,8 +8,8 @@
  * only `/mac` is ever billed against the Workers request quota.
  */
 
-const OWNER = "sidecodeapp";
-const REPO = "sidecode";
+const OWNER = "thinkite";
+const REPO = "thinkite";
 const RELEASES_PAGE = `https://github.com/${OWNER}/${REPO}/releases/latest`;
 const MAC_DMG = /-arm64\.dmg$/;
 

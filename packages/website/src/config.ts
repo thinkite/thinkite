@@ -6,7 +6,7 @@
 export const links = {
   // Set to "" to render the linked buttons as visually disabled
   // (pointer-events:none + dimmed). Restore the URL here to re-enable.
-  github: "https://github.com/sidecodeapp/sidecode",
+  github: "https://github.com/thinkite/thinkite",
   // iOS app — the /ios route redirects to TestFlight (see public/_redirects).
   // It's a TestFlight beta, NOT the App Store, so button copy should say
   // "TestFlight", not "App Store".

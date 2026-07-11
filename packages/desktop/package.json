@@ -13,24 +13,23 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "SIDECODE_DESKTOP_VITE=http://localhost:5183 deno desktop --hmr --node-modules-dir=none -A main.ts",
+    "dev": "sh scripts/sync-ndc-prebuild.sh && SIDECODE_DESKTOP_VITE=http://localhost:5183 deno desktop --hmr --node-modules-dir=none --exclude-unused-npm -A main.ts",
     "dev:web": "vite",
-    "dev:static": "deno desktop --hmr --node-modules-dir=none -A main.ts",
+    "dev:static": "sh scripts/sync-ndc-prebuild.sh && deno desktop --hmr --node-modules-dir=none --exclude-unused-npm -A main.ts",
     "build": "vite build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@astryxdesign/core": "^0.1.2",
-    "@astryxdesign/theme-neutral": "^0.1.2",
+    "@astryxdesign/core": "^0.1.4",
+    "@astryxdesign/theme-neutral": "^0.1.4",
     "@heroicons/react": "^2.2.0",
     "@pierre/diffs": "^1.2.12",
     "@tanstack/react-router": "^1.170.17",
-    "@tanstack/react-virtual": "^3.14.5",
     "@xterm/addon-fit": "0.12.0-beta.288",
     "@xterm/addon-unicode-graphemes": "0.5.0-beta.288",
     "@xterm/xterm": "6.1.0-beta.288",
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.2",

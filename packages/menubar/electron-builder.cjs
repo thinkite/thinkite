@@ -80,8 +80,8 @@ module.exports = {
       }
     : {
         provider: "github",
-        owner: "sidecodeapp",
-        repo: "sidecode",
+        owner: "thinkite",
+        repo: "thinkite",
         releaseType: "draft",
       },
 };
