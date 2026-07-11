@@ -93,8 +93,12 @@ function Session() {
             </div>
             {/* ChatLayout owns the transcript scroll container (stick-to-
                 bottom + scroll button) and docks the UI-only composer —
-                wired to the daemon chat pipeline later. */}
+                wired to the daemon chat pipeline later. Keyed by session so
+                a switch remounts it: scroll position and the follow lock
+                are per-session state, not survivors of the previous one
+                (t3code resets to following-end on thread open too). */}
             <ChatLayout
+              key={session.id}
               className="min-h-0 flex-1"
               composer={
                 <ChatComposer

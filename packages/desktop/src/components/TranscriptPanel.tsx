@@ -21,6 +21,11 @@ import { Text } from "@astryxdesign/core/Text";
 // locked; useChatNewMessages scrollIfLocked on content growth), and the
 // scroll-to-bottom button. Consecutive tool events collapse into one
 // ChatToolCalls group.
+//
+// Initial landing is ChatLayout's spring (animated flight for async-loaded
+// rows — accepted for now): astryx has no instant path yet. Our upstream
+// proposal adds `initial="instant"` (facebook/astryx#3795 / PR #3800);
+// switch to it here when it ships and the flight disappears.
 
 interface TranscriptRow {
   uuid: string;
