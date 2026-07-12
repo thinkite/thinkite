@@ -3,7 +3,7 @@ import {
   PAIR_OFFER_VERSION,
   type PairOfferFrame,
 } from "@sidecodeapp/protocol";
-import type { Identity } from "./identity.js";
+import type { Identity } from "./identity.ts";
 
 /**
  * Pair-offer construction — pure over the daemon's identity + a

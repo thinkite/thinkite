@@ -1,6 +1,6 @@
 import type { TimelineItem } from "@sidecodeapp/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { type RuntimeQueryHandle, SessionRuntime } from "./session-runtime.js";
+import { type RuntimeQueryHandle, SessionRuntime } from "./session-runtime.ts";
 
 describe("SessionRuntime", () => {
   it("addEvent assigns cursors monotonically starting at 1", () => {

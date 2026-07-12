@@ -19,7 +19,7 @@
 import {
   OAuthRefreshError,
   type OAuthRefreshManager,
-} from "./bridge/oauth-refresh.js";
+} from "./bridge/oauth-refresh.ts";
 
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 // REQUIRED beta cohort header — without it the endpoint 4xxes. Anthropic

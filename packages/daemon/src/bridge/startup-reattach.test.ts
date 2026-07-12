@@ -2,17 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   BridgeWorkerState,
   SidecodeSessionMetadata,
-} from "../sidecode-sessions.js";
+} from "../sidecode-sessions.ts";
 import type {
   BridgeAttachableRuntime,
   BridgeService,
-} from "./bridge-service.js";
-import type { TokenSource } from "./bridge-transport.js";
-import type { CredentialsFailure, RemoteCredentials } from "./sdk-adapter.js";
+} from "./bridge-service.ts";
+import type { TokenSource } from "./bridge-transport.ts";
+import type { CredentialsFailure, RemoteCredentials } from "./sdk-adapter.ts";
 import {
   reattachBridgedSessions,
   summarizeReattach,
-} from "./startup-reattach.js";
+} from "./startup-reattach.ts";
 
 const VALID_CREDS: RemoteCredentials = {
   worker_jwt: "jwt",

@@ -5,8 +5,8 @@ import {
   ensureSessionLoop,
   extractInboundPrompt,
   pushPrompt,
-} from "./run-query.js";
-import { type RuntimeEvent, SessionRuntime } from "./session-runtime.js";
+} from "./run-query.ts";
+import { type RuntimeEvent, SessionRuntime } from "./session-runtime.ts";
 
 /**
  * Cheap test seam: build a fake Query that iterates a static array of

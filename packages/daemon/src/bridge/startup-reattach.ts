@@ -45,16 +45,16 @@
 import {
   clearBridgeWorkerState as defaultClearBridgeWorkerState,
   listSidecodeSessions as defaultListSidecodeSessions,
-} from "../sidecode-sessions.js";
+} from "../sidecode-sessions.ts";
 import type {
   BridgeAttachableRuntime,
   BridgeService,
-} from "./bridge-service.js";
-import type { TokenSource } from "./bridge-transport.js";
+} from "./bridge-service.ts";
+import type { TokenSource } from "./bridge-transport.ts";
 import {
   fetchRemoteCredentials as defaultFetchRemoteCredentials,
   isCredentialsFailure,
-} from "./sdk-adapter.js";
+} from "./sdk-adapter.ts";
 
 /** Outcome counts from one re-attach pass. `total` is the number of
  *  bridged sessions found on disk; the three outcome counters partition

@@ -7,12 +7,12 @@ import {
   readSidecodeSession,
   type SidecodeSessionMetadata,
   writeSidecodeSession,
-} from "../sidecode-sessions.js";
-import type { RuntimeQueryHandle } from "./session-runtime.js";
+} from "../sidecode-sessions.ts";
+import type { RuntimeQueryHandle } from "./session-runtime.ts";
 import {
   SessionRuntimeManager,
   type SessionStateListener,
-} from "./session-runtime-manager.js";
+} from "./session-runtime-manager.ts";
 
 /** Helper to build a complete sidecode metadata record for fixture writes. */
 function fixtureMeta(

@@ -20,7 +20,7 @@ import {
   updateBridgeSequenceNum,
   writeBridgeWorkerState,
   writeSidecodeSession,
-} from "./sidecode-sessions.js";
+} from "./sidecode-sessions.ts";
 
 describe("buildNewSidecodeSession", () => {
   it("uses local_<cliSessionId> as sessionId; same cwd as originCwd; firstPrompt becomes title", () => {

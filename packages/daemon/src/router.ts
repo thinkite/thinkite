@@ -12,17 +12,17 @@ import {
   parseSlashCommand,
   SLASH_COMMANDS,
 } from "@sidecodeapp/protocol";
-import type { BridgeService } from "./bridge/bridge-service.js";
-import { OAuthRefreshError } from "./bridge/oauth-refresh.js";
-import type { CommandHandler } from "./command.js";
-import type { GitWatcherRegistry } from "./git-watch.js";
+import type { BridgeService } from "./bridge/bridge-service.ts";
+import { OAuthRefreshError } from "./bridge/oauth-refresh.ts";
+import type { CommandHandler } from "./command.ts";
+import type { GitWatcherRegistry } from "./git-watch.ts";
 import {
   ensureSessionLoop,
   pushPrompt,
   type SessionLoopOptions,
-} from "./runtime/run-query.js";
-import type { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
-import type { SidecodeSessionMetadata } from "./sidecode-sessions.js";
+} from "./runtime/run-query.ts";
+import type { SessionRuntimeManager } from "./runtime/session-runtime-manager.ts";
+import type { SidecodeSessionMetadata } from "./sidecode-sessions.ts";
 
 export interface RouterDeps {
   /**

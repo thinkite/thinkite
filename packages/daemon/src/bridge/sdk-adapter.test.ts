@@ -23,7 +23,7 @@ const {
   deleteCodeSession,
   fetchRemoteCredentials,
   isCredentialsFailure,
-} = await import("./sdk-adapter.js");
+} = await import("./sdk-adapter.ts");
 
 beforeEach(() => {
   for (const fn of Object.values(sdk)) fn.mockClear();

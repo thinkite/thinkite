@@ -37,7 +37,7 @@
 
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 
-import type { RuntimeBridge } from "../runtime/session-runtime.js";
+import type { RuntimeBridge } from "../runtime/session-runtime.ts";
 import {
   type AttachBridgeSessionOptions,
   attachBridgeSession,
@@ -46,7 +46,7 @@ import {
   createCodeSession,
   fetchRemoteCredentials,
   isCredentialsFailure,
-} from "./sdk-adapter.js";
+} from "./sdk-adapter.ts";
 
 /** Verdict returned to claude.ai for a set_permission_mode control_request.
  *  Mirrors the SDK's `onSetPermissionMode` return type. */

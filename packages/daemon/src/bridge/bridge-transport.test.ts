@@ -3,13 +3,13 @@ import {
   BridgeAttachError,
   BridgeTransport,
   type TokenSource,
-} from "./bridge-transport.js";
+} from "./bridge-transport.ts";
 import type {
   AttachBridgeSessionOptions,
   BridgeSessionHandle,
   CredentialsFailure,
   RemoteCredentials,
-} from "./sdk-adapter.js";
+} from "./sdk-adapter.ts";
 
 const CREDS: RemoteCredentials = {
   worker_jwt: "jwt-1",

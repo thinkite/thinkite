@@ -3,8 +3,8 @@ import {
   PAIR_OFFER_VERSION,
 } from "@sidecodeapp/protocol";
 import { describe, expect, it } from "vitest";
-import type { Identity } from "./identity.js";
-import { createPairOffer } from "./pairing.js";
+import type { Identity } from "./identity.ts";
+import { createPairOffer } from "./pairing.ts";
 
 // Identity is just a pubkey+fingerprint+privateKey blob from the daemon's
 // POV — createPairOffer only reads `publicKeyB64`, so we hand it a stub

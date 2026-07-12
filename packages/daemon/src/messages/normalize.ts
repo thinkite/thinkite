@@ -14,7 +14,7 @@ import {
   extractText,
   summaryFor,
   userContentBlock,
-} from "./tool-detail.js";
+} from "./tool-detail.ts";
 
 /**
  * Convert SDK `SessionMessage[]` (raw Anthropic message envelopes) into a

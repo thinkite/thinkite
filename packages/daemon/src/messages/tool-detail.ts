@@ -23,7 +23,7 @@
 import { grepMode, type ToolCallDetail } from "@sidecodeapp/protocol";
 import { structuredPatch } from "diff";
 import { z } from "zod";
-import { detectLanguageForPath } from "./language-detect.js";
+import { detectLanguageForPath } from "./language-detect.ts";
 
 // ─── Anthropic ContentBlock schemas ─────────────────────────────────────
 

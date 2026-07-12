@@ -3,14 +3,14 @@ import type {
   clearBridgeWorkerState,
   updateBridgeSequenceNum,
   writeBridgeWorkerState,
-} from "../sidecode-sessions.js";
+} from "../sidecode-sessions.ts";
 import {
   type BridgeAttachableRuntime,
   BridgeService,
   type OAuthManager,
-} from "./bridge-service.js";
-import type { BridgeTransport } from "./bridge-transport.js";
-import type { fetchRemoteCredentials } from "./sdk-adapter.js";
+} from "./bridge-service.ts";
+import type { BridgeTransport } from "./bridge-transport.ts";
+import type { fetchRemoteCredentials } from "./sdk-adapter.ts";
 
 /** A fake OAuthManager recording start/stop + handing out a token. */
 function fakeOAuth(): OAuthManager & {
@@ -105,7 +105,7 @@ function serviceWith(
     home: "/test-home",
     persist: STUB_PERSIST,
     attachTransport:
-      attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+      attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
   });
   return { service, oauth, getOnClose: () => onClose, attachSpy };
 }
@@ -172,7 +172,7 @@ describe("BridgeService.attach", () => {
       persist: STUB_PERSIST,
       oauth,
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     const rt = runtime();
     await expect(
@@ -233,7 +233,7 @@ describe("BridgeService.attach with `existing` — M3.4 startup re-attach path",
           clearSpy as unknown as typeof clearBridgeWorkerState,
       },
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
 
     await service.attach(
@@ -259,7 +259,7 @@ describe("BridgeService.attach with `existing` — M3.4 startup re-attach path",
       oauth,
       persist: STUB_PERSIST,
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
       setTimer: setTimerSpy as unknown as typeof setTimeout,
       clearTimer: (() => {}) as unknown as typeof clearTimeout,
     });
@@ -293,7 +293,7 @@ describe("BridgeService.attach with `existing` — M3.4 startup re-attach path",
       oauth: fakeOAuth(),
       persist: STUB_PERSIST,
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
       onInboundPrompt: () => {}, // flips hasInbound → bag built
     });
 
@@ -329,7 +329,7 @@ describe("BridgeService.attach with `existing` — M3.4 startup re-attach path",
           clearSpy as unknown as typeof clearBridgeWorkerState,
       },
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     const rt = runtime();
 
@@ -414,7 +414,7 @@ describe("BridgeService — inbound prompt routing (M2.2)", () => {
       onInboundPrompt: (sessionId, prompt) =>
         routed.push({ sessionId, text: prompt.text, uuid: prompt.uuid }),
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
 
     await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
@@ -455,7 +455,7 @@ describe("BridgeService — inbound prompt routing (M2.2)", () => {
       onInboundPrompt: (sessionId, prompt) =>
         routed.push({ sessionId, prompt }),
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
 
@@ -484,7 +484,7 @@ describe("BridgeService — inbound prompt routing (M2.2)", () => {
       oauth: fakeOAuth(),
       // No onInboundPrompt, no onInterrupt, no onSetModel.
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
     // inbound undefined → transport derives outboundOnly:true (pure mirror,
@@ -515,7 +515,7 @@ describe("BridgeService — control routing (M2.4)", () => {
       // ONLY onInterrupt — no prompt routing, no setModel.
       onInterrupt: (sessionId) => interrupts.push(sessionId),
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
 
@@ -549,7 +549,7 @@ describe("BridgeService — control routing (M2.4)", () => {
       oauth: fakeOAuth(),
       onSetModel: (sessionId, model) => models.push({ sessionId, model }),
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
 
@@ -594,7 +594,7 @@ describe("BridgeService — control routing (M2.4)", () => {
       onInterrupt: (sid) => seen.push(`interrupt:${sid}`),
       onSetModel: (sid, m) => seen.push(`setModel:${sid}:${m ?? "null"}`),
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
 
@@ -649,7 +649,7 @@ describe("BridgeService — control routing (M2.4)", () => {
       // independent of WHICH caller handler triggered bidirectional mode.
       onInterrupt: () => {},
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
 
@@ -687,7 +687,7 @@ describe("BridgeService — control routing (M2.4)", () => {
       oauth: fakeOAuth(),
       // No caller handlers → hasInbound false → no bag.
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
     expect(captured?.inbound).toBeUndefined();
@@ -726,7 +726,7 @@ describe("BridgeService.detach", () => {
       persist: STUB_PERSIST,
       oauth,
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     const rt1 = runtime();
     const rt2 = runtime();
@@ -790,7 +790,7 @@ describe("BridgeService.shutdown", () => {
       persist: STUB_PERSIST,
       oauth,
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
     await service.attach("s2", runtime(), { title: "T", cwd: "/w" });
@@ -821,7 +821,7 @@ describe("BridgeService — M3.1 worker-state persistence", () => {
       persist,
       attachTransport: vi.fn(
         async () => t,
-      ) as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+      ) as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await service.attach("local-sess-1", runtime(), { title: "T", cwd: "/w" });
     expect(persist.writeBridgeWorkerState).toHaveBeenCalledWith(
@@ -848,7 +848,7 @@ describe("BridgeService — M3.1 worker-state persistence", () => {
       oauth: fakeOAuth(),
       persist,
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await service.attach("sess-A", runtime(), { title: "T", cwd: "/w" });
     expect(typeof captured?.persistSequenceNum).toBe("function");
@@ -876,7 +876,7 @@ describe("BridgeService — M3.1 worker-state persistence", () => {
       persist,
       attachTransport: vi.fn(
         async () => t,
-      ) as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+      ) as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     const rt = runtime();
     await service.attach("s1", rt, { title: "T", cwd: "/w" });
@@ -903,7 +903,7 @@ describe("BridgeService — M3.1 worker-state persistence", () => {
           onClose = params.onClose;
           return t;
         },
-      ) as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+      ) as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await service.attach("s1", runtime(), { title: "T", cwd: "/w" });
     onClose?.(4090);
@@ -925,7 +925,7 @@ describe("BridgeService — M3.1 worker-state persistence", () => {
       persist,
       attachTransport: vi.fn(
         async () => t,
-      ) as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+      ) as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     await expect(
       service.attach("s1", runtime(), { title: "T", cwd: "/w" }),
@@ -990,7 +990,7 @@ describe("BridgeService.reconnect — M3.5.3 unified entry", () => {
       }) as unknown as typeof setTimeout,
       clearTimer: () => {},
       attachTransport:
-        attachSpy as unknown as typeof import("./bridge-transport.js").BridgeTransport.attach,
+        attachSpy as unknown as typeof import("./bridge-transport.ts").BridgeTransport.attach,
     });
     return {
       service,
@@ -1726,7 +1726,7 @@ const NO_TIMERS = {
   clearTimer: (_h: ReturnType<typeof setTimeout>) => {},
 };
 type AttachOverride =
-  typeof import("./bridge-transport.js").BridgeTransport.attach;
+  typeof import("./bridge-transport.ts").BridgeTransport.attach;
 const asAttach = (fn: unknown): AttachOverride => fn as AttachOverride;
 
 describe("upgrade (M3.3 pure→bridged + backfill)", () => {

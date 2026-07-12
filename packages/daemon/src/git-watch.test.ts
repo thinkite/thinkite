@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type GitStatus, GitWatcher } from "./git-watch.js";
+import { type GitStatus, GitWatcher } from "./git-watch.ts";
 
 /**
  * Real-git integration tests. `simple-git` is itself just a `git` CLI

@@ -3,8 +3,8 @@ import {
   getSessionMessages,
 } from "@anthropic-ai/claude-agent-sdk";
 import { type EventDelta, PROTOCOL_VERSION } from "@sidecodeapp/protocol";
-import { BridgeService } from "./bridge/bridge-service.js";
-import { OAuthRefreshManager } from "./bridge/oauth-refresh.js";
+import { BridgeService } from "./bridge/bridge-service.ts";
+import { OAuthRefreshManager } from "./bridge/oauth-refresh.ts";
 import {
   reattachBridgedSessions,
   summarizeReattach,
@@ -25,8 +25,8 @@ import {
   clearBridgeWorkerState,
   listSidecodeSessions,
   writeBridgeWorkerState,
-} from "./sidecode-sessions.js";
-import { WebRTCPeerServer } from "./webrtc-peer.js";
+} from "./sidecode-sessions.ts";
+import { WebRTCPeerServer } from "./webrtc-peer.ts";
 
 export interface DaemonOptions {
   /** Override SIDECODE_HOME. */

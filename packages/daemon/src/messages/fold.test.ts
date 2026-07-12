@@ -1,6 +1,6 @@
 import type { EventDelta, TimelineItem } from "@sidecodeapp/protocol";
 import { describe, expect, it } from "vitest";
-import { foldEventDelta } from "./fold.js";
+import { foldEventDelta } from "./fold.ts";
 
 // Structural fixtures — the fold operates on shape, so casts keep these
 // terse without pulling in detail builders. (Detail content is opaque to

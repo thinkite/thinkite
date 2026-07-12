@@ -7,7 +7,6 @@
   ],
   "nodeModulesDir": "auto",
   "minimumDependencyAge": 0,
-  "unstable": ["sloppy-imports"],
   "compilerOptions": {
     "lib": [
       "esnext",

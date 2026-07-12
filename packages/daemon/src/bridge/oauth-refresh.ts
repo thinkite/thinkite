@@ -36,7 +36,7 @@ import {
   readCredentials,
   type SecureStore,
   writeCredentials,
-} from "./credentials.js";
+} from "./credentials.ts";
 
 /** Claude Code's public PKCE client (no secret). Hard-coded in the binary
  *  + dozens of OSS tools — community-standard for subscription-OAuth refresh. */

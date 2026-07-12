@@ -1,6 +1,6 @@
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { describe, expect, it } from "vitest";
-import { normalize } from "./normalize.js";
+import { normalize } from "./normalize.ts";
 
 // Tiny helper to build SDK-shaped messages without typing 5 fields each time.
 function userMsg(uuid: string, content: unknown): SessionMessage {

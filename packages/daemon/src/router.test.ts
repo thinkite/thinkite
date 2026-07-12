@@ -14,11 +14,11 @@ import type {
   TimelineItem,
 } from "@sidecodeapp/protocol";
 import { describe, expect, it, vi } from "vitest";
-import type { CommandContext } from "./command.js";
-import { GitWatcherRegistry } from "./git-watch.js";
-import { createCommandHandler } from "./router.js";
-import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
-import type { SidecodeSessionMetadata } from "./sidecode-sessions.js";
+import type { CommandContext } from "./command.ts";
+import { GitWatcherRegistry } from "./git-watch.ts";
+import { createCommandHandler } from "./router.ts";
+import { SessionRuntimeManager } from "./runtime/session-runtime-manager.ts";
+import type { SidecodeSessionMetadata } from "./sidecode-sessions.ts";
 
 function makeCtx(): {
   ctx: CommandContext;

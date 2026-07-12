@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAsyncMessageInput } from "./async-message-input.js";
+import { createAsyncMessageInput } from "./async-message-input.ts";
 
 describe("createAsyncMessageInput", () => {
   it("queued before consume — iterator pulls in FIFO order", async () => {

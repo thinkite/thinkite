@@ -29,10 +29,10 @@ import type {
   RTCPeerConnection,
 } from "node-datachannel/polyfill";
 import PartySocket from "partysocket";
-import type { CommandContext, CommandHandler } from "./command.js";
-import type { Identity } from "./identity.js";
-import { publicKeyFromB64 } from "./identity.js";
-import type { KnownClients } from "./known-clients.js";
+import type { CommandContext, CommandHandler } from "./command.ts";
+import type { Identity } from "./identity.ts";
+import { publicKeyFromB64 } from "./identity.ts";
+import type { KnownClients } from "./known-clients.ts";
 
 /**
  * WebRTC-DataChannel transport with **DTLS-fingerprint-pinned identity**.

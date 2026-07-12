@@ -43,11 +43,11 @@ import {
   readSidecodeSession,
   type SidecodeSessionMetadata,
   writeSidecodeSession,
-} from "../sidecode-sessions.js";
+} from "../sidecode-sessions.ts";
 import {
   SessionRuntime,
   type SessionRuntimeOptions,
-} from "./session-runtime.js";
+} from "./session-runtime.ts";
 
 /**
  * #17 — listener for daemon-wide SessionState fan-out. Router wires one

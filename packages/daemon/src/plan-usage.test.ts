@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { OAuthRefreshError } from "./bridge/oauth-refresh.js";
-import { createPlanUsageFetcher, parsePlanUsage } from "./plan-usage.js";
+import { OAuthRefreshError } from "./bridge/oauth-refresh.ts";
+import { createPlanUsageFetcher, parsePlanUsage } from "./plan-usage.ts";
 
 // createPlanUsageFetcher only calls `ensureFresh()` on the manager — a
 // stub with that one method is a faithful stand-in.

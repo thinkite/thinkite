@@ -50,27 +50,27 @@
  * `initialSequenceNum` BridgeTransport.attach params that M3.5 added.
  */
 
-import type { InboundPrompt } from "../runtime/run-query.js";
-import { extractInboundPrompt } from "../runtime/run-query.js";
-import type { SessionRuntime } from "../runtime/session-runtime.js";
+import type { InboundPrompt } from "../runtime/run-query.ts";
+import { extractInboundPrompt } from "../runtime/run-query.ts";
+import type { SessionRuntime } from "../runtime/session-runtime.ts";
 import {
   clearBridgeWorkerState,
   markBridgeBackfilled,
   updateBridgeSequenceNum,
   writeBridgeWorkerState,
-} from "../sidecode-sessions.js";
+} from "../sidecode-sessions.ts";
 import {
   type BridgeInboundHandlers,
   BridgeTransport,
   type PermissionModeVerdict,
   type TokenSource,
-} from "./bridge-transport.js";
-import { readOrgUUID } from "./credentials.js";
+} from "./bridge-transport.ts";
+import { readOrgUUID } from "./credentials.ts";
 import {
   deleteCodeSession,
   fetchRemoteCredentials,
   isCredentialsFailure,
-} from "./sdk-adapter.js";
+} from "./sdk-adapter.ts";
 
 /** V0 verdict for any set_permission_mode control_request from claude.ai.
  *  sidecode V0 fixes `bypassPermissions` (project_no_plan_mode_v0 +

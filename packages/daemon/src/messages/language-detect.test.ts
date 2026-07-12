@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectLanguageForPath } from "./language-detect.js";
+import { detectLanguageForPath } from "./language-detect.ts";
 
 describe("detectLanguageForPath", () => {
   it("returns the tree-sitter lang for known extensions", () => {

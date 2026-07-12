@@ -4,7 +4,7 @@ import {
   readCredentials,
   type SecureStore,
   writeCredentials,
-} from "./credentials.js";
+} from "./credentials.ts";
 
 /** In-memory SecureStore for tests. */
 function memStore(initial: string | null = null): SecureStore & {

@@ -67,12 +67,12 @@ import {
   summaryFor,
   toolResultBlock,
   toolUseBlock,
-} from "../messages/tool-detail.js";
+} from "../messages/tool-detail.ts";
 import {
   type AsyncMessageInput,
   createAsyncMessageInput,
-} from "./async-message-input.js";
-import type { SessionActivity, SessionRuntime } from "./session-runtime.js";
+} from "./async-message-input.ts";
+import type { SessionActivity, SessionRuntime } from "./session-runtime.ts";
 
 /**
  * M3.7 idle-teardown delay — after a turn completes with no subscribers,

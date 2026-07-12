@@ -1,9 +1,9 @@
 import { hostname } from "node:os";
 import QRCode from "qrcode";
-import { readActiveDaemonLock } from "./daemon-lock.js";
-import { resolveSidecodeHome } from "./home.js";
-import { loadOrCreateIdentity } from "./identity.js";
-import { createPairOffer } from "./pairing.js";
+import { readActiveDaemonLock } from "./daemon-lock.ts";
+import { resolveSidecodeHome } from "./home.ts";
+import { loadOrCreateIdentity } from "./identity.ts";
+import { createPairOffer } from "./pairing.ts";
 
 /**
  * Implementation of the `sidecode pair` subcommand.

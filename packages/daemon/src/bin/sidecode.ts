@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { PROTOCOL_VERSION } from "@sidecodeapp/protocol";
-import { resolveSidecodeHome } from "../home.js";
-import { loadOrCreateIdentity } from "../identity.js";
-import { start } from "../index.js";
-import { KnownClients } from "../known-clients.js";
-import { runPairCommand } from "../pair-command.js";
+import { resolveSidecodeHome } from "../home.ts";
+import { loadOrCreateIdentity } from "../identity.ts";
+import { start } from "../index.ts";
+import { KnownClients } from "../known-clients.ts";
+import { runPairCommand } from "../pair-command.ts";
 
 const [, , rawSubcommand, ...rest] = process.argv;
 const subcommand = rawSubcommand ?? "help";

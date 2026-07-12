@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveSidecodeHome } from "./home.js";
+import { resolveSidecodeHome } from "./home.ts";
 
 describe("resolveSidecodeHome", () => {
   let originalEnv: string | undefined;

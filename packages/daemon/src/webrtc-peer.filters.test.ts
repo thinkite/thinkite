@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isIpv6CandidateAddress,
   isPrivateCandidateAddress,
-} from "./webrtc-peer.js";
+} from "./webrtc-peer.ts";
 
 // Cloudflare TURN denies CreatePermission/ChannelBind for private ranges
 // and issues IPv4 relays only; these tests pin which candidate addresses
