@@ -2,13 +2,30 @@
 // validated in T-Gate 3 (50MB/s loopback, ACK backpressure bounded ~1.1MB).
 //
 // Model (t3code-style tmux-lite): the PTY belongs to the SESSION, not the
-// socket — a dropped/reconnected client re-attaches the same live shell and
-// gets the bounded scrollback ring replayed. One attached client at a time
-// (latest wins); output keeps accumulating into the ring while detached.
+// socket — a dropped/reconnected client re-attaches the same live shell.
+// One attached client at a time (latest wins); output keeps flowing into a
+// server-side HEADLESS terminal while detached.
+//
+// The headless terminal (@xterm/headless) replaces the old raw-byte ring:
+// every pty byte is parsed into it, and re-attach replays
+// SerializeAddon.serialize() — a clean VT reconstruction of the screen +
+// scrollback. Raw replay was a bug CLASS: the ring preserved terminal
+// QUERIES a TUI once sent (DA1, XTVERSION, DECRQM…), the client's xterm
+// re-answered them on parse, and with the TUI gone the shell ate the
+// answers as keystrokes (`1;2c`, `>|xterm.js…` typed at the prompt).
+// Serialize output contains no queries by construction — the headless
+// parser consumed them. History is bounded in ROWS (scrollback option),
+// not bytes, so `clear` really clears and reflow stays coherent.
+//
+// While detached the headless terminal also ANSWERS queries (onData →
+// pty.write), so a TUI running unattended doesn't hang on DA1. While a
+// client is attached its xterm answers instead — the gate prevents double
+// answers.
 //
 // Client protocol (JSON): {t:"in",d} keystrokes · {t:"size",cols,rows} resize
 // · {t:"ack",n} flow control (bytes consumed by xterm's write callback).
-// Server→client frames are raw PTY text; first frame after attach = ring replay.
+// Server→client frames are raw PTY bytes; first frame after attach = the
+// serialized snapshot.
 //
 // Upstream merged our split-UTF-8 reader fix + BYTES API in 0.40.0, so we're
 // back on @sigma/pty-ffi proper (the @yyq fork is archived). The pty stream
@@ -18,6 +35,14 @@
 // upstream 0.40.0 release asset): a signed .app must never download binaries
 // at runtime. Packaged: `--include vendor` (T-Gate 2).
 import { instantiate, libName, Pty } from "jsr:@sigma/pty-ffi@0.40.0/noinit";
+// UMD bundles: named-export detection is unreliable under node-compat, so
+// take the module object and destructure (the pattern deno actually loads).
+import serializePkg from "@xterm/addon-serialize";
+import type { Terminal as HeadlessTerminal } from "@xterm/headless";
+import headlessPkg from "@xterm/headless";
+
+const { Terminal } = headlessPkg;
+const { SerializeAddon } = serializePkg;
 
 const vendored = new URL(`../vendor/${libName()}`, import.meta.url);
 await instantiate(
@@ -28,50 +53,18 @@ await instantiate(
 
 const HIGH = 256 * 1024; // pause reading the pty above this many unacked bytes
 const LOW = 64 * 1024; //  resume below this
-const RING_MAX = 512 * 1024; // scrollback replay budget per session
-
-/** Kill the shell + detach the client (session delete). */
-export function killPty(id: string): void {
-  const s = sessions.get(id);
-  if (!s) return;
-  sessions.delete(id);
-  s.socket?.close();
-  try {
-    s.pty.close();
-  } catch {
-    // already dead
-  }
-}
+const SCROLLBACK = 5000; // rows of history per session (matches the client)
 
 interface PtySession {
   id: string;
   pty: Pty;
-  ring: Uint8Array[];
-  ringBytes: number;
+  term: HeadlessTerminal; // server-side mirror: scrollback + query answering
+  snapshot: () => string;
   socket: WebSocket | null;
   outstanding: number; // true wire bytes sent-but-unacked (exact, not UTF-16 units)
 }
 
 const sessions = new Map<string, PtySession>();
-
-function pushRing(s: PtySession, data: Uint8Array) {
-  s.ring.push(data);
-  s.ringBytes += data.byteLength;
-  while (s.ringBytes > RING_MAX && s.ring.length > 1) {
-    s.ringBytes -= s.ring[0].byteLength;
-    s.ring.shift();
-  }
-}
-
-function concatRing(s: PtySession): Uint8Array {
-  const out = new Uint8Array(s.ringBytes);
-  let off = 0;
-  for (const chunk of s.ring) {
-    out.set(chunk, off);
-    off += chunk.byteLength;
-  }
-  return out;
-}
 
 // Read loop: RAW read() pump, NOT pty.readable — the library's stream sleeps
 // pollingInterval per CHUNK, so throughput collapses under flood (verified:
@@ -93,7 +86,7 @@ async function pump(s: PtySession) {
         await new Promise((r) => setTimeout(r, 8));
         continue;
       }
-      pushRing(s, data);
+      s.term.write(data);
       if (s.socket?.readyState === WebSocket.OPEN) {
         s.outstanding += data.byteLength;
         s.socket.send(data);
@@ -109,6 +102,7 @@ async function pump(s: PtySession) {
     if (sessions.get(s.id) === s) {
       sessions.delete(s.id);
       s.socket?.close();
+      s.term.dispose();
     }
   }
 }
@@ -127,6 +121,15 @@ export function handlePty(req: Request): Response {
   if (cwd !== null && !cwd.startsWith("/")) {
     return new Response("cwd must be absolute", { status: 400 });
   }
+  // Spawn-time size. pty-ffi hardcodes 24x80 at openpty; without an
+  // immediate resize the shell's first prompt renders at 80 cols and
+  // reflows into stray blank lines once the client's real size arrives.
+  const dim = (k: string) => {
+    const n = Number(url.searchParams.get(k));
+    return Number.isInteger(n) && n >= 2 && n <= 1000 ? n : null;
+  };
+  const cols = dim("cols");
+  const rows = dim("rows");
   const { socket, response } = Deno.upgradeWebSocket(req);
 
   socket.onopen = () => {
@@ -155,21 +158,57 @@ export function handlePty(req: Request): Response {
         socket.close(1011, "pty spawn failed");
         return;
       }
+      if (cols !== null && rows !== null) {
+        try {
+          pty.resize({ cols, rows });
+        } catch {
+          // pty died instantly; the pump's finally handles cleanup
+        }
+      }
+      const term = new Terminal({
+        allowProposedApi: true, // required by the serialize addon
+        scrollback: SCROLLBACK,
+        cols: cols ?? 80,
+        rows: rows ?? 24,
+      });
+      const serialize = new SerializeAddon();
+      term.loadAddon(serialize);
       s = {
         id: name,
         pty,
-        ring: [],
-        ringBytes: 0,
+        term,
+        snapshot: () => serialize.serialize(),
         socket: null,
         outstanding: 0,
       };
       sessions.set(name, s);
+      // Query answering while DETACHED (attached: the client's xterm
+      // answers, and this stays silent to avoid double answers). onData
+      // fires only for parser auto-responses here — nobody types into the
+      // headless terminal.
+      const session = s;
+      term.onData((d) => {
+        if (session.socket) return;
+        try {
+          session.pty.write(d);
+        } catch {
+          // pty gone; pump's finally cleans up
+        }
+      });
       pump(s);
     }
-    s.socket?.close(); // single attached client; latest wins
+    if (s.socket) {
+      // Single attached client; latest wins. A steady stream of these in
+      // the dev log means two clients are FIGHTING for the session (each
+      // kick triggers the other's reconnect) — look for a forgotten
+      // window/tab with the same session open.
+      console.log(`[pty] kicking previous client of session ${name}`);
+      s.socket.close();
+    }
     s.socket = socket;
-    s.outstanding = 0; // replay isn't flow-controlled (bounded by RING_MAX)
-    if (s.ring.length) socket.send(concatRing(s));
+    s.outstanding = 0; // snapshot isn't flow-controlled (bounded by SCROLLBACK rows)
+    const replay = s.snapshot();
+    if (replay) socket.send(new TextEncoder().encode(replay));
   };
 
   socket.onmessage = (ev) => {
@@ -181,6 +220,9 @@ export function handlePty(req: Request): Response {
         s.pty.write(m.d);
       } else if (m.t === "size") {
         s.pty.resize({ rows: m.rows, cols: m.cols });
+        // Keep the mirror's grid in lockstep so reflow + the next
+        // serialize() reconstruct at the real dimensions.
+        s.term.resize(m.cols, m.rows);
       } else if (m.t === "ack") {
         s.outstanding = Math.max(0, s.outstanding - m.n);
       }
