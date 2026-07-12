@@ -1,7 +1,7 @@
-import { useEffect, useRef } from "react";
-import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
+import { Terminal as XTerm } from "@xterm/xterm";
+import { useEffect, useRef } from "react";
 import "@xterm/xterm/css/xterm.css";
 
 // ACK flow control: report bytes only after xterm has actually consumed them
@@ -9,7 +9,13 @@ import "@xterm/xterm/css/xterm.css";
 // Server pauses reading the pty past its high-water mark (server/pty.ts).
 const ACK_EVERY = 32 * 1024;
 
-export function TerminalPane({ sessionId }: { sessionId: string }) {
+export function TerminalPane({
+  sessionId,
+  cwd,
+}: {
+  sessionId: string;
+  cwd: string;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -28,8 +34,7 @@ export function TerminalPane({ sessionId }: { sessionId: string }) {
     try {
       const versions = term.unicode.versions ?? [];
       const graphemes =
-        versions.find((v) => /graph|1[5-9]/.test(String(v))) ??
-        versions.at(-1);
+        versions.find((v) => /graph|1[5-9]/.test(String(v))) ?? versions.at(-1);
       if (graphemes) term.unicode.activeVersion = graphemes;
     } catch {
       // width falls back to xterm defaults
@@ -45,7 +50,9 @@ export function TerminalPane({ sessionId }: { sessionId: string }) {
 
     const sendSize = () => {
       if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ t: "size", cols: term.cols, rows: term.rows }));
+        ws.send(
+          JSON.stringify({ t: "size", cols: term.cols, rows: term.rows }),
+        );
       }
     };
 
@@ -53,8 +60,11 @@ export function TerminalPane({ sessionId }: { sessionId: string }) {
       if (disposed) return;
       const proto = location.protocol === "https:" ? "wss" : "ws";
       // Relative host: same-origin in packaged mode, Vite proxy in dev.
+      // cwd rides along for the FIRST attach (shell spawn dir — the client
+      // owns the session→cwd mapping via the sessions collection); the
+      // server ignores it when re-attaching a live shell.
       ws = new WebSocket(
-        `${proto}://${location.host}/pty?session=${encodeURIComponent(sessionId)}`,
+        `${proto}://${location.host}/pty?session=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}`,
       );
       // Server sends raw PTY BYTES (binary frames); xterm's own streaming
       // UTF-8 decoder handles codepoints split across chunks. ACK counts true
@@ -117,7 +127,7 @@ export function TerminalPane({ sessionId }: { sessionId: string }) {
       ws?.close();
       term.dispose();
     };
-  }, [sessionId]);
+  }, [sessionId, cwd]);
 
   return <div ref={hostRef} className="h-full w-full bg-black" />;
 }

@@ -30,23 +30,6 @@ const HIGH = 256 * 1024; // pause reading the pty above this many unacked bytes
 const LOW = 64 * 1024; //  resume below this
 const RING_MAX = 512 * 1024; // scrollback replay budget per session
 
-// Session-store integration, injected by main.ts. Imports stay one-way
-// (sessions.ts imports killPty/hasLivePty from here) — both modules have
-// top-level await, so a two-way import cycle would be fragile.
-export interface PtySessionHooks {
-  /** cwd for the session id, or null = unknown id → attach refused. */
-  getCwd(id: string): string | null;
-  onActivity(id: string): void;
-}
-let hooks: PtySessionHooks | null = null;
-export function setSessionHooks(h: PtySessionHooks) {
-  hooks = h;
-}
-
-export function hasLivePty(id: string): boolean {
-  return sessions.has(id);
-}
-
 /** Kill the shell + detach the client (session delete). */
 export function killPty(id: string): void {
   const s = sessions.get(id);
@@ -111,7 +94,6 @@ async function pump(s: PtySession) {
         continue;
       }
       pushRing(s, data);
-      hooks?.onActivity(s.id);
       if (s.socket?.readyState === WebSocket.OPEN) {
         s.outstanding += data.byteLength;
         s.socket.send(data);
@@ -132,15 +114,18 @@ async function pump(s: PtySession) {
 }
 
 export function handlePty(req: Request): Response {
-  const name = new URL(req.url).searchParams.get("session") ?? "default";
+  const url = new URL(req.url);
+  const name = url.searchParams.get("session") ?? "default";
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
     return new Response("bad session name", { status: 400 });
   }
-  // With a session store wired (the real app), only known ids may attach —
-  // the store's cwd is where the shell spawns. Hookless (tests) = spawn anywhere.
-  const cwd = hooks ? hooks.getCwd(name) : null;
-  if (hooks && cwd === null) {
-    return new Response("unknown session", { status: 404 });
+  // The client owns the session→cwd mapping (sessions-collection row) and
+  // sends it along; it only matters on the FIRST attach (shell spawn dir) —
+  // a live shell keeps its own cwd. Same trust boundary as before: this is
+  // a loopback server whose purpose is a shell for the local user.
+  const cwd = url.searchParams.get("cwd");
+  if (cwd !== null && !cwd.startsWith("/")) {
+    return new Response("cwd must be absolute", { status: 400 });
   }
   const { socket, response } = Deno.upgradeWebSocket(req);
 
@@ -170,7 +155,14 @@ export function handlePty(req: Request): Response {
         socket.close(1011, "pty spawn failed");
         return;
       }
-      s = { id: name, pty, ring: [], ringBytes: 0, socket: null, outstanding: 0 };
+      s = {
+        id: name,
+        pty,
+        ring: [],
+        ringBytes: 0,
+        socket: null,
+        outstanding: 0,
+      };
       sessions.set(name, s);
       pump(s);
     }
@@ -187,7 +179,6 @@ export function handlePty(req: Request): Response {
       const m = JSON.parse(ev.data);
       if (m.t === "in") {
         s.pty.write(m.d);
-        hooks?.onActivity(name);
       } else if (m.t === "size") {
         s.pty.resize({ rows: m.rows, cols: m.cols });
       } else if (m.t === "ack") {

@@ -1,5 +1,3 @@
-import { useState } from "react";
-import { createFileRoute, redirect } from "@tanstack/react-router";
 import {
   ChatComposer,
   ChatComposerInput,
@@ -14,28 +12,33 @@ import {
   ToggleButton,
   ToggleButtonGroup,
 } from "@astryxdesign/core/ToggleButton";
-import {
-  CommandLineIcon,
-  DocumentPlusIcon,
-} from "@heroicons/react/24/outline";
+import { CommandLineIcon, DocumentPlusIcon } from "@heroicons/react/24/outline";
+import { eq, useLiveQuery } from "@tanstack/react-db";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+import { useState } from "react";
 import { DiffPanel } from "../../components/DiffPanel";
 import { TerminalPane } from "../../components/TerminalPane";
 import { TranscriptPanel } from "../../components/TranscriptPanel";
-import { fetchSessions } from "../../lib/sessions";
+import { sessionStateCollection } from "../../lib/sessions-collection";
 
 // Session screen: transcript center column with a UI-only composer, and an
 // IntelliJ-style tool-window strip on the right edge — a vertical toggle
 // group that both picks the surface (terminal/diff) and closes the panel
 // (ToggleButtonGroup single mode: clicking the active button deselects →
 // null → closed). The strip stays visible when the panel is closed, so the
-// affordance never disappears. The session record is the daemon's (read-only
-// mirror); a stale link bounces back to the landing page.
+// affordance never disappears.
+//
+// `$sessionId` IS the Claude Code session uuid (cliSessionId) — the
+// collection key, aligned with the iOS routes. The loader gates on the
+// collection's first snapshot; a stale link bounces to the landing page.
+// The component then reads the LIVE row so title / activity keep updating
+// while the screen is open.
 export const Route = createFileRoute("/session/$sessionId")({
   loader: async ({ params }) => {
-    const rows = await fetchSessions();
-    const session = rows.find((s) => s.id === params.sessionId);
-    if (!session) throw redirect({ to: "/" });
-    return session;
+    await sessionStateCollection.preload();
+    if (sessionStateCollection.get(params.sessionId) === undefined) {
+      throw redirect({ to: "/" });
+    }
   },
   component: Session,
 });
@@ -49,7 +52,15 @@ function loadSurface(): Surface | null {
 }
 
 function Session() {
-  const session = Route.useLoaderData();
+  const { sessionId } = Route.useParams();
+  const { data: rows } = useLiveQuery(
+    (q) =>
+      q
+        .from({ s: sessionStateCollection })
+        .where(({ s }) => eq(s.cliSessionId, sessionId)),
+    [sessionId],
+  );
+  const session = rows[0];
   const [surface, setSurface] = useState<Surface | null>(loadSurface);
   // Diff mounts on first visit and stays mounted (preserves scroll; refetch
   // is the panel's own concern). The terminal NEVER unmounts — dropping it
@@ -69,6 +80,10 @@ function Session() {
     if (s === "diff") setDiffVisited(true);
     localStorage.setItem(SURFACE_KEY, s ?? "");
   };
+
+  // Row deleted while the screen is open (daemon-side delete pushed a
+  // session_state_removed) — nothing to render; the sidebar link is gone.
+  if (session === undefined) return null;
 
   return (
     <Layout
@@ -98,7 +113,7 @@ function Session() {
                 are per-session state, not survivors of the previous one
                 (t3code resets to following-end on thread open too). */}
             <ChatLayout
-              key={session.id}
+              key={sessionId}
               className="min-h-0 flex-1"
               composer={
                 <ChatComposer
@@ -108,10 +123,7 @@ function Session() {
                 />
               }
             >
-              <TranscriptPanel
-                dir={session.cwd}
-                claudeSessionId={session.claudeSessionId}
-              />
+              <TranscriptPanel dir={session.cwd} claudeSessionId={sessionId} />
             </ChatLayout>
           </div>
         </LayoutContent>
@@ -144,7 +156,7 @@ function Session() {
                 surface === "terminal" ? "h-full min-h-0 p-2" : "hidden"
               }
             >
-              <TerminalPane sessionId={session.id} />
+              <TerminalPane sessionId={sessionId} cwd={session.cwd} />
             </div>
             {diffVisited ? (
               <div className={surface === "diff" ? "h-full min-h-0" : "hidden"}>

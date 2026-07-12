@@ -20,19 +20,9 @@ import {
   start as startDaemon,
 } from "@sidecodeapp/daemon";
 import { handleDiff } from "./server/diff.ts";
-import { handlePty, setSessionHooks } from "./server/pty.ts";
+import { handlePty } from "./server/pty.ts";
 import { handleRpc } from "./server/rpc.ts";
-import { getSessionCwd, handleSessionsApi } from "./server/sessions.ts";
 import { handleTranscript } from "./server/transcript.ts";
-
-// PTY ↔ session-store wiring (kept out of the modules to avoid a two-way
-// import between two top-level-awaiting modules). Sessions are the daemon's
-// (read-only mirror), so PTY activity no longer touches any store — daemon
-// metadata records Claude activity, not shell keystrokes.
-setSessionHooks({
-  getCwd: getSessionCwd,
-  onActivity: () => {},
-});
 
 // Two possible dist/ roots:
 //  - packaged: `--include dist` embeds it next to the compiled entry (import.meta)
@@ -75,8 +65,7 @@ let daemon: Daemon | null = null;
     // import.meta points at a temp compile dir. Packaged builds replace
     // this with the embed+extract path in the packaging slice; undefined
     // lets the SDK try its own resolution as a last resort.
-    const devClaude =
-      `${Deno.cwd()}/../../node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`;
+    const devClaude = `${Deno.cwd()}/../../node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`;
     const claudeExecutablePath = (await Deno.stat(devClaude).catch(() => null))
       ? devClaude
       : undefined;
@@ -140,7 +129,7 @@ Deno.serve({ port: 0, onListen() {} }, async (req) => {
     return await handleTranscript(req);
   }
   if (url.pathname.startsWith("/api/")) {
-    return await handleSessionsApi(req);
+    return new Response("not found", { status: 404 });
   }
   const res = await serveDir(req, { fsRoot, quiet: true });
   // SPA fallback: only for HTML navigations, so missing assets/API paths still 404.
@@ -159,16 +148,19 @@ Deno.serve({ port: 0, onListen() {} }, async (req) => {
 
 // Headless guard: `deno run` (no desktop runtime) still boots the server +
 // daemon — the harness the D2 checks and future integration tests drive.
-const win = "BrowserWindow" in Deno
-  ? new Deno.BrowserWindow({
-      title: "Sidecode",
-      width: 1200,
-      height: 800,
-    })
-  : null;
+const win =
+  "BrowserWindow" in Deno
+    ? new Deno.BrowserWindow({
+        title: "Sidecode",
+        width: 1200,
+        height: 800,
+      })
+    : null;
 win?.addEventListener("close", () => void shutdown());
 if (!win) {
-  console.log("[desktop] no desktop runtime — headless mode (server + daemon only)");
+  console.log(
+    "[desktop] no desktop runtime — headless mode (server + daemon only)",
+  );
 }
 
 // Full React HMR loop: spawn the Vite dev server ourselves (what deno's

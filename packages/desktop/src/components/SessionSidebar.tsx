@@ -1,5 +1,3 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Button } from "@astryxdesign/core/Button";
 import {
   SideNav,
@@ -11,13 +9,18 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { MagnifyingGlassIcon, PlusIcon } from "@heroicons/react/24/outline";
-import { fetchSessions, type SessionRow } from "../lib/sessions";
+import { useLiveQuery } from "@tanstack/react-db";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useMemo, useState } from "react";
+import {
+  type SessionRow,
+  sessionStateCollection,
+} from "../lib/sessions-collection";
 
 // Global session sidebar (t3code-style, grouped by day instead of project).
-// Rows are the daemon's sessions — a read-only mirror, so freshness is all
-// polling: new sessions appear when iOS/daemon creates them, `live` flips
-// when a local terminal attaches/exits.
-const POLL_MS = 15_000;
+// Rows come from the daemon's subscribeSessions push stream via the
+// session-states collection — new sessions and activity flips appear live,
+// no polling. The dot marks sessions Claude is actively working in.
 
 function dayLabel(ts: number, now: Date): string {
   const d = new Date(ts);
@@ -42,27 +45,20 @@ function timeLabel(ts: number): string {
 
 export function SessionSidebar() {
   const navigate = useNavigate();
-  const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [query, setQuery] = useState("");
+
+  const { data: sessions } = useLiveQuery((q) =>
+    q
+      .from({ s: sessionStateCollection })
+      .orderBy(({ s }) => s.lastActivityAt, "desc"),
+  );
 
   // Current session id, straight off the location — the sidebar sits outside
   // the route tree, so route params aren't available via useParams here.
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const selectedId = pathname.match(/^\/session\/([^/]+)$/)?.[1];
 
-  const reload = useCallback(() => {
-    fetchSessions().then(setSessions).catch(() => {
-      // transient (server restart mid-HMR); keep the last good list
-    });
-  }, []);
-
-  useEffect(() => {
-    reload();
-    const poll = setInterval(reload, POLL_MS);
-    return () => clearInterval(poll);
-  }, [reload]);
-
-  // Day groups, newest first (rows arrive pre-sorted by lastActivityAt desc).
+  // Day groups, newest first (rows arrive sorted by lastActivityAt desc).
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
     const filtered = q
@@ -120,18 +116,18 @@ export function SessionSidebar() {
           <SideNavSection key={g.label} title={g.label}>
             {g.rows.map((s) => (
               <SideNavItem
-                key={s.id}
+                key={s.cliSessionId}
                 label={s.title}
-                isSelected={s.id === selectedId}
+                isSelected={s.cliSessionId === selectedId}
                 onClick={() =>
                   void navigate({
                     to: "/session/$sessionId",
-                    params: { sessionId: s.id },
+                    params: { sessionId: s.cliSessionId },
                   })
                 }
                 endContent={
-                  s.live ? (
-                    <StatusDot variant="success" label="terminal attached" />
+                  s.activity === "running" ? (
+                    <StatusDot variant="success" label="Claude running" />
                   ) : (
                     <Text size="xsm" color="secondary">
                       {timeLabel(s.lastActivityAt)}

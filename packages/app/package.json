@@ -28,7 +28,7 @@
     "@shikijs/langs": "^4.2.0",
     "@sidecodeapp/protocol": "workspace:*",
     "@swmansion/react-native-bottom-sheet": "0.15.3",
-    "@tanstack/react-db": "^0.1.86",
+    "@tanstack/react-db": "^0.1.92",
     "@tanstack/react-query": "^5.101.0",
     "@yyq1025/react-native-nitro-menu": "^0.2.0",
     "burnt": "^0.13.0",
