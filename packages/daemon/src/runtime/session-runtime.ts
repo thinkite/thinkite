@@ -42,7 +42,10 @@ import type { TimelineItem, TurnUsage } from "@sidecodeapp/protocol";
  * `interrupt`/`close` shapes stay stable.
  */
 export interface RuntimeQueryHandle {
-  interrupt(): Promise<void>;
+  /** Return value intentionally ignored — SDK 0.3.206 started resolving
+   *  with an SDKControlInterruptResponse (was void); `unknown` accepts
+   *  both and keeps callers from depending on it. */
+  interrupt(): Promise<unknown>;
   close(): void;
   /** Mid-session model swap. Router's `setSessionSelection` handler
    *  uses this. Passing `model` via applyFlagSettings behaves

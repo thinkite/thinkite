@@ -32,6 +32,7 @@ import {
   attachBridgeSession as sdkAttachBridgeSession,
   createCodeSession as sdkCreateCodeSession,
   fetchRemoteCredentials as sdkFetchRemoteCredentials,
+  isCreateSessionFailure as sdkIsCreateSessionFailure,
   isCredentialsFailure as sdkIsCredentialsFailure,
 } from "@anthropic-ai/claude-agent-sdk/bridge";
 
@@ -83,11 +84,17 @@ export interface CreateCodeSessionParams {
  * identical to a network/gate failure. Callers must preflight the token
  * (OAuthRefreshManager.ensureFresh) so a `null` here is known to be
  * non-token. See project_sidecode_ccr_architecture.
+ *
+ * SDK 0.3.207 added a structured `CreateSessionFailure` to the return
+ * union, but it only fires on `session_grouping_id` rejection — a
+ * positional param this adapter never passes — so it's unreachable for
+ * us. Folded back to `null` (with a log, since it would be genuinely
+ * surprising) to keep the caller contract unchanged.
  */
-export function createCodeSession(
+export async function createCodeSession(
   params: CreateCodeSessionParams,
 ): Promise<string | null> {
-  return sdkCreateCodeSession(
+  const result = await sdkCreateCodeSession(
     params.baseUrl ?? ANTHROPIC_API_BASE,
     params.accessToken,
     params.title,
@@ -97,6 +104,13 @@ export function createCodeSession(
     params.cwd,
     params.model,
   );
+  if (sdkIsCreateSessionFailure(result)) {
+    console.log(
+      `[sidecode] [bridge] createCodeSession terminal failure (status ${result.status}): ${result.detail ?? "no detail"}`,
+    );
+    return null;
+  }
+  return result;
 }
 
 export interface FetchRemoteCredentialsParams {

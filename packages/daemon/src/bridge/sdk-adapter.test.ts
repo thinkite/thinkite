@@ -11,6 +11,7 @@ const sdk = {
     worker_epoch: 1,
   })),
   attachBridgeSession: vi.fn(async () => ({ isConnected: () => true })),
+  isCreateSessionFailure: vi.fn(() => false),
   isCredentialsFailure: vi.fn(() => false),
 };
 vi.mock("@anthropic-ai/claude-agent-sdk/bridge", () => sdk);

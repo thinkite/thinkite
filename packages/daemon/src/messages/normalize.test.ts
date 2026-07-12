@@ -10,6 +10,7 @@ function userMsg(uuid: string, content: unknown): SessionMessage {
     session_id: "test-session",
     message: { role: "user", content },
     parent_tool_use_id: null,
+    parent_agent_id: null,
   };
 }
 
@@ -20,6 +21,7 @@ function assistantMsg(uuid: string, content: unknown[]): SessionMessage {
     session_id: "test-session",
     message: { role: "assistant", content },
     parent_tool_use_id: null,
+    parent_agent_id: null,
   };
 }
 
@@ -444,6 +446,7 @@ describe("normalize", () => {
         session_id: "test",
         message: { role: "system", content: "boot prompt" },
         parent_tool_use_id: null,
+        parent_agent_id: null,
       },
       userMsg("u-1", "hi"),
     ]);
@@ -484,6 +487,7 @@ function assistantMsgWithStop(
     session_id: "test-session",
     message: { role: "assistant", content, stop_reason: stopReason },
     parent_tool_use_id: null,
+    parent_agent_id: null,
   };
 }
 
