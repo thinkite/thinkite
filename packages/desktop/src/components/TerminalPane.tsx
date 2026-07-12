@@ -1,5 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
+import type { ITheme } from "@xterm/xterm";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
 import "@xterm/xterm/css/xterm.css";
@@ -8,6 +9,39 @@ import "@xterm/xterm/css/xterm.css";
 // (write callback), so a flood can't balloon xterm's internal parse queue.
 // Server pauses reading the pty past its high-water mark (server/pty.ts).
 const ACK_EVERY = 32 * 1024;
+
+// System-scheme-following themes (the rest of the app follows via astryx's
+// CSS `light-dark()` tokens; the terminal needs JS palettes). Swapping
+// `term.options.theme` at runtime also drives xterm's colorSchemeQuery
+// extension (on by default): it re-derives dark/light from theme luminance
+// and notifies programs that enabled mode 2031 (claude's TUI does) with
+// `CSI ?997;n` — so a running TUI re-skins itself live.
+// Dark keeps xterm's stock ANSI palette (tuned for dark backgrounds); light
+// needs a full ANSI set or default yellow/white output is unreadable
+// (VS Code Light+ terminal palette).
+const DARK_THEME: ITheme = { background: "#000000" };
+const LIGHT_THEME: ITheme = {
+  background: "#ffffff",
+  foreground: "#333333",
+  cursor: "#333333",
+  selectionBackground: "#b4d5fe",
+  black: "#000000",
+  red: "#cd3131",
+  green: "#00bc00",
+  yellow: "#949800",
+  blue: "#0451a5",
+  magenta: "#bc05bc",
+  cyan: "#0598bc",
+  white: "#555555",
+  brightBlack: "#666666",
+  brightRed: "#cd3131",
+  brightGreen: "#14ce14",
+  brightYellow: "#b5ba00",
+  brightBlue: "#0451a5",
+  brightMagenta: "#bc05bc",
+  brightCyan: "#0598bc",
+  brightWhite: "#a5a5a5",
+};
 
 export function TerminalPane({
   sessionId,
@@ -22,14 +56,24 @@ export function TerminalPane({
     const host = hostRef.current;
     if (!host) return;
 
+    const scheme = matchMedia("(prefers-color-scheme: dark)");
     const term = new XTerm({
       allowProposedApi: true, // required by unicode-graphemes
       fontFamily: "Menlo, monospace",
       fontSize: 13,
       cursorBlink: true,
       scrollback: 5000,
-      theme: { background: "#000000" },
+      theme: scheme.matches ? DARK_THEME : LIGHT_THEME,
     });
+    const applyScheme = () => {
+      const theme = scheme.matches ? DARK_THEME : LIGHT_THEME;
+      term.options.theme = theme;
+      // The host div shows through around the cell grid (padding, partial
+      // rows) — keep it in lockstep with the terminal background.
+      host.style.backgroundColor = theme.background ?? "#000000";
+    };
+    applyScheme();
+    scheme.addEventListener("change", applyScheme);
     term.loadAddon(new UnicodeGraphemesAddon());
     try {
       const versions = term.unicode.versions ?? [];
@@ -167,10 +211,11 @@ export function TerminalPane({
       clearTimeout(retry);
       clearTimeout(fitTimer);
       ro.disconnect();
+      scheme.removeEventListener("change", applyScheme);
       ws?.close();
       term.dispose();
     };
   }, [sessionId, cwd]);
 
-  return <div ref={hostRef} className="h-full w-full bg-black" />;
+  return <div ref={hostRef} className="h-full w-full" />;
 }
