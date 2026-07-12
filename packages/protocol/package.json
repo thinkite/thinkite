@@ -10,12 +10,12 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "react-native": "./src/index.ts",
-      "default": "./dist/index.js"
+      "default": "./src/index.ts"
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "src"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
