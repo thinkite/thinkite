@@ -40,19 +40,24 @@ export const Route = createFileRoute("/session/$sessionId")({
       throw redirect({ to: "/" });
     }
   },
-  component: Session,
+  component: SessionRoute,
 });
 
 type Surface = "terminal" | "diff";
-const SURFACE_KEY = "sidecode:session-right-surface";
 
-function loadSurface(): Surface | null {
-  const v = localStorage.getItem(SURFACE_KEY);
-  return v === "terminal" || v === "diff" ? v : v === "" ? null : "terminal";
+// Tool-panel UI state is PER SESSION, in memory (the t3code drawer pattern:
+// per-thread height/open state, reset on app restart). Keying the Session
+// component on the id makes every useState below per-session for free; these
+// maps carry the state across remounts within one app run.
+const surfaceBySession = new Map<string, Surface | null>();
+const panelSizeBySession = new Map<string, number>();
+
+function SessionRoute() {
+  const { sessionId } = Route.useParams();
+  return <Session key={sessionId} sessionId={sessionId} />;
 }
 
-function Session() {
-  const { sessionId } = Route.useParams();
+function Session({ sessionId }: { sessionId: string }) {
   const { data: rows } = useLiveQuery(
     (q) =>
       q
@@ -61,24 +66,36 @@ function Session() {
     [sessionId],
   );
   const session = rows[0];
-  const [surface, setSurface] = useState<Surface | null>(loadSurface);
-  // Diff mounts on first visit and stays mounted (preserves scroll; refetch
-  // is the panel's own concern). The terminal NEVER unmounts — dropping it
-  // would lose the xterm buffer and re-replay the scrollback ring — so
-  // closing the panel only zeroes the container width.
+  // `has` not `??`: null is a real remembered value ("closed"), which `??`
+  // would silently swallow. Default for an unvisited session: closed.
+  const [surface, setSurface] = useState<Surface | null>(() =>
+    surfaceBySession.has(sessionId)
+      ? (surfaceBySession.get(sessionId) as Surface | null)
+      : null,
+  );
+  // Both surfaces mount on FIRST VISIT and stay mounted (t3code's drawer
+  // pattern: `return null` until terminalOpen). For the terminal that
+  // structural gate IS the lazy attach — an unopened panel never mounts,
+  // never connects, never spawns a shell; after first open it stays mounted
+  // so closing the panel keeps the xterm buffer instead of re-replaying
+  // the scrollback ring.
   const [diffVisited, setDiffVisited] = useState(surface === "diff");
+  const [terminalVisited, setTerminalVisited] = useState(
+    surface === "terminal",
+  );
 
   const rightPanel = useResizable({
-    defaultSize: 560,
+    defaultSize: panelSizeBySession.get(sessionId) ?? 560,
     minSizePx: 320,
-    autoSaveId: "sidecode:session-right-panel",
+    onSizeChange: (size) => panelSizeBySession.set(sessionId, size),
   });
 
   const pick = (v: string | null) => {
     const s = v === "terminal" || v === "diff" ? v : null;
     setSurface(s);
     if (s === "diff") setDiffVisited(true);
-    localStorage.setItem(SURFACE_KEY, s ?? "");
+    if (s === "terminal") setTerminalVisited(true);
+    surfaceBySession.set(sessionId, s);
   };
 
   // Row deleted while the screen is open (daemon-side delete pushed a
@@ -108,12 +125,11 @@ function Session() {
             </div>
             {/* ChatLayout owns the transcript scroll container (stick-to-
                 bottom + scroll button) and docks the UI-only composer —
-                wired to the daemon chat pipeline later. Keyed by session so
-                a switch remounts it: scroll position and the follow lock
-                are per-session state, not survivors of the previous one
+                wired to the daemon chat pipeline later. The whole Session
+                subtree remounts per session (SessionRoute key), so scroll
+                position and the follow lock never survive a switch
                 (t3code resets to following-end on thread open too). */}
             <ChatLayout
-              key={sessionId}
               className="min-h-0 flex-1"
               composer={
                 <ChatComposer
@@ -151,13 +167,15 @@ function Session() {
               height: "100%",
             }}
           >
-            <div
-              className={
-                surface === "terminal" ? "h-full min-h-0 p-2" : "hidden"
-              }
-            >
-              <TerminalPane sessionId={sessionId} cwd={session.cwd} />
-            </div>
+            {terminalVisited ? (
+              <div
+                className={
+                  surface === "terminal" ? "h-full min-h-0 p-2" : "hidden"
+                }
+              >
+                <TerminalPane sessionId={sessionId} cwd={session.cwd} />
+              </div>
+            ) : null}
             {diffVisited ? (
               <div className={surface === "diff" ? "h-full min-h-0" : "hidden"}>
                 <DiffPanel active={surface === "diff"} dir={session.cwd} />
