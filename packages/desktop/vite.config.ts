@@ -36,6 +36,10 @@ export default defineConfig({
         target: process.env.SIDECODE_PTY_TARGET ?? "http://localhost:5184",
         ws: true,
       },
+      "/rpc": {
+        target: process.env.SIDECODE_PTY_TARGET ?? "http://localhost:5184",
+        ws: true,
+      },
       "/api": {
         target: process.env.SIDECODE_PTY_TARGET ?? "http://localhost:5184",
       },

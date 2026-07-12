@@ -8,19 +8,24 @@ import { OAuthRefreshManager } from "./bridge/oauth-refresh.ts";
 import {
   reattachBridgedSessions,
   summarizeReattach,
-} from "./bridge/startup-reattach.js";
-import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.js";
-import { GitWatcherRegistry } from "./git-watch.js";
-import { resolveSidecodeHome } from "./home.js";
-import { loadOrCreateIdentity } from "./identity.js";
-import { KnownClients } from "./known-clients.js";
-import { foldEventDelta } from "./messages/fold.js";
-import { extractLatestUsage, normalize } from "./messages/normalize.js";
-import { createPairOffer } from "./pairing.js";
-import { createPlanUsageFetcher, type PlanUsageResult } from "./plan-usage.js";
-import { createCommandHandler } from "./router.js";
-import { ensureSessionLoop, pushPrompt } from "./runtime/run-query.js";
-import { SessionRuntimeManager } from "./runtime/session-runtime-manager.js";
+} from "./bridge/startup-reattach.ts";
+import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.ts";
+import { GitWatcherRegistry } from "./git-watch.ts";
+import { resolveSidecodeHome } from "./home.ts";
+import { loadOrCreateIdentity } from "./identity.ts";
+import { KnownClients } from "./known-clients.ts";
+import {
+  createLocalConnection,
+  type LocalConnection,
+  type LocalConnectionOptions,
+} from "./local-connection.ts";
+import { foldEventDelta } from "./messages/fold.ts";
+import { extractLatestUsage, normalize } from "./messages/normalize.ts";
+import { createPairOffer } from "./pairing.ts";
+import { createPlanUsageFetcher, type PlanUsageResult } from "./plan-usage.ts";
+import { createCommandHandler } from "./router.ts";
+import { ensureSessionLoop, pushPrompt } from "./runtime/run-query.ts";
+import { SessionRuntimeManager } from "./runtime/session-runtime-manager.ts";
 import {
   clearBridgeWorkerState,
   listSidecodeSessions,
@@ -46,18 +51,22 @@ export interface DaemonOptions {
   claudeExecutablePath?: string;
 }
 
-export type {
-  PlanUsage,
-  PlanUsageResult,
-  PlanUsageWindow,
-} from "./plan-usage.js";
+export type { DaemonLock } from "./daemon-lock.ts";
 
 // Host-side single-instance guard: `start()` only WRITES the lock (liveness
 // record); a host that may coexist with another daemon (deno desktop while
 // the menubar app runs) checks before starting.
-export { readActiveDaemonLock } from "./daemon-lock.js";
-export type { DaemonLock } from "./daemon-lock.js";
-export { resolveSidecodeHome } from "./home.js";
+export { readActiveDaemonLock } from "./daemon-lock.ts";
+export { resolveSidecodeHome } from "./home.ts";
+export type {
+  LocalConnection,
+  LocalConnectionOptions,
+} from "./local-connection.ts";
+export type {
+  PlanUsage,
+  PlanUsageResult,
+  PlanUsageWindow,
+} from "./plan-usage.ts";
 
 export interface Daemon {
   stop(): Promise<void>;
@@ -107,6 +116,15 @@ export interface Daemon {
    * stays inside the daemon; callers get parsed numbers only.
    */
   fetchPlanUsage(): Promise<PlanUsageResult>;
+  /**
+   * Open an in-process client connection to the command router — the same
+   * RPC surface WebRTC peers get (sendPrompt, subscribe, subscribeSessions,
+   * …), minus pairing/auth: the caller is the host process, already inside
+   * the trust boundary. One connection per client socket; `close()` fires
+   * the router's per-connection cleanups and must be called when the
+   * client goes away. Open connections are closed by `stop()`.
+   */
+  connectLocal(options: LocalConnectionOptions): LocalConnection;
 }
 
 export async function start(options: DaemonOptions = {}): Promise<Daemon> {
@@ -370,6 +388,10 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     epoch,
   });
 
+  // Live in-process client connections (deno desktop GUI sockets). Tracked
+  // so stop() can fire their router cleanups alongside the WebRTC peers'.
+  const localConnections = new Set<LocalConnection>();
+
   const webrtc = new WebRTCPeerServer({
     identity,
     knownClients,
@@ -451,6 +473,21 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     },
     runtimeManager,
     bridgeService,
+    connectLocal(options) {
+      const inner = createLocalConnection(commandHandler, {
+        ...options,
+        log: options.log ?? ((msg) => console.log(`[sidecode] ${msg}`)),
+      });
+      const conn: LocalConnection = {
+        dispatchText: (text) => inner.dispatchText(text),
+        close: () => {
+          localConnections.delete(conn);
+          inner.close();
+        },
+      };
+      localConnections.add(conn);
+      return conn;
+    },
     async stop() {
       // Flip the gate FIRST so any inflight subscribe / sendPrompt RPC
       // racing with shutdown gets rejected before it can spawn a runtime
@@ -472,6 +509,11 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       // call before or after webrtc.stop(), no interaction with peers.
       gitWatchers.disposeAll();
       deleteDaemonLock(home);
+      // Same point in the order as the WebRTC peers below: queries are
+      // already drained, so these just run the (idempotent) subscription
+      // cleanups. Copy first — close() mutates the set via connectLocal's
+      // wrapper.
+      for (const conn of [...localConnections]) conn.close();
       await webrtc.stop();
       console.log("sidecode daemon stopped");
     },

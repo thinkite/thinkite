@@ -21,6 +21,7 @@ import {
 } from "@sidecodeapp/daemon";
 import { handleDiff } from "./server/diff.ts";
 import { handlePty, setSessionHooks } from "./server/pty.ts";
+import { handleRpc } from "./server/rpc.ts";
 import { getSessionCwd, handleSessionsApi } from "./server/sessions.ts";
 import { handleTranscript } from "./server/transcript.ts";
 
@@ -113,6 +114,12 @@ Deno.serve({ port: 0, onListen() {} }, async (req) => {
     (req.headers.get("upgrade") ?? "").toLowerCase() === "websocket"
   ) {
     return handlePty(req);
+  }
+  if (
+    url.pathname === "/rpc" &&
+    (req.headers.get("upgrade") ?? "").toLowerCase() === "websocket"
+  ) {
+    return handleRpc(req, daemon);
   }
   if (url.pathname === "/api/daemon/status") {
     return Response.json(
