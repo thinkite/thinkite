@@ -27,14 +27,19 @@
 // Server→client frames are raw PTY bytes; first frame after attach = the
 // serialized snapshot.
 //
-// Upstream merged our split-UTF-8 reader fix + BYTES API in 0.40.0, so we're
-// back on @sigma/pty-ffi proper (the @yyq fork is archived). The pty stream
-// stays raw bytes end-to-end — xterm decodes on the client — so codepoint
-// splits and interior NULs are structurally a non-issue.
+// Upstream merged our split-UTF-8 reader fix + BYTES API in 0.40.0 and our
+// spawn-size option in 0.41.0 (sigmaSd/deno-pty#15), so we're on
+// @sigma/pty-ffi proper. The pty stream stays raw bytes end-to-end — xterm
+// decodes on the client — so codepoint splits and interior NULs are
+// structurally a non-issue.
 // The dylib stays VENDORED (vendor/libpty_arm64.dylib, byte-for-byte the
-// upstream 0.40.0 release asset): a signed .app must never download binaries
+// upstream 0.42.0 release asset): a signed .app must never download binaries
 // at runtime. Packaged: `--include vendor` (T-Gate 2).
-import { instantiate, libName, Pty } from "jsr:@sigma/pty-ffi@0.40.0/noinit";
+// The version pin lives in the root deno.json imports map — an inline `jsr:`
+// specifier would resolve fine but never reach `deno install`'s manifest
+// scan, so the lock entry would depend on which files a command happened to
+// check.
+import { instantiate, libName, Pty } from "@sigma/pty-ffi/noinit";
 // UMD bundles: named-export detection is unreliable under node-compat, so
 // take the module object and destructure (the pattern deno actually loads).
 import serializePkg from "@xterm/addon-serialize";
@@ -121,9 +126,8 @@ export function handlePty(req: Request): Response {
   if (cwd !== null && !cwd.startsWith("/")) {
     return new Response("cwd must be absolute", { status: 400 });
   }
-  // Spawn-time size. pty-ffi hardcodes 24x80 at openpty; without an
-  // immediate resize the shell's first prompt renders at 80 cols and
-  // reflows into stray blank lines once the client's real size arrives.
+  // Spawn-time size, passed straight to openpty so the shell's first prompt
+  // renders at the real width — no 80x24 default to race against.
   const dim = (k: string) => {
     const n = Number(url.searchParams.get(k));
     return Number.isInteger(n) && n >= 2 && n <= 1000 ? n : null;
@@ -152,18 +156,12 @@ export function handlePty(req: Request): Response {
             COLORTERM: "truecolor",
           },
           ...(cwd ? { cwd } : {}),
+          ...(cols !== null && rows !== null ? { size: { cols, rows } } : {}),
         });
       } catch {
         // cwd vanished / shell missing — refuse the attach, keep the record.
         socket.close(1011, "pty spawn failed");
         return;
-      }
-      if (cols !== null && rows !== null) {
-        try {
-          pty.resize({ cols, rows });
-        } catch {
-          // pty died instantly; the pump's finally handles cleanup
-        }
       }
       const term = new Terminal({
         allowProposedApi: true, // required by the serialize addon

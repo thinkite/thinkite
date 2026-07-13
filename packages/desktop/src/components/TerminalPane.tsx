@@ -106,10 +106,10 @@ export function TerminalPane({
       // Relative host: same-origin in packaged mode, Vite proxy in dev.
       // cwd + size ride along for the FIRST attach: cwd is the shell spawn
       // dir (the client owns the session→cwd mapping via the sessions
-      // collection), and cols/rows let the server resize the fresh pty
-      // BEFORE the shell prints its first prompt — pty-ffi spawns at a
-      // hardcoded 80x24, and a prompt printed at that width reflows into
-      // stray blank lines once the real size lands. Both are ignored when
+      // collection), and cols/rows are the pty's SPAWN size — the server
+      // opens the pty at these dimensions (pty-ffi ≥0.41), so the shell's
+      // first prompt renders at the real width instead of a default 80x24
+      // that would reflow into stray blank lines. Both are ignored when
       // re-attaching a live shell. connect() only runs after fit() (lazy
       // attach), so term.cols/rows are the real dimensions here.
       ws = new WebSocket(

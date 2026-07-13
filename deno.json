@@ -21,6 +21,7 @@
   "imports": {
     "@anthropic-ai/claude-agent-sdk": "npm:@anthropic-ai/claude-agent-sdk@^0.3.207",
     "@anthropic-ai/claude-agent-sdk/bridge": "npm:@anthropic-ai/claude-agent-sdk@^0.3.207/bridge",
+    "@sigma/pty-ffi": "jsr:@sigma/pty-ffi@0.42.0",
     "@xterm/addon-serialize": "npm:@xterm/addon-serialize@0.15.0-beta.288",
     "@xterm/headless": "npm:@xterm/headless@6.1.0-beta.288",
     "partysocket": "npm:partysocket@^1.1.19",
