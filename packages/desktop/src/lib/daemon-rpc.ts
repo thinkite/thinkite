@@ -2,8 +2,11 @@ import {
   type Command,
   type DaemonFrame,
   daemonFrame,
+  type EventDelta,
   PROTOCOL_VERSION,
   type SessionState,
+  type TimelineItem,
+  type TurnUsage,
 } from "@sidecodeapp/protocol";
 
 // WebSocket client for the daemon's /rpc bridge — the local counterpart of
@@ -23,6 +26,33 @@ export interface SessionsSubscription {
   onRemove(sessionId: string): void;
 }
 
+/** Payload delivered to a transcript subscription's onSubscribed — the
+ *  cold/warm distinction mirrors iOS's SubscriptionAttached:
+ *  `recovered: false` = full snapshot, truncate + ingest `settled`;
+ *  `recovered: true` = incremental resume, keep state, gap events replay
+ *  via onEvent. */
+export interface TranscriptAttached {
+  recovered: boolean;
+  settled: TimelineItem[];
+  cursor: number;
+  initialUsage?: TurnUsage;
+}
+
+export interface TranscriptSubscription {
+  onEvent(delta: EventDelta): void;
+  onSubscribed(info: TranscriptAttached): void;
+}
+
+interface SessionSubEntry {
+  callbacks: TranscriptSubscription;
+  /** Last cursor consumed via an event frame OR set from a cold-path
+   *  response — the next (re)attach passes it back as sinceCursor. */
+  cursor: number | null;
+  /** Daemon process epoch from the last subscribe.response; passed back
+   *  as sinceEpoch — a mismatch (daemon restart) forces the cold path. */
+  epoch: string | null;
+}
+
 interface Pending {
   resolve: (frame: DaemonFrame) => void;
   reject: (err: Error) => void;
@@ -32,6 +62,7 @@ class DaemonRpc {
   #ws: WebSocket | null = null;
   #pending = new Map<string, Pending>();
   #sessionsSub: SessionsSubscription | null = null;
+  #sessionSubs = new Map<string, SessionSubEntry>();
   #backoff = 500;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #disposed = false;
@@ -72,6 +103,74 @@ class DaemonRpc {
   }
 
   /**
+   * Open the live transcript stream for one session (single consumer per
+   * session — the transcript collection factory). Issues the subscribe
+   * RPC now if connected, and again after every reconnect with the
+   * entry's cursor/epoch as resume hints — the daemon serves the warm
+   * (incremental) path when it can and falls back to a fresh snapshot,
+   * which onSubscribed surfaces as `recovered: false`.
+   */
+  subscribeSession(
+    sessionId: string,
+    callbacks: TranscriptSubscription,
+  ): { unsubscribe(): void } {
+    if (this.#sessionSubs.has(sessionId)) {
+      throw new Error(`subscribeSession: already subscribed: ${sessionId}`);
+    }
+    const entry: SessionSubEntry = { callbacks, cursor: null, epoch: null };
+    this.#sessionSubs.set(sessionId, entry);
+    if (this.#ws?.readyState === WebSocket.OPEN) {
+      void this.#issueSubscribeSession(sessionId, entry);
+    }
+    return {
+      unsubscribe: () => {
+        if (this.#sessionSubs.get(sessionId) !== entry) return;
+        this.#sessionSubs.delete(sessionId);
+        if (this.#ws?.readyState === WebSocket.OPEN) {
+          // Fire-and-forget: socket close also implicitly unsubscribes.
+          void this.#request({
+            type: "unsubscribe",
+            requestId: crypto.randomUUID(),
+            sessionId,
+          }).catch(() => {});
+        }
+      },
+    };
+  }
+
+  async #issueSubscribeSession(
+    sessionId: string,
+    entry: SessionSubEntry,
+  ): Promise<void> {
+    try {
+      const res = await this.#request({
+        type: "subscribe",
+        requestId: crypto.randomUUID(),
+        sessionId,
+        ...(entry.cursor !== null && entry.epoch !== null
+          ? { sinceCursor: entry.cursor, sinceEpoch: entry.epoch }
+          : {}),
+      });
+      if (res.type !== "subscribe.response") return;
+      // Unsubscribed (or replaced) during the await — don't deliver.
+      if (this.#sessionSubs.get(sessionId) !== entry) return;
+      entry.epoch = res.epoch;
+      // Cold path: the response cursor IS the high-water mark. Warm path:
+      // leave it — the replayed gap events advance it one frame at a time.
+      if (!res.recovered) entry.cursor = res.cursor;
+      entry.callbacks.onSubscribed({
+        recovered: res.recovered,
+        settled: res.settled,
+        cursor: res.cursor,
+        initialUsage: res.initialUsage,
+      });
+    } catch (err) {
+      // Connection dropped mid-flight — the reconnect path re-issues.
+      console.warn("[daemon-rpc] subscribe failed:", err);
+    }
+  }
+
+  /**
    * Send a user prompt into a session. Resolves when the daemon accepted
    * the turn (the reply itself streams via session state + JSONL).
    * `userMessageUuid` lets the caller optimistically render the bubble
@@ -83,6 +182,7 @@ class DaemonRpc {
     text: string;
     cwd?: string;
     userMessageUuid?: string;
+    model?: string;
   }): Promise<void> {
     await this.#request({
       type: "sendPrompt",
@@ -125,6 +225,9 @@ class DaemonRpc {
         JSON.stringify({ type: "hello", protocolVersion: PROTOCOL_VERSION }),
       );
       if (this.#sessionsSub !== null) void this.#issueSubscribeSessions();
+      for (const [sessionId, entry] of this.#sessionSubs) {
+        void this.#issueSubscribeSession(sessionId, entry);
+      }
     };
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") this.#onFrame(ev.data);
@@ -158,6 +261,13 @@ class DaemonRpc {
       case "session_state_removed":
         this.#sessionsSub?.onRemove(frame.sessionId);
         return;
+      case "event": {
+        const entry = this.#sessionSubs.get(frame.sessionId);
+        if (entry === undefined) return;
+        entry.cursor = frame.cursor;
+        entry.callbacks.onEvent(frame.delta);
+        return;
+      }
       default: {
         const requestId =
           "requestId" in frame ? (frame.requestId as string) : undefined;

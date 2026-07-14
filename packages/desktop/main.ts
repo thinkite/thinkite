@@ -4,8 +4,7 @@
 // search, git) on this same server, which detection's synthetic entry can't do.
 // npm deps resolve through deno.json's imports map (none-mode, global cache);
 // the daemon workspace lib is mapped to its built dist. (A historical note
-// warned against npm imports here — denoland/deno#35544 — long since fine:
-// transcript.ts pulled the agent SDK into this graph in P2.)
+// warned against npm imports here — denoland/deno#35544 — long since fine.)
 //
 // Dev:   pnpm build && deno desktop --hmr -A main.ts
 //        (or `pnpm dev:web` + SIDECODE_DESKTOP_VITE=http://localhost:5183
@@ -22,7 +21,6 @@ import {
 import { handleDiff } from "./server/diff.ts";
 import { handlePty } from "./server/pty.ts";
 import { handleRpc } from "./server/rpc.ts";
-import { handleTranscript } from "./server/transcript.ts";
 
 // Two possible dist/ roots:
 //  - packaged: `--include dist` embeds it next to the compiled entry (import.meta)
@@ -49,8 +47,9 @@ const viteDev = Deno.env.get("SIDECODE_DESKTOP_VITE");
 // identity, same ~/.sidecode home, same signaling presence the iOS app pairs
 // against. `start()` only writes the liveness lock, so the host checks it
 // first: if another daemon owns the home (e.g. the menubar app), the GUI
-// keeps working in local-only mode (PTY/transcript/diff read paths don't
-// need the daemon) rather than fighting over signaling with a twin identity.
+// keeps working in local-only mode (PTY/diff paths don't need the daemon;
+// sessions + transcripts do) rather than fighting over signaling with a
+// twin identity.
 let daemon: Daemon | null = null;
 {
   const home = resolveSidecodeHome(); // ensures the dir exists
@@ -154,9 +153,6 @@ Deno.serve({ port: 0, onListen() {} }, async (req) => {
   }
   if (url.pathname === "/api/diff") {
     return await handleDiff(req);
-  }
-  if (url.pathname === "/api/transcript") {
-    return await handleTranscript(req);
   }
   if (url.pathname.startsWith("/api/")) {
     return new Response("not found", { status: 404 });

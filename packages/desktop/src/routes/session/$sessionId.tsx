@@ -27,6 +27,7 @@ import { TerminalPane } from "../../components/TerminalPane";
 import { TranscriptPanel } from "../../components/TranscriptPanel";
 import { daemonRpc } from "../../lib/daemon-rpc";
 import { sessionStateCollection } from "../../lib/sessions-collection";
+import { sendUserMessage } from "../../lib/transcript-collections";
 
 // Session screen: transcript center column with a live composer (daemon
 // sendPrompt over /rpc), and an
@@ -98,37 +99,31 @@ function Session({ sessionId }: { sessionId: string }) {
     onSizeChange: (size) => panelSizeBySession.set(sessionId, size),
   });
 
-  // Composer → daemon sendPrompt. The bubble renders instantly as a pending
-  // row under a client-minted uuid; the daemon persists the SAME uuid for
-  // its synthesized user_message, so the transcript refetch replaces the
-  // optimistic row seamlessly (dedupe by key). A rejected send restores the
-  // draft and surfaces the error in the composer's status slot.
+  // Composer → optimistic send (transcript-collections.ts): the user
+  // bubble paints synchronously via the collection's optimistic overlay
+  // under a client-minted uuid; the daemon's synthesized append (same
+  // uuid) lands on it seamlessly through the subscribe stream. A rejected
+  // send auto-rolls the bubble back — here we just restore the draft and
+  // surface the error in the composer's status slot.
   const [draft, setDraft] = useState("");
-  const [pendingSends, setPendingSends] = useState<
-    Array<{ uuid: string; text: string }>
-  >([]);
   const [sendError, setSendError] = useState<string | null>(null);
 
   const submit = (value: string) => {
     const text = value.trim();
     if (text === "" || session === undefined) return;
-    const uuid = crypto.randomUUID();
-    setPendingSends((p) => [...p, { uuid, text }]);
     setDraft("");
     setSendError(null);
-    void daemonRpc
-      .sendPrompt({
-        sessionId,
-        text,
-        cwd: session.cwd,
-        userMessageUuid: uuid,
-        ...(currentModel !== null ? { model: currentModel } : {}),
-      })
-      .catch((err) => {
-        setPendingSends((p) => p.filter((m) => m.uuid !== uuid));
-        setDraft(value);
-        setSendError(err instanceof Error ? err.message : String(err));
-      });
+    const tx = sendUserMessage({
+      cliSessionId: sessionId,
+      userMessageUuid: crypto.randomUUID(),
+      text,
+      cwd: session.cwd,
+      model: currentModel ?? undefined,
+    });
+    void tx.isPersisted.promise.catch((err: unknown) => {
+      setDraft(value);
+      setSendError(err instanceof Error ? err.message : String(err));
+    });
   };
 
   const stop = () => {
@@ -241,10 +236,7 @@ function Session({ sessionId }: { sessionId: string }) {
               }
             >
               <TranscriptPanel
-                dir={session.cwd}
                 claudeSessionId={sessionId}
-                refreshKey={session.lastActivityAt}
-                pending={pendingSends}
                 isRunning={session.activity === "running"}
               />
             </ChatLayout>
