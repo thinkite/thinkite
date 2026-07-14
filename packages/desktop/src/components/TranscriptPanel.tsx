@@ -87,6 +87,14 @@ export function TranscriptPanel({
     [collection],
   );
 
+  // iOS's isThinking rule: the turn is running but the last item isn't
+  // Claude's text yet — the initial think window + tool gaps. Plain DOM
+  // (no virtual list), so conditional render is fine — iOS's
+  // always-mounted opacity fade exists only for its virtualized footer's
+  // anchoring quirk.
+  const isThinking =
+    isRunning === true && items.at(-1)?.type !== "assistant_message";
+
   // A session with no JSONL on this machine subscribes fine and settles
   // to an empty snapshot — indistinguishable from truly-empty, and a real
   // session always has at least its first prompt.
@@ -103,7 +111,7 @@ export function TranscriptPanel({
         )
       }
     >
-      {items.length === 0 && !isRunning
+      {items.length === 0 && !isThinking
         ? null
         : [
             ...toGroups(items).map((group) => {
@@ -141,10 +149,19 @@ export function TranscriptPanel({
                   return null;
               }
             }),
-            ...(isRunning
+            ...(isThinking
               ? [
-                  <ChatMessage key="__running" sender="assistant">
-                    <Spinner size="sm" label="Working…" />
+                  // Muted assistant-side status line, pulsing — matches the
+                  // iOS ThinkingIndicator (motion-safe: no animation under
+                  // prefers-reduced-motion).
+                  <ChatMessage key="__thinking" sender="assistant">
+                    <Text
+                      size="base"
+                      color="secondary"
+                      className="motion-safe:animate-pulse"
+                    >
+                      Thinking…
+                    </Text>
                   </ChatMessage>,
                 ]
               : []),
