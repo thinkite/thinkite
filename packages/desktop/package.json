@@ -20,8 +20,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@astryxdesign/core": "^0.1.4",
-    "@astryxdesign/theme-neutral": "^0.1.4",
+    "@astryxdesign/core": "^0.1.5",
+    "@astryxdesign/theme-neutral": "^0.1.5",
     "@heroicons/react": "^2.2.0",
     "@pierre/diffs": "^1.2.12",
     "@sidecodeapp/protocol": "workspace:*",
