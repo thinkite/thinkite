@@ -105,13 +105,23 @@ let daemon: Daemon | null = null;
   }
 }
 
-// One shutdown path for every exit trigger (window close, SIGINT/SIGTERM):
-// drain the daemon (WebRTC peers, claude subprocesses, JSONL writes) before
-// the process dies. Idempotent — close + signal can both fire.
+// One shutdown path for every exit trigger (tray Quit, SIGINT/SIGTERM):
+// reap the vite child, then drain the daemon (WebRTC peers, claude
+// subprocesses, JSONL writes) before the process dies. Idempotent —
+// multiple triggers can fire. NOT reached by Cmd+Q / the app-menu Quit:
+// laufey answers those with [NSApp terminate:] natively, which tears the
+// runtime down without running JS — the daemon lock's pid-liveness check
+// covers the stale lock that leaves behind.
+let viteChild: Deno.ChildProcess | null = null;
 let shuttingDown = false;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  try {
+    viteChild?.kill();
+  } catch {
+    // already gone
+  }
   try {
     await daemon?.stop();
   } catch (e) {
@@ -154,6 +164,20 @@ Deno.serve({ port: 0, onListen() {} }, async (req) => {
   if (url.pathname === "/api/diff") {
     return await handleDiff(req);
   }
+  if (url.pathname === "/api/pair/offer") {
+    if (daemon === null) {
+      // Another daemon owns ~/.sidecode — pairing belongs to IT, not us.
+      return new Response(
+        "daemon not running in this process — pairing unavailable",
+        { status: 503 },
+      );
+    }
+    // Same payload the menubar minted: a pure function of the daemon
+    // identity plus this host's name (shown in iOS's confirm modal), so
+    // no TTL and no refresh. Admission is gated by the pair window's
+    // open/close (setPairing in openPairWindow), not by this call.
+    return Response.json(daemon.createPairOffer(Deno.hostname()));
+  }
   if (url.pathname.startsWith("/api/")) {
     return new Response("not found", { status: 404 });
   }
@@ -182,11 +206,134 @@ const win =
         height: 800,
       })
     : null;
-win?.addEventListener("close", () => void shutdown());
+// Menu-bar-app convention: the red button HIDES the main window and the app
+// lives on in the tray + dock (hide also sidesteps the laufey close()
+// SIGSEGV — see openPairWindow). Quitting is explicit: tray Quit (or Cmd+Q,
+// which exits natively without reaching JS — see shutdown()).
+//
+// Keeper window: AppKit "retires" a window on hide just like on close, and
+// once the window list is empty laufey's hardcoded
+// applicationShouldTerminateAfterLastWindowClosed → YES kills the app
+// (verified: hiding the only window exits the process ~1s later, no red
+// button involved). So a 1×1 frameless opacity-0 window — invisible and
+// unclickable, but never retired — keeps the list non-empty while main and
+// pair windows hide. Drop it if laufey ever stops terminating tray apps.
+if (win !== null) {
+  new Deno.BrowserWindow({
+    title: "keeper",
+    width: 1,
+    height: 1,
+    x: 0,
+    y: 0,
+    frameless: true,
+    opacity: 0,
+  });
+}
+win?.addEventListener("close", () => {
+  win.hide();
+});
+// Dock click while hidden brings the window back: deno swallows AppKit's
+// default show-last-hidden behavior and hands the decision to `reopen`.
+if (win !== null && "Dock" in Deno) {
+  const dock = new Deno.Dock();
+  dock.addEventListener("reopen", () => {
+    win.show();
+    win.focus();
+  });
+}
 if (!win) {
   console.log(
     "[desktop] no desktop runtime — headless mode (server + daemon only)",
   );
+}
+
+// ─── Menu-bar tray (the menubar app's successor) ──────────────────────────
+// Simplified menu only: label + enabled items — deliberately nothing that
+// needs the MenuItem `checked`/`icon` fields (laufey has them since #27,
+// deno hasn't plumbed them through). RIGHT-click opens the menu: laufey's
+// webview backend hardcodes that split in tray_mac.mm (left-click is
+// reserved for the `click` event / attachPanel toggling — unlike its winit
+// backend, which inherits tray-icon's left-click-menu macOS default).
+// Upstream alignment PR is the fix if left-click ever matters; a left-click
+// handler here can't pop the menu (no such JS API). Plan-usage status rows
+// join this menu in the next step (disabled label items, refreshed via
+// setMenu).
+//
+// Pages served by this same process: Vite in dev, the runtime-chosen serve
+// port otherwise (DENO_SERVE_ADDRESS — fixed ports are impossible here).
+const pageBase = (() => {
+  if (viteDev) return viteDev;
+  const port = (Deno.env.get("DENO_SERVE_ADDRESS") ?? "").split(":").pop();
+  return `http://127.0.0.1:${port}`;
+})();
+
+// Created once, reused forever, and NEVER close()d. The `close` event is a
+// close REQUEST (laufey's windowShouldClose returns NO and defers to JS —
+// Electron semantics), and answering it with close() SIGSEGVs the laufey
+// backend and takes the whole app down: the traffic-light click leaves an
+// AppKit _NSWindowTransformAnimation behind whose dealloc use-after-frees
+// once the programmatic [win close] releases the window (repro'd against
+// deno 2.9.2 / laufey 0.5.0; deferring via setTimeout doesn't help). So the
+// red button HIDES the window instead, and reopening just shows it again.
+// (The main window's handler is unaffected: it exits the process.)
+let pairWin: Deno.BrowserWindow | null = null;
+function openPairWindow(): void {
+  // The window IS the admission gate (menubar semantics carried over):
+  // showing it starts admitting pairing attempts, dismissing stops them —
+  // so the QR "always works" exactly while it's visible, and no stranger
+  // can pair against a daemon whose owner isn't looking at a pair window.
+  daemon?.setPairing(true);
+  if (pairWin === null) {
+    pairWin = new Deno.BrowserWindow({
+      title: "Pair New Device",
+      width: 420,
+      height: 680,
+    });
+    pairWin.navigate(`${pageBase}/pair`);
+    pairWin.addEventListener("close", () => {
+      daemon?.setPairing(false);
+      pairWin?.hide();
+    });
+  }
+  pairWin.show();
+  pairWin.focus();
+}
+
+if (win !== null && "Tray" in Deno) {
+  const tray = new Deno.Tray();
+  // Same dual-root pattern as fsRoot: packaged = next to the compiled
+  // entry (--include assets), dev --hmr = cwd.
+  for (const root of [
+    `${import.meta.dirname}/assets`,
+    `${Deno.cwd()}/assets`,
+  ]) {
+    const png = await Deno.readFile(`${root}/tray.png`).catch(() => null);
+    if (png) {
+      tray.setIcon(png);
+      break;
+    }
+  }
+  tray.setTooltip("Sidecode");
+  tray.setMenu([
+    { item: { label: "Open Sidecode", id: "open", enabled: true } },
+    { item: { label: "Pair New Device…", id: "pair", enabled: true } },
+    "separator",
+    { item: { label: "Quit Sidecode", id: "quit", enabled: true } },
+  ]);
+  tray.onmenuclick = (ev) => {
+    switch (ev.detail.id) {
+      case "open":
+        win.show();
+        win.focus();
+        break;
+      case "pair":
+        openPairWindow();
+        break;
+      case "quit":
+        void shutdown();
+        break;
+    }
+  };
 }
 
 // Full React HMR loop: spawn the Vite dev server ourselves (what deno's
@@ -204,26 +351,19 @@ if (viteDev && win) {
     }
   };
   // Reuse an already-running dev server (e.g. a separate `pnpm dev:web`);
-  // otherwise spawn one and tie its lifetime to the window. The general
-  // close→shutdown listener (above) handles daemon drain + exit; this one
-  // only reaps the vite child first.
+  // otherwise spawn one and tie its lifetime to the PROCESS via shutdown()
+  // — NOT to the window's close event, which now merely hides the window
+  // and would orphan-kill vite on the first hide.
   if (!(await alive())) {
     // Tell Vite's proxy where our (runtime-chosen) server actually is.
     const serveAddr = Deno.env.get("DENO_SERVE_ADDRESS") ?? "";
     const ptyTarget = `http://127.0.0.1:${serveAddr.split(":").pop()}`;
-    const vite = new Deno.Command("pnpm", {
+    viteChild = new Deno.Command("pnpm", {
       args: ["dev:web"],
       stdout: "inherit",
       stderr: "inherit",
       env: { ...Deno.env.toObject(), SIDECODE_PTY_TARGET: ptyTarget },
     }).spawn();
-    win.addEventListener("close", () => {
-      try {
-        vite.kill();
-      } catch {
-        // already gone
-      }
-    });
     for (let i = 0; i < 100 && !(await alive()); i++) {
       await new Promise((r) => setTimeout(r, 100));
     }
