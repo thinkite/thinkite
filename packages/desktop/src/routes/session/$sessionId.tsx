@@ -3,6 +3,7 @@ import {
   ChatComposerInput,
   ChatLayout,
 } from "@astryxdesign/core/Chat";
+import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
 import { Heading } from "@astryxdesign/core/Heading";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
@@ -12,16 +13,23 @@ import {
   ToggleButton,
   ToggleButtonGroup,
 } from "@astryxdesign/core/ToggleButton";
-import { CommandLineIcon, DocumentPlusIcon } from "@heroicons/react/24/outline";
+import {
+  CheckIcon,
+  CommandLineIcon,
+  DocumentPlusIcon,
+} from "@heroicons/react/24/outline";
+import { MODELS, prettyModel } from "@sidecodeapp/protocol";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useState } from "react";
 import { DiffPanel } from "../../components/DiffPanel";
 import { TerminalPane } from "../../components/TerminalPane";
 import { TranscriptPanel } from "../../components/TranscriptPanel";
+import { daemonRpc } from "../../lib/daemon-rpc";
 import { sessionStateCollection } from "../../lib/sessions-collection";
 
-// Session screen: transcript center column with a UI-only composer, and an
+// Session screen: transcript center column with a live composer (daemon
+// sendPrompt over /rpc), and an
 // IntelliJ-style tool-window strip on the right edge — a vertical toggle
 // group that both picks the surface (terminal/diff) and closes the panel
 // (ToggleButtonGroup single mode: clicking the active button deselects →
@@ -90,6 +98,65 @@ function Session({ sessionId }: { sessionId: string }) {
     onSizeChange: (size) => panelSizeBySession.set(sessionId, size),
   });
 
+  // Composer → daemon sendPrompt. The bubble renders instantly as a pending
+  // row under a client-minted uuid; the daemon persists the SAME uuid for
+  // its synthesized user_message, so the transcript refetch replaces the
+  // optimistic row seamlessly (dedupe by key). A rejected send restores the
+  // draft and surfaces the error in the composer's status slot.
+  const [draft, setDraft] = useState("");
+  const [pendingSends, setPendingSends] = useState<
+    Array<{ uuid: string; text: string }>
+  >([]);
+  const [sendError, setSendError] = useState<string | null>(null);
+
+  const submit = (value: string) => {
+    const text = value.trim();
+    if (text === "" || session === undefined) return;
+    const uuid = crypto.randomUUID();
+    setPendingSends((p) => [...p, { uuid, text }]);
+    setDraft("");
+    setSendError(null);
+    void daemonRpc
+      .sendPrompt({
+        sessionId,
+        text,
+        cwd: session.cwd,
+        userMessageUuid: uuid,
+        ...(currentModel !== null ? { model: currentModel } : {}),
+      })
+      .catch((err) => {
+        setPendingSends((p) => p.filter((m) => m.uuid !== uuid));
+        setDraft(value);
+        setSendError(err instanceof Error ? err.message : String(err));
+      });
+  };
+
+  const stop = () => {
+    void daemonRpc.interrupt(sessionId).catch((err) => {
+      setSendError(err instanceof Error ? err.message : String(err));
+    });
+  };
+
+  // Model picker (official astryx pattern: DropdownMenu in footerActions,
+  // like the ai-chat template's mode picker). Selection commits at PICK
+  // time via setSessionSelection (daemon applies to the live query, then
+  // persists) — sendPrompt also forwards it, matching iOS. The optimistic
+  // value wins over the live row until the daemon's push catches up (they
+  // converge to equal); a rejected commit rolls back to the previous pick.
+  const [pickedModel, setPickedModel] = useState<string | null>(null);
+  const currentModel = pickedModel ?? session?.model ?? null;
+
+  const pickModel = (model: string) => {
+    if (model === currentModel) return;
+    const previous = pickedModel;
+    setPickedModel(model);
+    setSendError(null);
+    void daemonRpc.setSessionSelection(sessionId, model).catch((err) => {
+      setPickedModel(previous);
+      setSendError(err instanceof Error ? err.message : String(err));
+    });
+  };
+
   const pick = (v: string | null) => {
     const s = v === "terminal" || v === "diff" ? v : null;
     setSurface(s);
@@ -124,22 +191,62 @@ function Session({ sessionId }: { sessionId: string }) {
               </div>
             </div>
             {/* ChatLayout owns the transcript scroll container (stick-to-
-                bottom + scroll button) and docks the UI-only composer —
-                wired to the daemon chat pipeline later. The whole Session
-                subtree remounts per session (SessionRoute key), so scroll
-                position and the follow lock never survive a switch
-                (t3code resets to following-end on thread open too). */}
+                bottom + scroll button) and docks the composer. The whole
+                Session subtree remounts per session (SessionRoute key), so
+                scroll position, the follow lock, and the draft never
+                survive a switch (t3code resets on thread open too).
+                Composer slots stay reserved for their rightful owners
+                (headerContext = context usage, drawer = attachments); the
+                git status bar will wrap this composer in a stack. */}
             <ChatLayout
               className="min-h-0 flex-1"
               composer={
                 <ChatComposer
-                  onSubmit={() => {}}
-                  placeholder="Chat coming soon — use the terminal for now"
+                  onSubmit={submit}
+                  onStop={stop}
+                  isStopShown={session.activity === "running"}
+                  value={draft}
+                  onChange={setDraft}
+                  placeholder="Message Claude…"
+                  status={
+                    sendError
+                      ? { type: "error", message: sendError }
+                      : undefined
+                  }
+                  footerActions={
+                    <DropdownMenu
+                      button={{
+                        label:
+                          currentModel !== null
+                            ? prettyModel(currentModel)
+                            : "Model",
+                        variant: "ghost",
+                        size: "sm",
+                      }}
+                      items={MODELS.map((m) => ({
+                        label: m.displayName,
+                        // prettyModel-based match so a legacy `…[1m]` row id
+                        // still checkmarks its bare entry.
+                        icon:
+                          currentModel !== null &&
+                          prettyModel(currentModel) === m.displayName
+                            ? CheckIcon
+                            : undefined,
+                        onClick: () => pickModel(m.model),
+                      }))}
+                    />
+                  }
                   input={<ChatComposerInput />}
                 />
               }
             >
-              <TranscriptPanel dir={session.cwd} claudeSessionId={sessionId} />
+              <TranscriptPanel
+                dir={session.cwd}
+                claudeSessionId={sessionId}
+                refreshKey={session.lastActivityAt}
+                pending={pendingSends}
+                isRunning={session.activity === "running"}
+              />
             </ChatLayout>
           </div>
         </LayoutContent>

@@ -71,6 +71,49 @@ class DaemonRpc {
     };
   }
 
+  /**
+   * Send a user prompt into a session. Resolves when the daemon accepted
+   * the turn (the reply itself streams via session state + JSONL).
+   * `userMessageUuid` lets the caller optimistically render the bubble
+   * under the same uuid the daemon will persist — dedupe by key, no
+   * double bubble.
+   */
+  async sendPrompt(opts: {
+    sessionId: string;
+    text: string;
+    cwd?: string;
+    userMessageUuid?: string;
+  }): Promise<void> {
+    await this.#request({
+      type: "sendPrompt",
+      requestId: crypto.randomUUID(),
+      ...opts,
+    });
+  }
+
+  /** Stop the live turn — the session and subprocess stay alive for
+   *  follow-up prompts. */
+  async interrupt(sessionId: string): Promise<void> {
+    await this.#request({
+      type: "interrupt",
+      requestId: crypto.randomUUID(),
+      sessionId,
+    });
+  }
+
+  /** Pick-time commit of the model selection (not bundled with sendPrompt):
+   *  the daemon applies it to the live query via applyFlagSettings, then
+   *  persists to session metadata. Rejects when the control-plane apply
+   *  fails — callers roll back their optimistic picker state. */
+  async setSessionSelection(sessionId: string, model: string): Promise<void> {
+    await this.#request({
+      type: "setSessionSelection",
+      requestId: crypto.randomUUID(),
+      sessionId,
+      model,
+    });
+  }
+
   #connect(): void {
     if (this.#disposed) return;
     const proto = location.protocol === "https:" ? "wss" : "ws";
