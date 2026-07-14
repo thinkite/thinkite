@@ -38,9 +38,11 @@
  * normalizes any residual `…[1m]` id (from a pre-change session file) by
  * stripping the suffix before lookup. See memory `project_opus_1m_default`.
  *
- * Sonnet 1M is deliberately NOT supported: its 1M variant is gated behind
- * "extra usage" overage billing (off by default), so the picker offers the
- * 200K `claude-sonnet-4-6` only — no `[1m]` Sonnet entry, ever.
+ * Sonnet 1M history: through the 4.x generations Sonnet's 1M variant was
+ * gated behind "extra usage" overage billing (off by default), so the
+ * picker offered the 200K `claude-sonnet-4-6` only — no `[1m]` Sonnet
+ * entry. Sonnet 5 ends this: natively 1M with no gate (verified against
+ * the models doc at the 5-family launch), so it carries 1M like Opus.
  *
  * Update policy on Claude model launches — search `@[MODEL LAUNCH]`:
  *   1. Add ONE new entry for the new canonical id. Current-gen Opus is
@@ -108,16 +110,23 @@ export interface ModelMetadata {
  */
 export const MODEL_METADATA: Record<string, ModelMetadata> = {
   // ─── Current models ─────────────────────────────────────────────────
+  // Fable 5 is a NEW TIER above Opus (Mythos-class), not Opus 4.8's
+  // successor — both stay current, and the default deliberately stays on
+  // Opus 4.8 (the models doc's own "start with" recommendation; Fable is
+  // 2x the price and slower).
+  "claude-fable-5": {
+    displayName: "Fable 5",
+    contextWindow: 1_000_000,
+  },
   "claude-opus-4-8": {
     displayName: "Opus 4.8",
     isDefault: true,
     contextWindow: 1_000_000,
   },
-  // Sonnet 4.6 1M omitted: gated behind extra-usage billing (off by
-  // default), so the picker offers the 200K variant only.
-  "claude-sonnet-4-6": {
-    displayName: "Sonnet 4.6",
-    contextWindow: 200_000,
+  // Sonnet 5 is natively 1M — the 4.x-era extra-usage gate is gone.
+  "claude-sonnet-5": {
+    displayName: "Sonnet 5",
+    contextWindow: 1_000_000,
   },
   "claude-haiku-4-5-20251001": {
     displayName: "Haiku 4.5",
@@ -125,6 +134,13 @@ export const MODEL_METADATA: Record<string, ModelMetadata> = {
   },
 
   // ─── Deprecated (still present in historical sidecode session files) ─
+  // Sonnet 4.6: displaced by Sonnet 5 (in the docs' legacy table). Its
+  // entry keeps the 200K it was offered at (1M was extra-usage gated).
+  "claude-sonnet-4-6": {
+    displayName: "Sonnet 4.6",
+    deprecated: true,
+    contextWindow: 200_000,
+  },
   "claude-opus-4-7": {
     displayName: "Opus 4.7",
     deprecated: true,
