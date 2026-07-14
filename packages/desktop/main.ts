@@ -60,15 +60,45 @@ let daemon: Daemon | null = null;
       `[desktop] another daemon owns ${home} (pid ${lock.pid}) — starting GUI without in-process daemon`,
     );
   } else {
-    // Dev: spawn the repo's pnpm-installed claude binary (same seam
+    // Dev: spawn the SDK's platform-package claude binary (same seam
     // run-query.ts forwards). cwd-relative like fsRoot — under --hmr,
-    // import.meta points at a temp compile dir. Packaged builds replace
-    // this with the embed+extract path in the packaging slice; undefined
-    // lets the SDK try its own resolution as a last resort.
-    const devClaude = `${Deno.cwd()}/../../node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`;
-    const claudeExecutablePath = (await Deno.stat(devClaude).catch(() => null))
-      ? devClaude
-      : undefined;
+    // import.meta points at a temp compile dir. The top-level
+    // node_modules link is NOT guaranteed: deno only links workspace
+    // members' DIRECT deps there, and a lock rebuild can drop the
+    // platform package (an optional dep of the SDK) to store-only — so
+    // fall back to scanning the .deno store. Spawning some OTHER claude
+    // must not happen: a PATH-resolved system CLI can mismatch the SDK's
+    // control protocol and hang the first turn (spawns, writes JSONL
+    // meta records, never processes the prompt — activity stuck
+    // "running", interrupt unanswerable). Packaged builds replace this
+    // with the embed+extract path in the packaging slice.
+    const repoModules = `${Deno.cwd()}/../../node_modules`;
+    const candidates = [
+      `${repoModules}/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`,
+    ];
+    try {
+      for await (const entry of Deno.readDir(`${repoModules}/.deno`)) {
+        if (entry.name.startsWith("@anthropic-ai+claude-agent-sdk-darwin-")) {
+          candidates.push(
+            `${repoModules}/.deno/${entry.name}/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`,
+          );
+        }
+      }
+    } catch {
+      // no .deno store (packaged layout) — top-level candidate only
+    }
+    let claudeExecutablePath: string | undefined;
+    for (const c of candidates) {
+      if (await Deno.stat(c).catch(() => null)) {
+        claudeExecutablePath = c;
+        break;
+      }
+    }
+    if (claudeExecutablePath === undefined) {
+      console.warn(
+        "[desktop] SDK platform claude binary not found — falling back to SDK resolution (may pick a mismatched system CLI)",
+      );
+    }
     daemon = await startDaemon({ claudeExecutablePath });
     console.log(
       `[desktop] daemon up — fingerprint ${daemon.fingerprint}, pairedClients ${daemon.pairedClientCount()}`,
