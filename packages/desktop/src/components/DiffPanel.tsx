@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { parsePatchFiles } from "@pierre/diffs";
-import { CodeView } from "@pierre/diffs/react";
 import { Button } from "@astryxdesign/core/Button";
 import { Text } from "@astryxdesign/core/Text";
+import { parsePatchFiles } from "@pierre/diffs";
+import { CodeView } from "@pierre/diffs/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 // Working-tree diff panel: GET /api/diff (daemon `GitDiff` shape — see
 // server/diff.ts; the endpoint later swaps to the daemon's RPC, same shape)

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, type ReactNode } from "react";
 import type { SupportedLanguages } from "@pierre/diffs";
 import { useWorkerPool, WorkerPoolContextProvider } from "@pierre/diffs/react";
 import PierreWorker from "@pierre/diffs/worker/worker.js?worker";
+import { type ReactNode, useEffect, useMemo } from "react";
 
 // Shared Pierre highlight worker pool, mounted ONCE at the app root
 // (__root.tsx) and EXPLICITLY initialized on mount. Two subtleties, both

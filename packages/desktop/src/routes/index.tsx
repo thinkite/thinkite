@@ -1,9 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router";
 import { ChatComposer, ChatComposerInput } from "@astryxdesign/core/Chat";
 import { Icon } from "@astryxdesign/core/Icon";
-import { Text } from "@astryxdesign/core/Text";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
+import { Text } from "@astryxdesign/core/Text";
 import { SparklesIcon } from "@heroicons/react/24/outline";
+import { createFileRoute } from "@tanstack/react-router";
 
 // New-session landing (astryx ai-chat-landing template, simplified): greeting
 // + composer. UI-only for now — creating a session means asking the daemon

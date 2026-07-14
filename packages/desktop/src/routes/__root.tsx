@@ -1,5 +1,5 @@
-import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { AppShell } from "@astryxdesign/core/AppShell";
+import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { PierrePool } from "../components/PierrePool";
 import { SessionSidebar } from "../components/SessionSidebar";
 
