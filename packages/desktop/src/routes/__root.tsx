@@ -1,7 +1,16 @@
 import { AppShell } from "@astryxdesign/core/AppShell";
-import { createRootRoute, Outlet } from "@tanstack/react-router";
+import {
+  createRootRoute,
+  Outlet,
+  useRouterState,
+} from "@tanstack/react-router";
 import { PierrePool } from "../components/PierrePool";
 import { SessionSidebar } from "../components/SessionSidebar";
+
+// Routes that render in their OWN BrowserWindow (tray-opened dialogs) —
+// bare content, no app chrome. Everything else gets the AppShell + global
+// sidebar.
+const BARE_ROUTES = new Set(["/pair"]);
 
 export const Route = createRootRoute({
   // PierrePool at the root: the pool is a refcounted module singleton — were
@@ -13,7 +22,17 @@ export const Route = createRootRoute({
   // AppShell + SessionSidebar live here too: the sidebar is global chrome
   // (t3code-style), not route content — it survives navigation, so xterm-less
   // routes and session routes share one list and one resize state.
-  component: () => (
+  component: RootLayout,
+});
+
+function RootLayout() {
+  const pathname = useRouterState({
+    select: (s) => s.location.pathname,
+  });
+  if (BARE_ROUTES.has(pathname)) {
+    return <Outlet />;
+  }
+  return (
     <PierrePool>
       <AppShell
         height="fill"
@@ -29,5 +48,5 @@ export const Route = createRootRoute({
         <Outlet />
       </AppShell>
     </PierrePool>
-  ),
-});
+  );
+}
