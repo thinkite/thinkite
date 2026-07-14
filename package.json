@@ -3,11 +3,31 @@
   "version": "0.0.0",
   "private": true,
   "description": "",
+  "packageManager": "bun@1.3.14",
+  "workspaces": {
+    "packages": [
+      "packages/desktop",
+      "packages/app",
+      "packages/daemon",
+      "packages/protocol",
+      "packages/signaling",
+      "packages/website"
+    ],
+    "catalog": {
+      "react": "19.2.3",
+      "react-dom": "19.2.3",
+      "zod": "^4.4.3",
+      "@types/node": "^24.12.2",
+      "@tanstack/react-db": "^0.1.92",
+      "@pierre/diffs": "^1.2.12",
+      "tailwindcss": "^4.3.2"
+    }
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "npm run typecheck --prefix packages/protocol && npm run typecheck --prefix packages/daemon && npm run typecheck --prefix packages/desktop && tsc --noEmit -p packages/app",
-    "build": "npm run build --prefix packages/protocol && npm run build --prefix packages/daemon",
+    "typecheck": "bun run --cwd packages/protocol typecheck && bun run --cwd packages/daemon typecheck && bun run --cwd packages/desktop typecheck && bun run --cwd packages/app typecheck",
+    "build": "bun run --cwd packages/protocol build && bun run --cwd packages/daemon build",
     "lint": "biome check .",
     "format": "biome check --write ."
   },
@@ -21,9 +41,12 @@
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
+  "trustedDependencies": [
+    "node-datachannel"
+  ],
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.5"
   }
 }

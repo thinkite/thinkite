@@ -20,10 +20,10 @@
     "@astryxdesign/core": "^0.1.5",
     "@astryxdesign/theme-neutral": "^0.1.5",
     "@heroicons/react": "^2.2.0",
-    "@pierre/diffs": "^1.2.12",
+    "@pierre/diffs": "catalog:",
     "@sidecodeapp/daemon": "workspace:*",
     "@sidecodeapp/protocol": "workspace:*",
-    "@tanstack/react-db": "^0.1.92",
+    "@tanstack/react-db": "catalog:",
     "@tanstack/react-router": "^1.170.17",
     "@xterm/addon-fit": "0.12.0-beta.288",
     "@xterm/addon-serialize": "0.15.0-beta.288",
@@ -31,18 +31,20 @@
     "@xterm/headless": "6.1.0-beta.288",
     "@xterm/xterm": "6.1.0-beta.288",
     "electrobun": "1.18.4-beta.6",
-    "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "qrcode": "^1.5.4",
+    "react": "catalog:",
+    "react-dom": "catalog:"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.2",
     "@tanstack/router-plugin": "^1.168.19",
     "@types/bun": "^1.3.14",
-    "tailwindcss": "^4.3.2",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2",
     "@types/react-dom": "^19.2",
     "@vitejs/plugin-react": "^6.0.3",
-    "typescript": "^6.0.3",
+    "tailwindcss": "catalog:",
+    "typescript": "^7.0.2",
     "vite": "^8.1.2"
   }
 }

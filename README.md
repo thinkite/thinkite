@@ -115,33 +115,38 @@ steps out of the way — application traffic is peer-to-peer.
 
 ## Project structure
 
-This is a pnpm monorepo:
+This is a bun monorepo:
 
 | Package | What it is |
 |---|---|
 | `packages/app` | iOS client — Expo / React Native |
 | `packages/daemon` | macOS daemon — wraps the Claude Agent SDK, WebRTC peer, session orchestration, cloud bridge |
-| `packages/menubar` | Electron menu-bar app — bundles and supervises the daemon |
+| `packages/desktop` | macOS desktop GUI — Electrobun (bun + WKWebView), tray, terminal, pairing |
 | `packages/protocol` | Shared wire protocol — zod schemas, version negotiation, chunking |
 | `packages/signaling` | Cloudflare Worker + Durable Object signaling server |
 | `packages/website` | Landing page (Astro) |
+
+(`packages/menubar` — the earlier Electron menu-bar app — is retired in place; the desktop GUI supersedes it.)
 
 ---
 
 ## Development
 
 ```bash
-# prerequisites: Node >= 24, pnpm >= 11
-pnpm install
+# prerequisites: bun >= 1.3, Node >= 24 (vitest/tsc/eas run on node)
+bun install
 
-pnpm -r typecheck
-pnpm test            # vitest
+bun run typecheck
+bun run test         # vitest (on node)
 
-# run the daemon in dev
-pnpm --filter @sidecodeapp/daemon dev
+# run the desktop GUI in dev (vite HMR auto-spawned)
+bun run --cwd packages/desktop dev
+
+# run the daemon standalone
+bun run --cwd packages/daemon dev
 
 # run the iOS app
-pnpm --filter @sidecodeapp/app ios
+cd packages/app && bun run ios
 ```
 
 ---

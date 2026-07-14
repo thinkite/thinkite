@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "Apache-2.0",
-  "description": "macOS daemon for sidecode \u2014 wraps Claude Agent SDK and exposes it to mobile clients",
+  "description": "macOS daemon for sidecode — wraps Claude Agent SDK and exposes it to mobile clients",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -21,8 +21,8 @@
     "darwin"
   ],
   "scripts": {
-    "dev": "deno run -A --watch src/bin/sidecode.ts up",
-    "pair": "deno run -A src/bin/sidecode.ts pair",
+    "dev": "bun --watch src/bin/sidecode.ts up",
+    "pair": "bun src/bin/sidecode.ts pair",
     "build": "tsc -b tsconfig.json && chmod +x ./dist/bin/sidecode.js",
     "typecheck": "tsc -b tsconfig.json",
     "start": "node ./dist/bin/sidecode.js",
@@ -31,16 +31,17 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.207",
     "@sidecodeapp/protocol": "workspace:*",
-    "@types/qrcode": "^1.5.6",
     "diff": "^9.0.0",
+    "node-datachannel": "^0.32.3",
     "p-limit": "^7.3.0",
     "partysocket": "^1.1.19",
     "qrcode": "^1.5.4",
     "simple-git": "^3.36.0",
-    "node-datachannel": "^0.32.3",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "^24.12.2"
+    "@types/node": "catalog:",
+    "@types/qrcode": "^1.5.6"
   }
 }

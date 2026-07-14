@@ -87,10 +87,10 @@ let daemon: Daemon | null = null;
     );
   } else {
     // Dev: spawn the SDK's platform-package claude binary (same seam
-    // run-query.ts forwards). The top-level node_modules link is NOT
-    // guaranteed — a lock rebuild can drop the platform package (an
-    // optional dep of the SDK) to store-only — so fall back to scanning
-    // the .deno store. Spawning some OTHER claude must not happen: a
+    // run-query.ts forwards). bun's default hoisted install puts the
+    // platform package (an optional dep of the SDK) at top level; the
+    // isolated linker keeps it store-only under .bun — scan that as a
+    // fallback. Spawning some OTHER claude must not happen: a
     // PATH-resolved system CLI can mismatch the SDK's control protocol
     // and hang the first turn. Packaged builds replace this with
     // system-claude discovery + a version gate (packaging slice).
@@ -99,12 +99,12 @@ let daemon: Daemon | null = null;
       join(repoModules, "@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"),
     ];
     try {
-      for (const entry of await readdir(join(repoModules, ".deno"))) {
+      for (const entry of await readdir(join(repoModules, ".bun"))) {
         if (entry.startsWith("@anthropic-ai+claude-agent-sdk-darwin-")) {
           candidates.push(
             join(
               repoModules,
-              ".deno",
+              ".bun",
               entry,
               "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
             ),
@@ -112,7 +112,7 @@ let daemon: Daemon | null = null;
         }
       }
     } catch {
-      // no .deno store — top-level candidate only
+      // no .bun store (hoisted layout) — top-level candidate only
     }
     let claudeExecutablePath: string | undefined;
     for (const c of candidates) {
