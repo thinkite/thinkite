@@ -1,6 +1,6 @@
 // GET /api/diff — one-shot working-tree diff for the Pierre diff panel.
 //
-// Deno port of the daemon's `GitWatcher.fetchDiff` (packages/daemon/src/
+// Bun port of the daemon's `GitWatcher.fetchDiff` (packages/daemon/src/
 // git-watch.ts), kept response-shape-identical (`GitDiff`) on purpose: the
 // endpoint is a P1 placeholder — once the desktop GUI attaches to the daemon
 // (loopback transport, same router the iOS app speaks over WebRTC), the fetch
@@ -11,6 +11,8 @@
 //     convention), falling back to HEAD (uncommitted-only) when unresolvable
 //   - untracked files = synthesized all-add patches (`git diff` never shows
 //     them), with Paseo's caps: ≤500 files, ≤256 KiB each, null-byte sniff
+import { stat } from "node:fs/promises";
+
 const UNTRACKED_MAX_FILES = 500;
 const UNTRACKED_MAX_FILE_BYTES = 256 * 1024;
 const UNTRACKED_BINARY_SNIFF_BYTES = 512;
@@ -23,17 +25,16 @@ export interface GitDiff {
 }
 
 async function git(dir: string, args: string[]): Promise<string> {
-  const out = await new Deno.Command("git", {
-    args: ["-C", dir, ...args],
-    stdout: "piped",
-    stderr: "null",
-  }).output();
-  if (!out.success) throw new Error(`git ${args[0]} failed`);
-  return new TextDecoder().decode(out.stdout);
+  const proc = Bun.spawn(["git", "-C", dir, ...args], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const out = await new Response(proc.stdout).text();
+  if ((await proc.exited) !== 0) throw new Error(`git ${args[0]} failed`);
+  return out;
 }
 
-/** merge-base(defaultBranch, HEAD), falling back to HEAD — the same
- *  comparison ref the daemon's status bar numbers use. */
+/** merge-base(defaultBranch, HEAD), falling back to HEAD. */
 async function resolveComparisonRef(dir: string): Promise<string> {
   const defaultBranch = await resolveDefaultBranch(dir);
   if (defaultBranch === null) return "HEAD";
@@ -121,19 +122,15 @@ async function buildUntrackedDiff(
     for (const rel of files.slice(0, UNTRACKED_MAX_FILES)) {
       try {
         const abs = `${dir}/${rel}`;
-        const stat = await Deno.stat(abs);
-        if (!stat.isFile || stat.size === 0) continue;
-        if (stat.size > UNTRACKED_MAX_FILE_BYTES) {
+        const st = await stat(abs);
+        if (!st.isFile() || st.size === 0) continue;
+        if (st.size > UNTRACKED_MAX_FILE_BYTES) {
           truncated = true;
           continue;
         }
-        const bytes = await Deno.readFile(abs);
-        if (
-          bytes
-            .subarray(0, UNTRACKED_BINARY_SNIFF_BYTES)
-            .includes(0) // null byte = likely binary
-        ) {
-          continue;
+        const bytes = await Bun.file(abs).bytes();
+        if (bytes.subarray(0, UNTRACKED_BINARY_SNIFF_BYTES).includes(0)) {
+          continue; // null byte = likely binary
         }
         const content = new TextDecoder("utf-8", { fatal: false })
           .decode(bytes)
@@ -158,7 +155,9 @@ export async function fetchDiff(dir: string): Promise<GitDiff> {
   } catch {
     isRepo = false;
   }
-  if (!isRepo) return { isRepo: false, diff: "", fileCount: 0, truncated: false };
+  if (!isRepo) {
+    return { isRepo: false, diff: "", fileCount: 0, truncated: false };
+  }
 
   const comparisonRef = await resolveComparisonRef(dir);
   const [tracked, untracked] = await Promise.all([
@@ -170,23 +169,22 @@ export async function fetchDiff(dir: string): Promise<GitDiff> {
   return {
     isRepo: true,
     diff,
-    // Only real file headers sit at column 0 (content lines carry a
-    // space/+/- prefix), so this is exact.
+    // Only real file headers sit at column 0, so this is exact.
     fileCount: (diff.match(/^diff --git /gm) ?? []).length,
     truncated: untracked.truncated,
   };
 }
 
 export async function handleDiff(req: Request): Promise<Response> {
-  const dir = new URL(req.url).searchParams.get("dir") ?? Deno.cwd();
+  const dir = new URL(req.url).searchParams.get("dir") ?? process.cwd();
   // Loopback-local app (the PTY endpoint next door hands out a full shell),
-  // so `dir` isn't a trust boundary — just require an absolute path that exists.
+  // so `dir` isn't a trust boundary — just require an absolute existing path.
   if (!dir.startsWith("/")) {
     return new Response("dir must be absolute", { status: 400 });
   }
   try {
-    const stat = await Deno.stat(dir);
-    if (!stat.isDirectory) throw new Error("not a directory");
+    const st = await stat(dir);
+    if (!st.isDirectory()) throw new Error("not a directory");
   } catch {
     return new Response("dir not found", { status: 404 });
   }

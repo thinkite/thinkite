@@ -7,28 +7,53 @@
 // One LocalConnection per socket. Closing the socket fires the router's
 // per-connection cleanups (subscription fanouts), so a reloaded webview
 // never leaks subscribers.
+//
+// Bun.serve's websocket API is handler-per-server (not per-socket like
+// Deno.upgradeWebSocket), so main.ts dispatches open/message/close here by
+// ws.data.kind.
 import type { Daemon } from "@sidecodeapp/daemon";
+import type { Server, ServerWebSocket } from "bun";
 
-export function handleRpc(req: Request, daemon: Daemon | null): Response {
+export type RpcWsData = {
+  kind: "rpc";
+  conn: ReturnType<Daemon["connectLocal"]> | null;
+};
+
+type RpcSocket = ServerWebSocket<RpcWsData>;
+
+export function rpcUpgrade(
+  req: Request,
+  server: Server,
+  daemon: Daemon | null,
+): Response | undefined {
   if (daemon === null) {
     // Another daemon owns ~/.sidecode (or startup failed) — the GUI shows
     // its daemon-offline state off this instead of a dead socket.
     return new Response("daemon not running in this process", { status: 503 });
   }
-  const { socket, response } = Deno.upgradeWebSocket(req);
-  const conn = daemon.connectLocal({
+  const data: RpcWsData = { kind: "rpc", conn: null };
+  return server.upgrade(req, { data })
+    ? undefined
+    : new Response("upgrade failed", { status: 400 });
+}
+
+export function rpcOpen(ws: RpcSocket, daemon: Daemon): void {
+  ws.data.conn = daemon.connectLocal({
     send: (frame) => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(frame));
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(frame));
       }
     },
   });
-  socket.addEventListener("message", (ev) => {
-    if (typeof ev.data === "string") conn.dispatchText(ev.data);
-  });
-  // close always follows error, but conn.close() is idempotent — wiring
-  // both keeps teardown independent of that ordering detail.
-  socket.addEventListener("close", () => conn.close());
-  socket.addEventListener("error", () => conn.close());
-  return response;
+}
+
+export function rpcMessage(ws: RpcSocket, msg: string | Buffer): void {
+  if (typeof msg === "string") ws.data.conn?.dispatchText(msg);
+}
+
+export function rpcClose(ws: RpcSocket): void {
+  // conn.close() is idempotent; fires the router's per-connection cleanups
+  // (subscription fanouts) so a reloaded webview never leaks subscribers.
+  ws.data.conn?.close();
+  ws.data.conn = null;
 }

@@ -1,7 +1,7 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
 
 export default defineConfig(({ command }) => ({
   plugins: [
@@ -43,21 +43,12 @@ export default defineConfig(({ command }) => ({
     port: 5183,
     strictPort: true,
     // Vite-HMR dev mode: the webview's origin is this dev server; backend
-    // routes live on the Deno side, whose port the desktop runtime chooses
-    // at random (it ignores Deno.serve's `port` option). main.ts passes the
-    // real address via SIDECODE_PTY_TARGET when it spawns us (`pnpm dev`).
+    // routes live on main.ts's Bun.serve at its FIXED port (main.ts probes
+    // us at 5183 by the same convention — no env relay in either direction).
     proxy: {
-      "/pty": {
-        target: process.env.SIDECODE_PTY_TARGET ?? "http://localhost:5184",
-        ws: true,
-      },
-      "/rpc": {
-        target: process.env.SIDECODE_PTY_TARGET ?? "http://localhost:5184",
-        ws: true,
-      },
-      "/api": {
-        target: process.env.SIDECODE_PTY_TARGET ?? "http://localhost:5184",
-      },
+      "/pty": { target: "http://127.0.0.1:5199", ws: true },
+      "/rpc": { target: "http://127.0.0.1:5199", ws: true },
+      "/api": { target: "http://127.0.0.1:5199" },
     },
   },
 }));
