@@ -1,0 +1,11 @@
+# Hoisted (npm/yarn-style flat) layout instead of bun 1.3's isolated default
+# for workspaces. The RN/Expo toolchain effectively requires it: under the
+# isolated linker, peer-dependency variant hashing materializes SECOND
+# physical copies of expo packages inside expo-router's store entry
+# (same version, different path — expo-doctor flags every one as a duplicate
+# native module, and Metro would bundle two module instances). Hoisting is
+# what expo's own monorepo support assumes; the desktop/daemon side works
+# under either layout (server/index.ts scans top-level AND the .bun store
+# for the SDK's claude binary).
+[install]
+linker = "hoisted"
