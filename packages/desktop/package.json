@@ -18,8 +18,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@astryxdesign/core": "^0.1.5",
-    "@astryxdesign/theme-neutral": "^0.1.5",
+    "@astryxdesign/core": "0.1.5-canary.93d881b",
+    "@astryxdesign/theme-neutral": "0.1.5-canary.93d881b",
     "@heroicons/react": "^2.2.0",
     "@pierre/diffs": "catalog:",
     "@sidecodeapp/daemon": "workspace:*",

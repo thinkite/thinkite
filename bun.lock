@@ -112,8 +112,8 @@
       "name": "@sidecodeapp/desktop",
       "version": "0.0.1",
       "dependencies": {
-        "@astryxdesign/core": "^0.1.5",
-        "@astryxdesign/theme-neutral": "^0.1.5",
+        "@astryxdesign/core": "0.1.5-canary.93d881b",
+        "@astryxdesign/theme-neutral": "0.1.5-canary.93d881b",
         "@heroicons/react": "^2.2.0",
         "@pierre/diffs": "catalog:",
         "@sidecodeapp/daemon": "workspace:*",
@@ -253,9 +253,9 @@
 
     "@astrojs/telemetry": ["@astrojs/telemetry@3.3.3", "", { "dependencies": { "ci-info": "^4.4.0", "dset": "^3.1.4", "is-docker": "^4.0.0", "package-manager-detector": "^1.6.0" } }, "sha512-C1TLn5sPJr0x4vk56piHWKbnqlEB8BKyte5Y45V02U+D7BGO5eMqZDH5aPjnkXQWJggvmsTXxH03QMZ9NgWLzQ=="],
 
-    "@astryxdesign/core": ["@astryxdesign/core@0.1.5", "", { "peerDependencies": { "@stylexjs/stylex": "^0.19.0", "react": ">=19.0.0", "react-dom": ">=19.0.0" } }, "sha512-5z9KcFSWoTyAiAHyuSwcLr5J8898vcX0Rei5F1fUwgBfMmxP87A1hHbj33uge5f0k0Tq8AiywhvZTzANdeQthw=="],
+    "@astryxdesign/core": ["@astryxdesign/core@0.1.5-canary.93d881b", "", { "peerDependencies": { "@stylexjs/stylex": "^0.19.0", "react": ">=19.0.0", "react-dom": ">=19.0.0" } }, "sha512-C4WATJTd+I970cv16i5lRVEFJsItKcVQ7v9biOkH0OdwAQWorGmDwgBTJ725Wt08OpF54TqE5wpi9yPVx6ogXA=="],
 
-    "@astryxdesign/theme-neutral": ["@astryxdesign/theme-neutral@0.1.5", "", { "dependencies": { "lucide-react": "^1.18.0" }, "peerDependencies": { "@astryxdesign/core": "0.1.5", "react": ">=19" } }, "sha512-UP4KUoYBvzb1a6paSZLueCa31PslUmFRdjJVp+CK5h7k3mJcA6u6hf5PDcqCNzqlkwgHs+Or5s1a8QSXSztyRQ=="],
+    "@astryxdesign/theme-neutral": ["@astryxdesign/theme-neutral@0.1.5-canary.93d881b", "", { "dependencies": { "lucide-react": "^1.18.0" }, "peerDependencies": { "@astryxdesign/core": "0.1.5-canary.93d881b", "react": ">=19" } }, "sha512-6AvIH7ChGJ9KFjeSGv4VULQqSpmR1IeocfLJyxcLcZ4vjZ9VFSk8T195Xx1Y7Ds/b2YAQOdJv6t5E3ZPICMDAQ=="],
 
     "@babel/code-frame": ["@babel/code-frame@7.29.7", "", { "dependencies": { "@babel/helper-validator-identifier": "^7.29.7", "js-tokens": "^4.0.0", "picocolors": "^1.1.1" } }, "sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw=="],
 
