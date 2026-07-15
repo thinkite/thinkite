@@ -18,6 +18,15 @@ import type { ElectrobunConfig } from "electrobun";
 //             gate in server/index.ts).
 const packaged = process.argv.includes("build");
 
+// Sign/notarize exactly when credentials are present (the package script
+// sources .env.local before invoking the CLI, so this config sees them).
+// Without credentials a packaged build still succeeds — unsigned, for
+// local testing; downloaded unsigned apps need `xattr -cr` to open.
+const canSign = packaged && !!process.env.ELECTROBUN_DEVELOPER_ID;
+const canNotarize =
+  canSign &&
+  !!(process.env.ELECTROBUN_APPLEIDPASS || process.env.ELECTROBUN_APPLEAPIKEY);
+
 export default {
   app: {
     name: "Sidecode",
@@ -52,7 +61,10 @@ export default {
           },
         }
       : {}),
-    mac: { bundleCEF: false },
+    // Default entitlements already carry the bun-JIT trio (allow-jit,
+    // unsigned-executable-memory, disable-library-validation) — no custom
+    // entitlements file needed for a signed hardened runtime.
+    mac: { bundleCEF: false, codesign: canSign, notarize: canNotarize },
     linux: { bundleCEF: false },
     win: { bundleCEF: false },
   },
