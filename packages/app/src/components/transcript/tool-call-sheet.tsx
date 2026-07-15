@@ -690,7 +690,6 @@ function AskUserDetail({
   return (
     <View>
       {detail.questions.map((q, i) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: questions are positional and static
         <View key={i} className={i > 0 ? "mt-3" : undefined}>
           <SectionLabel>{q.header || `Question ${i + 1}`}</SectionLabel>
           <Text

@@ -23,13 +23,6 @@ interface GitDiff {
   truncated: boolean;
 }
 
-// DEV probe: console + window.__perfMarks — the latter is readable from
-// OUTSIDE the page (laufey executeJs), which console isn't in WKWebView.
-function perfMark(msg: string) {
-  console.info(msg);
-  ((window as { __perfMarks?: string[] }).__perfMarks ??= []).push(msg);
-}
-
 function useColorScheme(): "light" | "dark" {
   const mq = useMemo(() => matchMedia("(prefers-color-scheme: dark)"), []);
   const [dark, setDark] = useState(mq.matches);
@@ -52,16 +45,9 @@ export function DiffPanel({ active, dir }: { active: boolean; dir: string }) {
   const refresh = async () => {
     setLoading(true);
     try {
-      const t0 = performance.now();
       const res = await fetch(`/api/diff?dir=${encodeURIComponent(dir)}`);
       if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
       const next = (await res.json()) as GitDiff;
-      if (import.meta.env.DEV) {
-        refreshT0.current = performance.now();
-        perfMark(
-          `[diff] fetch ${Math.round(refreshT0.current - t0)}ms, ${next.fileCount} files, ${next.diff.length}B`,
-        );
-      }
       setResult(next);
       setError(null);
     } catch (e) {
@@ -70,22 +56,6 @@ export function DiffPanel({ active, dir }: { active: boolean; dir: string }) {
       setLoading(false);
     }
   };
-  // DEV probe: timestamps of Pierre's per-file render commits, relative to
-  // the moment new diff content landed. phase "mount" = plain-text first
-  // paint; "update" = the worker's highlight applied in place.
-  const refreshT0 = useRef(0);
-  const postRenderLog = useMemo(() => {
-    if (!import.meta.env.DEV) return undefined;
-    let logged = 0;
-    return (_node: HTMLElement, _instance: unknown, phase: string) => {
-      if (phase === "unmount" || logged > 40) return;
-      logged++;
-      perfMark(
-        `[diff] postRender ${phase} +${Math.round(performance.now() - refreshT0.current)}ms`,
-      );
-    };
-  }, []);
-
   // Refetch on every activation (tab switch). Stale-while-refetch: the old
   // diff stays rendered until the new one lands.
   useEffect(() => {
@@ -146,7 +116,6 @@ export function DiffPanel({ active, dir }: { active: boolean; dir: string }) {
           lineDiffType: "word",
           stickyHeaders: true,
           preferredHighlighter: "shiki-wasm",
-          onPostRender: postRenderLog,
         }}
       />
     </div>

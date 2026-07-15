@@ -74,7 +74,9 @@ function PairPage() {
           status="error"
           title="Couldn't create a pairing code"
           description={error}
-          endContent={<Button label="Retry" variant="ghost" clickAction={refresh} />}
+          endContent={
+            <Button label="Retry" variant="ghost" clickAction={refresh} />
+          }
         />
       ) : offer === null ? (
         <Spinner size="sm" label="Preparing pairing code…" />

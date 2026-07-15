@@ -47,21 +47,9 @@ const LANGS: SupportedLanguages[] = [
 function PoolWarmup() {
   const pool = useWorkerPool();
   useEffect(() => {
-    const t0 = performance.now();
     // Idempotent: initialize() returns the in-flight/settled promise on
     // repeat calls. Failure just means the lazy path runs later instead.
-    void pool
-      ?.initialize(LANGS)
-      .then(() => {
-        if (import.meta.env.DEV) {
-          const msg = `[pierre] pool init ${Math.round(performance.now() - t0)}ms`;
-          console.info(msg);
-          // Engine-agnostic probe channel: WKWebView console isn't readable
-          // from outside, __perfMarks is (via laufey executeJs).
-          ((window as { __perfMarks?: string[] }).__perfMarks ??= []).push(msg);
-        }
-      })
-      .catch(() => {});
+    void pool?.initialize(LANGS).catch(() => {});
   }, [pool]);
   return null;
 }

@@ -98,7 +98,6 @@ const TokenLine = memo(
     return (
       <Text>
         {tokens.map((t, i) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional within a line
           <Text key={i} style={t.color ? { color: t.color } : undefined}>
             {t.content}
           </Text>
@@ -155,7 +154,6 @@ const CodeBlockSegment = memo(function CodeBlockSegment({
                 const key = lineKeyOf(lineTokens);
                 return (
                   <TokenLine
-                    // biome-ignore lint/suspicious/noArrayIndexKey: lines are positional
                     key={i}
                     tokens={lineTokens}
                     lineKey={key}

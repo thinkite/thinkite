@@ -621,9 +621,8 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
     expect(readSidecodeSession(home, "sm-1")?.model).toBe("claude-opus-4-7");
     // Exactly one fan-out — direct mirror set, no extra onStateChanged.
     expect(onChange).toHaveBeenCalledOnce();
-    expect((onChange.mock.calls[0]?.[1] as SessionState).model).toBe(
-      "claude-opus-4-7",
-    );
+    const state = onChange.mock.calls[0]?.[1] as SessionState;
+    expect(state.model).toBe("claude-opus-4-7");
   });
 
   it("setModel reset-to-default after the race still fans out (no stale-null gap)", () => {
@@ -651,6 +650,7 @@ describe("SessionRuntimeManager #17 SessionState fan-out", () => {
     expect(changed).toBe(true);
     expect(m.getMetadata("sm-2")?.model).toBeUndefined();
     expect(onChange).toHaveBeenCalledOnce();
-    expect((onChange.mock.calls[0]?.[1] as SessionState).model).toBeNull();
+    const state = onChange.mock.calls[0]?.[1] as SessionState;
+    expect(state.model).toBeNull();
   });
 });

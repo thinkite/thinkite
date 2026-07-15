@@ -12,7 +12,8 @@
       "!**/*.astro",
       "!**/*.svg",
       "!packages/app/src/uniwind-types.d.ts",
-      "!packages/app/assets/**/*.icon"
+      "!packages/app/assets/**/*.icon",
+      "!packages/desktop/src/routeTree.gen.ts"
     ]
   },
   "formatter": {

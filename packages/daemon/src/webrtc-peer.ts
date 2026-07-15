@@ -233,8 +233,7 @@ export class WebRTCPeerServer {
    * signaled to the client, and non-relay REMOTE candidates are never fed
    * to the pc. No material, no pair.
    */
-  private readonly relayOnly =
-    process.env.SIDECODE_ICE_POLICY === "relay";
+  private readonly relayOnly = process.env.SIDECODE_ICE_POLICY === "relay";
   /** Cached minted TURN ICE-server list (+ expiry). Null until first
    *  fetch; on mint failure holds the STUN fallback with a short TTL. */
   private turnCache: { iceServers: RTCIceServer[]; expiresAt: number } | null =
@@ -382,8 +381,7 @@ export class WebRTCPeerServer {
       const remoteTyp = / typ (\w+)/.exec(candStr)?.[1];
       if (
         this.relayOnly &&
-        (isPrivateCandidateAddress(candStr) ||
-          isIpv6CandidateAddress(candStr))
+        (isPrivateCandidateAddress(candStr) || isIpv6CandidateAddress(candStr))
       ) {
         this.log("peer.candidate.remote_private_dropped", {
           clientId: peer.clientId,
@@ -399,9 +397,7 @@ export class WebRTCPeerServer {
       try {
         // Candidate init dict straight through — W3C addIceCandidate takes
         // RTCIceCandidateInit directly, no wrapper class needed.
-        await peer.pc.addIceCandidate(
-          msg.candidate as RTCIceCandidateInit,
-        );
+        await peer.pc.addIceCandidate(msg.candidate as RTCIceCandidateInit);
       } catch (err) {
         this.log("peer.candidate.error", {
           clientId: peer.clientId,

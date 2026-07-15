@@ -137,7 +137,6 @@ async function main() {
   await probe("max effort + valid model", () =>
     q.applyFlagSettings({
       model: "claude-opus-4-7",
-      // biome-ignore lint: deliberately bypassing the SDK type to probe runtime behavior
       effortLevel: "max" as never,
     }),
   );
@@ -145,7 +144,6 @@ async function main() {
   // Probe 2: completely invalid string.
   await probe("invalid effort 'test'", () =>
     q.applyFlagSettings({
-      // biome-ignore lint: deliberate
       effortLevel: "test" as never,
     }),
   );
