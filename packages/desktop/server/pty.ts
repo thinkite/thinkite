@@ -38,9 +38,10 @@
 //    makes this theoretical; log if it ever trips.
 //  - Plain named imports: bun's ESM/CJS interop detects named exports on the
 //    UMD bundles (deno's node-compat couldn't — it needed default-import +
-//    destructure). Note @xterm/headless 6.1.0-beta.288 ships a broken
-//    `module` field (lib/xterm.mjs doesn't exist); bun silently falls back
-//    to the CJS `main`.
+//    destructure). Note @xterm/headless ships a broken `module` field
+//    (lib/xterm.mjs doesn't exist — a publish-script leak from the main
+//    package; reported + fixed upstream: xtermjs/xterm.js#6052, #6053);
+//    bun silently falls back to the CJS `main`.
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { type Terminal as HeadlessTerminal, Terminal } from "@xterm/headless";
 import type { Server, ServerWebSocket } from "bun";
