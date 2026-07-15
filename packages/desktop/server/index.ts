@@ -5,10 +5,11 @@
 // (DENO_SERVE_ADDRESS → SIDECODE_PTY_TARGET) existed only because that
 // runtime chose the port; a fixed port dissolves it.
 //
-// Dev:   bun run dev        (electrobun dev; main.ts probes/starts Vite for HMR)
+// Dev:   bun run dev        (electrobun dev; probes/starts Vite for HMR)
 //        bun run dev:static (same, but skips Vite — exercises the built dist)
-// Pack:  electrobun build (packaging slice — dist embedding + system-claude
-//        discovery + version gate land there).
+// Pack:  bun run package    (vite build + daemon build + electrobun build;
+//        renderer dist + tray icon ride under views/, daemon is bundled,
+//        node-datachannel is staged — see electrobun.config.ts)
 //
 // Window model (the reason this file is short): electrobun's
 // `exitOnLastWindowClosed: false` lets every window REALLY close while the
@@ -16,7 +17,7 @@
 // none of the laufey lifecycle workarounds (close-request-only semantics,
 // close() SIGSEGV, last-hidden-window termination) this file used to carry.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
@@ -43,24 +44,49 @@ import {
   rpcUpgrade,
 } from "./rpc";
 
-// The bundle runs from build/dev-*/­Sidecode.app/Contents/Resources/app/bun/,
-// so walk up to the package root (marked by electrobun.config.ts). Everything
-// on disk — dist/, assets/, the vite bin, the repo's node_modules — hangs off
-// it. A packaged app has no config above it: the packaging slice replaces
-// this with embedded-resource paths.
+// Mode detection: electrobun stamps Resources/version.json with the build
+// channel ("dev" for `electrobun dev`, "stable"/"canary" for `electrobun
+// build`) — the same field its own Updater keys on (build.json exists too
+// but carries NO channel). NOT layout-based: a stable .app launched from
+// packages/desktop/build/ still sits inside the repo, so a walk-up marker
+// would misread it as dev and serve the repo's dist / spawn vite / pick
+// the repo SDK binary.
+//
+// In dev, everything (dist/, assets/, the vite bin, the repo's
+// node_modules) hangs off the package root, found by walking up from the
+// bundle (build/dev-*/…/Resources/app/bun/) to electrobun.config.ts. A
+// packaged app had its dist/tray/node_modules staged under Resources/app/
+// by the config's `copy` map instead.
+const APP_DIR = dirname(import.meta.dir); // Contents/Resources/app
+const CHANNEL = (() => {
+  try {
+    const raw = JSON.parse(
+      readFileSync(join(dirname(APP_DIR), "version.json"), "utf8"),
+    ) as { channel?: string };
+    return raw.channel ?? "dev";
+  } catch {
+    return "dev";
+  }
+})();
 const PKG = (() => {
+  if (CHANNEL !== "dev") return null; // packaged — never dev paths
   let dir = import.meta.dir;
   while (dir !== "/") {
     if (existsSync(join(dir, "electrobun.config.ts"))) return dir;
     dir = dirname(dir);
   }
   throw new Error(
-    "electrobun.config.ts not found above the bundle — packaged layout isn't wired yet (packaging slice)",
+    "dev channel but no electrobun.config.ts above the bundle — unexpected layout",
   );
 })();
-const REPO = dirname(dirname(PKG));
-const DIST = join(PKG, "dist");
-console.log(`[desktop] boot — pkg ${PKG}`);
+const REPO = PKG ? dirname(dirname(PKG)) : null;
+const DIST = PKG ? join(PKG, "dist") : join(APP_DIR, "views/dist");
+const TRAY_ICON = PKG
+  ? join(PKG, "assets/tray.png")
+  : join(APP_DIR, "views/assets/tray.png");
+console.log(
+  `[desktop] boot — channel ${CHANNEL}, ${PKG ? `dev pkg ${PKG}` : `packaged ${APP_DIR}`}`,
+);
 
 const PORT = 5199;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -73,10 +99,11 @@ const VITE_URL = "http://localhost:5183"; // strictPort in vite.config.ts
 // working in local-only mode (PTY/diff don't need the daemon; sessions +
 // transcripts do) rather than fighting over signaling with a twin identity.
 //
-// The import is real but marked `external` in electrobun.config.ts: bundling
-// the daemon would inline its lazy node-datachannel loader away from the
-// repo's node_modules, where the N-API prebuild actually lives. At runtime
-// bun resolves it by walking up from the bundle to the repo root.
+// The daemon import is mode-dependent (electrobun.config.ts): dev marks it
+// `external` so it resolves through the repo's node_modules at runtime (a
+// daemon rebuild needs no desktop re-bundle); packaged builds BUNDLE it and
+// external only node-datachannel, whose native prebuild is staged into
+// app/bun/node_modules where the daemon's lazy import finds it by walk-up.
 let daemon: Daemon | null = null;
 {
   const home = resolveSidecodeHome(); // ensures the dir exists
@@ -86,14 +113,35 @@ let daemon: Daemon | null = null;
       `[desktop] another daemon owns ${home} (pid ${lock.pid}) — starting GUI without in-process daemon`,
     );
   } else {
-    // Dev: spawn the SDK's platform-package claude binary (same seam
-    // run-query.ts forwards). bun's default hoisted install puts the
-    // platform package (an optional dep of the SDK) at top level; the
-    // isolated linker keeps it store-only under .bun — scan that as a
-    // fallback. Spawning some OTHER claude must not happen: a
-    // PATH-resolved system CLI can mismatch the SDK's control protocol
-    // and hang the first turn. Packaged builds replace this with
-    // system-claude discovery + a version gate (packaging slice).
+    const claudeExecutablePath = await resolveClaude();
+    if (claudeExecutablePath === undefined) {
+      console.warn(
+        "[desktop] no usable claude binary found — falling back to SDK resolution (may pick a mismatched CLI)",
+      );
+    }
+    console.log(`[desktop] starting daemon — claude ${claudeExecutablePath}`);
+    daemon = await startDaemon({ claudeExecutablePath });
+    console.log(
+      `[desktop] daemon up — fingerprint ${daemon.fingerprint}, pairedClients ${daemon.pairedClientCount()}`,
+    );
+  }
+}
+
+// Dev: spawn the SDK's platform-package claude binary from the REPO (same
+// seam run-query.ts forwards) — top-level under bun's hoisted linker, .bun
+// store under the isolated one.
+//
+// Packaged: no repo, and the SDK's 230MB platform binary is deliberately
+// not shipped — discover the SYSTEM claude instead, gated by version.
+// Spawning a mismatched CLI must not happen: an old CLI can mismatch the
+// SDK's control protocol and hang the first turn (spawns, writes JSONL
+// meta records, never processes the prompt), which is WORSE than failing
+// loudly here. (Handshake watchdog = follow-up hardening.)
+async function resolveClaude(): Promise<string | undefined> {
+  // Inside the function: the daemon block above calls this via top-level
+  // await BEFORE later module-level consts initialize (TDZ).
+  const MIN_CLAUDE = [2, 1, 0] as const;
+  if (REPO !== null) {
     const repoModules = join(REPO, "node_modules");
     const candidates = [
       join(repoModules, "@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"),
@@ -114,23 +162,63 @@ let daemon: Daemon | null = null;
     } catch {
       // no .bun store (hoisted layout) — top-level candidate only
     }
-    let claudeExecutablePath: string | undefined;
     for (const c of candidates) {
-      if (await stat(c).catch(() => null)) {
-        claudeExecutablePath = c;
-        break;
-      }
+      if (await stat(c).catch(() => null)) return c;
     }
-    if (claudeExecutablePath === undefined) {
+    return undefined;
+  }
+  // System discovery order: user PATH (meaningful when launched from a
+  // terminal; Finder gives a bare one), then the native installer's
+  // default, then Homebrew/npm-global prefixes.
+  const home = process.env.HOME ?? "";
+  const candidates = [
+    Bun.which("claude"),
+    join(home, ".local/bin/claude"),
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+  ].filter((c): c is string => c !== null && c !== undefined);
+  for (const c of candidates) {
+    if (!(await stat(c).catch(() => null))) continue;
+    const version = await claudeVersion(c);
+    if (version === null) {
       console.warn(
-        "[desktop] SDK platform claude binary not found — falling back to SDK resolution (may pick a mismatched system CLI)",
+        `[desktop] ${c}: --version failed or unparseable — skipping`,
       );
+      continue;
     }
-    console.log(`[desktop] starting daemon — claude ${claudeExecutablePath}`);
-    daemon = await startDaemon({ claudeExecutablePath });
-    console.log(
-      `[desktop] daemon up — fingerprint ${daemon.fingerprint}, pairedClients ${daemon.pairedClientCount()}`,
-    );
+    const ok =
+      version[0] > MIN_CLAUDE[0] ||
+      (version[0] === MIN_CLAUDE[0] &&
+        (version[1] > MIN_CLAUDE[1] ||
+          (version[1] === MIN_CLAUDE[1] && version[2] >= MIN_CLAUDE[2])));
+    if (!ok) {
+      console.warn(
+        `[desktop] ${c}: version ${version.join(".")} < ${MIN_CLAUDE.join(".")} — skipping (control-protocol mismatch risk)`,
+      );
+      continue;
+    }
+    console.log(`[desktop] system claude ${version.join(".")} at ${c}`);
+    return c;
+  }
+  return undefined;
+}
+
+async function claudeVersion(
+  bin: string,
+): Promise<[number, number, number] | null> {
+  try {
+    const proc = Bun.spawn([bin, "--version"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 5000,
+    });
+    const out = await new Response(proc.stdout).text();
+    if ((await proc.exited) !== 0) return null;
+    const m = out.match(/(\d+)\.(\d+)\.(\d+)/);
+    if (!m) return null;
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
+  } catch {
+    return null;
   }
 }
 
@@ -246,12 +334,13 @@ const pageBase = await (async () => {
       return false;
     }
   };
+  if (PKG === null || REPO === null) return BASE; // packaged — dist only
   if (await alive()) return VITE_URL;
   const viteBin = [
     join(PKG, "node_modules/.bin/vite"),
     join(REPO, "node_modules/.bin/vite"),
   ].find(existsSync);
-  if (!viteBin) return BASE; // packaged layout — serve dist
+  if (!viteBin) return BASE; // no vite on disk — serve dist
   viteChild = Bun.spawn([viteBin], {
     cwd: PKG,
     stdout: "inherit",
@@ -317,7 +406,7 @@ app.on("reopen", () => {
 // Plan-usage status rows join this menu later (disabled label items,
 // refreshed via setMenu).
 const tray = new Tray({
-  image: join(PKG, "assets/tray.png"),
+  image: TRAY_ICON,
   template: true,
   width: 18,
   height: 18,

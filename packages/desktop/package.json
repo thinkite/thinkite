@@ -14,6 +14,7 @@
     "dev:static": "SIDECODE_DESKTOP_STATIC=1 electrobun dev",
     "dev:web": "vite",
     "build": "vite build",
+    "package": "bun run --cwd ../protocol build && bun run --cwd ../daemon build && vite build && electrobun build --env=stable",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
