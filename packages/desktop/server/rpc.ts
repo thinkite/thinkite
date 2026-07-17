@@ -8,52 +8,24 @@
 // per-connection cleanups (subscription fanouts), so a reloaded webview
 // never leaks subscribers.
 //
-// Bun.serve's websocket API is handler-per-server (not per-socket like
-// Deno.upgradeWebSocket), so main.ts dispatches open/message/close here by
-// ws.data.kind.
+// `ws` is per-socket listeners (unlike Bun.serve's handler-per-server API
+// this replaced), so index.ts just hands the upgraded socket here — no
+// ws.data discriminant dance.
 import type { Daemon } from "@sidecodeapp/daemon";
-import type { Server, ServerWebSocket } from "bun";
+import type { WebSocket } from "ws";
 
-export type RpcWsData = {
-  kind: "rpc";
-  conn: ReturnType<Daemon["connectLocal"]> | null;
-};
-
-type RpcSocket = ServerWebSocket<RpcWsData>;
-
-export function rpcUpgrade(
-  req: Request,
-  server: Server,
-  daemon: Daemon | null,
-): Response | undefined {
-  if (daemon === null) {
-    // Another daemon owns ~/.sidecode (or startup failed) — the GUI shows
-    // its daemon-offline state off this instead of a dead socket.
-    return new Response("daemon not running in this process", { status: 503 });
-  }
-  const data: RpcWsData = { kind: "rpc", conn: null };
-  return server.upgrade(req, { data })
-    ? undefined
-    : new Response("upgrade failed", { status: 400 });
-}
-
-export function rpcOpen(ws: RpcSocket, daemon: Daemon): void {
-  ws.data.conn = daemon.connectLocal({
+export function attachRpc(ws: WebSocket, daemon: Daemon): void {
+  const conn = daemon.connectLocal({
     send: (frame) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws.readyState === ws.OPEN) {
         ws.send(JSON.stringify(frame));
       }
     },
   });
-}
-
-export function rpcMessage(ws: RpcSocket, msg: string | Buffer): void {
-  if (typeof msg === "string") ws.data.conn?.dispatchText(msg);
-}
-
-export function rpcClose(ws: RpcSocket): void {
+  ws.on("message", (msg, isBinary) => {
+    if (!isBinary) conn.dispatchText(msg.toString());
+  });
   // conn.close() is idempotent; fires the router's per-connection cleanups
   // (subscription fanouts) so a reloaded webview never leaks subscribers.
-  ws.data.conn?.close();
-  ws.data.conn = null;
+  ws.on("close", () => conn.close());
 }

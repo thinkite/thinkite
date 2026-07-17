@@ -1,131 +1,54 @@
-// Electrobun entry (bun process; MUST be named index.ts — see the
-// electrobun.config.ts entrypoint note). Serves the Vite-built SPA from dist/ and
-// mounts our own routes (PTY WebSocket, daemon RPC, diff, pairing) on one
-// fixed-port Bun.serve — the deno-desktop predecessor's env-relay dance
-// (DENO_SERVE_ADDRESS → SIDECODE_PTY_TARGET) existed only because that
-// runtime chose the port; a fixed port dissolves it.
+// Electron main (node process; built to dist-main/index.js by `bun run
+// build:main`, esbuild with packages=external — everything resolves from
+// node_modules at runtime). Serves the Vite-built SPA from dist/ and mounts
+// our own routes (PTY WebSocket, daemon RPC, diff, pairing) on one
+// fixed-port node http server — same port and routes as the electrobun and
+// deno predecessors, so the renderer never noticed a runtime change.
 //
-// Dev:   bun run dev        (electrobun dev; probes/starts Vite for HMR)
+// Dev:   bun run dev        (build:main + electron; probes/starts Vite HMR)
 //        bun run dev:static (same, but skips Vite — exercises the built dist)
-// Pack:  bun run package    (vite build + daemon build + electrobun build;
-//        renderer dist + tray icon ride under views/, daemon is bundled,
-//        node-datachannel is staged — see electrobun.config.ts)
+// Pack:  S3 (electron-builder) — not wired yet.
 //
-// Window model (the reason this file is short): electrobun's
-// `exitOnLastWindowClosed: false` lets every window REALLY close while the
-// app lives on in the tray/dock — no keeper window, no close→hide masquerade,
-// none of the laufey lifecycle workarounds (close-request-only semantics,
-// close() SIGSEGV, last-hidden-window termination) this file used to carry.
-
-import { existsSync, readFileSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+// S1 scope note: tray + pair window land in S2 (Electron Tray/Menu, harvested
+// from the retired menubar app). Until then closing the window quits the app.
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { createServer } from "node:http";
 import { hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   type Daemon,
   readActiveDaemonLock,
   resolveSidecodeHome,
   start as startDaemon,
 } from "@sidecodeapp/daemon";
-import { app, BrowserWindow, Tray } from "electrobun/bun";
+import { app, BrowserWindow } from "electron";
+import { WebSocketServer } from "ws";
 import { handleDiff } from "./diff";
-import {
-  type PtyWsData,
-  ptyClose,
-  ptyMessage,
-  ptyOpen,
-  ptyUpgrade,
-} from "./pty";
-import {
-  type RpcWsData,
-  rpcClose,
-  rpcMessage,
-  rpcOpen,
-  rpcUpgrade,
-} from "./rpc";
+import { attachPty, ptyParams } from "./pty";
+import { attachRpc } from "./rpc";
 
-// Mode detection: electrobun stamps Resources/version.json with the build
-// channel ("dev" for `electrobun dev`, "stable"/"canary" for `electrobun
-// build`) — the same field its own Updater keys on (build.json exists too
-// but carries NO channel). NOT layout-based: a stable .app launched from
-// packages/desktop/build/ still sits inside the repo, so a walk-up marker
-// would misread it as dev and serve the repo's dist / spawn vite / pick
-// the repo SDK binary.
+// Mode detection: `app.isPackaged` (real Electron signal — no more
+// version.json channel probing; electrobun needed that because a stable
+// .app launched from inside the repo defeated layout walk-ups, but
+// isPackaged is stamped by the binary itself, not the filesystem).
 //
-// In dev, everything (dist/, assets/, the vite bin, the repo's
-// node_modules) hangs off the package root, found by walking up from the
-// bundle (build/dev-*/…/Resources/app/bun/) to electrobun.config.ts. A
-// packaged app had its dist/tray/node_modules staged under Resources/app/
-// by the config's `copy` map instead.
-const APP_DIR = dirname(import.meta.dir); // Contents/Resources/app
-const CHANNEL = (() => {
-  try {
-    const raw = JSON.parse(
-      readFileSync(join(dirname(APP_DIR), "version.json"), "utf8"),
-    ) as { channel?: string };
-    return raw.channel ?? "dev";
-  } catch {
-    return "dev";
-  }
-})();
-const PKG = (() => {
-  if (CHANNEL !== "dev") return null; // packaged — never dev paths
-  let dir = import.meta.dir;
-  while (dir !== "/") {
-    if (existsSync(join(dir, "electrobun.config.ts"))) return dir;
-    dir = dirname(dir);
-  }
-  throw new Error(
-    "dev channel but no electrobun.config.ts above the bundle — unexpected layout",
-  );
-})();
+// Dev: everything (dist/, the vite bin, the repo's node_modules) hangs off
+// the package root = one level above dist-main/. A packaged app has its
+// dist staged under process.resourcesPath by electron-builder (S3).
+const HERE = dirname(fileURLToPath(import.meta.url)); // packages/desktop/dist-main
+const PKG = app.isPackaged ? null : dirname(HERE);
 const REPO = PKG ? dirname(dirname(PKG)) : null;
-const DIST = PKG ? join(PKG, "dist") : join(APP_DIR, "views/dist");
-const TRAY_ICON = PKG
-  ? join(PKG, "assets/tray.png")
-  : join(APP_DIR, "views/assets/tray.png");
+const DIST = PKG ? join(PKG, "dist") : join(process.resourcesPath, "dist");
 console.log(
-  `[desktop] boot — channel ${CHANNEL}, ${PKG ? `dev pkg ${PKG}` : `packaged ${APP_DIR}`}`,
+  `[desktop] boot — ${PKG ? `dev pkg ${PKG}` : `packaged ${process.resourcesPath}`}`,
 );
 
 const PORT = 5199;
 const BASE = `http://127.0.0.1:${PORT}`;
 const VITE_URL = "http://localhost:5183"; // strictPort in vite.config.ts
-
-// ─── In-process daemon (D2): this process IS the sidecode daemon ───────────
-// Same identity, same ~/.sidecode home, same signaling presence the iOS app
-// pairs against. `start()` only writes the liveness lock, so check it first:
-// if another daemon owns the home (e.g. the menubar app), the GUI keeps
-// working in local-only mode (PTY/diff don't need the daemon; sessions +
-// transcripts do) rather than fighting over signaling with a twin identity.
-//
-// The daemon import is mode-dependent (electrobun.config.ts): dev marks it
-// `external` so it resolves through the repo's node_modules at runtime (a
-// daemon rebuild needs no desktop re-bundle); packaged builds BUNDLE it and
-// external only node-datachannel, whose native prebuild is staged into
-// app/bun/node_modules where the daemon's lazy import finds it by walk-up.
-let daemon: Daemon | null = null;
-{
-  const home = resolveSidecodeHome(); // ensures the dir exists
-  const lock = readActiveDaemonLock(home);
-  if (lock) {
-    console.warn(
-      `[desktop] another daemon owns ${home} (pid ${lock.pid}) — starting GUI without in-process daemon`,
-    );
-  } else {
-    const claudeExecutablePath = await resolveClaude();
-    if (claudeExecutablePath === undefined) {
-      console.warn(
-        "[desktop] no usable claude binary found — falling back to SDK resolution (may pick a mismatched CLI)",
-      );
-    }
-    console.log(`[desktop] starting daemon — claude ${claudeExecutablePath}`);
-    daemon = await startDaemon({ claudeExecutablePath });
-    console.log(
-      `[desktop] daemon up — fingerprint ${daemon.fingerprint}, pairedClients ${daemon.pairedClientCount()}`,
-    );
-  }
-}
 
 // Dev: spawn the SDK's platform-package claude binary from the REPO (same
 // seam run-query.ts forwards) — top-level under bun's hoisted linker, .bun
@@ -137,10 +60,9 @@ let daemon: Daemon | null = null;
 // SDK's control protocol and hang the first turn (spawns, writes JSONL
 // meta records, never processes the prompt), which is WORSE than failing
 // loudly here. (Handshake watchdog = follow-up hardening.)
+const MIN_CLAUDE = [2, 1, 0] as const;
+
 async function resolveClaude(): Promise<string | undefined> {
-  // Inside the function: the daemon block above calls this via top-level
-  // await BEFORE later module-level consts initialize (TDZ).
-  const MIN_CLAUDE = [2, 1, 0] as const;
   if (REPO !== null) {
     const repoModules = join(REPO, "node_modules");
     const candidates = [
@@ -171,12 +93,13 @@ async function resolveClaude(): Promise<string | undefined> {
   // terminal; Finder gives a bare one), then the native installer's
   // default, then Homebrew/npm-global prefixes.
   const home = process.env.HOME ?? "";
+  const which = (await run("/usr/bin/which", ["claude"]))?.trim();
   const candidates = [
-    Bun.which("claude"),
+    which,
     join(home, ".local/bin/claude"),
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
-  ].filter((c): c is string => c !== null && c !== undefined);
+  ].filter((c): c is string => !!c);
   for (const c of candidates) {
     if (!(await stat(c).catch(() => null))) continue;
     const version = await claudeVersion(c);
@@ -203,30 +126,63 @@ async function resolveClaude(): Promise<string | undefined> {
   return undefined;
 }
 
+function run(cmd: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: 5000 }, (err, stdout) =>
+      resolve(err ? null : stdout),
+    );
+  });
+}
+
 async function claudeVersion(
   bin: string,
 ): Promise<[number, number, number] | null> {
-  try {
-    const proc = Bun.spawn([bin, "--version"], {
-      stdout: "pipe",
-      stderr: "ignore",
-      timeout: 5000,
-    });
-    const out = await new Response(proc.stdout).text();
-    if ((await proc.exited) !== 0) return null;
-    const m = out.match(/(\d+)\.(\d+)\.(\d+)/);
-    if (!m) return null;
-    return [Number(m[1]), Number(m[2]), Number(m[3])];
-  } catch {
-    return null;
+  const out = await run(bin, ["--version"]);
+  const m = out?.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+// ─── In-process daemon (D2): this process IS the sidecode daemon ───────────
+// Same identity, same ~/.sidecode home, same signaling presence the iOS app
+// pairs against. `start()` only writes the liveness lock, so check it first:
+// if another daemon owns the home (e.g. the menubar app), the GUI keeps
+// working in local-only mode (PTY/diff don't need the daemon; sessions +
+// transcripts do) rather than fighting over signaling with a twin identity.
+//
+// The daemon is a static import resolved from node_modules at runtime
+// (esbuild packages=external) — a daemon rebuild needs no desktop
+// re-bundle. Packaged builds revisit this in S3 (bundle + stage
+// node-datachannel, the electrobun recipe carried over).
+let daemon: Daemon | null = null;
+{
+  const home = resolveSidecodeHome(); // ensures the dir exists
+  const lock = readActiveDaemonLock(home);
+  if (lock) {
+    console.warn(
+      `[desktop] another daemon owns ${home} (pid ${lock.pid}) — starting GUI without in-process daemon`,
+    );
+  } else {
+    const claudeExecutablePath = await resolveClaude();
+    if (claudeExecutablePath === undefined) {
+      console.warn(
+        "[desktop] no usable claude binary found — falling back to SDK resolution (may pick a mismatched CLI)",
+      );
+    }
+    console.log(`[desktop] starting daemon — claude ${claudeExecutablePath}`);
+    daemon = await startDaemon({ claudeExecutablePath });
+    console.log(
+      `[desktop] daemon up — fingerprint ${daemon.fingerprint}, pairedClients ${daemon.pairedClientCount()}`,
+    );
   }
 }
 
-// ─── One shutdown path for every exit trigger (tray Quit, SIGINT/SIGTERM) ──
+// ─── One shutdown path for every exit trigger (window close, SIGINT/SIGTERM)
 // Reap the vite child, then drain the daemon (WebRTC peers, claude
 // subprocesses, JSONL writes) before the process dies. Idempotent —
 // multiple triggers can fire.
-let viteChild: Bun.Subprocess | null = null;
+let viteChild: ReturnType<typeof import("node:child_process").spawn> | null =
+  null;
 let shuttingDown = false;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
@@ -241,82 +197,142 @@ async function shutdown(): Promise<void> {
   } catch (e) {
     console.error("[desktop] daemon stop failed:", e);
   }
-  process.exit(0);
+  app.exit(0);
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 
-// ─── HTTP + WS server (fixed port — impossible on deno desktop) ────────────
-type WsData = PtyWsData | RpcWsData;
+// ─── HTTP + WS server (fixed port, node http + ws) ─────────────────────────
+const MIME: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".mjs": "text/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+  ".wasm": "application/wasm",
+  ".map": "application/json",
+};
 
-const server = Bun.serve<WsData, Record<string, never>>({
-  port: PORT,
-  async fetch(req, srv) {
-    const url = new URL(req.url);
-    if (url.pathname === "/pty") return ptyUpgrade(req, srv);
-    if (url.pathname === "/rpc") return rpcUpgrade(req, srv, daemon);
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url ?? "/", BASE);
+  try {
     if (url.pathname === "/api/daemon/status") {
-      return Response.json(
-        daemon
-          ? {
-              running: true,
-              fingerprint: daemon.fingerprint,
-              pairedClients: daemon.pairedClientCount(),
-              authenticatedPeers: daemon.authenticatedPeerCount(),
-            }
-          : { running: false },
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify(
+          daemon
+            ? {
+                running: true,
+                fingerprint: daemon.fingerprint,
+                pairedClients: daemon.pairedClientCount(),
+                authenticatedPeers: daemon.authenticatedPeerCount(),
+              }
+            : { running: false },
+        ),
       );
+      return;
     }
-    if (url.pathname === "/api/diff") return await handleDiff(req);
+    if (url.pathname === "/api/diff") {
+      const r = await handleDiff(url);
+      if ("json" in r) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(r.json));
+      } else {
+        res.writeHead(r.status, { "content-type": "text/plain" });
+        res.end(r.body);
+      }
+      return;
+    }
     if (url.pathname === "/api/pair/offer") {
       if (daemon === null) {
         // Another daemon owns ~/.sidecode — pairing belongs to IT, not us.
-        return new Response(
-          "daemon not running in this process — pairing unavailable",
-          { status: 503 },
-        );
+        res.writeHead(503, { "content-type": "text/plain" });
+        res.end("daemon not running in this process — pairing unavailable");
+        return;
       }
       // Same payload the menubar minted: a pure function of the daemon
       // identity plus this host's name (shown in iOS's confirm modal), so
-      // no TTL and no refresh. Admission is gated by the pair window's
-      // open/close (setPairing in openPairWindow), not by this call.
-      return Response.json(daemon.createPairOffer(hostname()));
+      // no TTL and no refresh. Admission gating rejoins in S2 with the
+      // pair window (setPairing on open/close).
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(daemon.createPairOffer(hostname())));
+      return;
     }
     if (url.pathname.startsWith("/api/")) {
-      return new Response("not found", { status: 404 });
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
+      return;
     }
     // Static SPA from dist/. SPA fallback only for HTML navigations, so
     // missing assets/API paths still 404.
     const rel = url.pathname === "/" ? "/index.html" : url.pathname;
-    const file = Bun.file(DIST + rel);
-    if (await file.exists()) return new Response(file);
+    let file = join(DIST, rel);
+    let st = await stat(file).catch(() => null);
     if (
+      !st?.isFile() &&
       req.method === "GET" &&
-      (req.headers.get("accept") ?? "").includes("text/html")
+      (req.headers.accept ?? "").includes("text/html")
     ) {
-      return new Response(Bun.file(join(DIST, "index.html")));
+      file = join(DIST, "index.html");
+      st = await stat(file).catch(() => null);
     }
-    return new Response("not found", { status: 404 });
-  },
-  // Bun's websocket handlers are per-server, not per-socket — dispatch on
-  // the discriminant stamped at upgrade time.
-  websocket: {
-    open(ws) {
-      if (ws.data.kind === "pty") ptyOpen(ws as never);
-      // rpcUpgrade already rejected when daemon is null.
-      else if (daemon) rpcOpen(ws as never, daemon);
-    },
-    message(ws, msg) {
-      if (ws.data.kind === "pty") ptyMessage(ws as never, msg as never);
-      else rpcMessage(ws as never, msg as never);
-    },
-    close(ws) {
-      if (ws.data.kind === "pty") ptyClose(ws as never);
-      else rpcClose(ws as never);
-    },
-  },
+    if (!st?.isFile()) {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": MIME[extname(file)] ?? "application/octet-stream",
+    });
+    res.end(await readFile(file));
+  } catch (e) {
+    res.writeHead(500, { "content-type": "text/plain" });
+    res.end(String(e));
+  }
 });
-console.log(`[desktop] serving ${DIST} + /pty /rpc /api on ${server.url}`);
+
+const wss = new WebSocketServer({ noServer: true });
+server.on("upgrade", (req, socket, head) => {
+  const url = new URL(req.url ?? "/", BASE);
+  if (url.pathname === "/pty") {
+    const params = ptyParams(url);
+    if (typeof params === "string") {
+      socket.end(`HTTP/1.1 400 Bad Request\r\n\r\n${params}`);
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => attachPty(ws, params));
+  } else if (url.pathname === "/rpc") {
+    if (daemon === null) {
+      // The GUI shows its daemon-offline state off this instead of a dead
+      // socket.
+      socket.end(
+        "HTTP/1.1 503 Service Unavailable\r\n\r\ndaemon not running in this process",
+      );
+      return;
+    }
+    const d = daemon;
+    wss.handleUpgrade(req, socket, head, (ws) => attachRpc(ws, d));
+  } else {
+    socket.destroy();
+  }
+});
+
+await new Promise<void>((resolve, reject) => {
+  server.once("error", reject);
+  server.listen(PORT, "127.0.0.1", resolve);
+}).catch((e) => {
+  console.error(
+    `[desktop] port ${PORT} unavailable (another instance running?):`,
+    e,
+  );
+  app.exit(1);
+});
+console.log(`[desktop] serving ${DIST} + /pty /rpc /api on ${BASE}`);
 
 // ─── Full React HMR loop (probe-first, no env relay) ───────────────────────
 // If a Vite dev server is already up (separate `bun run dev:web`), reuse it;
@@ -341,10 +357,10 @@ const pageBase = await (async () => {
     join(REPO, "node_modules/.bin/vite"),
   ].find(existsSync);
   if (!viteBin) return BASE; // no vite on disk — serve dist
-  viteChild = Bun.spawn([viteBin], {
+  const { spawn } = await import("node:child_process");
+  viteChild = spawn(viteBin, [], {
     cwd: PKG,
-    stdout: "inherit",
-    stderr: "inherit",
+    stdio: ["ignore", "inherit", "inherit"],
   });
   for (let i = 0; i < 100 && !(await alive()); i++) {
     await new Promise((r) => setTimeout(r, 100));
@@ -352,7 +368,7 @@ const pageBase = await (async () => {
   return (await alive()) ? VITE_URL : BASE;
 })();
 
-// ─── Windows: REAL close semantics ─────────────────────────────────────────
+// ─── Window ─────────────────────────────────────────────────────────────────
 let mainWin: BrowserWindow | null = null;
 function openMain(): void {
   if (mainWin !== null) {
@@ -361,75 +377,31 @@ function openMain(): void {
   }
   mainWin = new BrowserWindow({
     title: "Sidecode",
-    url: `${pageBase}/`,
-    frame: { x: 160, y: 120, width: 1200, height: 800 },
+    x: 160,
+    y: 120,
+    width: 1200,
+    height: 800,
     // Transparent titlebar: native traffic lights inset over the page; the
-    // renderer detects electrobun (preload stamps __electrobunWindowId) and
-    // renders the drag strip the preload's drag-region handler picks up.
+    // renderer detects Electron (userAgent) and renders a strip with native
+    // `-webkit-app-region: drag` — no preload needed.
     titleBarStyle: "hiddenInset",
   });
-  mainWin.on("close", () => {
-    // Real close; the app lives on in tray/dock. PTY sessions live
-    // server-side and survive this.
+  void mainWin.loadURL(`${pageBase}/`);
+  mainWin.on("closed", () => {
     mainWin = null;
   });
 }
 
-let pairWin: BrowserWindow | null = null;
-function openPairWindow(): void {
-  if (pairWin !== null) {
-    pairWin.focus();
-    return;
-  }
-  // The window IS the admission gate (menubar semantics carried over):
-  // showing it starts admitting pairing attempts, dismissing stops them —
-  // so the QR "always works" exactly while it's visible, and no stranger
-  // can pair against a daemon whose owner isn't looking at a pair window.
-  daemon?.setPairing(true);
-  pairWin = new BrowserWindow({
-    title: "Pair New Device",
-    url: `${pageBase}/pair`,
-    frame: { x: 560, y: 200, width: 420, height: 680 },
-  });
-  pairWin.on("close", () => {
-    daemon?.setPairing(false);
-    pairWin = null;
-  });
-}
-
 // Dock click with no windows: recreate the main window.
-app.on("reopen", () => {
-  openMain();
-});
+app.on("activate", openMain);
 
-// ─── Menu-bar tray ──────────────────────────────────────────────────────────
-// Plan-usage status rows join this menu later (disabled label items,
-// refreshed via setMenu).
-const tray = new Tray({
-  image: TRAY_ICON,
-  template: true,
-  width: 18,
-  height: 18,
-});
-tray.setMenu([
-  { type: "normal", label: "Open Sidecode", action: "open" },
-  { type: "normal", label: "Pair New Device…", action: "pair" },
-  { type: "separator" },
-  { type: "normal", label: "Quit Sidecode", action: "quit" },
-]);
-tray.on("tray-clicked", (event) => {
-  const action = (event as { data?: { action?: string } })?.data?.action;
-  switch (action) {
-    case "open":
-      openMain();
-      break;
-    case "pair":
-      openPairWindow();
-      break;
-    case "quit":
-      void shutdown();
-      break;
-  }
-});
+// S1 lifecycle: closing the window quits (tray residency returns in S2 —
+// then this handler becomes a no-op and quit moves to the tray menu).
+app.on("window-all-closed", () => void shutdown());
 
-openMain();
+// NOT `await app.whenReady()`: with an ESM entry Electron delays `ready`
+// until the module's top-level evaluation (including every await above)
+// finishes — a top-level await on whenReady is therefore a DEADLOCK (the
+// daemon/server/vite booted, no window ever appeared). The .then() lets
+// evaluation complete; ready fires right after, with pageBase already set.
+void app.whenReady().then(openMain);

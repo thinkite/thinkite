@@ -27,80 +27,68 @@
 // Server→client frames are raw PTY bytes; first frame after attach = the
 // serialized snapshot.
 //
-// Runtime deltas vs the deno predecessor (git history of this file):
-//  - @sigma/pty-ffi + vendored dylib + hand-written read pump → Bun.Terminal
-//    INLINE options (bun #33237: the existing-instance form skips
-//    setsid/TIOCSCTTY and breaks ^C — never use it). Spawn-size rides in the
-//    options, so there is no 80x24 race to fix.
-//  - Push-model data callback replaces the pull pump. Fidelity gap: the pump
-//    PAUSED reads above HIGH unacked bytes; Bun.Terminal has no read-pause,
-//    so a slow client buffers in the ws instead. Loopback + an acking client
-//    makes this theoretical; log if it ever trips.
-//  - Plain named imports: bun's ESM/CJS interop detects named exports on the
-//    UMD bundles (deno's node-compat couldn't — it needed default-import +
-//    destructure). Note @xterm/headless ships a broken `module` field
-//    (lib/xterm.mjs doesn't exist — a publish-script leak from the main
-//    package; reported + fixed upstream: xtermjs/xterm.js#6052, #6053);
-//    bun silently falls back to the CJS `main`.
-import { SerializeAddon } from "@xterm/addon-serialize";
-import { type Terminal as HeadlessTerminal, Terminal } from "@xterm/headless";
-import type { Server, ServerWebSocket } from "bun";
+// Runtime deltas vs the electrobun predecessor (git history of this file):
+//  - Bun.Terminal → @lydell/node-pty (prebuilt N-API — loads in Electron's
+//    main-process Node without an electron-rebuild step). Same push-model
+//    data callback, so the no-read-pause fidelity gap carries over: a slow
+//    client buffers in the ws instead of pausing the pty read. Loopback +
+//    an acking client keeps this theoretical; the HIGH log guard stays.
+//  - Bun.serve's handler-per-server websocket API → `ws` package per-socket
+//    listeners. index.ts routes the HTTP upgrade; this module owns the
+//    socket from attach onward.
+//  - UMD bundles: default-import + destructure (Node's CJS named-export
+//    lexer can miss these — the same class of issue deno had; bun's custom
+//    interop was the outlier that allowed plain named imports).
+import { type IPty, spawn } from "@lydell/node-pty";
+import serializePkg from "@xterm/addon-serialize";
+import type { Terminal as HeadlessTerminal } from "@xterm/headless";
+import headlessPkg from "@xterm/headless";
+import type { WebSocket } from "ws";
+
+const { SerializeAddon } = serializePkg;
+const { Terminal } = headlessPkg;
 
 const HIGH = 256 * 1024; // log threshold for unacked bytes (no read-pause in push model)
 const SCROLLBACK = 5000; // rows of history per session (matches the client)
 
-export type PtyWsData = {
-  kind: "pty";
+export interface PtyParams {
   name: string;
   cwd: string | null;
   cols: number | null;
   rows: number | null;
-};
-
-type PtySocket = ServerWebSocket<PtyWsData>;
+}
 
 interface PtySession {
   id: string;
-  proc: Bun.Subprocess;
-  pterm: Bun.Terminal;
+  proc: IPty;
   term: HeadlessTerminal; // server-side mirror: scrollback + query answering
   snapshot: () => string;
-  socket: PtySocket | null;
+  socket: WebSocket | null;
   outstanding: number;
   highWarned: boolean;
 }
 
 const sessions = new Map<string, PtySession>();
 
-export function ptyUpgrade(req: Request, server: Server): Response | undefined {
-  const url = new URL(req.url);
+/** Validate /pty query params BEFORE the ws upgrade. Returns params, or an
+ *  error string the caller turns into a 400. */
+export function ptyParams(url: URL): PtyParams | string {
   const name = url.searchParams.get("session") ?? "default";
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
-    return new Response("bad session name", { status: 400 });
-  }
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) return "bad session name";
   // Client owns the session→cwd mapping; only matters on FIRST attach.
   const cwd = url.searchParams.get("cwd");
-  if (cwd !== null && !cwd.startsWith("/")) {
-    return new Response("cwd must be absolute", { status: 400 });
-  }
+  if (cwd !== null && !cwd.startsWith("/")) return "cwd must be absolute";
   const dim = (k: string) => {
     const n = Number(url.searchParams.get(k));
     return Number.isInteger(n) && n >= 2 && n <= 1000 ? n : null;
   };
-  const data: PtyWsData = {
-    kind: "pty",
-    name,
-    cwd,
-    cols: dim("cols"),
-    rows: dim("rows"),
-  };
-  return server.upgrade(req, { data })
-    ? undefined
-    : new Response("upgrade failed", { status: 400 });
+  return { name, cwd, cols: dim("cols"), rows: dim("rows") };
 }
 
-export function ptyOpen(ws: PtySocket): void {
-  const { name, cwd, cols, rows } = ws.data;
+export function attachPty(
+  ws: WebSocket,
+  { name, cwd, cols, rows }: PtyParams,
+): void {
   let s = sessions.get(name);
   if (!s) {
     const term = new Terminal({
@@ -112,22 +100,12 @@ export function ptyOpen(ws: PtySocket): void {
     const serialize = new SerializeAddon();
     term.loadAddon(serialize);
 
-    // Session object exists before spawn so the terminal callbacks can
-    // close over it.
-    const session: PtySession = {
-      id: name,
-      proc: null as unknown as Bun.Subprocess,
-      pterm: null as unknown as Bun.Terminal,
-      term,
-      snapshot: () => serialize.serialize(),
-      socket: null,
-      outstanding: 0,
-      highWarned: false,
-    };
-
-    let proc: Bun.Subprocess;
+    let proc: IPty;
     try {
-      proc = Bun.spawn([process.env.SHELL ?? "/bin/zsh", "-l"], {
+      proc = spawn(process.env.SHELL ?? "/bin/zsh", ["-l"], {
+        name: "xterm-256color",
+        cols: cols ?? 80,
+        rows: rows ?? 24,
         ...(cwd ? { cwd } : {}),
         env: {
           // Finder-launched apps get a bare LaunchServices env; LANG is
@@ -137,33 +115,6 @@ export function ptyOpen(ws: PtySocket): void {
           TERM: "xterm-256color",
           COLORTERM: "truecolor",
         },
-        terminal: {
-          cols: cols ?? 80,
-          rows: rows ?? 24,
-          data(_t, chunk) {
-            session.term.write(chunk);
-            const sock = session.socket;
-            if (sock) {
-              session.outstanding += chunk.byteLength;
-              if (session.outstanding > HIGH && !session.highWarned) {
-                session.highWarned = true;
-                console.warn(
-                  `[pty] session ${name}: client ${session.outstanding} bytes behind (no read-pause in Bun.Terminal push model)`,
-                );
-              }
-              sock.send(chunk);
-            }
-          },
-          exit() {
-            // Shell exited (or pty died): drop the entry so the next
-            // attach spawns a fresh shell instead of adopting a corpse.
-            if (sessions.get(name) === session) {
-              sessions.delete(name);
-              session.socket?.close();
-              session.term.dispose();
-            }
-          },
-        },
       });
     } catch {
       // cwd vanished / shell missing — refuse the attach.
@@ -171,13 +122,46 @@ export function ptyOpen(ws: PtySocket): void {
       ws.close(1011, "pty spawn failed");
       return;
     }
-    session.proc = proc;
-    session.pterm = proc.terminal!;
+
+    const session: PtySession = {
+      id: name,
+      proc,
+      term,
+      snapshot: () => serialize.serialize(),
+      socket: null,
+      outstanding: 0,
+      highWarned: false,
+    };
+
+    proc.onData((chunk) => {
+      session.term.write(chunk);
+      const sock = session.socket;
+      if (sock) {
+        const bytes = Buffer.from(chunk, "utf8");
+        session.outstanding += bytes.byteLength;
+        if (session.outstanding > HIGH && !session.highWarned) {
+          session.highWarned = true;
+          console.warn(
+            `[pty] session ${name}: client ${session.outstanding} bytes behind (no read-pause in the push model)`,
+          );
+        }
+        sock.send(bytes);
+      }
+    });
+    proc.onExit(() => {
+      // Shell exited (or pty died): drop the entry so the next attach
+      // spawns a fresh shell instead of adopting a corpse.
+      if (sessions.get(name) === session) {
+        sessions.delete(name);
+        session.socket?.close();
+        session.term.dispose();
+      }
+    });
     // Query answering while DETACHED only (attached: client xterm answers).
     term.onData((d: string) => {
       if (session.socket) return;
       try {
-        session.pterm.write(d);
+        session.proc.write(d);
       } catch {
         // pty gone; exit callback cleans up
       }
@@ -194,31 +178,29 @@ export function ptyOpen(ws: PtySocket): void {
   s.socket = ws;
   s.outstanding = 0; // snapshot isn't flow-controlled (bounded by SCROLLBACK rows)
   s.highWarned = false;
-  const replay = s.snapshot();
-  if (replay) ws.send(new TextEncoder().encode(replay));
-}
 
-export function ptyMessage(ws: PtySocket, msg: string | Buffer): void {
-  const s = sessions.get(ws.data.name);
-  if (!s) return;
-  try {
-    const m = JSON.parse(typeof msg === "string" ? msg : msg.toString());
-    if (m.t === "in") {
-      s.pterm.write(m.d);
-    } else if (m.t === "size") {
-      s.pterm.resize(m.cols, m.rows);
-      // Keep the mirror's grid in lockstep so reflow + the next
-      // serialize() reconstruct at the real dimensions.
-      s.term.resize(m.cols, m.rows);
-    } else if (m.t === "ack") {
-      s.outstanding = Math.max(0, s.outstanding - m.n);
+  const session = s;
+  ws.on("message", (msg) => {
+    try {
+      const m = JSON.parse(msg.toString());
+      if (m.t === "in") {
+        session.proc.write(m.d);
+      } else if (m.t === "size") {
+        session.proc.resize(m.cols, m.rows);
+        // Keep the mirror's grid in lockstep so reflow + the next
+        // serialize() reconstruct at the real dimensions.
+        session.term.resize(m.cols, m.rows);
+      } else if (m.t === "ack") {
+        session.outstanding = Math.max(0, session.outstanding - m.n);
+      }
+    } catch {
+      // ignore malformed frame
     }
-  } catch {
-    // ignore malformed frame
-  }
-}
+  });
+  ws.on("close", () => {
+    if (session.socket === ws) session.socket = null; // pty survives for re-attach
+  });
 
-export function ptyClose(ws: PtySocket): void {
-  const s = sessions.get(ws.data.name);
-  if (s && s.socket === ws) s.socket = null; // pty survives for re-attach
+  const replay = session.snapshot();
+  if (replay) ws.send(Buffer.from(replay, "utf8"));
 }

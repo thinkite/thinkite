@@ -26,14 +26,15 @@ export const Route = createRootRoute({
   component: RootLayout,
 });
 
-// Electrobun hiddenInset spike: when running inside an electrobun webview
-// (preload stamps __electrobunWindowId), the window has a TRANSPARENT
-// titlebar — render a drag strip its preload recognizes (the class-based
-// region; stylesheet `-webkit-app-region` is Electron-only) and push the
-// app below the traffic lights. Under deno desktop the flag is absent and
-// this renders nothing.
-const isElectrobun =
-  typeof window !== "undefined" && "__electrobunWindowId" in window;
+// Electron hiddenInset: the window has a TRANSPARENT titlebar — render a
+// drag strip and push the app below the traffic lights. Chromium's native
+// `-webkit-app-region: drag` CSS replaces the electrobun-era class-based
+// preload polyfill, and it preventDefaults properly so no select-none dance.
+// In a plain browser (vite dev tab) the UA flag is absent and this renders
+// nothing.
+const isDesktopShell =
+  typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
+const DRAG_REGION = { WebkitAppRegion: "drag" } as CSSProperties;
 
 function RootLayout() {
   const pathname = useRouterState({
@@ -42,14 +43,11 @@ function RootLayout() {
   if (BARE_ROUTES.has(pathname)) {
     return <Outlet />;
   }
-  if (isElectrobun) {
+  if (isDesktopShell) {
     return (
       <PierrePool>
         <div className="flex h-dvh flex-col">
-          {/* select-none: electrobun's drag polyfill doesn't preventDefault
-              (unlike Electron's native app-region), so without it a drag
-              doubles as a text-selection gesture — I-beam cursor and all. */}
-          <div className="electrobun-webkit-app-region-drag h-7 shrink-0 cursor-default select-none" />
+          <div className="h-7 shrink-0 cursor-default" style={DRAG_REGION} />
           <div className="min-h-0 flex-1">
             {/* height="fill" compiles to 100dvh — viewport-fixed, which
                 would overflow by the strip's 28px and grow a window

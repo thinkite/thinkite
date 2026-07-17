@@ -1,6 +1,6 @@
 // GET /api/diff — one-shot working-tree diff for the Pierre diff panel.
 //
-// Bun port of the daemon's `GitWatcher.fetchDiff` (packages/daemon/src/
+// Node port of the daemon's `GitWatcher.fetchDiff` (packages/daemon/src/
 // git-watch.ts), kept response-shape-identical (`GitDiff`) on purpose: the
 // endpoint is a P1 placeholder — once the desktop GUI attaches to the daemon
 // (loopback transport, same router the iOS app speaks over WebRTC), the fetch
@@ -11,7 +11,8 @@
 //     convention), falling back to HEAD (uncommitted-only) when unresolvable
 //   - untracked files = synthesized all-add patches (`git diff` never shows
 //     them), with Paseo's caps: ≤500 files, ≤256 KiB each, null-byte sniff
-import { stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
 
 const UNTRACKED_MAX_FILES = 500;
 const UNTRACKED_MAX_FILE_BYTES = 256 * 1024;
@@ -24,14 +25,21 @@ export interface GitDiff {
   truncated: boolean;
 }
 
-async function git(dir: string, args: string[]): Promise<string> {
-  const proc = Bun.spawn(["git", "-C", dir, ...args], {
-    stdout: "pipe",
-    stderr: "ignore",
+/** Result shape for index.ts to write as an HTTP response. */
+export type DiffResult =
+  | { status: 200; json: GitDiff }
+  | { status: number; body: string };
+
+function git(dir: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      ["-C", dir, ...args],
+      { maxBuffer: 64 * 1024 * 1024 },
+      (err, stdout) =>
+        err ? reject(new Error(`git ${args[0]} failed`)) : resolve(stdout),
+    );
   });
-  const out = await new Response(proc.stdout).text();
-  if ((await proc.exited) !== 0) throw new Error(`git ${args[0]} failed`);
-  return out;
 }
 
 /** merge-base(defaultBranch, HEAD), falling back to HEAD. */
@@ -128,7 +136,7 @@ async function buildUntrackedDiff(
           truncated = true;
           continue;
         }
-        const bytes = await Bun.file(abs).bytes();
+        const bytes = await readFile(abs);
         if (bytes.subarray(0, UNTRACKED_BINARY_SNIFF_BYTES).includes(0)) {
           continue; // null byte = likely binary
         }
@@ -175,18 +183,18 @@ export async function fetchDiff(dir: string): Promise<GitDiff> {
   };
 }
 
-export async function handleDiff(req: Request): Promise<Response> {
-  const dir = new URL(req.url).searchParams.get("dir") ?? process.cwd();
+export async function handleDiff(url: URL): Promise<DiffResult> {
+  const dir = url.searchParams.get("dir") ?? process.cwd();
   // Loopback-local app (the PTY endpoint next door hands out a full shell),
   // so `dir` isn't a trust boundary — just require an absolute existing path.
   if (!dir.startsWith("/")) {
-    return new Response("dir must be absolute", { status: 400 });
+    return { status: 400, body: "dir must be absolute" };
   }
   try {
     const st = await stat(dir);
     if (!st.isDirectory()) throw new Error("not a directory");
   } catch {
-    return new Response("dir not found", { status: 404 });
+    return { status: 404, body: "dir not found" };
   }
-  return Response.json(await fetchDiff(dir));
+  return { status: 200, json: await fetchDiff(dir) };
 }
