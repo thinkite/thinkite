@@ -10,10 +10,8 @@
     "darwin"
   ],
   "scripts": {
-    "build:main": "esbuild server/index.ts --bundle --packages=external --platform=node --format=esm --outfile=dist-main/index.js",
-    "dev": "bun run build:main && electron .",
-    "dev:static": "SIDECODE_DESKTOP_STATIC=1 bun run dev",
-    "dev:web": "vite",
+    "dev": "vite",
+    "dev:static": "vite build && electron .",
     "build": "vite build",
     "package": "echo 'packaging lands in S3 (electron-builder)' && exit 1",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json"
@@ -22,21 +20,21 @@
     "@astryxdesign/core": "^0.1.6",
     "@astryxdesign/theme-neutral": "^0.1.6",
     "@heroicons/react": "^2.2.0",
-    "@lydell/node-pty": "^1.1.0",
+    "@lydell/node-pty": "^1.2.0-beta.12",
     "@pierre/diffs": "catalog:",
     "@sidecodeapp/daemon": "workspace:*",
     "@sidecodeapp/protocol": "workspace:*",
     "@tanstack/react-db": "catalog:",
     "@tanstack/react-router": "^1.170.17",
-    "@xterm/addon-fit": "0.12.0-beta.289",
-    "@xterm/addon-serialize": "0.15.0-beta.289",
-    "@xterm/addon-unicode-graphemes": "0.5.0-beta.289",
-    "@xterm/headless": "6.1.0-beta.289",
-    "@xterm/xterm": "6.1.0-beta.289",
+    "@xterm/addon-fit": "0.12.0-beta.290",
+    "@xterm/addon-serialize": "0.15.0-beta.290",
+    "@xterm/addon-unicode-graphemes": "0.5.0-beta.290",
+    "@xterm/headless": "6.1.0-beta.290",
+    "@xterm/xterm": "6.1.0-beta.290",
     "qrcode": "^1.5.4",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "ws": "^8.18.0"
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.2",
@@ -48,10 +46,10 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.3",
     "electron": "^43.1.1",
-    "esbuild": "^0.28.1",
     "tailwindcss": "catalog:",
     "typescript": "^7.0.2",
-    "vite": "^8.1.2"
+    "vite": "^8.1.2",
+    "vite-plugin-electron": "^1.1.0"
   },
-  "main": "dist-main/index.js"
+  "main": "dist-electron/index.js"
 }

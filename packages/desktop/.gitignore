@@ -3,4 +3,4 @@ deno.lock
 *.app/
 *.dmg
 out/
-dist-main/
+dist-electron/

@@ -9,6 +9,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { toDataURL } from "qrcode";
 import { useCallback, useEffect, useState } from "react";
 import sidecodeLogo from "../assets/sidecode-logo.svg";
+import { DRAG_REGION, isDesktopShell } from "../lib/desktop-shell";
 
 // Pairing window content — loaded by the tray's "Pair New Device…" item in
 // its own BrowserWindow (the menubar PairView, carried over).
@@ -68,63 +69,71 @@ function PairPage() {
   }, [refresh]);
 
   return (
-    <VStack gap={4} align="center" justify="center" className="h-screen p-6">
-      {error !== null ? (
-        <Banner
-          status="error"
-          title="Couldn't create a pairing code"
-          description={error}
-          endContent={
-            <Button label="Retry" variant="ghost" clickAction={refresh} />
-          }
-        />
-      ) : offer === null ? (
-        <Spinner size="sm" label="Preparing pairing code…" />
-      ) : (
-        <>
-          <Heading level={4}>Pair New Device</Heading>
-          {/* The card stays white in BOTH themes — dark-on-light is the most
-              universally scannable, and it pops against a dark window. */}
-          <div className="relative rounded-lg border bg-white p-1.5">
-            <img
-              src={offer.qr}
-              alt="Pairing QR code"
-              width={QR_SIZE}
-              height={QR_SIZE}
-            />
-            <img
-              src={sidecodeLogo}
-              alt=""
-              width={LOGO_SIZE}
-              height={LOGO_SIZE}
-              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white p-1"
-            />
-          </div>
-          <VStack gap={1} align="center">
-            <Text size="sm" weight="medium">
-              Scan with iPhone camera
-            </Text>
-            {/* The window IS the admission gate (main.ts setPairing): closing
-                it stops admitting, so warn against closing early. */}
-            <Text size="xsm" color="secondary" className="text-center">
-              Keep this window open until your iPhone connects.
-            </Text>
-          </VStack>
-          <VStack gap={2} className="w-full">
-            <Text size="xsm" color="secondary" className="text-center">
-              Or paste this code in the app
-            </Text>
-            <CodeBlock
-              code={offer.encoded}
-              size="sm"
-              width="100%"
-              isWrapped
-              maxHeight={120}
-              hasCopyButton
-            />
-          </VStack>
-        </>
+    <>
+      {/* The pair window is hiddenInset (no titlebar) — without a drag
+          region the whole window is immovable. Fixed strip under the
+          traffic lights; content is centered well below it. */}
+      {isDesktopShell && (
+        <div className="fixed inset-x-0 top-0 h-8" style={DRAG_REGION} />
       )}
-    </VStack>
+      <VStack gap={4} align="center" justify="center" className="h-screen p-6">
+        {error !== null ? (
+          <Banner
+            status="error"
+            title="Couldn't create a pairing code"
+            description={error}
+            endContent={
+              <Button label="Retry" variant="ghost" clickAction={refresh} />
+            }
+          />
+        ) : offer === null ? (
+          <Spinner size="sm" label="Preparing pairing code…" />
+        ) : (
+          <>
+            <Heading level={4}>Pair New Device</Heading>
+            {/* The card stays white in BOTH themes — dark-on-light is the most
+              universally scannable, and it pops against a dark window. */}
+            <div className="relative rounded-lg border bg-white p-1.5">
+              <img
+                src={offer.qr}
+                alt="Pairing QR code"
+                width={QR_SIZE}
+                height={QR_SIZE}
+              />
+              <img
+                src={sidecodeLogo}
+                alt=""
+                width={LOGO_SIZE}
+                height={LOGO_SIZE}
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white p-1"
+              />
+            </div>
+            <VStack gap={1} align="center">
+              <Text size="sm" weight="medium">
+                Scan with iPhone camera
+              </Text>
+              {/* The window IS the admission gate (main.ts setPairing): closing
+                it stops admitting, so warn against closing early. */}
+              <Text size="xsm" color="secondary" className="text-center">
+                Keep this window open until your iPhone connects.
+              </Text>
+            </VStack>
+            <VStack gap={2} className="w-full">
+              <Text size="xsm" color="secondary" className="text-center">
+                Or paste this code in the app
+              </Text>
+              <CodeBlock
+                code={offer.encoded}
+                size="sm"
+                width="100%"
+                isWrapped
+                maxHeight={120}
+                hasCopyButton
+              />
+            </VStack>
+          </>
+        )}
+      </VStack>
+    </>
   );
 }

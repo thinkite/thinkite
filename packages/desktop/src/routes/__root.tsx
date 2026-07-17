@@ -7,6 +7,7 @@ import {
 import type { CSSProperties } from "react";
 import { PierrePool } from "../components/PierrePool";
 import { SessionSidebar } from "../components/SessionSidebar";
+import { DRAG_REGION, isDesktopShell } from "../lib/desktop-shell";
 
 // Routes that render in their OWN BrowserWindow (tray-opened dialogs) —
 // bare content, no app chrome. Everything else gets the AppShell + global
@@ -27,14 +28,8 @@ export const Route = createRootRoute({
 });
 
 // Electron hiddenInset: the window has a TRANSPARENT titlebar — render a
-// drag strip and push the app below the traffic lights. Chromium's native
-// `-webkit-app-region: drag` CSS replaces the electrobun-era class-based
-// preload polyfill, and it preventDefaults properly so no select-none dance.
-// In a plain browser (vite dev tab) the UA flag is absent and this renders
-// nothing.
-const isDesktopShell =
-  typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
-const DRAG_REGION = { WebkitAppRegion: "drag" } as CSSProperties;
+// drag strip and push the app below the traffic lights (detection + style
+// shared with the pair window via lib/desktop-shell).
 
 function RootLayout() {
   const pathname = useRouterState({
