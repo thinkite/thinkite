@@ -70,7 +70,13 @@ export function PierrePool({ children }: { children: ReactNode }) {
     () => ({
       theme: { dark: "pierre-dark", light: "pierre-light" } as const,
       langs: LANGS,
-      preferredHighlighter: "shiki-wasm" as const,
+      // shiki-js (JS regex engine), NOT shiki-wasm: on V8 the JS engine is
+      // fast, and it avoids oniguruma's grow-only wasm linear memory
+      // (~40-150M per worker once hot, never returned — wasm memory can't
+      // shrink). The wasm engine was a WKWebView-era necessity: shiki-js
+      // ran ~5x slower on JSC, which is why iOS's PierreView still ships
+      // shiki-wasm. Electron renderer = Chromium/V8, so desktop flips.
+      preferredHighlighter: "shiki-js" as const,
       // Skip tokenizing pathological lines (lock files, minified bundles) —
       // they render plain instead of stalling the worker (t3code's guard).
       tokenizeMaxLineLength: 1_000,

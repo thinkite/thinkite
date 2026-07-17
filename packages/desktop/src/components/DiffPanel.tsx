@@ -115,7 +115,9 @@ export function DiffPanel({ active, dir }: { active: boolean; dir: string }) {
           diffStyle: "unified",
           lineDiffType: "word",
           stickyHeaders: true,
-          preferredHighlighter: "shiki-wasm",
+          // Matches PierrePool's engine choice (see the rationale there):
+          // V8 renderer → JS regex engine, no grow-only wasm memory.
+          preferredHighlighter: "shiki-js",
         }}
       />
     </div>

@@ -29,7 +29,6 @@ import { daemonRpc } from "./daemon-rpc";
 export type OrderedTimelineItem = TimelineItem & { _order: number };
 
 const collections = new Map<string, Collection<OrderedTimelineItem, string>>();
-const GC_TIME_MS = 60_000;
 
 const itemKey = (item: TimelineItem): string =>
   item.type === "tool_call" ? item.callId : item.uuid;
@@ -46,7 +45,10 @@ export function getTranscriptCollection(
     // everything else keys by message uuid.
     getKey: itemKey,
     compare: (a, b) => a._order - b._order,
-    gcTime: GC_TIME_MS,
+    // gcTime: react-db default (5 min). The explicit 60s from the first cut
+    // was tighter than it needed to be — a switched-away session's data is
+    // small relative to the real renderer costs (Pierre wasm, xterm), and
+    // the longer window makes back-nav re-subscribes rarer.
     sync: {
       sync: ({
         begin,
@@ -140,7 +142,7 @@ export function getTranscriptCollection(
           },
         });
 
-        // Runs when gcTime expires (no subscribers for ≥60s).
+        // Runs when gcTime expires (no subscribers for ≥5 min).
         return () => {
           sub.unsubscribe();
         };
