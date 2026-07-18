@@ -39,6 +39,12 @@ import { WebSocketServer } from "ws";
 import { handleDiff } from "./diff";
 import { attachPty, ptyParams } from "./pty";
 import { attachRpc } from "./rpc";
+import {
+  checkForUpdates,
+  getUpdateState,
+  initUpdater,
+  quitAndInstall,
+} from "./updater";
 
 // ─── Single instance ────────────────────────────────────────────────────────
 // The port-conflict guard alone made a second launch die AFTER booting a
@@ -60,13 +66,15 @@ app.on("second-instance", () => openMain());
 // Dev: everything (dist/, assets/, the repo's node_modules) hangs off the
 // package root = one level above dist-electron/. A packaged app has dist/
 // and assets/ staged under process.resourcesPath by electron-builder (S3).
-const HERE = dirname(fileURLToPath(import.meta.url)); // packages/desktop/dist-electron
-const PKG = app.isPackaged ? null : dirname(HERE);
+const HERE = dirname(fileURLToPath(import.meta.url)); // <root>/dist-electron
+// Dev root = the package dir; packaged root = app.getAppPath() (app.asar —
+// Electron's asar-patched fs lets the http server readFile straight out of
+// the archive, so dist/ and assets/ ship INSIDE it, no extraResources).
+const ROOT = app.isPackaged ? app.getAppPath() : dirname(HERE);
+const PKG = app.isPackaged ? null : ROOT;
 const REPO = PKG ? dirname(dirname(PKG)) : null;
-const DIST = PKG ? join(PKG, "dist") : join(process.resourcesPath, "dist");
-const TRAY_ICON = PKG
-  ? join(PKG, "assets/iconTemplate.png")
-  : join(process.resourcesPath, "assets/iconTemplate.png");
+const DIST = join(ROOT, "dist");
+const TRAY_ICON = join(ROOT, "assets/iconTemplate.png");
 console.log(
   `[desktop] boot — ${PKG ? `dev pkg ${PKG}` : `packaged ${process.resourcesPath}`}`,
 );
@@ -494,9 +502,27 @@ function planUsageItems(): Electron.MenuItemConstructorOptions[] {
   }
 }
 
-// electron-updater rows rejoin this menu in S3 (menubar's updater.ts —
-// state-adaptive "Downloading…/Restart to update" item + tray-title
-// download percent).
+// State-adaptive update row driven by electron-updater (server/updater.ts).
+// Shown only when there's something to convey; idle/error fall back to the
+// manual "Check for updates" in the About submenu.
+function updateMenuItem(): Electron.MenuItemConstructorOptions | null {
+  const s = getUpdateState();
+  switch (s.status) {
+    case "checking":
+      return { label: "Checking for updates…", enabled: false };
+    case "downloading":
+      return { label: `Downloading update… ${s.percent}%`, enabled: false };
+    case "downloaded":
+      return {
+        label: `Restart to update · v${s.version}`,
+        icon: symbolIcon("arrow.up.circle"),
+        click: () => quitAndInstall(),
+      };
+    default:
+      return null; // idle | error
+  }
+}
+
 function buildMenu(): Electron.Menu {
   const items: Electron.MenuItemConstructorOptions[] = [
     { label: "Claude Plan Usage", type: "header" },
@@ -543,11 +569,24 @@ function buildMenu(): Electron.Menu {
       ],
     },
     { type: "separator" },
+  ];
+
+  const updateItem = updateMenuItem();
+  if (updateItem) items.push(updateItem);
+
+  items.push(
     {
       label: "About Sidecode",
       icon: symbolIcon("info.circle"),
       submenu: [
         { label: `Version ${app.getVersion()}`, enabled: false },
+        {
+          label: "Check for updates",
+          // Interactive: a user-initiated check always answers with a
+          // dialog (up to date / restart prompt / error) — Sparkle
+          // convention; scheduled checks stay silent.
+          click: () => checkForUpdates({ interactive: true }),
+        },
         {
           label: "View on GitHub",
           click: () => {
@@ -562,12 +601,17 @@ function buildMenu(): Electron.Menu {
       accelerator: "CommandOrControl+Q",
       click: () => app.quit(),
     },
-  ];
+  );
   return Menu.buildFromTemplate(items);
 }
 
 function refreshMenu(): void {
   tray?.setContextMenu(buildMenu());
+  // Download progress lives in the tray TITLE (text beside the icon) — the
+  // one surface visible without opening anything; macOS doesn't repaint an
+  // already-open NSMenu.
+  const s = getUpdateState();
+  tray?.setTitle(s.status === "downloading" ? ` ${s.percent}%` : "");
 }
 
 function setupTray(): void {
@@ -635,5 +679,8 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 // evaluation complete; ready fires right after.
 void app.whenReady().then(() => {
   setupTray();
+  // Auto-download + drive the update menu row / tray-title percent.
+  // Inert in dev (packaged-only inside).
+  initUpdater({ onStateChange: refreshMenu });
   openMain();
 });
