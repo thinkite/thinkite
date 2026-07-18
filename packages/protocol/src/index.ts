@@ -136,7 +136,7 @@ export function outdatedSide(remote: string): "local" | "remote" | null {
 //   - `serviceName` — `os.hostname()` snapshot for the iOS confirm UI.
 //
 // The QR carries no expiry. Admission of an unknown pubkey is gated
-// daemon-side by "is the menubar Pair window open" — that flag, not the
+// daemon-side by "is the desktop app's Pair window open" — that flag, not the
 // QR, is the authority on "can a fresh client pair right now." A stale
 // screenshot is harmless once the window closes.
 

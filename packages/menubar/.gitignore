@@ -1,8 +1,0 @@
-# electron-builder output (dmg / zip / latest-mac.yml / blockmap)
-/release
-
-# iconset scratch dir from icns generation
-*.iconset
-
-# local signing / notarization env (APPLE_API_* etc.) — never commit
-.env*.local

@@ -126,7 +126,6 @@ This is a bun monorepo:
 | `packages/signaling` | Cloudflare Worker + Durable Object signaling server |
 | `packages/website` | Landing page (Astro) |
 
-(`packages/menubar` — the earlier Electron menu-bar app — is retired in place; the desktop GUI supersedes it.)
 
 ---
 

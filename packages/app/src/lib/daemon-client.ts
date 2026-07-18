@@ -201,7 +201,7 @@ export interface SessionStatesCallbacks {
  * delays admitting an unknown pubkey (pair-window open vs not).
  *
  * If this trips, the UX message blames the most likely cause: the user
- * forgot to open the menubar Pair window on their Mac.
+ * forgot to open the Pair window in the desktop app on their Mac.
  *
  * Also bounds the boot "Connecting to daemon…" screen before it falls to
  * `offline`. 10s (was 15s) for a snappier fall-through, still well above the
