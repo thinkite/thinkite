@@ -1,11 +1,13 @@
-# Paths @expo/fingerprint should NOT hash into the runtime version.
-# Keep this list minimal — every entry trades OTA-vs-native safety for
-# less fingerprint churn. Things that look like noise but MUST stay
-# fingerprinted: package.json scripts (eas-build-* hooks live there),
-# patches/, and every config-referenced asset (icon/splash compile into
-# the native binary).
-#
-# .gitignore only affects which files get collected — it has zero effect
-# on the native build, but hashing it flipped the fingerprint when an
-# unrelated ignore rule changed (the v0.0.2-era TestFlight OTA miss).
-.gitignore
+# react-native-enriched-markdown is an autolinked native module, so the
+# whole package dir feeds the fingerprint runtime version. Two subtrees
+# inside it are machine-local, not source: the grammar / tree-sitter /
+# RaTeX assets its postinstall downloads (their pins live in
+# grammar-versions.json and ratex-version.json, which stay hashed), and
+# the per-app tree-sitter registry `pod install` codegens into
+# cpp/highlight/vendor/generated-<app>/ (upstream #680). Hashing them made
+# the fingerprint differ between a fresh checkout and a machine that had
+# run pod install — EAS rejected the 0.2.1 build with a runtime version
+# mismatch. Language set changes still bump the fingerprint through
+# package.json.
+../../node_modules/react-native-enriched-markdown/cpp/highlight/vendor/**
+../../node_modules/react-native-enriched-markdown/ios/vendor/**
