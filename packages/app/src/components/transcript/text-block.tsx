@@ -1,7 +1,7 @@
 import { Text, View } from "react-native";
 import { ImageStack } from "@/components/image-stack";
 import { materializeImagesSync } from "@/lib/image-cache";
-import { ChunkedMarkdown } from "@/lib/markdown";
+import { ChatMarkdown } from "@/lib/markdown";
 import type { TextRenderBlock } from "@/lib/transcript-blocks";
 
 /**
@@ -9,15 +9,14 @@ import type { TextRenderBlock } from "@/lib/transcript-blocks";
  * (~85% max width — the parent transcript container already provides
  * outer horizontal padding, so the bubble can use most of the inner
  * column). Assistant messages stream as full-width markdown via
- * `ChunkedMarkdown` — text/table runs still go through enriched (Fabric,
- * Yoga-self-sizing, so rows hit LegendList with real height on first
- * layout), while code blocks break out into shiki-highlighted native
- * Text. See `chunked-markdown.tsx` header for the design.
+ * `ChatMarkdown` (enriched: Fabric, Yoga-self-sizing, so rows hit
+ * LegendList with real height on first layout; native code highlighting).
+ * See its header for the design.
  *
  * `streaming` comes from ChatPanel's derivation (last block && assistant
  * && turn running — there is no protocol-level settle signal; daemon
- * ignores content_block_stop). It gates three things downstream: tail-run
- * remend repair, EOF fence-close marking, and — performance-critical —
+ * ignores content_block_stop). It gates two things downstream: remend
+ * repair of unterminated inline syntax, and — performance-critical —
  * enriched's streamingAnimation, which must be FALSE for settled messages
  * (measurement cache) and TRUE only for actively-changing content (see
  * ChatMarkdownProps.streaming).
@@ -69,7 +68,7 @@ export function TextBlock({
   }
   return (
     <View className="px-4 py-1.5">
-      <ChunkedMarkdown markdown={block.text} streamDone={!streaming} />
+      <ChatMarkdown markdown={block.text} streaming={streaming} />
     </View>
   );
 }

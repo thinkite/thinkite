@@ -1,14 +1,18 @@
-import { useColorScheme } from "react-native";
+import { useColorScheme, View } from "react-native";
 import {
   EnrichedMarkdownText,
   type MarkdownStyle,
 } from "react-native-enriched-markdown";
 
+import { useRemend } from "./remend";
+
 /**
- * Chat-side markdown renderer for assistant text. Wraps
- * `react-native-enriched-markdown` (Software Mansion) — a Fabric component
- * that self-sizes via Yoga, supports GFM (tables, task lists,
- * strikethrough), and animates new tokens during streaming.
+ * Markdown renderer for assistant text and markdown-bearing tool output.
+ * Wraps `react-native-enriched-markdown` (Software Mansion) — a Fabric
+ * component that self-sizes via Yoga, supports GFM (tables, task lists,
+ * strikethrough), highlights fenced code natively (tree-sitter, compiled
+ * in per the `enriched-markdown` block of package.json) and animates new
+ * tokens during streaming.
  *
  * Why a native Fabric markdown component for chat (not a WebView/Nitro
  * renderer)?
@@ -20,22 +24,33 @@ import {
  *   - It exposes chat typography (fontFamily / real italic) and animates new
  *     tokens during streaming — both of which plain-prose chat needs.
  *
- * Streaming behavior (V0 ships streaming via Slice F+G+H):
+ * One renderer for the whole message. Until enriched 1.0 the app split
+ * assistant messages itself (marked.lexer prefix-diff → text runs through
+ * enriched, code blocks through a shiki-highlighted TextInput) because
+ * 0.x had no highlighter and repeated list markers on nested code lines
+ * (software-mansion/enriched-markdown#243, fixed by #478). 1.0's github
+ * flavor segments the AST itself (text runs, tables, code, math, quotes
+ * are separate block views; selection never spanned segments anyway), so
+ * the app-side chunker was pure duplication and was removed.
+ *
+ * Streaming behavior:
  *   - `streamingAnimation` — fades in newly appended tokens as patch_text
  *     deltas arrive (every ~200ms during a turn, per envelope from the
  *     SDK iterator).
  *   - `streamingConfig.tableMode: 'progressive'` — renders GFM tables
- *     incrementally as rows stream in (0.6 made this viable; 0.5.0's
- *     full-reparse path measured single-digit fps, which is why V0
- *     originally shipped 'hidden'. See project_streaming_markdown_w3.md
- *     for the decision history.)
+ *     incrementally as rows stream in.
+ *   - `streamingConfig.codeBlockMode: 'progressive'` — code streams in
+ *     line by line with the header visible; highlighting is applied once
+ *     when the closing fence arrives instead of flickering per token.
+ *   - remend repairs unterminated INLINE syntax (`**bold`, half-typed
+ *     links) mid-stream — the layer enriched's streaming props don't cover.
  *   - `flavor: 'github'` — enables GFM extensions; commonmark-only would
  *     drop tables which Claude responses occasionally include.
  *
  * Tool detail (Read/Bash/Edit/Write outputs + diffs) is rendered separately by
- * `PierreView` (@pierre/diffs in an expo-dom WebView): syntax highlight +
- * raw-diff handling matter there, and tool-block rows live in a BottomSheet —
- * not on the LegendList scroll-flicker hot path.
+ * `PierreView` (@pierre/diffs in an expo-dom WebView): raw-diff handling
+ * matters there, and tool-block rows live in a BottomSheet — not on the
+ * LegendList scroll-flicker hot path.
  */
 
 // Heading + paragraph metrics derived from a side-by-side comparison with
@@ -44,20 +59,15 @@ import {
 // chat density compact rather than blog-like.
 const BODY_FONT_SIZE = 16;
 const BODY_LINE_HEIGHT = 22;
-// Exported: ChunkedMarkdown's broken-out CodeBlock must stay metric- and
-// palette-identical to the code blocks enriched renders, so inline code
-// (still enriched, inside runs) and block code (ours) read as one family.
-export const CODE_FONT_SIZE = 14;
-export const CODE_LINE_HEIGHT = 19;
+const CODE_FONT_SIZE = 14;
+const CODE_LINE_HEIGHT = 19;
 // JetBrains Mono, embedded at build time via the expo-font config plugin
 // (app.json; Regular + Bold TTFs from @expo-google-fonts/jetbrains-mono —
 // the package is only the TTF source, we deliberately do NOT use its
 // useFonts runtime loading: the transcript needs the font synchronously
-// at first native render, no flash-of-fallback). Family-name resolution:
-// both enriched (RCTFont via StyleConfig) and RN TextInput resolve
-// "JetBrains Mono" + weight against the embedded family. Matches the
-// Pierre diff webview, which already ships JetBrains Mono woff2.
-export const CODE_FONT_FAMILY = "JetBrains Mono";
+// at first native render, no flash-of-fallback). Matches the Pierre diff
+// webview, which already ships JetBrains Mono woff2.
+const CODE_FONT_FAMILY = "JetBrains Mono";
 
 interface ColorPalette {
   text: string;
@@ -72,9 +82,16 @@ interface ColorPalette {
   tableHeaderBg: string;
   tableRowBg: string;
   tableBorder: string;
+  /** tree-sitter capture → foreground. Values are the Pierre theme's
+   *  TextMate colors (the same palette the Pierre diff sheet renders
+   *  with) mapped onto enriched's 14 token slots, so chat code blocks and
+   *  the diff sheet read as one family. `variable` and `embedded` are left
+   *  unset on purpose: tree-sitter captures every identifier as
+   *  `variable`, and painting them all orange is not what Pierre does. */
+  syntax: NonNullable<NonNullable<MarkdownStyle["codeBlock"]>["syntaxColors"]>;
 }
 
-export const LIGHT_PALETTE: ColorPalette = {
+const LIGHT_PALETTE: ColorPalette = {
   text: "#0a0a0a",
   textMuted: "#404040",
   link: "#2563eb",
@@ -90,9 +107,23 @@ export const LIGHT_PALETTE: ColorPalette = {
   tableHeaderBg: "#eeeeef",
   tableRowBg: "#f4f4f5",
   tableBorder: "#ffffff",
+  syntax: {
+    keyword: "#d32a61",
+    operator: "#636363",
+    punctuation: "#636363",
+    string: "#199f43",
+    number: "#1ca1c7",
+    constant: "#1ca1c7",
+    comment: "#737373",
+    function: "#693acf",
+    type: "#a631be",
+    property: "#d47628",
+    tag: "#d5512f",
+    attribute: "#18a46c",
+  },
 };
 
-export const DARK_PALETTE: ColorPalette = {
+const DARK_PALETTE: ColorPalette = {
   text: "#fafafa",
   textMuted: "#a1a1aa",
   link: "#60a5fa",
@@ -106,6 +137,20 @@ export const DARK_PALETTE: ColorPalette = {
   tableHeaderBg: "#27272a", // zinc-800 — one shade lighter than chat bg
   tableRowBg: "#18181b", // zinc-900
   tableBorder: "#202023",
+  syntax: {
+    keyword: "#ff678d",
+    operator: "#636363",
+    punctuation: "#636363",
+    string: "#5ecc71",
+    number: "#68cdf2",
+    constant: "#68cdf2",
+    comment: "#737373",
+    function: "#9d6afb",
+    type: "#d568ea",
+    property: "#ffa359",
+    tag: "#ff855e",
+    attribute: "#60d199",
+  },
 };
 
 function buildStyle(p: ColorPalette): MarkdownStyle {
@@ -185,6 +230,7 @@ function buildStyle(p: ColorPalette): MarkdownStyle {
       padding: 10,
       marginTop: 0,
       marginBottom: 12,
+      syntaxColors: p.syntax,
     },
     blockquote: {
       fontSize: BODY_FONT_SIZE,
@@ -238,22 +284,24 @@ const LIGHT_STYLE = buildStyle(LIGHT_PALETTE);
 const DARK_STYLE = buildStyle(DARK_PALETTE);
 
 export interface ChatMarkdownProps {
-  /** Assistant message content. May be partial during streaming. */
+  /** Message content. May be partial during streaming. */
   markdown: string;
-  /** True ONLY for content actively receiving deltas (in practice: the
-   *  tail run of the streaming message). Drives enriched's
-   *  `streamingAnimation`, which is a PERFORMANCE switch, not just a fade:
+  /** True ONLY for content actively receiving deltas (the streaming
+   *  assistant message). Callers without a settle signal (tool output)
+   *  leave it false. Drives two things:
    *
-   *  - `false` (settled) → enriched's measurement CACHE is active —
-   *    re-mounting a session is cache hits instead of mock-rendering every
-   *    message synchronously just to measure it (the dominant cost of the
-   *    session-enter jank, ~15→35+ JS fps measured 2026-06-12) — and the
-   *    view.bounds measure fast path never engages (the sub-pixel height
-   *    creep loop; see ShadowMeasurementUtils.h).
-   *  - `true` (streaming) → bounds fast path gives cheap re-measures
-   *    between deltas. NEVER use false here: every delta is a new string,
-   *    so the cache misses every tick and enriched would mock-render the
-   *    whole message per delta.
+   *  - remend repair of unterminated inline syntax (only meaningful while
+   *    the text is still growing);
+   *  - enriched's `streamingAnimation`, which is a PERFORMANCE switch, not
+   *    just a fade:
+   *    - `false` (settled) → enriched's measurement CACHE is active —
+   *      re-mounting a session is cache hits instead of mock-rendering
+   *      every message synchronously just to measure it (the dominant
+   *      cost of session-enter jank, ~15→35+ JS fps measured 2026-06-12).
+   *    - `true` (streaming) → bounds fast path gives cheap re-measures
+   *      between deltas. NEVER use false here: every delta is a new
+   *      string, so the cache misses every tick and enriched would
+   *      mock-render the whole message per delta.
    *
    *  The true→false settle flip forces one exact re-measure upstream
    *  (ENRMPropsNeedExactStreamingMeasurement), snapping away any rounding
@@ -267,16 +315,28 @@ export function ChatMarkdown({
 }: ChatMarkdownProps) {
   const colorScheme = useColorScheme() ?? "light";
   const markdownStyle = colorScheme === "dark" ? DARK_STYLE : LIGHT_STYLE;
+  const content = useRemend(markdown, streaming);
   return (
-    <EnrichedMarkdownText
-      markdown={markdown}
-      md4cFlags={{
-        underline: true,
-      }}
-      flavor="github"
-      streamingAnimation={streaming}
-      streamingConfig={{ tableMode: "progressive" }}
-      markdownStyle={markdownStyle}
-    />
+    // The plain View wrapper is LOAD-BEARING, not decoration: with enriched
+    // as a direct flex child of the message column, repeated layout passes
+    // (e.g. swiping a sibling horizontal ScrollView) inflated its measured
+    // height by ~0.5px per pass — visible as growing blank space inside the
+    // message. An ordinary View between the column and enriched breaks that
+    // measure→round→remeasure loop. Verified by A/B on device 2026-06-12.
+    <View>
+      <EnrichedMarkdownText
+        markdown={content}
+        md4cFlags={{
+          underline: true,
+        }}
+        flavor="github"
+        streamingAnimation={streaming}
+        streamingConfig={{
+          tableMode: "progressive",
+          codeBlockMode: "progressive",
+        }}
+        markdownStyle={markdownStyle}
+      />
+    </View>
   );
 }

@@ -23,7 +23,7 @@ import {
 import { KeyboardController } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkingTreeDiff } from "@/hooks/use-working-tree-diff";
-import { ChunkedMarkdown } from "@/lib/markdown/chunked-markdown";
+import { ChatMarkdown } from "@/lib/markdown";
 import { toolVerb } from "@/lib/tool-verbs";
 import type { ToolRenderBlock } from "@/lib/transcript-blocks";
 import workerPortableAsset from "../../../assets/pierre/worker-portable.pwt";
@@ -410,7 +410,7 @@ type Descriptor =
  * Map a tool block to how its body renders. Diffs and code-shaped output
  * (bash/read/grep/glob/monitor) go to the Pierre webview; everything else —
  * errors, empty output, markdown-bearing tools (web_fetch/agent via
- * ChunkedMarkdown), field-shaped tools (tasks, schedule_wakeup, ask_user),
+ * ChatMarkdown), field-shaped tools (tasks, schedule_wakeup, ask_user),
  * and `unknown` — renders natively inside the sheet's ScrollView.
  */
 function describeDetail(block: ToolRenderBlock): Descriptor {
@@ -649,7 +649,7 @@ function WebFetchDetail({
         {/* WebFetch output is the fetch-side model's prose summary —
             markdown, not raw page text. Render it like chat. */}
         {detail.output.length > 0 ? (
-          <ChunkedMarkdown markdown={detail.output} streamDone />
+          <ChatMarkdown markdown={detail.output} />
         ) : (
           <EmptyOutput />
         )}
@@ -673,7 +673,7 @@ function AgentDetail({
             Its intermediate tool calls live in the subagent JSONL and are
             not surfaced here (V0.5+ Background Tasks panel). */}
         {detail.output.length > 0 ? (
-          <ChunkedMarkdown markdown={detail.output} streamDone />
+          <ChatMarkdown markdown={detail.output} />
         ) : (
           <EmptyOutput />
         )}

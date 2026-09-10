@@ -17,7 +17,7 @@
       "react-dom": "19.2.3",
       "zod": "^4.4.3",
       "@types/node": "^24.12.2",
-      "@legendapp/list": "^3.3.7",
+      "@legendapp/list": "^3.3.10",
       "@tanstack/react-db": "^0.1.92",
       "@pierre/diffs": "^1.2.12",
       "tailwindcss": "^4.3.2"
@@ -42,11 +42,17 @@
     "react-dom": "19.2.3"
   },
   "trustedDependencies": [
-    "electron"
+    "electron",
+    "react-native-enriched-markdown"
   ],
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
     "typescript": "~6.0.3",
     "vitest": "^4.1.5"
+  },
+  "dependencies": {
+    "expo": "~57.0.21",
+    "react": "19.2.3",
+    "react-native": "0.86.3"
   }
 }
