@@ -8,8 +8,7 @@ import { FolderOpenIcon, SparklesIcon } from "@heroicons/react/24/outline";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { mintMessageId } from "@thinkite/oc-client";
 import { useState } from "react";
-import { getOcClient } from "../lib/oc";
-import { sendUserMessage } from "../lib/transcript-collections";
+import { getOcClient, sendUserMessage } from "../lib/oc";
 
 // New-session landing (astryx ai-chat-landing template, simplified):
 // greeting + directory row + composer. Submit creates the opencode

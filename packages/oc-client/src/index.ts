@@ -5,6 +5,7 @@
  * No React, no DOM, no Node-only APIs in this entry (see `client.ts`).
  */
 
+export { SharedBus } from "./bus.ts";
 export type {
   AgentV2Info,
   ModelRef,
@@ -26,6 +27,7 @@ export {
   type OcStreamOptions,
 } from "./client.ts";
 export { mintMessageId } from "./identifier.ts";
+export { formatModelRef, parseModelRef } from "./model-ref.ts";
 export {
   applyOcEvent,
   buildOcToolDetail,

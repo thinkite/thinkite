@@ -11,11 +11,9 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { useLiveQuery } from "@tanstack/react-db";
+import type { OrderedOcRow } from "@thinkite/oc-client/tanstack";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  getTranscriptCollection,
-  type OrderedOcRow,
-} from "../lib/transcript-collections";
+import { getTranscriptCollection } from "../lib/oc";
 
 // Live transcript for ONE opencode session, folded from the v2 history +
 // session stream + global bus through the oc-client reducer: the

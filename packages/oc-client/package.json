@@ -13,6 +13,12 @@
       "bun": "./src/index.ts",
       "node": "./dist/index.js",
       "default": "./src/index.ts"
+    },
+    "./tanstack": {
+      "types": "./dist/tanstack/index.d.ts",
+      "bun": "./src/tanstack/index.ts",
+      "node": "./dist/tanstack/index.js",
+      "default": "./src/tanstack/index.ts"
     }
   },
   "files": [
@@ -24,6 +30,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "1.18.30"
+    "@opencode-ai/sdk": "1.18.30",
+    "@tanstack/db": "catalog:"
   }
 }

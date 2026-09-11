@@ -16,14 +16,20 @@ import {
 } from "@heroicons/react/24/outline";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { mintMessageId } from "@thinkite/oc-client";
+import {
+  formatModelRef,
+  mintMessageId,
+  parseModelRef,
+} from "@thinkite/oc-client";
 import { useEffect, useState } from "react";
 import { DiffPanel } from "../../components/DiffPanel";
 import { TerminalPane } from "../../components/TerminalPane";
 import { TranscriptPanel } from "../../components/TranscriptPanel";
-import { formatModelRef, getOcClient, parseModelRef } from "../../lib/oc";
-import { sessionStateCollection } from "../../lib/sessions-collection";
-import { sendUserMessage } from "../../lib/transcript-collections";
+import {
+  getOcClient,
+  sendUserMessage,
+  sessionStateCollection,
+} from "../../lib/oc";
 
 // Session screen: transcript center column with a live composer (opencode
 // v2 `session.prompt` through the same-origin `/oc` proxy), and an
@@ -142,7 +148,7 @@ function Session({ sessionId }: { sessionId: string }) {
     onSizeChange: (size) => panelSizeBySession.set(sessionId, size),
   });
 
-  // Composer → optimistic send (transcript-collections.ts): the user
+  // Composer → optimistic send (lib/oc.ts): the user
   // bubble paints synchronously via the collection's optimistic overlay
   // under a client-minted input id; the durable `prompt.admitted` event
   // (same id as `messageID`) lands on it seamlessly through the session

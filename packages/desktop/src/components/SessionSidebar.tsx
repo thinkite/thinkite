@@ -15,13 +15,13 @@ import {
 } from "@heroicons/react/24/outline";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
+import type { SessionRow } from "@thinkite/oc-client/tanstack";
 import { useMemo, useState } from "react";
-import { getOcClient } from "../lib/oc";
 import {
-  type SessionRow,
+  evictTranscriptCollection,
+  getOcClient,
   sessionStateCollection,
-} from "../lib/sessions-collection";
-import { evictTranscriptCollection } from "../lib/transcript-collections";
+} from "../lib/oc";
 
 // Global session sidebar (t3code-style, grouped by day instead of project).
 // Rows come from the opencode session list + `/api/event` bus via the

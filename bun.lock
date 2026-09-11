@@ -156,6 +156,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@opencode-ai/sdk": "1.18.30",
+        "@tanstack/db": "catalog:",
       },
     },
     "packages/protocol": {
@@ -194,6 +195,7 @@
   "catalog": {
     "@legendapp/list": "^3.3.10",
     "@pierre/diffs": "^1.2.12",
+    "@tanstack/db": "0.6.14",
     "@tanstack/react-db": "^0.1.92",
     "@types/node": "^24.12.2",
     "react": "19.2.3",
