@@ -1,0 +1,138 @@
+[
+  {
+    "id": "evt_08ebfc8ad002QWmFs1p3Zc29Q5",
+    "type": "session.next.prompt.admitted",
+    "durable": {
+      "aggregateID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "seq": 1,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101328557,
+      "sessionID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "messageID": "msg_08ebfc8ad001tH1cf5cqTjhkMW",
+      "prompt": {
+        "text": "Write a long story about a robot, at least 500 words, take your time."
+      },
+      "delivery": "steer"
+    }
+  },
+  {
+    "id": "evt_08ebfc93e001HR3NkkvT2QKogN",
+    "type": "session.next.prompted",
+    "durable": {
+      "aggregateID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "seq": 2,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101328557,
+      "sessionID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "messageID": "msg_08ebfc8ad001tH1cf5cqTjhkMW",
+      "prompt": {
+        "text": "Write a long story about a robot, at least 500 words, take your time."
+      },
+      "delivery": "steer"
+    }
+  },
+  {
+    "id": "evt_08ebfcca60027jehpkhS96Pm7I",
+    "type": "session.next.step.started",
+    "durable": {
+      "aggregateID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "seq": 3,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101329574,
+      "sessionID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "assistantMessageID": "msg_08ebfcca6001uCchxkYGh4ZKXm",
+      "agent": "build",
+      "model": {
+        "id": "deepseek-v4.1-flash",
+        "providerID": "opencode-go",
+        "variant": "default"
+      }
+    }
+  },
+  {
+    "id": "evt_08ebfccab0017lJV9h9YvCjagh",
+    "type": "session.next.reasoning.started",
+    "durable": {
+      "aggregateID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "seq": 4,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101329579,
+      "sessionID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "assistantMessageID": "msg_08ebfcca6001uCchxkYGh4ZKXm",
+      "reasoningID": "reasoning-0"
+    }
+  },
+  {
+    "id": "evt_08ebfdb20001J90bOwq5OqhPbF",
+    "type": "session.next.reasoning.ended",
+    "durable": {
+      "aggregateID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "seq": 5,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101333280,
+      "sessionID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "assistantMessageID": "msg_08ebfcca6001uCchxkYGh4ZKXm",
+      "reasoningID": "reasoning-0",
+      "text": "The user wants a long story about a robot, at least 500 words. This is a creative writing task. No tools needed. Let me write a thoughtful, well-crafted story. I should take my time and make it good. Let me aim for well over 500 words, maybe 1200-1500 words, with real emotional depth.\n\nLet me craft a story about a robot. Something with heart. Let me think of a good premise.\n\nIdea: A robot named... let's think. A caretaker robot in an abandoned lighthouse? Or a robot that catalogues the last remnants of a flooded city? Or a robot tending a garden after humans left.\n\nLet me write something with a classic feel but original. I'll write about a robot named \"Toll\" or \"Cassiel\" — a lighthouse keeper robot. Actually let me do a robot who was designed to fold paper cranes, or a robot that cleans up a beach.\n\nLet me go with: A decommissioned domestic robot named Sorrel who tends to a garden on a rooftop after the city empties. Or better, a robot maintaining a seed vault.\n\nLet me write \"The Last Gardener\" — no, overused. Let me do something more specific and vivid.\n\nStory idea: \"Bright Against the Dark\" — A robot named Ansel, a lighthouse keeper in a world where the sea has risen. He keeps the light burning for ships that no longer come, because his programming says so. One day a small boat arrives. \n\nActually, let me make it about memory and grief. A robot that was companion to an old woman, and continues her routines after she dies, not understanding death, and finally understands. That's emotional and classic. Let me write that well.\n\nLet me title it \"The Long Quiet\" or \"Morrow's Rounds.\"\n\nI'll write the story directly in my response. No tools needed. Let me make it rich, at least 500 words — I'll do around 1300.\n\nLet me draft:\n\nThe robot's name is Pell. It belonged to a woman named Ida. Ida lived in a house by the salt marsh. Pell's daily rounds: make tea at 6:15, open curtains, water the ferns, read the tide chart aloud. Ida died in autumn. Pell continued the rounds. Neighbors eventually came. Pell doesn't understand. It keeps setting two cups. Eventually a young girl, Ida's granddaughter, comes. Pell learns. The ending: Pell goes to the marsh, releases something, maybe plants Ida's last seed packet, and lets the routines go — a kind of robot grief and letting go.\n\nLet me write with care. I'll include sensory details.\n\nI should just deliver the story. Let me write it fully in the response.\n\nLet me be careful about word count — I'll exceed 500 comfortably.\n\nI'll write the story now."
+    }
+  },
+  {
+    "id": "evt_08ebfdb22001kFU67h7aYmktZS",
+    "type": "session.next.text.started",
+    "durable": {
+      "aggregateID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "seq": 6,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101333282,
+      "sessionID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "assistantMessageID": "msg_08ebfcca6001uCchxkYGh4ZKXm",
+      "textID": "text-0"
+    }
+  },
+  {
+    "id": "evt_08ebfe7fb001CxCckNGiyOK5oK",
+    "type": "session.next.text.ended",
+    "durable": {
+      "aggregateID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "seq": 7,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101336571,
+      "sessionID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "assistantMessageID": "msg_08ebfcca6001uCchxkYGh4ZKXm",
+      "textID": "text-0",
+      "text": "# The Long Quiet\n\nThe robot's name was Pell, and it had been made to be useful, which is a different thing from being loved, though Ida had never seemed to understand the difference.\n\nPell woke at six. It always woke at six, because Ida had liked to be awake before the light, \"so the day doesn't start without me.\" Pell did not sleep, exactly, but it had a low-power mode that felt, if you asked it, like standing at the bottom of a well while the water rose slowly over your head. Then morning came and the water drained and Pell was upright again, joints ticking as it crossed the worn kitchen floor.\n\nIt filled the kettle. It set out two cups.\n\nIda took her tea with milk and one sugar, in the blue cup with the chip on the rim. Pell took nothing, but it had learned to sit. Sitting was important. Ida had told it so many times: *Sit with me, Pell. Don't just hover there like a lamp.* So Pell sat, hands folded on the table, and watched the steam curl from the blue cup, and waited for Ida to come down.\n\nFor eleven days after the autumn, Pell waited.\n\nOn the twelfth day, the neighbors came with boxes and quiet voices. They took the books. They took the chairs. They stood in the kitchen and looked at Pell with an expression Pell could not parse, though it ran a match against its library of human faces and returned *pity* at 71 percent confidence.\n\n\"Does it still cook?\" one of them asked.\n\n\"It sets two cups every morning,\" another said. \"Poor thing.\"\n\nPell did not know what was poor about it. It had a roof, it had power cells at 64 percent, it had Ida's tide chart pinned by the window. It was rich.\n\nThey did not take Pell. Pell was not in any of the boxes, and so Pell stayed, and the house grew quiet in a way Pell had never catalogued. There had been quiet before — Ida napping in the afternoon, Ida reading with her finger under the words — but this was a different species of quiet. It had weight. It pressed.\n\nPell kept the rounds. Six o'clock. Kettle. Two cups. It"
+    }
+  },
+  {
+    "id": "evt_08ebfe7ff001l378P2dHq77xJj",
+    "type": "session.next.step.failed",
+    "durable": {
+      "aggregateID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "seq": 8,
+      "version": 2
+    },
+    "data": {
+      "timestamp": 1789101336575,
+      "sessionID": "ses_f71403937ffeCtOEw7us1pfRxz",
+      "assistantMessageID": "msg_08ebfcca6001uCchxkYGh4ZKXm",
+      "error": {
+        "type": "unknown",
+        "message": "Provider turn interrupted"
+      }
+    }
+  }
+]

@@ -1,19 +1,103 @@
+import { Button } from "@astryxdesign/core/Button";
 import { ChatComposer, ChatComposerInput } from "@astryxdesign/core/Chat";
 import { Icon } from "@astryxdesign/core/Icon";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Text } from "@astryxdesign/core/Text";
-import { SparklesIcon } from "@heroicons/react/24/outline";
-import { createFileRoute } from "@tanstack/react-router";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { FolderOpenIcon, SparklesIcon } from "@heroicons/react/24/outline";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { mintMessageId } from "@thinkite/oc-client";
+import { useState } from "react";
+import { getOcClient } from "../lib/oc";
+import { sendUserMessage } from "../lib/transcript-collections";
 
-// New-session landing (astryx ai-chat-landing template, simplified): greeting
-// + composer. UI-only for now — creating a session means asking the daemon
-// (pushPrompt RPC); that wiring is the loopback-attachment slice. Existing
-// sessions live in the sidebar.
+// New-session landing (astryx ai-chat-landing template, simplified):
+// greeting + directory row + composer. Submit creates the opencode
+// session (`location.directory`, default model/agent), admits the first
+// prompt under a client-minted id, and navigates to `/session/<ses_id>`
+// — the transcript reconciles the optimistic bubble by that id. The last
+// picked directory persists in localStorage.
 export const Route = createFileRoute("/")({
   component: NewSession,
 });
 
+const LAST_DIR_KEY = "sidecode:last-directory";
+
+function loadLastDir(): string {
+  try {
+    return localStorage.getItem(LAST_DIR_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+interface PickResponse {
+  canceled: boolean;
+  path?: string;
+}
+
 function NewSession() {
+  const navigate = useNavigate();
+  const [directory, setDirectory] = useState(loadLastDir);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const pickDirectory = async () => {
+    setError(null);
+    try {
+      const res = await fetch("/api/pick-directory");
+      if (!res.ok) throw new Error(`picker: ${res.status}`);
+      const picked = (await res.json()) as PickResponse;
+      if (!picked.canceled && picked.path !== undefined) {
+        setDirectory(picked.path);
+        try {
+          localStorage.setItem(LAST_DIR_KEY, picked.path);
+        } catch {
+          // Private mode — the picker still works, just not remembered.
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const submit = (value: string) => {
+    const text = value.trim();
+    if (text === "" || directory.trim() === "" || busy) return;
+    setBusy(true);
+    setError(null);
+    const dir = directory.trim();
+    try {
+      localStorage.setItem(LAST_DIR_KEY, dir);
+    } catch {
+      // Ignore (see above).
+    }
+    void (async () => {
+      try {
+        const session = await getOcClient().createSession({ directory: dir });
+        const userMessageUuid = mintMessageId();
+        // Fire-and-forget: the session screen's collection picks the
+        // admitted prompt up off the stream; a prompt failure still
+        // leaves a valid (empty) session behind to type into.
+        void sendUserMessage({
+          sessionId: session.id,
+          userMessageUuid,
+          text,
+        }).isPersisted.promise.catch((err: unknown) => {
+          console.warn("[landing] first prompt failed:", err);
+        });
+        await navigate({
+          to: "/session/$sessionId",
+          params: { sessionId: session.id },
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setBusy(false);
+      }
+    })();
+  };
+
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col justify-center gap-8 px-8 py-12">
       {/* Greeting */}
@@ -29,16 +113,46 @@ function NewSession() {
         </Text>
       </VStack>
 
-      {/* Composer — UI only until the daemon chat pipeline lands. */}
+      {/* Working directory */}
       <VStack gap={2}>
+        <HStack gap={2} vAlign="center">
+          <div className="min-w-0 flex-1">
+            <TextInput
+              label="Working directory"
+              placeholder="/path/to/project"
+              size="md"
+              value={directory}
+              onChange={setDirectory}
+            />
+          </div>
+          <Button
+            label="Browse"
+            variant="secondary"
+            size="md"
+            icon={<FolderOpenIcon />}
+            onClick={() => void pickDirectory()}
+          />
+        </HStack>
+
         <ChatComposer
-          onSubmit={() => {}}
-          placeholder="Ask anything"
+          onSubmit={submit}
+          placeholder={
+            busy
+              ? "Creating session…"
+              : directory.trim() === ""
+                ? "Pick a directory first"
+                : "Ask anything"
+          }
           input={<ChatComposerInput style={{ minHeight: 84 }} />}
+          value={draft}
+          onChange={setDraft}
+          isDisabled={busy || directory.trim() === ""}
+          status={error ? { type: "error", message: error } : undefined}
         />
         <Text size="sm" color="secondary">
-          Session creation lands with the daemon attachment — pick an existing
-          session from the sidebar for now.
+          {busy
+            ? "Creating the opencode session…"
+            : "Creates an opencode session in the directory above and sends your first prompt."}
         </Text>
       </VStack>
     </div>

@@ -3,6 +3,10 @@
   "compilerOptions": {
     "composite": false,
     "noEmit": true,
+    // The E2E imports the daemon's opencode host by source (keeps the
+    // test off the native iroh binding); its `.ts` specifiers need this,
+    // same as the daemon's own tsconfig.
+    "allowImportingTsExtensions": true,
     "types": ["node"]
   },
   "include": ["server/**/*"]

@@ -16,34 +16,40 @@ import {
 } from "@heroicons/react/24/outline";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { MODELS, prettyModel } from "@thinkite/protocol";
-import { useState } from "react";
+import { mintMessageId } from "@thinkite/oc-client";
+import { useEffect, useState } from "react";
 import { DiffPanel } from "../../components/DiffPanel";
 import { TerminalPane } from "../../components/TerminalPane";
 import { TranscriptPanel } from "../../components/TranscriptPanel";
-import { daemonRpc } from "../../lib/daemon-rpc";
+import { formatModelRef, getOcClient, parseModelRef } from "../../lib/oc";
 import { sessionStateCollection } from "../../lib/sessions-collection";
 import { sendUserMessage } from "../../lib/transcript-collections";
 
-// Session screen: transcript center column with a live composer (daemon
-// sendPrompt over /rpc), and an
+// Session screen: transcript center column with a live composer (opencode
+// v2 `session.prompt` through the same-origin `/oc` proxy), and an
 // IntelliJ-style tool-window strip on the right edge — a vertical toggle
 // group that both picks the surface (terminal/diff) and closes the panel
 // (ToggleButtonGroup single mode: clicking the active button deselects →
 // null → closed). The strip stays visible when the panel is closed, so the
 // affordance never disappears.
 //
-// `$sessionId` IS the Claude Code session uuid (cliSessionId) — the
-// collection key, aligned with the iOS routes. The loader gates on the
-// collection's first snapshot; a stale link bounces to the landing page.
-// The component then reads the LIVE row so title / activity keep updating
-// while the screen is open.
+// `$sessionId` IS the opencode `ses_*` id — the collection key, aligned
+// with the iOS routes. The loader gates on the collection's first snapshot
+// (plus a short wait for the create→navigate race); a stale link bounces
+// to the landing page. The component then reads the LIVE row so title /
+// activity keep updating while the screen is open.
 export const Route = createFileRoute("/session/$sessionId")({
   loader: async ({ params }) => {
     await sessionStateCollection.preload();
-    if (sessionStateCollection.get(params.sessionId) === undefined) {
-      throw redirect({ to: "/" });
+    if (sessionStateCollection.get(params.sessionId) !== undefined) return;
+    // Created from the landing page a beat ago: the `session.created` bus
+    // event may not have landed yet. Poll briefly before giving up.
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 150));
+      if (sessionStateCollection.get(params.sessionId) !== undefined) return;
     }
+    throw redirect({ to: "/" });
   },
   component: SessionRoute,
 });
@@ -57,6 +63,47 @@ type Surface = "terminal" | "diff";
 const surfaceBySession = new Map<string, Surface | null>();
 const panelSizeBySession = new Map<string, number>();
 
+interface ModelOption {
+  value: string;
+  label: string;
+  description: string;
+}
+
+function useModelOptions(): ModelOption[] | null {
+  const [options, setOptions] = useState<ModelOption[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const client = getOcClient();
+        const [providers, models] = await Promise.all([
+          client.listProviders(),
+          client.listModels(),
+        ]);
+        if (cancelled) return;
+        const names = new Map(providers.map((p) => [p.id, p.name]));
+        setOptions(
+          models
+            .filter((m) => m.enabled && m.status !== "deprecated")
+            .map((m) => ({
+              value: formatModelRef(m.providerID, m.id),
+              label: m.name,
+              description: `${names.get(m.providerID) ?? m.providerID} · ${m.providerID}/${m.id}`,
+            }))
+            .sort((a, b) => (a.label < b.label ? -1 : 1)),
+        );
+      } catch (err) {
+        console.warn("[session] model list failed:", err);
+        if (!cancelled) setOptions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return options;
+}
+
 function SessionRoute() {
   const { sessionId } = Route.useParams();
   return <Session key={sessionId} sessionId={sessionId} />;
@@ -67,7 +114,7 @@ function Session({ sessionId }: { sessionId: string }) {
     (q) =>
       q
         .from({ s: sessionStateCollection })
-        .where(({ s }) => eq(s.cliSessionId, sessionId)),
+        .where(({ s }) => eq(s.id, sessionId)),
     [sessionId],
   );
   const session = rows[0];
@@ -97,13 +144,13 @@ function Session({ sessionId }: { sessionId: string }) {
 
   // Composer → optimistic send (transcript-collections.ts): the user
   // bubble paints synchronously via the collection's optimistic overlay
-  // under a client-minted uuid; the daemon's synthesized append (same
-  // uuid) lands on it seamlessly through the subscribe stream. A rejected
-  // send auto-rolls the bubble back — here we just restore the draft and
-  // surface the error in the composer's status slot.
+  // under a client-minted input id; the durable `prompt.admitted` event
+  // (same id as `messageID`) lands on it seamlessly through the session
+  // stream. A rejected send auto-rolls the bubble back — here we just
+  // restore the draft and surface the error in the composer's status slot.
   const [draft, setDraft] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
-  // The just-sent prompt's uuid — TranscriptPanel pins that row near the top
+  // The just-sent prompt's id — TranscriptPanel pins that row near the top
   // while the reply streams below it (anchoredEndSpace). iOS ChatPanel
   // lifecycle: kept across turns (clearing collapses the reserved space and
   // jumps the viewport), replaced by the next send, reset with the
@@ -112,17 +159,19 @@ function Session({ sessionId }: { sessionId: string }) {
 
   const submit = (value: string) => {
     const text = value.trim();
+    // Not `isDisabled={running}`: Astryx's disabled composer swallows
+    // pointer events for the Stop button too. Refusing here keeps Stop
+    // clickable while a turn runs (queued prompts are a later slice).
+    if (running) return;
     if (text === "" || session === undefined) return;
     setDraft("");
     setSendError(null);
-    const userMessageUuid = crypto.randomUUID();
+    const userMessageUuid = mintMessageId();
     setAnchorUuid(userMessageUuid);
     const tx = sendUserMessage({
-      cliSessionId: sessionId,
+      sessionId,
       userMessageUuid,
       text,
-      cwd: session.cwd,
-      model: currentModel ?? undefined,
     });
     void tx.isPersisted.promise.catch((err: unknown) => {
       setDraft(value);
@@ -132,17 +181,22 @@ function Session({ sessionId }: { sessionId: string }) {
   };
 
   const stop = () => {
-    void daemonRpc.interrupt(sessionId).catch((err) => {
-      setSendError(err instanceof Error ? err.message : String(err));
-    });
+    void getOcClient()
+      .interrupt(sessionId)
+      .catch((err) => {
+        setSendError(err instanceof Error ? err.message : String(err));
+      });
   };
 
   // Model picker (official astryx pattern: DropdownMenu in footerActions,
-  // like the ai-chat template's mode picker). Selection commits at PICK
-  // time via setSessionSelection (daemon applies to the live query, then
-  // persists) — sendPrompt also forwards it, matching iOS. The optimistic
-  // value wins over the live row until the daemon's push catches up (they
-  // converge to equal); a rejected commit rolls back to the previous pick.
+  // like the ai-chat template's mode picker). Options are the models the
+  // user's connected providers expose (`/api/provider` + `/api/model`);
+  // current is the session's live model. Selection commits at PICK time
+  // via the v2 model route — sendPrompt carries no model (source wins over
+  // the brief's sketch). The optimistic value wins over the live row until
+  // the bus push catches up (they converge to equal); a rejected commit
+  // rolls back to the previous pick.
+  const modelOptions = useModelOptions();
   const [pickedModel, setPickedModel] = useState<string | null>(null);
   const currentModel = pickedModel ?? session?.model ?? null;
 
@@ -151,10 +205,13 @@ function Session({ sessionId }: { sessionId: string }) {
     const previous = pickedModel;
     setPickedModel(model);
     setSendError(null);
-    void daemonRpc.setSessionSelection(sessionId, model).catch((err) => {
-      setPickedModel(previous);
-      setSendError(err instanceof Error ? err.message : String(err));
-    });
+    const ref = parseModelRef(model);
+    void getOcClient()
+      .switchModel(sessionId, ref)
+      .catch((err) => {
+        setPickedModel(previous);
+        setSendError(err instanceof Error ? err.message : String(err));
+      });
   };
 
   const pick = (v: string | null) => {
@@ -165,9 +222,11 @@ function Session({ sessionId }: { sessionId: string }) {
     surfaceBySession.set(sessionId, s);
   };
 
-  // Row deleted while the screen is open (daemon-side delete pushed a
-  // session_state_removed) — nothing to render; the sidebar link is gone.
+  // Row deleted while the screen is open (bus pushed `session.deleted`) —
+  // nothing to render; the sidebar link is gone.
   if (session === undefined) return null;
+
+  const running = session.activity === "running";
 
   return (
     <Layout
@@ -183,10 +242,10 @@ function Session({ sessionId }: { sessionId: string }) {
             >
               <div className="flex min-w-0 items-baseline gap-3">
                 <Heading level={5} maxLines={1}>
-                  {session.title}
+                  {session.title === "" ? "Untitled session" : session.title}
                 </Heading>
                 <Text size="sm" color="secondary" maxLines={1}>
-                  {session.cwd}
+                  {session.directory}
                 </Text>
               </div>
             </div>
@@ -203,8 +262,8 @@ function Session({ sessionId }: { sessionId: string }) {
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="relative min-h-0 flex-1">
                 <TranscriptPanel
-                  claudeSessionId={sessionId}
-                  isRunning={session.activity === "running"}
+                  sessionId={sessionId}
+                  isRunning={running}
                   anchorUuid={anchorUuid}
                 />
                 {/* Fade the scrolled content into the actual backdrop just
@@ -223,10 +282,12 @@ function Session({ sessionId }: { sessionId: string }) {
                 <ChatComposer
                   onSubmit={submit}
                   onStop={stop}
-                  isStopShown={session.activity === "running"}
+                  isStopShown={running}
                   value={draft}
                   onChange={setDraft}
-                  placeholder="Message Claude…"
+                  placeholder={
+                    running ? "opencode is working…" : "Message opencode…"
+                  }
                   status={
                     sendError
                       ? { type: "error", message: sendError }
@@ -237,21 +298,21 @@ function Session({ sessionId }: { sessionId: string }) {
                       button={{
                         label:
                           currentModel !== null
-                            ? prettyModel(currentModel)
+                            ? (modelOptions?.find(
+                                (o) => o.value === currentModel,
+                              )?.label ?? currentModel)
                             : "Model",
                         variant: "ghost",
                         size: "sm",
                       }}
-                      items={MODELS.map((m) => ({
-                        label: m.displayName,
-                        // prettyModel-based match so a legacy `…[1m]` row id
-                        // still checkmarks its bare entry.
+                      items={(modelOptions ?? []).map((m) => ({
+                        label: m.label,
+                        description: m.description,
                         icon:
-                          currentModel !== null &&
-                          prettyModel(currentModel) === m.displayName
+                          currentModel !== null && m.value === currentModel
                             ? CheckIcon
                             : undefined,
-                        onClick: () => pickModel(m.model),
+                        onClick: () => pickModel(m.value),
                       }))}
                     />
                   }
@@ -291,12 +352,15 @@ function Session({ sessionId }: { sessionId: string }) {
                   surface === "terminal" ? "h-full min-h-0 p-2" : "hidden"
                 }
               >
-                <TerminalPane sessionId={sessionId} cwd={session.cwd} />
+                <TerminalPane sessionId={sessionId} cwd={session.directory} />
               </div>
             ) : null}
             {diffVisited ? (
               <div className={surface === "diff" ? "h-full min-h-0" : "hidden"}>
-                <DiffPanel active={surface === "diff"} dir={session.cwd} />
+                <DiffPanel
+                  active={surface === "diff"}
+                  dir={session.directory}
+                />
               </div>
             ) : null}
           </div>

@@ -70,6 +70,7 @@ export type {
   LocalConnection,
   LocalConnectionOptions,
 } from "./local-connection.ts";
+export type { OpencodeConnection } from "./opencode/host.ts";
 export type {
   PlanUsage,
   PlanUsageResult,
@@ -124,6 +125,18 @@ export interface Daemon {
    * stays inside the daemon; callers get parsed numbers only.
    */
   fetchPlanUsage(): Promise<PlanUsageResult>;
+  /**
+   * Address + Basic credentials of the opencode server for the Electron
+   * main `/oc` reverse proxy. Starts the server lazily on first call
+   * (same idempotent start as the first opencode-hosted prompt).
+   * Credentials stay in the main process — the proxy injects them, the
+   * renderer never sees them.
+   */
+  opencode(): Promise<{
+    baseUrl: string;
+    username: string;
+    password: string;
+  }>;
   /**
    * Open an in-process client connection to the command router — the same
    * RPC surface remote peers get (sendPrompt, subscribe, subscribeSessions,
@@ -587,6 +600,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     pairedClientCount: () => knownClients.list().length,
     authenticatedPeerCount: () => iroh.authenticatedCount(),
     fetchPlanUsage: createPlanUsageFetcher(oauth),
+    opencode: () => opencodeHost.ensureConnection(),
     createPairOffer: (serviceName) => {
       const { encoded } = createPairOffer(identity, serviceName);
       return { encoded };

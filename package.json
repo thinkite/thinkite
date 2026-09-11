@@ -10,6 +10,7 @@
       "packages/app",
       "packages/daemon",
       "packages/protocol",
+      "packages/oc-client",
       "packages/website"
     ],
     "catalog": {
@@ -26,8 +27,8 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "bun run --cwd packages/protocol typecheck && bun run --cwd packages/daemon typecheck && bun run --cwd packages/desktop typecheck && bun run --cwd packages/app typecheck",
-    "build": "bun run --cwd packages/protocol build && bun run --cwd packages/daemon build",
+    "typecheck": "bun run --cwd packages/protocol typecheck && bun run --cwd packages/daemon typecheck && bun run --cwd packages/desktop typecheck && bun run --cwd packages/app typecheck && bun run --cwd packages/oc-client typecheck",
+    "build": "bun run --cwd packages/protocol build && bun run --cwd packages/daemon build && bun run --cwd packages/oc-client build",
     "lint": "biome check .",
     "format": "biome check --write ."
   },

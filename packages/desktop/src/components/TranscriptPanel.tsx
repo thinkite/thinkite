@@ -14,15 +14,15 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getTranscriptCollection,
-  type OrderedTimelineItem,
+  type OrderedOcRow,
 } from "../lib/transcript-collections";
 
-// Live transcript for ONE Claude session, streamed over the daemon's
-// subscribe channel: the per-session collection ingests the settled
-// snapshot on attach, then folds EventDeltas — appends, token-level
-// patch_text on the assistant row, tool_call status patches. Reconnects
-// resume warm (cursor/epoch) or rebuild cold inside one sync transaction;
-// either way this component just renders the live rows.
+// Live transcript for ONE opencode session, folded from the v2 history +
+// session stream + global bus through the oc-client reducer: the
+// per-session collection mirrors reducer rows, then folds EventDeltas —
+// appends, token-level patch_text on the assistant row, tool_call status
+// patches. Reconnects resume with `after=` (durable replay + `*.ended`
+// reconcile); either way this component just renders the live rows.
 //
 // Virtualized through LegendList (same library as the iOS ChatPanel,
 // catalog-pinned): the list owns the scroll container, the initial landing
@@ -37,25 +37,25 @@ import {
 // once a row unmounts far off-screen. recycleItems stays OFF so row-internal
 // state never leaks between rows.
 //
-// Consecutive tool_call rows collapse into one ChatToolCalls group; a
+// Consecutive tool rows collapse into one ChatToolCalls group; a
 // tool_use without its result renders as `running` until the patch lands.
 
 type TranscriptGroup =
-  | { key: string; kind: "item"; item: OrderedTimelineItem }
+  | { key: string; kind: "item"; item: OrderedOcRow }
   | { key: string; kind: "tools"; calls: ChatToolCallItem[] };
 
 const TOOL_STATUS = {
   running: "running",
   completed: "complete",
-  failed: "error",
+  error: "error",
 } as const;
 
-function toGroups(items: OrderedTimelineItem[]): TranscriptGroup[] {
+function toGroups(items: OrderedOcRow[]): TranscriptGroup[] {
   const groups: TranscriptGroup[] = [];
   for (const item of items) {
-    if (item.type === "tool_call") {
+    if (item.kind === "tool") {
       const call: ChatToolCallItem = {
-        key: item.callId,
+        key: item.id,
         name: item.name,
         target: item.summary,
         status: TOOL_STATUS[item.status],
@@ -63,9 +63,9 @@ function toGroups(items: OrderedTimelineItem[]): TranscriptGroup[] {
       };
       const prev = groups.at(-1);
       if (prev?.kind === "tools") prev.calls.push(call);
-      else groups.push({ key: item.callId, kind: "tools", calls: [call] });
+      else groups.push({ key: item.id, kind: "tools", calls: [call] });
     } else {
-      groups.push({ key: item.uuid, kind: "item", item });
+      groups.push({ key: item.id, kind: "item", item });
     }
   }
   return groups;
@@ -101,8 +101,8 @@ function renderGroup(group: TranscriptGroup) {
       return <ChatToolCalls calls={group.calls} />;
     case "item": {
       const item = group.item;
-      switch (item.type) {
-        case "user_message":
+      switch (item.kind) {
+        case "user":
           return (
             <ChatMessage sender="user">
               <ChatMessageBubble>
@@ -110,21 +110,44 @@ function renderGroup(group: TranscriptGroup) {
               </ChatMessageBubble>
             </ChatMessage>
           );
-        case "assistant_message":
+        case "text":
           return (
             <ChatMessage sender="assistant">
               <Markdown>{item.text}</Markdown>
-              {item.stopReason === null ? (
-                <Text size="sm" color="secondary">
-                  [stopped]
-                </Text>
-              ) : null}
             </ChatMessage>
           );
-        case "compact_divider":
+        case "reasoning":
+          // Model thinking — secondary, small; streaming rows keep
+          // appending below.
+          return (
+            <ChatMessage sender="assistant">
+              <Text size="sm" color="secondary">
+                {item.text}
+              </Text>
+            </ChatMessage>
+          );
+        case "compaction":
           return (
             <ChatSystemMessage variant="divider">
-              {`Context compacted · ${Math.round(item.preTokens / 1000)}k → ${Math.round(item.postTokens / 1000)}k (${item.trigger})`}
+              {item.reason === "auto"
+                ? "Context compacted automatically"
+                : "Context compacted"}
+            </ChatSystemMessage>
+          );
+        case "step-failed":
+          return (
+            <ChatSystemMessage variant="divider">
+              {item.error}
+            </ChatSystemMessage>
+          );
+        case "revert":
+          return (
+            <ChatSystemMessage variant="divider">
+              {item.state === "committed"
+                ? "Reverted to checkpoint"
+                : item.state === "staged"
+                  ? "Revert staged"
+                  : "Revert cleared"}
             </ChatSystemMessage>
           );
         default:
@@ -134,19 +157,18 @@ function renderGroup(group: TranscriptGroup) {
   }
 }
 
-const EMPTY_NOTICE =
-  "No transcript on this machine — it may have been cleaned up (30-day GC) or created on another device.";
+const EMPTY_NOTICE = "Nothing here yet — send a prompt to start the session.";
 
 export function TranscriptPanel({
-  claudeSessionId,
+  sessionId,
   isRunning,
   anchorUuid = null,
 }: {
-  claudeSessionId: string;
-  /** Renders a working indicator under the last message (daemon-pushed
-   *  sessionState.activity). */
+  sessionId: string;
+  /** Renders a working indicator under the last message (opencode
+   *  `session.status` via the session-states collection). */
   isRunning?: boolean;
-  /** Uuid of the most recently sent user message — pinned near the viewport
+  /** Id of the most recently sent user message — pinned near the viewport
    *  top while the response streams into reserved space below it. The iOS
    *  ChatPanel lifecycle: kept ACROSS turns (clearing on idle collapses the
    *  reserved space and jumps the viewport); the next send re-anchors; the
@@ -156,8 +178,8 @@ export function TranscriptPanel({
   anchorUuid?: string | null;
 }) {
   const collection = useMemo(
-    () => getTranscriptCollection(claudeSessionId),
-    [claudeSessionId],
+    () => getTranscriptCollection(sessionId),
+    [sessionId],
   );
   const { data: items, isLoading } = useLiveQuery(
     (q) => q.from({ t: collection }).orderBy(({ t }) => t._order, "asc"),
@@ -165,10 +187,9 @@ export function TranscriptPanel({
   );
 
   // iOS's isThinking rule: the turn is running but the last item isn't
-  // Claude's text yet — the initial think window + tool gaps. Rendered by the
-  // resident ThinkingFooter (constant height, label fades).
-  const isThinking =
-    isRunning === true && items.at(-1)?.type !== "assistant_message";
+  // the assistant's text yet — the initial think window + tool gaps.
+  // Rendered by the resident ThinkingFooter (constant height, label fades).
+  const isThinking = isRunning === true && items.at(-1)?.kind !== "text";
 
   const groups = useMemo(() => toGroups(items), [items]);
 
@@ -184,8 +205,8 @@ export function TranscriptPanel({
       const g = groups[i];
       if (
         g?.kind === "item" &&
-        g.item.type === "user_message" &&
-        g.item.uuid === anchorUuid
+        g.item.kind === "user" &&
+        g.item.id === anchorUuid
       ) {
         return { anchorIndex: i, anchorOffset: 16 };
       }
@@ -248,7 +269,7 @@ export function TranscriptPanel({
             {renderGroup(item)}
           </div>
         )}
-        getItemType={(g) => (g.kind === "item" ? g.item.type : g.kind)}
+        getItemType={(g) => (g.kind === "item" ? g.item.kind : g.kind)}
         estimatedItemSize={120}
         recycleItems={false}
         alignItemsAtEnd

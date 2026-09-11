@@ -1,0 +1,144 @@
+[
+  {
+    "_comment": "SYNTHETIC fixture: manual `POST /api/session/:id/compact` returns 503 in opencode 1.18.30, so no live compaction log could be recorded. Shapes below follow packages/schema/src/session-event.ts (Compaction.Started/Ended) with surrounding prompt/text/step events in the recorded style.",
+    "id": "evt_synthetic0001",
+    "type": "session.next.prompt.admitted",
+    "durable": {
+      "aggregateID": "ses_syntheticcompact01",
+      "seq": 1,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101300000,
+      "sessionID": "ses_syntheticcompact01",
+      "messageID": "msg_syntheticcompact01",
+      "prompt": {
+        "text": "Reply with exactly the word pong and nothing else."
+      },
+      "delivery": "steer"
+    }
+  },
+  {
+    "id": "evt_synthetic0002",
+    "type": "session.next.prompted",
+    "durable": {
+      "aggregateID": "ses_syntheticcompact01",
+      "seq": 2,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101300000,
+      "sessionID": "ses_syntheticcompact01",
+      "messageID": "msg_syntheticcompact01",
+      "prompt": {
+        "text": "Reply with exactly the word pong and nothing else."
+      },
+      "delivery": "steer"
+    }
+  },
+  {
+    "id": "evt_synthetic0003",
+    "type": "session.next.compaction.started",
+    "durable": {
+      "aggregateID": "ses_syntheticcompact01",
+      "seq": 3,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101301000,
+      "sessionID": "ses_syntheticcompact01",
+      "messageID": "msg_syntheticcompact02",
+      "reason": "manual"
+    }
+  },
+  {
+    "id": "evt_synthetic0004",
+    "type": "session.next.compaction.ended",
+    "durable": {
+      "aggregateID": "ses_syntheticcompact01",
+      "seq": 4,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101305000,
+      "sessionID": "ses_syntheticcompact01",
+      "messageID": "msg_syntheticcompact02",
+      "reason": "manual",
+      "text": "Compacted summary of the conversation so far.",
+      "recent": "Reply with exactly the word pong and nothing else."
+    }
+  },
+  {
+    "id": "evt_synthetic0005",
+    "type": "session.next.step.started",
+    "durable": {
+      "aggregateID": "ses_syntheticcompact01",
+      "seq": 5,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101306000,
+      "sessionID": "ses_syntheticcompact01",
+      "assistantMessageID": "msg_syntheticcompact03",
+      "agent": "build",
+      "model": {
+        "id": "deepseek-v4.1-flash",
+        "providerID": "opencode-go",
+        "variant": "default"
+      }
+    }
+  },
+  {
+    "id": "evt_synthetic0006",
+    "type": "session.next.text.started",
+    "durable": {
+      "aggregateID": "ses_syntheticcompact01",
+      "seq": 6,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101306000,
+      "sessionID": "ses_syntheticcompact01",
+      "assistantMessageID": "msg_syntheticcompact03",
+      "textID": "text-0"
+    }
+  },
+  {
+    "id": "evt_synthetic0007",
+    "type": "session.next.text.ended",
+    "durable": {
+      "aggregateID": "ses_syntheticcompact01",
+      "seq": 7,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101307000,
+      "sessionID": "ses_syntheticcompact01",
+      "assistantMessageID": "msg_syntheticcompact03",
+      "textID": "text-0",
+      "text": "pong"
+    }
+  },
+  {
+    "id": "evt_synthetic0008",
+    "type": "session.next.step.ended",
+    "durable": {
+      "aggregateID": "ses_syntheticcompact01",
+      "seq": 8,
+      "version": 1
+    },
+    "data": {
+      "timestamp": 1789101307000,
+      "sessionID": "ses_syntheticcompact01",
+      "assistantMessageID": "msg_syntheticcompact03",
+      "finish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 100,
+        "output": 2,
+        "reasoning": 0,
+        "cache": { "read": 0, "write": 0 }
+      }
+    }
+  }
+]

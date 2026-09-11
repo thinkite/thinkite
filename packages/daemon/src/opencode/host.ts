@@ -90,9 +90,17 @@ function freePort(): Promise<number> {
   });
 }
 
+/** Credentials + address for the spawned server (proxy use only). */
+export interface OpencodeConnection {
+  baseUrl: string;
+  username: string;
+  password: string;
+}
+
 export class OpencodeHost {
   private child: ChildProcess | null = null;
   private client_: OpencodeClient | null = null;
+  private connection_: OpencodeConnection | null = null;
   private starting: Promise<OpencodeClient> | null = null;
   private stopped = false;
   private readonly log: (msg: string) => void;
@@ -123,6 +131,25 @@ export class OpencodeHost {
 
   get client(): OpencodeClient | null {
     return this.client_;
+  }
+
+  /**
+   * Address + credentials of the running server, for the Electron main
+   * `/oc` reverse proxy (which injects Basic auth so credentials never
+   * reach the renderer). Null until started.
+   */
+  get connection(): OpencodeConnection | null {
+    return this.connection_;
+  }
+
+  /** Idempotent lazy start, returning the proxy-usable connection. */
+  async ensureConnection(): Promise<OpencodeConnection> {
+    await this.start();
+    const connection = this.connection_;
+    if (connection === null) {
+      throw new Error("opencode host started without a connection");
+    }
+    return connection;
   }
 
   get running(): boolean {
@@ -185,6 +212,7 @@ export class OpencodeHost {
       if (this.child === child) {
         this.child = null;
         this.client_ = null;
+        this.connection_ = null;
       }
       this.stopBus();
     });
@@ -210,6 +238,11 @@ export class OpencodeHost {
 
     const client = new OpencodeClient(base, username, password);
     await this.waitHealthy(client);
+    this.connection_ = {
+      baseUrl: String(base).replace(/\/+$/, ""),
+      username,
+      password,
+    };
     this.log(`[opencode] up at ${base} (pid ${child.pid})`);
     this.startBus(client);
     return client;
@@ -332,6 +365,7 @@ export class OpencodeHost {
     const child = this.child;
     this.child = null;
     this.client_ = null;
+    this.connection_ = null;
     if (child === null) return;
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {

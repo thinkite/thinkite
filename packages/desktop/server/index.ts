@@ -29,6 +29,7 @@ import {
 import {
   app,
   BrowserWindow,
+  dialog,
   Menu,
   nativeImage,
   powerSaveBlocker,
@@ -37,6 +38,7 @@ import {
 } from "electron";
 import { WebSocketServer } from "ws";
 import { handleDiff } from "./diff";
+import { handleOcProxy } from "./oc-proxy";
 import { attachPty, ptyParams } from "./pty";
 import { attachRpc } from "./rpc";
 import {
@@ -273,6 +275,50 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify(daemon.createPairOffer(hostname())));
       return;
     }
+    if (url.pathname === "/api/pick-directory") {
+      // Landing-page directory picker: native Electron dialog (renderer
+      // has no fs access). Remembers nothing server-side — the renderer
+      // keeps the last pick in localStorage.
+      const win =
+        mainWin !== null && !mainWin.isDestroyed() ? mainWin : undefined;
+      const picked =
+        win !== undefined
+          ? await dialog.showOpenDialog(win, {
+              properties: ["openDirectory", "createDirectory"],
+            })
+          : await dialog.showOpenDialog({
+              properties: ["openDirectory", "createDirectory"],
+            });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify(
+          picked.canceled || picked.filePaths.length === 0
+            ? { canceled: true }
+            : { canceled: false, path: picked.filePaths[0] },
+        ),
+      );
+      return;
+    }
+    if (url.pathname === "/oc" || url.pathname.startsWith("/oc/")) {
+      // Same-origin opencode endpoint (see server/oc-proxy.ts): strip +
+      // forward with the daemon-owned Basic credentials. Lazy-starts the
+      // opencode server on first use; 502 while it cannot start.
+      if (daemon === null) {
+        res.writeHead(503, { "content-type": "text/plain" });
+        res.end("daemon not running in this process — opencode unavailable");
+        return;
+      }
+      let upstream: { baseUrl: string; username: string; password: string };
+      try {
+        upstream = await daemon.opencode();
+      } catch (e) {
+        res.writeHead(502, { "content-type": "text/plain" });
+        res.end(`opencode unavailable: ${e}`);
+        return;
+      }
+      handleOcProxy(req, res, upstream);
+      return;
+    }
     if (url.pathname.startsWith("/api/")) {
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("not found");
@@ -339,7 +385,7 @@ await new Promise<void>((resolve, reject) => {
   console.error(`[desktop] port ${PORT} unavailable:`, e);
   app.exit(1);
 });
-console.log(`[desktop] serving ${DIST} + /pty /rpc /api on ${BASE}`);
+console.log(`[desktop] serving ${DIST} + /pty /rpc /api /oc on ${BASE}`);
 
 // ─── Windows ────────────────────────────────────────────────────────────────
 let mainWin: BrowserWindow | null = null;

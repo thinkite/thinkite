@@ -1,0 +1,41 @@
+[
+  {
+    "type": "session.next.text.started",
+    "data": {
+      "timestamp": 1789101260966,
+      "sessionID": "ses_f7141466cffea87BcvRKd0xmLU",
+      "assistantMessageID": "msg_08ebec0a1001se2fbLiRfypzmU",
+      "textID": "text-0"
+    }
+  },
+  {
+    "type": "session.next.text.delta",
+    "data": {
+      "timestamp": 1789101260970,
+      "sessionID": "ses_f7141466cffea87BcvRKd0xmLU",
+      "assistantMessageID": "msg_08ebec0a1001se2fbLiRfypzmU",
+      "textID": "text-0",
+      "delta": "p"
+    }
+  },
+  {
+    "type": "session.next.text.delta",
+    "data": {
+      "timestamp": 1789101260970,
+      "sessionID": "ses_f7141466cffea87BcvRKd0xmLU",
+      "assistantMessageID": "msg_08ebec0a1001se2fbLiRfypzmU",
+      "textID": "text-0",
+      "delta": "ong"
+    }
+  },
+  {
+    "type": "session.next.text.ended",
+    "data": {
+      "timestamp": 1789101260988,
+      "sessionID": "ses_f7141466cffea87BcvRKd0xmLU",
+      "assistantMessageID": "msg_08ebec0a1001se2fbLiRfypzmU",
+      "textID": "text-0",
+      "text": "pong"
+    }
+  }
+]

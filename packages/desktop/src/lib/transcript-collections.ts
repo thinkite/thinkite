@@ -3,52 +3,50 @@ import {
   createCollection,
   createOptimisticAction,
 } from "@tanstack/react-db";
-import type { TimelineItem } from "@thinkite/protocol";
-import { daemonRpc } from "./daemon-rpc";
+import {
+  applyOcEvent,
+  createInitialTranscriptState,
+  type OcRow,
+  type OcTranscriptState,
+} from "@thinkite/oc-client";
+import { getOcClient, sharedOcBus } from "./oc";
+import { publishSessionStatus } from "./session-status";
 
-// Per-session live transcript collections — the desktop port of iOS's
-// transcript-collection-factory.ts (same Map-of-collections pattern,
-// TanStack/db#652; still the practical optimum for resident push
-// subscriptions — query-driven sync's loadSubset contract is
-// fetch/pagination-shaped, see project memory). One collection per
-// cliSessionId; the sync handler owns the daemon subscription, so any
-// number of consumers share one stream and back-nav within gcTime never
-// re-issues the subscribe RPC.
+// Per-session live transcript collections — same Map-of-collections
+// pattern as before (TanStack/db#652): one collection per opencode
+// `ses_*` id; the sync handler owns the session stream + bus routing, so
+// any number of consumers share one stream and back-nav within gcTime
+// never re-opens it.
 //
-// Desktop simplifications vs iOS: no per-session turn-result store yet
-// (usage meter / turn_failed surfacing are the headerContext slice), no
-// isNew fast path (desktop doesn't create sessions), no images.
+// Data now comes from `@thinkite/oc-client` instead of the daemon's
+// `/rpc` transcript path: initial `/api/session/:id/history` page(s),
+// then one durable session stream (`after=` resume on reconnect) plus the
+// shared global bus (live-only deltas, `session.status`), both folded
+// through the pure reducer. The reducer owns merge truth (seq dedupe,
+// delta→ended reconcile); this module only mirrors its rows into the
+// collection incrementally — new keys insert at the tail, changed rows
+// update in place (row objects keep identity when untouched, so a `!==`
+// check is the whole diff).
 
-/**
- * `_order` is a client-internal monotonic counter used purely for
- * sorting — NOT wire protocol. TanStack DB sorts by key without a
- * `compare`, and our keys are random uuids; `timestamp` is not monotonic
- * around compact boundaries (verified on iOS). Array order from the
- * daemon IS canonical order, so we preserve it by index.
- */
-export type OrderedTimelineItem = TimelineItem & { _order: number };
+export type OrderedOcRow = OcRow & { _order: number };
 
-const collections = new Map<string, Collection<OrderedTimelineItem, string>>();
+const collections = new Map<string, Collection<OrderedOcRow, string>>();
 
-const itemKey = (item: TimelineItem): string =>
-  item.type === "tool_call" ? item.callId : item.uuid;
+const rowKey = (row: OcRow): string => row.id;
 
 export function getTranscriptCollection(
-  cliSessionId: string,
-): Collection<OrderedTimelineItem, string> {
-  const cached = collections.get(cliSessionId);
+  sessionId: string,
+): Collection<OrderedOcRow, string> {
+  const cached = collections.get(sessionId);
   if (cached !== undefined) return cached;
 
-  const collection = createCollection<OrderedTimelineItem, string>({
-    id: `transcript-${cliSessionId}`,
-    // tool_call rows use `callId` (Anthropic tool_use_id) as identity;
-    // everything else keys by message uuid.
-    getKey: itemKey,
+  const collection = createCollection<OrderedOcRow, string>({
+    id: `transcript-${sessionId}`,
+    getKey: rowKey,
     compare: (a, b) => a._order - b._order,
-    // gcTime: react-db default (5 min). The explicit 60s from the first cut
-    // was tighter than it needed to be — a switched-away session's data is
+    // gcTime: react-db default (5 min). A switched-away session's data is
     // small relative to the real renderer costs (Pierre wasm, xterm), and
-    // the longer window makes back-nav re-subscribes rarer.
+    // the longer window makes back-nav re-opens rarer.
     sync: {
       sync: ({
         begin,
@@ -59,92 +57,138 @@ export function getTranscriptCollection(
         collection: coll,
       }) => {
         // markReady() exactly once per sync-handler lifetime; reconnect
-        // re-attaches refresh contents without re-gating isLoading.
+        // re-attaches without re-gating isLoading.
         let hasMarkedReady = false;
+        let disposed = false;
+        let state: OcTranscriptState = createInitialTranscriptState();
+        // Last rendered row object per key — identity diff.
+        const rendered = new Map<string, OcRow>();
 
-        const sub = daemonRpc.subscribeSession(cliSessionId, {
-          onEvent: (delta) => {
-            switch (delta.kind) {
-              case "append": {
-                // Optimistic reconcile: a user_message we optimistically
-                // inserted (same uuid) already holds a slot — reuse its
-                // `_order` so the synced row lands in that slot and the
-                // overlay drops onto it by key, no flicker.
-                const key = itemKey(delta.item);
-                const existing = coll.get(key);
-                begin();
-                write({
-                  type: "insert",
-                  value: {
-                    ...delta.item,
-                    _order: existing?._order ?? coll.size,
-                  },
-                });
-                commit();
-                break;
-              }
-              case "patch_text": {
-                const current = coll.get(delta.uuid);
-                if (current?.type !== "assistant_message") return;
-                begin();
-                write({
-                  type: "update",
-                  value: { ...current, text: current.text + delta.deltaText },
-                });
-                commit();
-                break;
-              }
-              case "patch_tool_call": {
-                const current = coll.get(delta.callId);
-                if (current?.type !== "tool_call") return;
-                begin();
-                write({
-                  type: "update",
-                  value: {
-                    ...current,
-                    status: delta.status,
-                    error: delta.error,
-                    detail: delta.detail,
-                  },
-                });
-                commit();
-                break;
-              }
-              case "turn_started":
-              case "turn_completed":
-              case "turn_failed":
-              case "turn_canceled":
-                // Running-state renders from the daemon-pushed
-                // sessionState.activity; usage / turn errors land with
-                // the composer headerContext slice.
-                break;
-              case "compact_started":
-              case "compact_applied":
-                // V0.5+ — divider append + preservedUuids filtering.
-                break;
+        const mirror = () => {
+          begin();
+          for (const row of state.rows) {
+            const key = rowKey(row);
+            const prev = rendered.get(key);
+            if (prev === row) continue;
+            if (prev === undefined) {
+              const existing = coll.get(key);
+              write({
+                type: "insert",
+                value: { ...row, _order: existing?._order ?? coll.size },
+              });
+            } else {
+              const current = coll.get(key);
+              write({
+                type: "update",
+                value: {
+                  ...row,
+                  _order: current?._order ?? coll.size,
+                },
+              });
             }
-          },
-          onSubscribed: ({ recovered, settled }) => {
-            if (!recovered) {
-              // Cold path — full snapshot. truncate() inside the sync
-              // transaction so observers never see a flash of empty.
-              begin();
-              truncate();
-              for (let i = 0; i < settled.length; i += 1) {
-                write({ type: "insert", value: { ...settled[i], _order: i } });
+            rendered.set(key, row);
+          }
+          commit();
+        };
+
+        const ingest = (event: { type: string; data?: unknown }) => {
+          const next = applyOcEvent(state, event);
+          if (next === state) return;
+          const statusChanged = next.status !== state.status;
+          state = next;
+          mirror();
+          // Durable reading of busy/idle → sessions row (session-status.ts).
+          if (statusChanged) publishSessionStatus(sessionId, next.status);
+        };
+
+        const ready = () => {
+          if (!hasMarkedReady && !disposed) {
+            markReady();
+            hasMarkedReady = true;
+          }
+        };
+
+        // Cold path — full history, then live. Truncate inside the sync
+        // transaction so observers never see a flash of empty.
+        const open = async (signal: AbortSignal) => {
+          try {
+            let after = 0;
+            for (let page = 0; page < 20; page += 1) {
+              const result = await getOcClient().history(sessionId, after, 100);
+              if (signal.aborted || disposed) return;
+              for (const event of result.events) {
+                const next = applyOcEvent(state, event);
+                if (next !== state) state = next;
+                const seq = (event.durable as { seq?: number } | undefined)
+                  ?.seq;
+                if (typeof seq === "number" && seq > after) after = seq;
               }
-              commit();
+              if (!result.hasMore) break;
             }
-            if (!hasMarkedReady) {
-              markReady();
-              hasMarkedReady = true;
+            if (signal.aborted || disposed) return;
+            begin();
+            truncate();
+            rendered.clear();
+            for (const row of state.rows) {
+              write({
+                type: "insert",
+                value: { ...row, _order: rendered.size },
+              });
+              rendered.set(rowKey(row), row);
             }
-          },
+            commit();
+          } catch (err) {
+            console.warn(`[transcript] history failed for ${sessionId}:`, err);
+          } finally {
+            ready();
+          }
+          if (signal.aborted || disposed) return;
+
+          // Follow: durable stream with `after=` resume. The SDK stream
+          // retries internally on blips; a return here means the server
+          // closed it (restart) — re-issue with backoff until disposed.
+          let backoff = 1000;
+          while (!signal.aborted && !disposed) {
+            try {
+              for await (const event of getOcClient().openSessionStream(
+                sessionId,
+                state.lastSeq,
+                { signal },
+              )) {
+                backoff = 1000;
+                ingest(event);
+              }
+            } catch (err) {
+              if (signal.aborted || disposed) return;
+              console.warn(
+                `[transcript] stream ended for ${sessionId}, retrying:`,
+                err,
+              );
+            }
+            if (signal.aborted || disposed) return;
+            await new Promise((r) => setTimeout(r, backoff));
+            backoff = Math.min(backoff * 2, 10_000);
+          }
+        };
+
+        const abort = new AbortController();
+        void open(abort.signal);
+
+        // Shared bus, routed to this session by `sessionID`. Carries the
+        // live-only deltas plus `session.status`; durable duplicates of
+        // stream events dedupe by seq in the reducer.
+        const unsubscribeBus = sharedOcBus.subscribe((event) => {
+          if (disposed) return;
+          const data = event.data as { sessionID?: unknown } | undefined;
+          if (data?.sessionID !== sessionId) return;
+          ingest(event);
         });
 
         // Runs when gcTime expires (no subscribers for ≥5 min).
         return () => {
-          sub.unsubscribe();
+          disposed = true;
+          abort.abort();
+          unsubscribeBus();
         };
       },
     },
@@ -155,50 +199,46 @@ export function getTranscriptCollection(
   // collection that throws on writes.
   collection.on("status:change", ({ status }) => {
     if (status === "cleaned-up") {
-      collections.delete(cliSessionId);
+      collections.delete(sessionId);
     }
   });
 
-  collections.set(cliSessionId, collection);
+  collections.set(sessionId, collection);
   return collection;
 }
 
+/** Drop a cached collection (after delete) so the next open re-syncs. */
+export function evictTranscriptCollection(sessionId: string): void {
+  collections.delete(sessionId);
+}
+
 interface SendMessageVars {
-  cliSessionId: string;
-  /** Client-minted uuid — the optimistic insert and the daemon's
-   *  synthesized user_message append share it, so the live append drops
-   *  onto the optimistic bubble by key. */
+  sessionId: string;
+  /** Client-minted input id — sent as the prompt `id` so the durable
+   *  `prompt.admitted`/`prompted` events echo it as `messageID` and the
+   *  synced user row lands on the optimistic bubble by key, no flicker. */
   userMessageUuid: string;
   text: string;
-  cwd?: string;
-  model?: string;
 }
 
 /**
  * Optimistic send: `onMutate` paints the user bubble synchronously;
- * `mutationFn` fires sendPrompt with the same uuid. The daemon fans the
- * synthesized append out on the subscribe stream BEFORE the RPC ack, and
- * frames are ordered — so the synced row exists by the time the
- * optimistic transaction settles, and the overlay lands on it seamlessly.
- * On failure the action rolls the insert back automatically.
+ * `mutationFn` admits the prompt with the same id. The durable admitted
+ * event fans out on the session stream / bus and upserts onto the same
+ * key, so the overlay lands seamlessly. On failure the action rolls the
+ * insert back automatically.
  */
 export const sendUserMessage = createOptimisticAction<SendMessageVars>({
-  onMutate: ({ cliSessionId, userMessageUuid, text }) => {
-    const coll = getTranscriptCollection(cliSessionId);
+  onMutate: ({ sessionId, userMessageUuid, text }) => {
+    const coll = getTranscriptCollection(sessionId);
     coll.insert({
-      type: "user_message",
-      uuid: userMessageUuid,
+      kind: "user",
+      id: userMessageUuid,
       text,
       _order: coll.size,
     });
   },
-  mutationFn: async ({ cliSessionId, userMessageUuid, text, cwd, model }) => {
-    await daemonRpc.sendPrompt({
-      sessionId: cliSessionId,
-      text,
-      cwd,
-      model,
-      userMessageUuid,
-    });
+  mutationFn: async ({ sessionId, userMessageUuid, text }) => {
+    await getOcClient().prompt(sessionId, text, { id: userMessageUuid });
   },
 });

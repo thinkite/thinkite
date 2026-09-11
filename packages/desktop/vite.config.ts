@@ -61,6 +61,7 @@ export default defineConfig({
       "/pty": { target: "http://127.0.0.1:5199", ws: true },
       "/rpc": { target: "http://127.0.0.1:5199", ws: true },
       "/api": { target: "http://127.0.0.1:5199" },
+      "/oc": { target: "http://127.0.0.1:5199" },
     },
   },
 });
