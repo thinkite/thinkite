@@ -529,6 +529,9 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     knownClients,
     commandHandler,
     isPairing: () => pairingOpen,
+    // HTTP tunnel target: the same lazily-started opencode host the desktop
+    // proxy uses. First tunneled request pays the spawn cost.
+    opencode: () => opencodeHost.ensureConnection(),
     log: (event, data) =>
       console.log(
         `[sidecode] ${event}${data ? ` ${JSON.stringify(data)}` : ""}`,

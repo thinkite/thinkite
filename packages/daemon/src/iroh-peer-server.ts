@@ -7,6 +7,7 @@ import {
   decodeWireFrameLength,
   decodeWireFramePayload,
   encodeWireFrame,
+  IROH_HTTP_ALPN,
   IROH_RPC_ALPN,
   isProtocolCompatible,
   PROTOCOL_VERSION,
@@ -15,7 +16,9 @@ import {
 import type { CommandContext, CommandHandler } from "./command.ts";
 import type { Identity } from "./identity.ts";
 import { fingerprintFromPubkeyB64, seedFromPrivateKey } from "./identity.ts";
+import { IrohHttpTunnel } from "./iroh-http-tunnel.ts";
 import type { KnownClients } from "./known-clients.ts";
+import type { OpencodeConnection } from "./opencode/host.ts";
 
 /**
  * The daemon's remote transport: an iroh QUIC listener on the daemon
@@ -65,6 +68,12 @@ export interface IrohPeerServerOptions {
   /** Pair-window gate for admitting unknown pubkeys. */
   isPairing?: () => boolean;
   /**
+   * Resolver for the opencode server the HTTP ALPN (`thinkite/http/1`)
+   * tunnels to. Called lazily on the first tunneled request; omitting it
+   * leaves the tunnel in place but answering 502 to every request.
+   */
+  opencode?: () => Promise<OpencodeConnection>;
+  /**
    * Endpoint preset. "n0" (default) = production relays + pkarr
    * discovery. "minimal" = no external services — tests dial by direct
    * address, offline.
@@ -105,6 +114,8 @@ export class IrohPeerServer {
   private readonly isPairing: () => boolean;
   private readonly preset: "n0" | "minimal";
   private readonly log: NonNullable<IrohPeerServerOptions["log"]>;
+  /** HTTP ALPN surface: one bi-stream per HTTP/1.1 connection. */
+  private readonly tunnel: IrohHttpTunnel;
 
   constructor(options: IrohPeerServerOptions) {
     this.identity = options.identity;
@@ -113,6 +124,14 @@ export class IrohPeerServer {
     this.isPairing = options.isPairing ?? (() => false);
     this.preset = options.preset ?? "n0";
     this.log = options.log ?? (() => undefined);
+    this.tunnel = new IrohHttpTunnel({
+      opencode:
+        options.opencode ??
+        (async () => {
+          throw new Error("opencode host is not configured on this daemon");
+        }),
+      log: this.log,
+    });
   }
 
   /**
@@ -130,7 +149,10 @@ export class IrohPeerServer {
     if (this.preset === "n0") b.applyN0();
     else b.applyMinimal();
     b.secretKey(Array.from(seedFromPrivateKey(this.identity.privateKey)));
-    b.alpns([Array.from(Buffer.from(IROH_RPC_ALPN))]);
+    b.alpns([
+      Array.from(Buffer.from(IROH_RPC_ALPN)),
+      Array.from(Buffer.from(IROH_HTTP_ALPN)),
+    ]);
     const ep = await b.bind();
     if (this.stopped) {
       // stop() raced the bind — don't leak the endpoint.
@@ -141,6 +163,7 @@ export class IrohPeerServer {
     this.log("iroh.listening", {
       endpointId: ep.id().toString(),
       alpn: IROH_RPC_ALPN,
+      httpAlpn: IROH_HTTP_ALPN,
     });
     void this.acceptLoop(ep);
   }
@@ -151,6 +174,8 @@ export class IrohPeerServer {
       this.closePeer(peer, "shutdown");
     }
     this.peers.clear();
+    // Close tunnel connections + the proxy before the endpoint goes away.
+    this.tunnel.stop();
     if (this.endpoint) {
       const ep = this.endpoint;
       this.endpoint = null;
@@ -165,6 +190,11 @@ export class IrohPeerServer {
   /** Peers admitted past the known_clients gate (QUIC handshake = auth). */
   authenticatedCount(): number {
     return this.peers.size;
+  }
+
+  /** Active HTTP-tunnel connections (the other half of the same gate). */
+  httpTunnelCount(): number {
+    return this.tunnel.activeConnections();
   }
 
   /** Test hook: the bound endpoint's dialable address (id + direct addrs). */
@@ -203,6 +233,13 @@ export class IrohPeerServer {
     const accepting = await incoming.accept();
     const conn = await accepting.connect();
 
+    // ALPN dispatch: the same endpoint hosts the RPC and HTTP tunnels. The
+    // negotiated ALPN is fixed by the QUIC handshake (`Connection.alpn()` is
+    // synchronous once connected); RPC connections keep their handshake path
+    // below, HTTP connections go to the tunnel after the gate.
+    const alpn = Buffer.from(Uint8Array.from(conn.alpn())).toString();
+    const isHttp = alpn === IROH_HTTP_ALPN;
+
     // ── known_clients gate ──
     // remoteId is authenticated by the QUIC handshake itself (the peer
     // proved possession of the matching secret key). Compare raw bytes,
@@ -215,9 +252,10 @@ export class IrohPeerServer {
       .find((c) => c.publicKeyB64 === clientPubkey);
     if (!known) {
       if (!this.isPairing()) {
-        this.log("iroh.peer.rejected_unknown", {
-          pubkey: clientPubkey.slice(0, 12),
-        });
+        this.log(
+          isHttp ? "iroh.http.rejected_unknown" : "iroh.peer.rejected_unknown",
+          { pubkey: clientPubkey.slice(0, 12) },
+        );
         conn.close(CLOSE_UNKNOWN_CLIENT, Array.from(Buffer.from("unknown")));
         return;
       }
@@ -229,6 +267,13 @@ export class IrohPeerServer {
       };
       this.knownClients.add(known);
       this.log("iroh.peer.paired", { fingerprint });
+    }
+
+    if (isHttp) {
+      // The tunnel accepts bi-streams itself; fire-and-forget so the main
+      // accept loop keeps serving other connections.
+      void this.tunnel.serveConnection(conn);
+      return;
     }
 
     // ── RPC stream ──

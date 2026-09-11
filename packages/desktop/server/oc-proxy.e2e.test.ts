@@ -58,6 +58,10 @@ runIf("oc proxy + client (live server)", () => {
       serverLog.push(m);
     });
     let proxy: Server | null = null;
+    let cleanupDelete: {
+      client: ReturnType<typeof createOcClient>;
+      sessionId: string;
+    } | null = null;
     const abort = new AbortController();
     const t0 = Date.now();
     const log = (msg: string) =>
@@ -84,6 +88,7 @@ runIf("oc proxy + client (live server)", () => {
         model,
       });
       log(`session ${session.id}`);
+      cleanupDelete = { client, sessionId: session.id };
       expect(session.id.startsWith("ses_")).toBe(true);
 
       // Fold BOTH the durable session stream and the shared bus through
@@ -271,6 +276,14 @@ runIf("oc proxy + client (live server)", () => {
     } finally {
       abort.abort();
       console.log(`E2E server log tail:\n${serverLog.slice(-30).join("\n")}`);
+      // Best-effort cleanup so a passing or failing run doesn't litter the
+      // user's opencode session database (v1 delete: no v2 route exists).
+      // Runs before the proxy/upstream close so the request can still land.
+      if (cleanupDelete !== null) {
+        await cleanupDelete.client
+          .deleteSession(cleanupDelete.sessionId)
+          .catch(() => {});
+      }
       await new Promise<void>((r) => {
         if (proxy !== null) proxy.close(() => r());
         else r();

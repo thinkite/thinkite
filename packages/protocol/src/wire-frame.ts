@@ -19,6 +19,14 @@
  *  hello/server_info handshake (`isProtocolCompatible`). */
 export const IROH_RPC_ALPN = "thinkite/rpc/1";
 
+/** ALPN for the daemon's plain-HTTP/1.1 tunnel over iroh
+ *  (`thinkite/http/1`): one HTTP/1.1 exchange per bi-stream. The client
+ *  half-closes its send side after the request body, the server
+ *  half-closes after the response, and an SSE response stays open until
+ *  the client resets the stream. Advertised alongside `IROH_RPC_ALPN` on
+ *  the same endpoint; the accept loop dispatches on the negotiated ALPN. */
+export const IROH_HTTP_ALPN = "thinkite/http/1";
+
 /** Bytes in the length prefix. */
 export const WIRE_FRAME_HEADER_BYTES = 4;
 

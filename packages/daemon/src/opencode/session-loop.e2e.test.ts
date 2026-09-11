@@ -42,11 +42,13 @@ runIf("opencode session loop (live server)", () => {
     const unsubscribe = runtime.subscribe((event) => {
       seen.push(event.payload);
     });
+    let opencodeSessionId: string | null = null;
     try {
       const loop = await ensureOpencodeLoop(manager, host, runtime, {
         text: "reply with exactly: pong",
         cwd: dir,
       });
+      opencodeSessionId = loop.opencodeSessionId;
       await pushOpencodePrompt(manager, host, runtime, loop, {
         text: "reply with exactly: pong",
         cwd: dir,
@@ -103,6 +105,12 @@ runIf("opencode session loop (live server)", () => {
       console.log(`E2E delta kinds: ${kinds.join(" → ")}`);
       unsubscribe();
     } finally {
+      // Best-effort cleanup so a passing or failing run doesn't litter the
+      // user's opencode session database (v1 delete: no v2 route exists).
+      const client = host.client;
+      if (client !== null && opencodeSessionId !== null) {
+        await client.deleteSession(opencodeSessionId).catch(() => {});
+      }
       await shutdownOpencodeLoops();
       await host.stop();
       rmSync(dir, { recursive: true, force: true });
