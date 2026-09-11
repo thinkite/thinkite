@@ -25,6 +25,7 @@ import {
   DaemonClientProvider,
   useDaemonClient,
 } from "@/lib/daemon-client-context";
+import { OcRuntimeGate } from "@/lib/oc";
 import { queryClient } from "@/lib/query-client";
 import { SafeAreaView } from "@/lib/styled";
 import { getThemePreference } from "@/lib/theme-preference";
@@ -69,6 +70,10 @@ export default function RootLayout() {
         <KeyboardProvider>
           <QueryClientProvider client={queryClient}>
             <DaemonClientProvider>
+              {/* Headless: starts/tears down the opencode-over-iroh
+                  runtime (sessions collection + shared bus) off the
+                  daemon connection status. */}
+              <OcRuntimeGate />
               <SafeAreaListener
                 onChange={({ insets }) => {
                   Uniwind.updateInsets(insets);

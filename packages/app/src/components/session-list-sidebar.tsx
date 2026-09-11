@@ -20,38 +20,8 @@ import { SessionRow } from "@/components/session-row";
 import { useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { useSessions } from "@/hooks/use-sessions";
 import { useDrawerUI } from "@/lib/drawer-ui";
-import { dayKey, formatDaySection } from "@/lib/format";
-import type { SessionRow as SessionRowData } from "@/lib/sessions-collection";
-
-interface DaySection {
-  title: string;
-  data: SessionRowData[];
-}
-
-/**
- * Bucket the recency-sorted sessions into calendar-day sections (Today /
- * Yesterday / "Jun 1" / …). `sessions` is already sorted `lastActivityAt`
- * desc by `useSessions`, so a single linear pass keeps both section order
- * (most-recent day first) and within-section recency. `now` is snapshotted
- * once so every row buckets against the same "today".
- */
-function groupSessionsByDay(sessions: readonly SessionRowData[]): DaySection[] {
-  const now = Date.now();
-  const out: DaySection[] = [];
-  let currentKey: string | null = null;
-  for (const session of sessions) {
-    const key = dayKey(session.lastActivityAt);
-    if (key !== currentKey) {
-      out.push({
-        title: formatDaySection(session.lastActivityAt, now),
-        data: [],
-      });
-      currentKey = key;
-    }
-    out[out.length - 1].data.push(session);
-  }
-  return out;
-}
+import { type DaySection, groupSessionsByDay } from "@/lib/session-sections";
+import type { OcSessionRow as SessionRowData } from "@/lib/sessions-collection";
 
 // Floating-header content height, below the status-bar inset. We set our own
 // (instead of react-navigation's getDefaultHeaderHeight, which hardcodes the
@@ -136,28 +106,30 @@ export function SessionListSidebar() {
   // user gets a back chevron in the UINavigationBar that pops to a session
   // they don't expect to "go back" to.
   const setLastUsedCwd = useSetLastUsedCwd();
+  // The route param keeps its `cliSessionId` name until 3b-2; it now
+  // carries the opencode `ses_*` id.
   const handleOpenSession = (session: SessionRowData) => {
     // Tapping the already-open session: just close the drawer. router.replace
     // to the same path-param route still mints a fresh route key → remounts
     // ChatPanel + flashes Loading, for no actual navigation. Skip it.
-    if (session.cliSessionId === activeSessionId) {
+    if (session.id === activeSessionId) {
       closeDrawer();
       return;
     }
     // Record the current focus so the next "New session" defaults to
     // the project the user just opened. Mutation is fire-and-forget;
     // the navigation below shouldn't wait on SecureStore I/O.
-    setLastUsedCwd.mutate(session.cwd);
+    setLastUsedCwd.mutate(session.directory);
     // closeDrawer(targetId) records the gate target in the same batch as the
     // route swap below, so the session navigated TO mounts the cheap
     // TranscriptLoading first — the session screen's drawer-settle gate holds
     // the heavy ChatPanel mount until the close animation finishes. No
     // frame-deferral needed.
-    closeDrawer(session.cliSessionId);
+    closeDrawer(session.id);
     router.replace({
       pathname: "/session/[cliSessionId]",
       params: {
-        cliSessionId: session.cliSessionId,
+        cliSessionId: session.id,
         // No title param — the detail screen reads it from the session's
         // collection row (filtered live query), so it stays correct as
         // the daemon's canonical title lands.
@@ -165,7 +137,7 @@ export function SessionListSidebar() {
         // Pass cwd so the session screen can hand it to sendPrompt — the
         // SDK derives the project key from cwd to locate the JSONL for
         // `claude --resume`.
-        cwd: session.cwd,
+        cwd: session.directory,
       },
     });
   };
@@ -314,15 +286,15 @@ function Body({
   // separators and non-sticky headers so the whole list flows under the
   // gradient scrim as one quiet column.
   return (
-    <SectionList<SessionRowData, DaySection>
+    <SectionList<SessionRowData, DaySection<SessionRowData>>
       style={{ flex: 1 }}
       sections={sections}
-      keyExtractor={(item) => item.cliSessionId}
+      keyExtractor={(item) => item.id}
       renderItem={({ item }) => (
         <SessionRow
           session={item}
           onPress={onOpenSession}
-          isActive={item.cliSessionId === activeCliSessionId}
+          isActive={item.id === activeCliSessionId}
         />
       )}
       renderSectionHeader={({ section }) => (

@@ -2,6 +2,7 @@ import {
   decodeWireFrameLength,
   decodeWireFramePayload,
   encodeWireFrame,
+  IROH_HTTP_ALPN,
   IROH_RPC_ALPN,
   WIRE_FRAME_HEADER_BYTES,
 } from "@thinkite/protocol";
@@ -66,6 +67,90 @@ function getEndpoint(identity: ClientIdentity): Promise<EndpointLike> {
     throw err;
   });
   return endpointPromise;
+}
+
+/**
+ * One long-lived `thinkite/http/1` QUIC connection per app process,
+ * opened lazily and shared by every `openHttpStream()` bi-stream. A
+ * connection per request would pay discovery + QUIC handshake on every
+ * opencode call; the daemon's tunnel accepts any number of bi-streams
+ * (one per HTTP exchange) on one connection.
+ */
+let httpConnectionPromise: Promise<ConnectionLike> | null = null;
+
+function clearHttpConnection(): void {
+  const promise = httpConnectionPromise;
+  httpConnectionPromise = null;
+  void promise
+    ?.then((conn) => {
+      try {
+        conn.close(0n, new ArrayBuffer(0));
+      } catch {
+        // already closed
+      }
+    })
+    .catch(() => {
+      // the dial itself never completed
+    });
+}
+
+async function getHttpConnection(
+  identity: ClientIdentity,
+  daemonPubkey: string,
+): Promise<ConnectionLike> {
+  if (httpConnectionPromise !== null) return httpConnectionPromise;
+  const promise = (async () => {
+    const remote = EndpointId.fromBytes(
+      toArrayBuffer(base64UrlToBytes(daemonPubkey)),
+    );
+    const ep = await getEndpoint(identity);
+    const conn = await ep.connect(
+      new EndpointAddr(remote, undefined, []),
+      toArrayBuffer(Uint8Array.from(IROH_HTTP_ALPN, (c) => c.charCodeAt(0))),
+    );
+    // Peer restart / network loss: drop the cache so the next request
+    // redials instead of opening a stream on a dead connection.
+    conn
+      .closed()
+      .then(() => {
+        if (httpConnectionPromise === promise) httpConnectionPromise = null;
+      })
+      .catch(() => {
+        if (httpConnectionPromise === promise) httpConnectionPromise = null;
+      });
+    return conn;
+  })();
+  httpConnectionPromise = promise;
+  promise.catch(() => {
+    if (httpConnectionPromise === promise) httpConnectionPromise = null;
+  });
+  return promise;
+}
+
+/**
+ * Open one bi-stream to the daemon's HTTP tunnel (one HTTP/1.1 exchange
+ * per stream). Reuses the identity-keyed endpoint and the cached
+ * `thinkite/http/1` connection; a failed `openBi` drops the cache and
+ * retries once on a fresh dial, so a connection that died between
+ * requests heals without a caller-visible failure.
+ */
+export async function openHttpStream(
+  identity: ClientIdentity,
+  daemonPubkey: string,
+): Promise<BiStreamLike> {
+  try {
+    const conn = await getHttpConnection(identity, daemonPubkey);
+    return await conn.openBi();
+  } catch {
+    clearHttpConnection();
+    const conn = await getHttpConnection(identity, daemonPubkey);
+    return await conn.openBi();
+  }
+}
+
+/** Tear down the cached HTTP tunnel connection (connection gate → offline). */
+export function closeHttpConnection(): void {
+  clearHttpConnection();
 }
 
 class IrohWireTransport implements WireTransport {

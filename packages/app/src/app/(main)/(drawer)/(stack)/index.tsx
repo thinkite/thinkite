@@ -1,7 +1,7 @@
+import { mintMessageId, parseModelRef } from "@thinkite/oc-client";
 import type { ImageAttachment } from "@thinkite/protocol";
-import * as Crypto from "expo-crypto";
 import { router, Stack } from "expo-router";
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { Alert, Pressable, Text, View } from "react-native";
 import {
   KeyboardAvoidingView,
@@ -12,7 +12,7 @@ import { InputBar } from "@/components/transcript/input-bar";
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { useDrawerUI } from "@/lib/drawer-ui";
-import { createSession } from "@/lib/sessions-collection";
+import { getOcClient, sendUserMessage } from "@/lib/sessions-collection";
 
 /**
  * (drawer)/(stack)/index — new-session create page, URL `/`. Lives inside
@@ -36,21 +36,18 @@ import { createSession } from "@/lib/sessions-collection";
  *      shows a "Select a project" placeholder + chevron; tap opens the
  *      cwd picker. Send button stays disabled until cwd resolves.
  *
- * Flow on first send:
- *   1. Generate a fresh UUIDv4 client-side
- *   2. `createSession(...)` — its onMutate optimistically inserts the
- *      session row (so the sidebar + detail screen show it, with a title,
- *      immediately), and its mutationFn fires the first sendPrompt +
- *      reconciles via refetch
- *   3. `router.replace("/session/[id]")` immediately — the detail screen
- *      reads the just-inserted row via its own filtered live query
- *
- * The first sendPrompt fires HERE (not deferred to the detail screen)
- * because the daemon seeds an empty settled snapshot for a freshly-created
- * query — so the synthesized user_message + turn_started are recovered via
- * ring-buffer replay whenever the detail screen subscribes, regardless of
- * order. (Previously this was deferred to ChatPanel's first-send effect to
- * dodge the cursor race window; the daemon-side seed removes that need.)
+ * Flow on first send (stage 3b-1: opencode over the iroh HTTP tunnel):
+ *   1. `getOcClient().createSession({ location.directory: cwd })` on the
+ *      daemon's opencode — it mints the canonical `ses_*` id.
+ *   2. Fire the first prompt under a client-minted `msg_*` id
+ *      (`sendUserMessage`) so the durable admitted event echoes it and
+ *      the transcript can reconcile the optimistic bubble once 3b-2
+ *      swaps that screen. A failed prompt still leaves a valid empty
+ *      session to type into.
+ *   3. `router.replace("/session/[cliSessionId]")` with the `ses_*` id.
+ *      Until 3b-2 the detail screen runs the old daemon-RPC transcript
+ *      path, finds nothing for that id, and shows its empty state — the
+ *      session row is still live in the drawer list.
  */
 export default function NewSessionScreen() {
   const { openDrawer } = useDrawerUI();
@@ -63,80 +60,55 @@ export default function NewSessionScreen() {
   const cwd = lastUsedCwd ?? roots?.recentCwds[0]?.path ?? undefined;
   const setLastUsedCwd = useSetLastUsedCwd();
 
-  // The model picker lives INSIDE InputBar now (cliSessionId={null} =
-  // draft mode: InputBar holds a local draft model seeded to
-  // DEFAULT_MODEL). The chosen model arrives back via `rawSend`'s `model`
-  // arg at send time and seeds `createSession`. No selection state here.
-
-  // Create-bridged intent: a LOCAL pref (no session exists yet — nothing to
-  // RPC) that rides out on the first send's `bridged` flag. Mirrors the detail
-  // screen's header toggle, but here it just flips local state.
-  const [createBridged, setCreateBridged] = useState(false);
-  const toggleCreateBridged = useCallback(() => {
-    // Turning OFF (→ private) needs no confirm — nothing is exposed yet.
-    if (createBridged) {
-      setCreateBridged(false);
-      return;
-    }
-    // Turning ON (→ bridged) confirms first, like the other bridge toggles.
-    Alert.alert(
-      "Start Remote Control?",
-      "The session you create will be bridged to the cloud from its first message — visible and controllable from claude.ai and Claude Desktop.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Start", onPress: () => setCreateBridged(true) },
-      ],
-    );
-  }, [createBridged]);
-
   // Raw send — invoked for non-slash text AND for whitelisted
   // passthrough commands (/init, /review). On new-session only those
   // two passthrough commands are reachable; intercept commands aren't
   // in the new-session picker so the slash hook never dispatches
-  // /clear or /model from here.
+  // /clear or /model from here. Images are not admitted yet on this
+  // path (3b-2), so only `text` rides out on the prompt.
   const rawSend = useCallback(
-    (text: string, images: ImageAttachment[] | undefined, model: string) => {
+    (text: string, _images: ImageAttachment[] | undefined, model: string) => {
       if (cwd === undefined) {
         // Placeholder state — user hasn't picked and there's no
         // recent history to fall back on. InputBar.canSend already
         // gates on text/images presence; this is the extra cwd gate
-        // so we don't ship a malformed sendPrompt to the daemon.
+        // so we don't create a session in an unknown directory.
         return;
       }
       // Refresh "last used" so subsequent new-session opens default
-      // to this same cwd even before the daemon records the activity.
+      // to this same cwd even before opencode records the activity.
       setLastUsedCwd.mutate(cwd);
-      const newId = Crypto.randomUUID();
-      // Optimistically create the session: `createSession`'s onMutate
-      // inserts the row synchronously (so the sidebar + detail screen show
-      // it — with a title — the instant we navigate), and its mutationFn
-      // fires the first sendPrompt + reconciles via refetch. The daemon
-      // seeds an empty settled snapshot for the freshly-created query, so
-      // this sendPrompt firing before the detail screen subscribes is
-      // race-free. sendPrompt failure rolls the optimistic row back.
-      // `model` comes from InputBar's draft picker (the only place the
-      // pre-create selection lives).
-      createSession({
-        cliSessionId: newId,
-        text,
-        cwd,
-        images,
-        model,
-        bridged: createBridged,
-      }).isPersisted.promise.catch((err) => {
-        console.error("create session failed", err);
-      });
-      router.replace({
-        pathname: "/session/[cliSessionId]",
-        // `new: "1"` flags the detail screen's transcript subscribe to
-        // take the daemon's brand-new-session fast path (skip the JSONL
-        // scan — there's none yet — and dodge the cold-path await race
-        // that drops the synthesized first user_message). Self-clearing:
-        // the next navigation is another router.replace without it.
-        params: { cliSessionId: newId, cwd, new: "1" },
-      });
+      void (async () => {
+        try {
+          const session = await getOcClient().createSession({
+            directory: cwd,
+            // The input bar's picker still lists Claude ids until 3b-2;
+            // only a `provider/model` ref is meaningful to opencode — a
+            // bare id parses to `{providerID: id, id: ""}` and the runner
+            // fails the turn with ModelUnavailable (seen live). Omit it
+            // and let opencode pick its default.
+            ...(model.includes("/") ? { model: parseModelRef(model) } : {}),
+          });
+          void sendUserMessage({
+            sessionId: session.id,
+            userMessageUuid: mintMessageId(),
+            text,
+          }).isPersisted.promise.catch((err: unknown) => {
+            console.warn("[new-session] first prompt failed:", err);
+          });
+          router.replace({
+            pathname: "/session/[cliSessionId]",
+            params: { cliSessionId: session.id, cwd },
+          });
+        } catch (err) {
+          Alert.alert(
+            "Couldn't create session",
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      })();
     },
-    [cwd, setLastUsedCwd, createBridged],
+    [cwd, setLastUsedCwd],
   );
 
   const openCwdPicker = useCallback(() => {
@@ -153,16 +125,6 @@ export default function NewSessionScreen() {
       <Stack.Header transparent />
       <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button icon="line.3.horizontal" onPress={openDrawer} />
-      </Stack.Toolbar>
-      {/* Create-bridged toggle — same cloud↔cloud.fill vocabulary as the
-          detail header, but a LOCAL intent (no session to bridge yet); it rides
-          out on the first send. Claude orange when armed. */}
-      <Stack.Toolbar placement="right">
-        <Stack.Toolbar.Button
-          icon={createBridged ? "cloud.fill" : "cloud"}
-          tintColor={createBridged ? "#DA7756" : undefined}
-          onPress={toggleCreateBridged}
-        />
       </Stack.Toolbar>
       <View className="flex-1 bg-white dark:bg-black pb-safe">
         <KeyboardAvoidingView

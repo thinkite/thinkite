@@ -216,3 +216,21 @@ export const updateSessionModel = createOptimisticAction<{
     });
   },
 });
+
+export type { SessionRow as OcSessionRow } from "@thinkite/oc-client/tanstack";
+/**
+ * Stage 3b-1 — the opencode-backed session list, the one screen that has
+ * swapped onto the iroh HTTP tunnel. The daemon-RPC collection above still
+ * feeds the transcript screen until 3b-2; the drawer sidebar and
+ * new-session flow read the exports below.
+ *
+ * Rows are `@thinkite/oc-client/tanstack`'s `SessionRow`, keyed by the
+ * opencode `ses_*` id. The collection starts/stops with the daemon
+ * connection in `@/lib/oc` (see `OcRuntimeGate`).
+ */
+export {
+  evictTranscriptCollection,
+  getOcClient,
+  sendUserMessage,
+  sessionStateCollection as ocSessionStateCollection,
+} from "./oc";

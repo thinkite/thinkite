@@ -44,6 +44,12 @@ export interface TranscriptCollections {
   get(sessionId: string): Collection<OrderedOcRow, string>;
   /** Drop a cached collection (after delete) so the next open re-syncs. */
   evict(sessionId: string): void;
+  /**
+   * Tear down every cached collection: abort its session stream and bus
+   * subscription, and clear the cache. Used by the phone's connection gate
+   * on offline so no stream keeps reconnecting while the daemon is away.
+   */
+  disposeAll(): void;
   sendUserMessage(variables: SendMessageVars): Transaction;
 }
 
@@ -238,6 +244,17 @@ export function createTranscriptCollections({
     collections.delete(sessionId);
   }
 
+  function disposeAll(): void {
+    for (const collection of collections.values()) {
+      void collection.cleanup().catch((err) => {
+        console.warn("[transcript] cleanup failed:", err);
+      });
+    }
+    // A collection's status listener also evicts itself; clearing here
+    // covers the entries whose cleanup is still in flight.
+    collections.clear();
+  }
+
   /**
    * Optimistic send: `onMutate` paints the user bubble synchronously;
    * `mutationFn` admits the prompt with the same id. The durable admitted
@@ -260,5 +277,5 @@ export function createTranscriptCollections({
     },
   });
 
-  return { get, evict, sendUserMessage };
+  return { get, evict, disposeAll, sendUserMessage };
 }

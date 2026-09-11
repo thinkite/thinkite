@@ -46,6 +46,13 @@ export type SessionRow = {
 export interface SessionsCollectionOptions {
   client: OcClient;
   bus: SharedBus;
+  /**
+   * Eagerly start the initial list + bus subscription at creation.
+   * Defaults to `true` (desktop); the phone creates the collection before
+   * its daemon connection is online and starts sync from its connection
+   * gate instead.
+   */
+  startSync?: boolean;
 }
 
 function toRow(item: OcSessionItem, status: "busy" | "idle"): SessionRow {
@@ -72,11 +79,12 @@ function sessionIdOf(event: { data?: unknown }): string | undefined {
 export function createSessionsCollection({
   client,
   bus,
+  startSync = true,
 }: SessionsCollectionOptions): Collection<SessionRow, string> {
   return createCollection<SessionRow, string>({
     id: "session-states",
     getKey: (r) => r.id,
-    startSync: true,
+    startSync,
     sync: {
       sync: ({ begin, write, commit, markReady, truncate, collection }) => {
         let hasMarkedReady = false;
