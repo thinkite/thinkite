@@ -164,6 +164,38 @@ export class SessionRuntimeManager<T> {
     return this.runtimes.delete(sessionId);
   }
 
+  /**
+   * Full session removal for the opencode host's delete-session path:
+   * disposes the live runtime, drops the in-memory states entry, and fans
+   * out `onRemove` so `subscribeSessions` listeners emit
+   * `session_state_removed`. On-disk deletion is the caller's job
+   * (`deleteSidecodeSession`) — kept separate because disk writes live
+   * outside the manager. Returns true iff the session was known.
+   */
+  removeSession(sessionId: string): boolean {
+    const runtime = this.runtimes.get(sessionId);
+    const known = runtime !== undefined || this.states.has(sessionId);
+    if (runtime !== undefined) {
+      try {
+        runtime.disposeQuery();
+      } catch {
+        // Best-effort; a torn-down query must not fail the delete.
+      }
+      this.runtimes.delete(sessionId);
+    }
+    this.states.delete(sessionId);
+    if (known) {
+      for (const listener of this.stateListeners) {
+        try {
+          listener.onRemove(sessionId);
+        } catch {
+          // Isolation: don't poison sibling listeners.
+        }
+      }
+    }
+    return known;
+  }
+
   size(): number {
     return this.runtimes.size;
   }
@@ -210,6 +242,8 @@ export class SessionRuntimeManager<T> {
     firstPrompt: string;
     model?: string;
     now?: number;
+    host?: "claude" | "opencode";
+    opencodeSessionId?: string;
   }): SidecodeSessionMetadata {
     const meta = buildNewSidecodeSession(input);
     this.createSession(meta);
@@ -275,6 +309,26 @@ export class SessionRuntimeManager<T> {
     this.persistMetadata(sessionId, { title, titleSource: source });
     this.fanoutStateChanged(sessionId);
     return title;
+  }
+
+  /**
+   * Persist the opencode server-side session id for a session whose
+   * metadata predates the mapping (e.g. written before the opencode host
+   * existed). No-op when the session isn't known.
+   */
+  attachOpencodeSession(sessionId: string, opencodeSessionId: string): void {
+    const prev = this.states.get(sessionId);
+    if (prev === undefined) return;
+    if (
+      prev.host === "opencode" &&
+      prev.opencodeSessionId === opencodeSessionId
+    ) {
+      return;
+    }
+    this.persistMetadata(sessionId, {
+      host: "opencode",
+      opencodeSessionId,
+    });
   }
 
   /**

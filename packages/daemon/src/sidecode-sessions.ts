@@ -20,6 +20,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -85,6 +86,20 @@ export interface SidecodeSessionMetadata {
    *  project_sidecode_ccr_architecture "Restart re-attach" for the
    *  semantic proof from spike ccr-reattach. */
   bridge?: BridgeWorkerState;
+  /**
+   * Which agent host drives this session's turns. Absent (pre-opencode
+   * sessions) means `"claude"`. Opencode-hosted sessions additionally
+   * carry `opencodeSessionId`, so the two hosts never collide on identity.
+   */
+  host?: "claude" | "opencode";
+  /**
+   * The opencode server's session id (`ses_*`) for `host: "opencode"`
+   * sessions. The v2 SessionID brand requires the `ses_` prefix, so the
+   * Thinkite session id (a UUID) can't be reused server-side — this field
+   * is the mapping. All opencode calls (history / prompt / delete) key on
+   * this; the Thinkite id keys runtimes, buffers, and this file's name.
+   */
+  opencodeSessionId?: string;
 }
 
 /**
@@ -289,6 +304,10 @@ export function buildNewSidecodeSession(input: {
    *  resume-time `setSessionSelection` fills the gap on next pick. */
   model?: string;
   now?: number;
+  /** Agent host driving this session. Omit for `"claude"` (legacy). */
+  host?: "claude" | "opencode";
+  /** Server-side opencode id (`ses_*`) for `host: "opencode"` sessions. */
+  opencodeSessionId?: string;
 }): SidecodeSessionMetadata {
   const now = input.now ?? Date.now();
   return {
@@ -308,7 +327,30 @@ export function buildNewSidecodeSession(input: {
     // Hardcoded schema placeholder — see SidecodeSessionMetadata.effort.
     effort: "xhigh",
     ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.host !== undefined ? { host: input.host } : {}),
+    ...(input.opencodeSessionId !== undefined
+      ? { opencodeSessionId: input.opencodeSessionId }
+      : {}),
   };
+}
+
+/**
+ * Delete a sidecode session metadata file. Returns true iff a file
+ * existed. Used by the opencode host's delete-session path (plus the
+ * runtime manager's in-memory drop) — the Claude host has no delete RPC.
+ */
+export function deleteSidecodeSession(
+  home: string,
+  cliSessionId: string,
+): boolean {
+  const target = sidecodeSessionPath(home, cliSessionId);
+  if (!existsSync(target)) return false;
+  try {
+    unlinkSync(target);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
