@@ -5,28 +5,20 @@
   "license": "Apache-2.0",
   "description": "Framework-agnostic opencode 2 client + reducers + TanStack DB collections for Thinkite frontends (desktop + iOS)",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "bun": "./src/index.ts",
-      "node": "./dist/index.js",
+      "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
     "./tanstack": {
-      "types": "./dist/tanstack/index.d.ts",
-      "bun": "./src/tanstack/index.ts",
-      "node": "./dist/tanstack/index.js",
+      "types": "./src/tanstack/index.ts",
       "default": "./src/tanstack/index.ts"
     }
   },
   "files": [
-    "dist",
     "src"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
