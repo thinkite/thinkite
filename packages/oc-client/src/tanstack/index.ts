@@ -1,24 +1,23 @@
 /**
- * `@thinkite/oc-client/tanstack` — TanStack DB glue over the
- * framework-agnostic opencode client (desktop now, iOS in stage 3): the
- * sessions collection plus lazily created per-session transcript
- * collections, fed by the pure reducers.
+ * `@thinkite/oc-client/tanstack` — TanStack DB collections over the
+ * framework-agnostic opencode 2 client: the session list plus lazily
+ * created per-session transcript collections (rows are opencode's own
+ * `SessionMessageInfo`), with paging state alongside.
  *
- * No React here: apps read these collections with `useLiveQuery` (or the
- * framework binding of their choice). Runtime stays Hermes-safe — no
- * `node:*`, no DOM-only globals, no `Buffer` (TanStack DB itself is fine
- * on Hermes).
+ * No React here: apps read these collections with `useLiveQuery`.
+ * Runtime stays Hermes-safe — no `node:*`, no DOM-only globals.
  */
 
 export {
   createSessionsCollection,
+  type SessionActivity,
   type SessionRow,
   type SessionsCollectionOptions,
 } from "./sessions.ts";
 export {
   createTranscriptCollections,
-  type OrderedOcRow,
   type SendMessageVars,
   type TranscriptCollections,
   type TranscriptCollectionsOptions,
+  type TranscriptPagingRow,
 } from "./transcript.ts";

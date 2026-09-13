@@ -10,17 +10,22 @@ import { Markdown } from "@astryxdesign/core/Markdown";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { useLiveQuery } from "@tanstack/react-db";
-import type { OrderedOcRow } from "@thinkite/oc-client/tanstack";
+import { eq, useLiveQuery } from "@tanstack/react-db";
+import type { SessionMessageInfo } from "@thinkite/oc-client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getTranscriptCollection } from "../lib/oc";
+import {
+  getTranscriptCollection,
+  loadOlderTranscript,
+  transcriptPaging,
+} from "../lib/oc";
 
-// Live transcript for ONE opencode session, folded from the v2 history +
-// session stream + global bus through the oc-client reducer: the
-// per-session collection mirrors reducer rows, then folds EventDeltas —
-// appends, token-level patch_text on the assistant row, tool_call status
-// patches. Reconnects resume with `after=` (durable replay + `*.ended`
-// reconcile); either way this component just renders the live rows.
+// Live transcript for ONE opencode session. Rows are opencode's own
+// `SessionMessageInfo` projection (see oc-client): the newest page is read
+// from `message.list`, the running turn is folded from the bus by the
+// reducer, and the projection tail is re-read when the turn ends. Older
+// pages are prepended on demand — LegendList's `onStartReached` is the
+// trigger (opencode's GUI: scrollTop < 200) and
+// `maintainVisibleContentPosition` keeps the viewport still while they land.
 //
 // Virtualized through LegendList (same library as the iOS ChatPanel,
 // catalog-pinned): the list owns the scroll container, the initial landing
@@ -35,35 +40,155 @@ import { getTranscriptCollection } from "../lib/oc";
 // once a row unmounts far off-screen. recycleItems stays OFF so row-internal
 // state never leaks between rows.
 //
-// Consecutive tool rows collapse into one ChatToolCalls group; a
-// tool_use without its result renders as `running` until the patch lands.
+// One projection row can render as several list rows: an assistant message
+// is its content items in order (text / reasoning / tool), and consecutive
+// tool items collapse into one ChatToolCalls group.
 
 type TranscriptGroup =
-  | { key: string; kind: "item"; item: OrderedOcRow }
+  | { key: string; kind: "user"; messageId: string; text: string }
+  | { key: string; kind: "text"; text: string }
+  | { key: string; kind: "reasoning"; text: string }
+  | { key: string; kind: "system"; text: string }
   | { key: string; kind: "tools"; calls: ChatToolCallItem[] };
 
+type ToolItem = Extract<
+  Extract<SessionMessageInfo, { type: "assistant" }>["content"][number],
+  { type: "tool" }
+>;
+
 const TOOL_STATUS = {
+  streaming: "running",
   running: "running",
   completed: "complete",
   error: "error",
 } as const;
 
-function toGroups(items: OrderedOcRow[]): TranscriptGroup[] {
+/** One-line target for a tool row: the most descriptive input field. */
+function toolTarget(tool: ToolItem): string | undefined {
+  const input = tool.state.input;
+  if (typeof input === "string")
+    return input === "" ? undefined : input.slice(0, 120);
+  for (const key of [
+    "filePath",
+    "path",
+    "command",
+    "pattern",
+    "query",
+    "url",
+    "description",
+  ]) {
+    const value = input[key];
+    if (typeof value === "string" && value !== "") return value;
+  }
+  return undefined;
+}
+
+function toolCall(tool: ToolItem): ChatToolCallItem {
+  const target = toolTarget(tool);
+  return {
+    key: tool.id,
+    name: tool.name,
+    ...(target !== undefined ? { target } : {}),
+    status: TOOL_STATUS[tool.state.status],
+    ...(tool.state.status === "error"
+      ? { error: tool.state.error.message }
+      : {}),
+  };
+}
+
+function toGroups(messages: SessionMessageInfo[]): TranscriptGroup[] {
   const groups: TranscriptGroup[] = [];
-  for (const item of items) {
-    if (item.kind === "tool") {
-      const call: ChatToolCallItem = {
-        key: item.id,
-        name: item.name,
-        target: item.summary,
-        status: TOOL_STATUS[item.status],
-        ...(item.error !== null ? { error: item.error } : {}),
-      };
-      const prev = groups.at(-1);
-      if (prev?.kind === "tools") prev.calls.push(call);
-      else groups.push({ key: item.id, kind: "tools", calls: [call] });
-    } else {
-      groups.push({ key: item.id, kind: "item", item });
+  const pushTool = (call: ChatToolCallItem) => {
+    const prev = groups.at(-1);
+    if (prev?.kind === "tools") prev.calls.push(call);
+    else
+      groups.push({ key: `tools:${call.key}`, kind: "tools", calls: [call] });
+  };
+  for (const message of messages) {
+    switch (message.type) {
+      case "user":
+        groups.push({
+          key: message.id,
+          kind: "user",
+          messageId: message.id,
+          text: message.text,
+        });
+        break;
+      case "assistant": {
+        message.content.forEach((item, index) => {
+          const key = `${message.id}:${index}`;
+          if (item.type === "text") {
+            if (item.text !== "")
+              groups.push({ key, kind: "text", text: item.text });
+          } else if (item.type === "reasoning") {
+            if (item.text !== "")
+              groups.push({ key, kind: "reasoning", text: item.text });
+          } else {
+            pushTool(toolCall(item));
+          }
+        });
+        if (message.error !== undefined) {
+          groups.push({
+            key: `${message.id}:error`,
+            kind: "system",
+            text: message.error.message,
+          });
+        }
+        break;
+      }
+      case "synthetic":
+      case "system":
+        groups.push({
+          key: message.id,
+          kind: "system",
+          text: message.description ?? message.text,
+        });
+        break;
+      case "compaction":
+        groups.push({
+          key: message.id,
+          kind: "system",
+          text:
+            message.status === "running"
+              ? "Compacting context…"
+              : "Context compacted",
+        });
+        break;
+      case "agent-switched":
+        groups.push({
+          key: message.id,
+          kind: "system",
+          text: `Agent: ${message.agent}`,
+        });
+        break;
+      case "model-switched":
+        groups.push({
+          key: message.id,
+          kind: "system",
+          text: `Model: ${message.model.providerID}/${message.model.id}`,
+        });
+        break;
+      case "location-switched":
+        groups.push({
+          key: message.id,
+          kind: "system",
+          text: `Moved to ${message.location.directory}`,
+        });
+        break;
+      case "shell":
+        groups.push({
+          key: message.id,
+          kind: "system",
+          text: `$ ${message.command}`,
+        });
+        break;
+      case "skill":
+        groups.push({
+          key: message.id,
+          kind: "system",
+          text: `Skill: ${message.name}`,
+        });
+        break;
     }
   }
   return groups;
@@ -93,65 +218,50 @@ function ThinkingFooter({ active }: { active: boolean }) {
   );
 }
 
+function OlderHeader({ loading }: { loading: boolean }) {
+  return (
+    <div
+      className={`chat-col h-8 transition-opacity duration-200 ${loading ? "opacity-100" : "opacity-0"}`}
+    >
+      <Text size="sm" color="secondary">
+        Loading earlier messages…
+      </Text>
+    </div>
+  );
+}
+
 function renderGroup(group: TranscriptGroup) {
   switch (group.kind) {
     case "tools":
       return <ChatToolCalls calls={group.calls} />;
-    case "item": {
-      const item = group.item;
-      switch (item.kind) {
-        case "user":
-          return (
-            <ChatMessage sender="user">
-              <ChatMessageBubble>
-                <Markdown>{item.text}</Markdown>
-              </ChatMessageBubble>
-            </ChatMessage>
-          );
-        case "text":
-          return (
-            <ChatMessage sender="assistant">
-              <Markdown>{item.text}</Markdown>
-            </ChatMessage>
-          );
-        case "reasoning":
-          // Model thinking — secondary, small; streaming rows keep
-          // appending below.
-          return (
-            <ChatMessage sender="assistant">
-              <Text size="sm" color="secondary">
-                {item.text}
-              </Text>
-            </ChatMessage>
-          );
-        case "compaction":
-          return (
-            <ChatSystemMessage variant="divider">
-              {item.reason === "auto"
-                ? "Context compacted automatically"
-                : "Context compacted"}
-            </ChatSystemMessage>
-          );
-        case "step-failed":
-          return (
-            <ChatSystemMessage variant="divider">
-              {item.error}
-            </ChatSystemMessage>
-          );
-        case "revert":
-          return (
-            <ChatSystemMessage variant="divider">
-              {item.state === "committed"
-                ? "Reverted to checkpoint"
-                : item.state === "staged"
-                  ? "Revert staged"
-                  : "Revert cleared"}
-            </ChatSystemMessage>
-          );
-        default:
-          return null;
-      }
-    }
+    case "user":
+      return (
+        <ChatMessage sender="user">
+          <ChatMessageBubble>
+            <Markdown>{group.text}</Markdown>
+          </ChatMessageBubble>
+        </ChatMessage>
+      );
+    case "text":
+      return (
+        <ChatMessage sender="assistant">
+          <Markdown>{group.text}</Markdown>
+        </ChatMessage>
+      );
+    case "reasoning":
+      // Model thinking — secondary, small; streaming rows keep appending
+      // below.
+      return (
+        <ChatMessage sender="assistant">
+          <Text size="sm" color="secondary">
+            {group.text}
+          </Text>
+        </ChatMessage>
+      );
+    case "system":
+      return (
+        <ChatSystemMessage variant="divider">{group.text}</ChatSystemMessage>
+      );
   }
 }
 
@@ -163,8 +273,8 @@ export function TranscriptPanel({
   anchorUuid = null,
 }: {
   sessionId: string;
-  /** Renders a working indicator under the last message (opencode
-   *  `session.status` via the session-states collection). */
+  /** Renders a working indicator under the last message (busy/idle from
+   *  the session-states collection). */
   isRunning?: boolean;
   /** Id of the most recently sent user message — pinned near the viewport
    *  top while the response streams into reserved space below it. The iOS
@@ -179,33 +289,41 @@ export function TranscriptPanel({
     () => getTranscriptCollection(sessionId),
     [sessionId],
   );
-  const { data: items, isLoading } = useLiveQuery(
-    (q) => q.from({ t: collection }).orderBy(({ t }) => t._order, "asc"),
+  const { data: messages, isLoading } = useLiveQuery(
+    (q) =>
+      q
+        .from({ t: collection })
+        .orderBy(({ t }) => t.time.created, "asc")
+        .orderBy(({ t }) => t.id, "asc"),
     [collection],
   );
+  const { data: pagingRows } = useLiveQuery(
+    (q) =>
+      q.from({ p: transcriptPaging }).where(({ p }) => eq(p.id, sessionId)),
+    [sessionId],
+  );
+  const paging = pagingRows[0];
+  const hasOlder = paging?.hasOlder === true;
+  const loadingOlder = paging?.loading === true;
 
-  // iOS's isThinking rule: the turn is running but the last item isn't
-  // the assistant's text yet — the initial think window + tool gaps.
-  // Rendered by the resident ThinkingFooter (constant height, label fades).
-  const isThinking = isRunning === true && items.at(-1)?.kind !== "text";
+  const groups = useMemo(() => toGroups(messages), [messages]);
 
-  const groups = useMemo(() => toGroups(items), [items]);
+  // iOS's isThinking rule: the turn is running but the last row isn't the
+  // assistant's text yet — the initial think window + tool gaps. Rendered
+  // by the resident ThinkingFooter (constant height, label fades).
+  const isThinking = isRunning === true && groups.at(-1)?.kind !== "text";
 
   // Pin the just-sent prompt near the top; the reply streams into the space
   // the list reserves below it. No exclusion against maintainScrollAtEnd —
   // anchoring leaves the viewport away from the end, so follow sleeps until
-  // the user reaches the tail (the iOS arbitration). uuid → index lookup
+  // the user reaches the tail (the iOS arbitration). id → index lookup
   // instead of iOS's send-time index because desktop groups fold consecutive
   // tool calls, so indices shift. 16px ≈ the container's top breathing room.
   const anchoredEndSpace = useMemo(() => {
     if (anchorUuid === null) return undefined;
     for (let i = groups.length - 1; i >= 0; i--) {
       const g = groups[i];
-      if (
-        g?.kind === "item" &&
-        g.item.kind === "user" &&
-        g.item.id === anchorUuid
-      ) {
+      if (g?.kind === "user" && g.messageId === anchorUuid) {
         return { anchorIndex: i, anchorOffset: 16 };
       }
     }
@@ -234,13 +352,10 @@ export function TranscriptPanel({
     void listRef.current?.scrollToEnd({ animated: true });
   }, [anchorUuid]);
 
-  // A session with no JSONL on this machine subscribes fine and settles
-  // to an empty snapshot — indistinguishable from truly-empty, and a real
-  // session always has at least its first prompt.
   if (!hasRows) {
     return (
       <div className="flex h-full items-center justify-center">
-        {isLoading || isRunning === true ? (
+        {isLoading || paging?.hydrated !== true || isRunning === true ? (
           <Spinner size="sm" label="Loading transcript…" />
         ) : (
           <Text size="sm" color="secondary">
@@ -267,7 +382,7 @@ export function TranscriptPanel({
             {renderGroup(item)}
           </div>
         )}
-        getItemType={(g) => (g.kind === "item" ? g.item.kind : g.kind)}
+        getItemType={(g) => g.kind}
         estimatedItemSize={120}
         recycleItems={false}
         alignItemsAtEnd
@@ -275,6 +390,14 @@ export function TranscriptPanel({
         {...(anchoredEndSpace !== undefined ? { anchoredEndSpace } : {})}
         maintainScrollAtEnd
         maintainVisibleContentPosition
+        // Older pages: half a viewport from the top asks for the next page;
+        // the collection ignores the call while one is in flight or when
+        // nothing older exists.
+        onStartReached={
+          hasOlder ? () => void loadOlderTranscript(sessionId) : undefined
+        }
+        onStartReachedThreshold={0.5}
+        ListHeaderComponent={<OlderHeader loading={loadingOlder} />}
         ListFooterComponent={<ThinkingFooter active={isThinking} />}
         // t3code container hygiene: horizontal padding lives on the scroll
         // container (rows stay full-width), overscroll stays contained, and

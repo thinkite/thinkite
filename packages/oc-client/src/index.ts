@@ -1,55 +1,51 @@
 /**
- * `@thinkite/oc-client` — framework-agnostic opencode v2 access for
- * Thinkite frontends (desktop now, iOS in stage 3).
+ * `@thinkite/oc-client` — framework-agnostic opencode 2 access for
+ * Thinkite frontends (desktop + iOS).
  *
- * No React, no DOM, no Node-only APIs in this entry (see `client.ts`).
+ * No React, no DOM, no Node-only APIs in this entry.
  */
 
-export { SharedBus } from "./bus.ts";
-export type {
-  AgentV2Info,
-  ModelRef,
-  ModelV2Info,
-  ProviderV2Info,
-  QuestionV2Reply,
-  SessionDurableEvent,
-  SessionInputAdmitted,
-  SessionV2Info,
-  V2Event,
-} from "./client.ts";
 export {
+  type AgentInfo,
   createOcClient,
-  OcApiError,
+  type ModelInfo,
+  type ModelRef,
   type OcClient,
   type OcClientOptions,
-  type OcHistoryPage,
+  type OcEventStreamOptions,
+  type OcMessagePage,
   type OcSessionPage,
-  type OcStreamOptions,
+  type OpenCodeClient,
+  type OpenCodeEvent,
+  type ProviderInfo,
+  type ServiceHealth,
+  type SessionInboxUser,
+  type SessionInfo,
+  type SessionMessageInfo,
 } from "./client.ts";
+export {
+  durableSeq,
+  type OcEvent,
+  type OcEventOf,
+  type OcEventType,
+  type SubscribeEventsOptions,
+  sessionIDOf,
+  subscribeEvents,
+} from "./events.ts";
 export { mintMessageId } from "./identifier.ts";
 export { formatModelRef, parseModelRef } from "./model-ref.ts";
 export {
-  applyOcEvent,
-  buildOcToolDetail,
-  createInitialTranscriptState,
-  foldOcEvents,
-  type OcEventLike,
-  type OcPermissionRequest,
-  type OcQuestionRequest,
-  type OcRow,
-  type OcToolDetail,
-  type OcToolStatus,
-  type OcTranscriptState,
-  type OcUsage,
-  ocStatusTransition,
-  ocToolOutputText,
-  summaryForOcTool,
-} from "./reducer.ts";
+  applySessionEvent,
+  type SessionActivity,
+  type SessionRow,
+  sessionRowFromCreated,
+  sessionRowFromInfo,
+} from "./session-reducer.ts";
 export {
-  applySessionListEvent,
-  applySessionListPage,
-  createInitialSessionListState,
-  normalizeSessionInfo,
-  type OcSessionItem,
-  type OcSessionListState,
-} from "./session-list.ts";
+  applyTranscriptEvent,
+  mergeProjection,
+  messageIDFromEvent,
+  STREAMING_EVENT_TYPES,
+  type TranscriptRows,
+  TURN_END_EVENT_TYPES,
+} from "./transcript-reducer.ts";

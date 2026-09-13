@@ -4,235 +4,306 @@ import {
   createOptimisticAction,
   type Transaction,
 } from "@tanstack/db";
-import type { SharedBus } from "../bus.ts";
-import type { OcClient } from "../client.ts";
+import type { OcClient, SessionMessageInfo } from "../client.ts";
 import {
-  applyOcEvent,
-  createInitialTranscriptState,
-  type OcRow,
-  type OcTranscriptState,
-} from "../reducer.ts";
-import { publishSessionStatus } from "./status.ts";
+  durableSeq,
+  type OcEvent,
+  sessionIDOf,
+  subscribeEvents,
+} from "../events.ts";
+import {
+  applyTranscriptEvent,
+  mergeProjection,
+  STREAMING_EVENT_TYPES,
+  type TranscriptRows,
+  TURN_END_EVENT_TYPES,
+} from "../transcript-reducer.ts";
 
-// Per-session live transcript collections — same Map-of-collections
-// pattern as before (TanStack/db#652): one collection per opencode
-// `ses_*` id; the sync handler owns the session stream + bus routing, so
-// any number of consumers share one stream and back-nav within gcTime
-// never re-opens it.
+// Per-session transcript collections — one per opencode `ses_*` id, rows
+// are opencode's own `SessionMessageInfo` projection. The sync handler
+// owns three things:
 //
-// Data comes from the pure transcript reducer: initial
-// `/api/session/:id/history` page(s), then one durable session stream
-// (`after=` resume on reconnect) plus the shared global bus (live-only
-// deltas, `session.status`), both folded through the reducer. The
-// reducer owns merge truth (seq dedupe, delta→ended reconcile); this
-// factory only mirrors its rows into the collection incrementally — new
-// keys insert at the tail, changed rows update in place (row objects
-// keep identity when untouched, so a `!==` check is the whole diff).
-
-export type OrderedOcRow = OcRow & { _order: number };
+//   1. Hydration and paging from `message.list` (newest page first; older
+//      pages prepended on demand — see `paging`). A local service keeps
+//      no durable event log, so the projection is the only history.
+//   2. The live turn: streaming events folded by the pure reducer.
+//   3. Settling: the projection tail is re-read when a turn ends, after
+//      a reconnect (`server.connected`), and — coalesced — after any
+//      durable session event the reducer does not fold (compaction,
+//      revert, agent/model switches, …), so the server's projection
+//      always wins over what the reducer built.
+//
+// Consumers read the collection with a live query ordered by
+// `time.created` (then `id`) and the `paging` collection for load-more
+// state; nothing here is React.
 
 export interface SendMessageVars {
   sessionId: string;
-  /** Client-minted input id — sent as the prompt `id` so the durable
-   *  `prompt.admitted`/`prompted` events echo it as `messageID` and the
-   *  synced user row lands on the optimistic bubble by key, no flicker. */
+  /** Client-minted `msg_*` id — sent as the prompt `id` so the durable
+   *  `session.inbox.enqueued` event and the projection row carry it and
+   *  the optimistic user row lands on the synced one by key. */
   userMessageUuid: string;
   text: string;
 }
 
+export type TranscriptPagingRow = {
+  /** Session id. */
+  id: string;
+  /** Older messages exist beyond the loaded window. */
+  hasOlder: boolean;
+  /** An older page is being read. */
+  loading: boolean;
+  /** First projection read finished (rows may still be empty). */
+  hydrated: boolean;
+};
+
 export interface TranscriptCollections {
-  get(sessionId: string): Collection<OrderedOcRow, string>;
-  /** Drop a cached collection (after delete) so the next open re-syncs. */
+  get(sessionId: string): Collection<SessionMessageInfo, string>;
+  /** Load-more state per session (keyed by session id). */
+  readonly paging: Collection<TranscriptPagingRow, string>;
+  /** Prepend the next older page; resolves when it is in the collection. */
+  loadOlder(sessionId: string): Promise<void>;
+  /** Drop a cached collection (after delete) so the next open re-reads. */
   evict(sessionId: string): void;
-  /**
-   * Tear down every cached collection: abort its session stream and bus
-   * subscription, and clear the cache. Used by the phone's connection gate
-   * on offline so no stream keeps reconnecting while the daemon is away.
-   */
+  /** Tear down every cached collection and its bus subscription. */
   disposeAll(): void;
   sendUserMessage(variables: SendMessageVars): Transaction;
 }
 
 export interface TranscriptCollectionsOptions {
   client: OcClient;
-  bus: SharedBus;
+  /** Messages per projection read; opencode's GUI uses 20. */
+  pageSize?: number;
+  /** Trailing window that coalesces settle reads after event bursts. */
+  settleMs?: number;
 }
 
 export function createTranscriptCollections({
   client,
-  bus,
+  pageSize = 20,
+  settleMs = 200,
 }: TranscriptCollectionsOptions): TranscriptCollections {
-  const collections = new Map<string, Collection<OrderedOcRow, string>>();
+  const collections = new Map<string, Collection<SessionMessageInfo, string>>();
+  const controls = new Map<string, { loadOlder: () => Promise<void> }>();
 
-  const rowKey = (row: OcRow): string => row.id;
+  // Load-more state lives in its own tiny collection so screens can
+  // subscribe to it with a live query. Its sync handle is captured once
+  // (`startSync: true` runs the handler synchronously at creation).
+  let pagingSync: {
+    begin: () => void;
+    write: (message: {
+      type: "insert" | "update";
+      value: TranscriptPagingRow;
+    }) => void;
+    commit: () => void;
+  } | null = null;
+  const pagingRows = new Map<string, TranscriptPagingRow>();
+  const paging = createCollection<TranscriptPagingRow, string>({
+    id: "transcript-paging",
+    getKey: (r) => r.id,
+    startSync: true,
+    sync: {
+      sync: ({ begin, write, commit, markReady }) => {
+        pagingSync = { begin, write, commit };
+        markReady();
+        return () => {
+          pagingSync = null;
+          pagingRows.clear();
+        };
+      },
+    },
+  });
+  const setPaging = (row: TranscriptPagingRow) => {
+    const existing = pagingRows.get(row.id);
+    if (
+      existing !== undefined &&
+      existing.hasOlder === row.hasOlder &&
+      existing.loading === row.loading &&
+      existing.hydrated === row.hydrated
+    )
+      return;
+    if (pagingSync === null) return;
+    pagingSync.begin();
+    pagingSync.write({
+      type: existing === undefined ? "insert" : "update",
+      value: row,
+    });
+    pagingSync.commit();
+    pagingRows.set(row.id, row);
+  };
 
-  function get(sessionId: string): Collection<OrderedOcRow, string> {
+  function get(sessionId: string): Collection<SessionMessageInfo, string> {
     const cached = collections.get(sessionId);
     if (cached !== undefined) return cached;
 
-    const collection = createCollection<OrderedOcRow, string>({
+    const collection = createCollection<SessionMessageInfo, string>({
       id: `transcript-${sessionId}`,
-      getKey: rowKey,
-      compare: (a, b) => a._order - b._order,
-      // gcTime: react-db default (5 min). A switched-away session's data is
-      // small relative to the real renderer costs (Pierre wasm, xterm), and
-      // the longer window makes back-nav re-opens rarer.
+      getKey: (row) => row.id,
       sync: {
-        sync: ({
-          begin,
-          write,
-          commit,
-          markReady,
-          truncate,
-          collection: coll,
-        }) => {
-          // markReady() exactly once per sync-handler lifetime; reconnect
-          // re-attaches without re-gating isLoading.
+        sync: ({ begin, write, commit, markReady }) => {
           let hasMarkedReady = false;
           let disposed = false;
-          let state: OcTranscriptState = createInitialTranscriptState();
-          // Last rendered row object per key — identity diff.
-          const rendered = new Map<string, OcRow>();
+          const abort = new AbortController();
+          let rows: TranscriptRows = [];
+          let cursor: string | undefined;
+          let hydrated = false;
+          let loadingOlder = false;
+          const rendered = new Map<string, SessionMessageInfo>();
 
+          const pagingRow = () =>
+            setPaging({
+              id: sessionId,
+              hasOlder: cursor !== undefined,
+              loading: loadingOlder,
+              hydrated,
+            });
+
+          const ready = () => {
+            if (hasMarkedReady || disposed) return;
+            markReady();
+            hasMarkedReady = true;
+          };
+
+          // Mirror the reducer's rows into the collection: identity diff,
+          // inserts for new keys, updates for changed objects, deletes for
+          // keys that left.
           const mirror = () => {
             begin();
-            for (const row of state.rows) {
-              const key = rowKey(row);
-              const prev = rendered.get(key);
+            const seen = new Set<string>();
+            for (const row of rows) {
+              seen.add(row.id);
+              const prev = rendered.get(row.id);
               if (prev === row) continue;
-              if (prev === undefined) {
-                const existing = coll.get(key);
-                write({
-                  type: "insert",
-                  value: { ...row, _order: existing?._order ?? coll.size },
-                });
-              } else {
-                const current = coll.get(key);
-                write({
-                  type: "update",
-                  value: {
-                    ...row,
-                    _order: current?._order ?? coll.size,
-                  },
-                });
-              }
-              rendered.set(key, row);
+              write({
+                type: prev === undefined ? "insert" : "update",
+                value: row,
+              });
+              rendered.set(row.id, row);
+            }
+            for (const key of [...rendered.keys()]) {
+              if (seen.has(key)) continue;
+              rendered.delete(key);
+              write({ type: "delete", key });
             }
             commit();
           };
 
-          const ingest = (event: { type: string; data?: unknown }) => {
-            const next = applyOcEvent(state, event);
-            if (next === state) return;
-            const statusChanged = next.status !== state.status;
-            state = next;
+          const apply = (next: TranscriptRows) => {
+            if (next === rows) return;
+            rows = next;
             mirror();
-            // Durable reading of busy/idle → sessions row (status.ts).
-            if (statusChanged) publishSessionStatus(sessionId, next.status);
           };
 
-          const ready = () => {
-            if (!hasMarkedReady && !disposed) {
-              markReady();
-              hasMarkedReady = true;
-            }
-          };
-
-          // Cold path — full history, then live. Truncate inside the sync
-          // transaction so observers never see a flash of empty.
-          const open = async (signal: AbortSignal) => {
-            try {
-              let after = 0;
-              for (let page = 0; page < 20; page += 1) {
-                const result = await client.history(sessionId, after, 100);
-                if (signal.aborted || disposed) return;
-                for (const event of result.events) {
-                  const next = applyOcEvent(state, event);
-                  if (next !== state) state = next;
-                  const seq = (event.durable as { seq?: number } | undefined)
-                    ?.seq;
-                  if (typeof seq === "number" && seq > after) after = seq;
-                }
-                if (!result.hasMore) break;
-              }
-              if (signal.aborted || disposed) return;
-              begin();
-              truncate();
-              rendered.clear();
-              for (const row of state.rows) {
-                write({
-                  type: "insert",
-                  value: { ...row, _order: rendered.size },
+          // Newest page. First call hydrates; later calls (turn end,
+          // reconnect, settle) merge the tail by id.
+          let reading: Promise<void> | null = null;
+          const readTail = () => {
+            if (reading !== null) return reading;
+            reading = (async () => {
+              try {
+                const page = await client.listMessages(sessionId, {
+                  limit: pageSize,
                 });
-                rendered.set(rowKey(row), row);
+                if (disposed) return;
+                const newest = page.messages.slice().reverse();
+                if (!hydrated) {
+                  hydrated = true;
+                  cursor = page.nextCursor;
+                }
+                apply(mergeProjection(rows, newest));
+              } catch (err) {
+                console.warn(`[transcript] read failed for ${sessionId}:`, err);
+              } finally {
+                reading = null;
+                ready();
+                pagingRow();
               }
-              commit();
+            })();
+            return reading;
+          };
+
+          const loadOlder = async () => {
+            if (cursor === undefined || loadingOlder || disposed) return;
+            loadingOlder = true;
+            pagingRow();
+            try {
+              const page = await client.listMessages(sessionId, {
+                limit: pageSize,
+                cursor,
+              });
+              if (disposed) return;
+              cursor = page.nextCursor;
+              const older = page.messages.slice().reverse();
+              const present = new Set(rows.map((r) => r.id));
+              const fresh = older.filter((m) => !present.has(m.id));
+              if (fresh.length > 0) apply([...fresh, ...rows]);
             } catch (err) {
               console.warn(
-                `[transcript] history failed for ${sessionId}:`,
+                `[transcript] older page failed for ${sessionId}:`,
                 err,
               );
             } finally {
-              ready();
-            }
-            if (signal.aborted || disposed) return;
-
-            // Follow: durable stream with `after=` resume. The SDK stream
-            // retries internally on blips; a return here means the server
-            // closed it (restart) — re-issue with backoff until disposed.
-            let backoff = 1000;
-            while (!signal.aborted && !disposed) {
-              try {
-                for await (const event of client.openSessionStream(
-                  sessionId,
-                  state.lastSeq,
-                  { signal },
-                )) {
-                  backoff = 1000;
-                  ingest(event);
-                }
-              } catch (err) {
-                if (signal.aborted || disposed) return;
-                console.warn(
-                  `[transcript] stream ended for ${sessionId}, retrying:`,
-                  err,
-                );
-              }
-              if (signal.aborted || disposed) return;
-              await new Promise((r) => setTimeout(r, backoff));
-              backoff = Math.min(backoff * 2, 10_000);
+              loadingOlder = false;
+              pagingRow();
             }
           };
+          controls.set(sessionId, { loadOlder });
 
-          const abort = new AbortController();
-          void open(abort.signal);
+          let settleTimer: ReturnType<typeof setTimeout> | undefined;
+          const settle = () => {
+            if (settleTimer !== undefined) clearTimeout(settleTimer);
+            settleTimer = setTimeout(() => {
+              settleTimer = undefined;
+              void readTail();
+            }, settleMs);
+          };
 
-          // Shared bus, routed to this session by `sessionID`. Carries the
-          // live-only deltas plus `session.status`; durable duplicates of
-          // stream events dedupe by seq in the reducer.
-          const unsubscribeBus = bus.subscribe((event) => {
-            if (disposed) return;
-            const data = event.data as { sessionID?: unknown } | undefined;
-            if (data?.sessionID !== sessionId) return;
-            ingest(event);
+          let skipNextConnected = true;
+          const handle = (event: OcEvent) => {
+            if (event.type === "server.connected") {
+              if (skipNextConnected) {
+                skipNextConnected = false;
+                return;
+              }
+              if (hydrated) void readTail();
+              return;
+            }
+            if (sessionIDOf(event) !== sessionId) return;
+            if (STREAMING_EVENT_TYPES.has(event.type)) {
+              apply(applyTranscriptEvent(rows, event));
+              return;
+            }
+            if (TURN_END_EVENT_TYPES.has(event.type)) {
+              if (settleTimer !== undefined) clearTimeout(settleTimer);
+              settleTimer = undefined;
+              void readTail();
+              return;
+            }
+            if (durableSeq(event) !== undefined) settle();
+          };
+
+          void readTail();
+          void subscribeEvents(client, handle, {
+            signal: abort.signal,
+            onError: (err) =>
+              console.warn(`[transcript] bus for ${sessionId}:`, err),
           });
+          pagingRow();
 
-          // Runs when gcTime expires (no subscribers for ≥5 min).
           return () => {
             disposed = true;
             abort.abort();
-            unsubscribeBus();
+            if (settleTimer !== undefined) clearTimeout(settleTimer);
+            controls.delete(sessionId);
           };
         },
       },
     });
 
-    // Auto-evict when the collection finishes its own cleanup lifecycle —
-    // a dead entry left in the cache would hand consumers a cleaned-up
-    // collection that throws on writes.
     collection.on("status:change", ({ status }) => {
       if (status === "cleaned-up") {
         collections.delete(sessionId);
+        controls.delete(sessionId);
       }
     });
 
@@ -242,6 +313,7 @@ export function createTranscriptCollections({
 
   function evict(sessionId: string): void {
     collections.delete(sessionId);
+    controls.delete(sessionId);
   }
 
   function disposeAll(): void {
@@ -250,26 +322,21 @@ export function createTranscriptCollections({
         console.warn("[transcript] cleanup failed:", err);
       });
     }
-    // A collection's status listener also evicts itself; clearing here
-    // covers the entries whose cleanup is still in flight.
     collections.clear();
+    controls.clear();
   }
 
-  /**
-   * Optimistic send: `onMutate` paints the user bubble synchronously;
-   * `mutationFn` admits the prompt with the same id. The durable admitted
-   * event fans out on the session stream / bus and upserts onto the same
-   * key, so the overlay lands seamlessly. On failure the action rolls the
-   * insert back automatically.
-   */
+  async function loadOlder(sessionId: string): Promise<void> {
+    await controls.get(sessionId)?.loadOlder();
+  }
+
   const sendUserMessage = createOptimisticAction<SendMessageVars>({
     onMutate: ({ sessionId, userMessageUuid, text }) => {
-      const coll = get(sessionId);
-      coll.insert({
-        kind: "user",
+      get(sessionId).insert({
         id: userMessageUuid,
+        type: "user",
         text,
-        _order: coll.size,
+        time: { created: Date.now() },
       });
     },
     mutationFn: async ({ sessionId, userMessageUuid, text }) => {
@@ -277,5 +344,5 @@ export function createTranscriptCollections({
     },
   });
 
-  return { get, evict, disposeAll, sendUserMessage };
+  return { get, paging, loadOlder, evict, disposeAll, sendUserMessage };
 }

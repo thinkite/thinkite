@@ -23,6 +23,7 @@ import {
 import { foldEventDelta } from "./messages/fold.ts";
 import { extractLatestUsage, normalize } from "./messages/normalize.ts";
 import { OpencodeHost, resolveOpencodeModel } from "./opencode/host.ts";
+import { createOpencodeDiscovery } from "./opencode/registry.ts";
 import {
   ensureOpencodeLoop,
   getOpencodeLoop,
@@ -208,6 +209,27 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // idempotent). Stopped in `daemon.stop()` before the runtimes drain so
   // no late stream event races shutdown.
   const opencodeHost = new OpencodeHost();
+  // opencode 2 endpoint for the desktop `/oc` proxy and the phone's iroh
+  // HTTP tunnel: the user's registered background service
+  // (`~/.local/state/opencode/service.json`, see opencode/registry.ts)
+  // when one is healthy, else the stage-1 spawn path as a fallback.
+  const opencodeDiscovery = createOpencodeDiscovery({
+    onChange: (next) =>
+      console.log(
+        `[sidecode] opencode service ${next === null ? "not registered" : `${next.version} pid ${next.pid} at ${next.baseUrl}`}`,
+      ),
+  });
+  const resolveOpencode = async () => {
+    const discovered = await opencodeDiscovery.resolve();
+    if (discovered !== null) {
+      return {
+        baseUrl: discovered.baseUrl,
+        username: discovered.username,
+        password: discovered.password,
+      };
+    }
+    return opencodeHost.ensureConnection();
+  };
   // CCR bridge mirror service (slice M1). One OAuthRefreshManager (the
   // keychain token is process-global) feeds every bridge; BridgeService
   // ref-counts its proactive timer to live only while ≥1 bridge is attached.
@@ -531,7 +553,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     isPairing: () => pairingOpen,
     // HTTP tunnel target: the same lazily-started opencode host the desktop
     // proxy uses. First tunneled request pays the spawn cost.
-    opencode: () => opencodeHost.ensureConnection(),
+    opencode: () => resolveOpencode(),
     log: (event, data) =>
       console.log(
         `[sidecode] ${event}${data ? ` ${JSON.stringify(data)}` : ""}`,
@@ -603,7 +625,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     pairedClientCount: () => knownClients.list().length,
     authenticatedPeerCount: () => iroh.authenticatedCount(),
     fetchPlanUsage: createPlanUsageFetcher(oauth),
-    opencode: () => opencodeHost.ensureConnection(),
+    opencode: () => resolveOpencode(),
     createPairOffer: (serviceName) => {
       const { encoded } = createPairOffer(identity, serviceName);
       return { encoded };

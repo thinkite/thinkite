@@ -11,5 +11,6 @@
     "types": []
   },
   "include": ["src/**/*", "src/__fixtures__/*.json"],
-  "references": []
+  "references": [],
+  "exclude": ["src/**/*.test.ts", "src/**/*.e2e.test.ts", "scripts/**"]
 }

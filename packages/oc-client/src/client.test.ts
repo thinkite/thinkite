@@ -1,87 +1,72 @@
 /**
- * Offline tests for the client wrapper: hey-api URL joining must keep the
- * `/oc` proxy prefix for every method (unary here; SSE is covered by the
- * E2E through the real proxy), and the v1-compat delete shim semantics.
+ * Client wrapper tests: the `/oc` path prefix is inserted on every route
+ * (the generated client resolves against the origin), Basic auth is
+ * derived from the password, and paging arguments follow the server's
+ * "cursor xor order" rule.
  */
 
-import { describe, expect, it, vi } from "vitest";
-import { createOcClient, OcApiError } from "./client.ts";
+import { describe, expect, it } from "vitest";
+import { createOcClient } from "./client.ts";
 
-function stubFetch(handler: (url: string, init?: RequestInit) => Response) {
-  return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-    const url =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url;
-    return handler(url, init);
-  }) as unknown as typeof globalThis.fetch;
-}
-
-const SESSION_PAGE = {
-  data: [
-    {
-      id: "ses_1",
-      projectID: "p",
-      cost: 0,
-      tokens: {
-        input: 0,
-        output: 0,
-        reasoning: 0,
-        cache: { read: 0, write: 0 },
-      },
-      time: { created: 1, updated: 2 },
-      title: "T",
-      location: { directory: "/tmp" },
-    },
-  ],
-  cursor: {},
-};
-
-function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+function capture(body: unknown = { data: [], cursor: {} }) {
+  const calls: Array<{ url: string; auth: string | null; method: string }> = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    calls.push({
+      url:
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url,
+      auth: headers.get("authorization"),
+      method: init?.method ?? "GET",
+    });
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  return { fetchImpl, calls };
 }
 
 describe("oc client", () => {
-  it("keeps the /oc prefix on unary methods", async () => {
-    const seen: string[] = [];
-    const fetch = stubFetch((url) => {
-      seen.push(url);
-      return json(SESSION_PAGE);
+  it("keeps the mount prefix on routes and injects Basic auth", async () => {
+    const { fetchImpl, calls } = capture({
+      healthy: true,
+      version: "2.0.2",
+      pid: 1,
     });
     const client = createOcClient({
-      baseUrl: "http://127.0.0.1:5199/oc",
-      fetch,
+      baseUrl: "http://localhost:5183",
+      pathPrefix: "/oc",
+      password: "pw",
+      fetch: fetchImpl,
     });
-    await client.listSessions({ limit: 10 });
-    expect(seen).toHaveLength(1);
-    expect(seen[0]?.startsWith("http://127.0.0.1:5199/oc/api/session")).toBe(
-      true,
-    );
-    expect(client.baseUrl).toBe("http://127.0.0.1:5199/oc");
+    await client.health();
+    expect(calls[0]?.url).toBe("http://localhost:5183/oc/api/health");
+    expect(calls[0]?.auth).toBe(`Basic ${btoa("opencode:pw")}`);
   });
 
-  it("deleteSession hits the v1 compat route and treats 404 as gone", async () => {
-    const seen: Array<{ url: string; method?: string }> = [];
-    const fetch = stubFetch((url, init) => {
-      seen.push({ url, method: init?.method });
-      return new Response("true", { status: 404 });
-    });
-    const client = createOcClient({ baseUrl: "http://x/oc", fetch });
-    await client.deleteSession("ses_gone");
-    expect(seen[0]).toMatchObject({
-      url: "http://x/oc/session/ses_gone",
-      method: "DELETE",
-    });
+  it("asks for desc order on the first page and only the cursor afterwards", async () => {
+    const { fetchImpl, calls } = capture();
+    const client = createOcClient({ baseUrl: "http://h", fetch: fetchImpl });
+    await client.listMessages("ses_a", { limit: 20 });
+    await client.listMessages("ses_a", { limit: 20, cursor: "c1" });
+    await client.listSessions({ limit: 50 });
+    const urls = calls.map((c) => new URL(c.url));
+    expect(urls[0]?.pathname).toBe("/api/session/ses_a/message");
+    expect(urls[0]?.searchParams.get("order")).toBe("desc");
+    expect(urls[0]?.searchParams.get("cursor")).toBeNull();
+    expect(urls[1]?.searchParams.get("cursor")).toBe("c1");
+    expect(urls[1]?.searchParams.get("order")).toBeNull();
+    expect(urls[2]?.pathname).toBe("/api/session");
+    expect(urls[2]?.searchParams.get("limit")).toBe("50");
+  });
 
-    const failing = stubFetch(() => new Response("boom", { status: 500 }));
-    const client2 = createOcClient({ baseUrl: "http://x/oc", fetch: failing });
-    await expect(client2.deleteSession("ses_1")).rejects.toBeInstanceOf(
-      OcApiError,
-    );
+  it("maps active drains to a set of session ids", async () => {
+    const { fetchImpl } = capture({ data: { ses_a: { type: "running" } } });
+    const client = createOcClient({ baseUrl: "http://h", fetch: fetchImpl });
+    expect(await client.activeSessionIDs()).toEqual(new Set(["ses_a"]));
   });
 });

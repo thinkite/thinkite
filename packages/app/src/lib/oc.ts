@@ -1,4 +1,4 @@
-import { createOcClient, type OcClient, SharedBus } from "@thinkite/oc-client";
+import { createOcClient, type OcClient } from "@thinkite/oc-client";
 import {
   createSessionsCollection,
   createTranscriptCollections,
@@ -11,15 +11,16 @@ import { loadOrCreateIdentity } from "./identity";
 import { createIrohFetch } from "./iroh-fetch";
 import { closeHttpConnection, openHttpStream } from "./iroh-wire";
 
-// Phone-side opencode v2 access — the phone twin of
+// Phone-side opencode 2 access — the phone twin of
 // packages/desktop/src/lib/oc.ts. Desktop is same-origin through the
 // Electron `/oc` proxy; the phone tunnels HTTP/1.1 over iroh
-// (`thinkite/http/1`) with the fetch shim in iroh-fetch.ts, so the SDK,
-// its SSE parser, and the oc-client reducers run unchanged.
+// (`thinkite/http/1`) with the fetch shim in iroh-fetch.ts, so the
+// generated client, its SSE parser, and the oc-client reducers run
+// unchanged. Basic auth is injected by the daemon's proxy end.
 //
-// Subscriptions mirror desktop: each open session owns one durable stream
-// (owned by its transcript collection), and the global bus is a single
-// shared `/api/event` fan-out for the sessions list + live deltas.
+// Subscriptions mirror desktop: the collections share one `/api/event`
+// connection (fan-out inside `@opencode/client`) and resync on every
+// `server.connected`.
 //
 // Connection gate: unlike desktop, the tunnel is only reachable while the
 // daemon RPC connection is online (pairing + endpoint reachability). This
@@ -60,25 +61,21 @@ export function getOcClient(): OcClient {
   return client;
 }
 
-export const sharedOcBus = new SharedBus(() => getOcClient());
-
 // Collection singletons — same shapes as desktop, created once from the
 // `./tanstack` factories. `startSync: false` on the sessions collection so
 // it waits for the connection gate (the transcript factory is inert until
 // first `get`).
 export const sessionStateCollection = createSessionsCollection({
   client: getOcClient(),
-  bus: sharedOcBus,
   startSync: false,
 });
 
-const transcripts = createTranscriptCollections({
-  client: getOcClient(),
-  bus: sharedOcBus,
-});
+const transcripts = createTranscriptCollections({ client: getOcClient() });
 
 export const {
   get: getTranscriptCollection,
+  paging: transcriptPaging,
+  loadOlder: loadOlderTranscript,
   evict: evictTranscriptCollection,
   sendUserMessage,
 } = transcripts;
@@ -99,8 +96,8 @@ export function attachOcRuntime(): void {
  * live query … depends on it") when a mounted `useLiveQuery` still holds
  * the collection, and the list screen is mounted through every
  * connecting/offline blip. The sync handlers already own their recovery:
- * the shared bus reconnects with backoff and each transcript stream
- * re-opens with `after=`. Observed on the simulator before this change:
+ * every collection's bus loop reconnects with backoff and re-reads
+ * its projection on `server.connected`. Observed on the simulator before this change:
  * cleanup/restart churn on the connecting→online edge, one Live Query
  * Error toast, and two proxied requests cut mid-flight (502 ECONNRESET).
  */

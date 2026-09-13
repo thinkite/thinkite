@@ -1,330 +1,269 @@
 /**
- * Framework-agnostic opencode v2 client for Thinkite frontends.
+ * Framework-agnostic opencode 2 client for Thinkite frontends.
  *
- * Thin wrapper over the published `@opencode-ai/sdk` (pinned to 1.18.30 in
- * `package.json`, in lockstep with the opencode binary version the daemon
- * spawns) `v2/client` entry — `createOpencodeClient({ baseUrl, fetch?,
- * headers? })` — plus the few helpers the UI needs: a session event stream
- * with `after=` resume and the shared global bus, both as abortable async
- * iterables.
+ * Thin wrapper over the published `@opencode/client` promise entry (exact
+ * pin in `package.json`; the service it talks to is discovered from the
+ * opencode registry, never spawned by us) plus the few helpers the UI and
+ * the TanStack collections need.
  *
- * Runtime constraints (stage 3 reuses this on Hermes under Expo 57): no
- * `node:*` imports, no DOM-only globals beyond what Expo provides
- * (`fetch`, `ReadableStream`, `TextDecoderStream`), no `Buffer`. Only the
- * SDK (which itself only needs `fetch` + streaming bodies) is imported.
+ * Runtime constraints (the phone reuses this on Hermes under Expo 57): no
+ * `node:*` imports, no DOM-only globals beyond what Expo provides (`fetch`,
+ * `ReadableStream`, `TextDecoder`), no `Buffer`. The promise entry itself
+ * only needs `fetch` + streaming bodies (verified: 32 KB browser bundle,
+ * no `effect` at runtime).
  */
 
 import {
-  createOpencodeClient,
-  type OpencodeClient as SdkClient,
-} from "@opencode-ai/sdk/v2/client";
-import type {
-  AgentV2Info,
-  ModelRef,
-  ModelV2Info,
-  PermissionV2Reply,
-  ProviderV2Info,
-  QuestionV2Reply,
-  SessionDurableEvent,
-  SessionInputAdmitted,
-  SessionV2Info,
-  V2Event,
-} from "@opencode-ai/sdk/v2/types";
+  type AgentInfo,
+  isSessionNotFoundError,
+  type ModelInfo,
+  type ModelRef,
+  OpenCode,
+  type OpenCodeClient,
+  type OpenCodeEvent,
+  type PermissionReplyInput,
+  type ProviderInfo,
+  type ServiceHealth,
+  type SessionInboxUser,
+  type SessionInfo,
+  type SessionMessageInfo,
+} from "@opencode/client";
 
 export type {
-  AgentV2Info,
+  AgentInfo,
+  ModelInfo,
   ModelRef,
-  ModelV2Info,
-  ProviderV2Info,
-  QuestionV2Reply,
-  SessionDurableEvent,
-  SessionInputAdmitted,
-  SessionV2Info,
-  V2Event,
+  OpenCodeClient,
+  OpenCodeEvent,
+  ProviderInfo,
+  ServiceHealth,
+  SessionInboxUser,
+  SessionInfo,
+  SessionMessageInfo,
 };
 
 export interface OcClientOptions {
-  /** Same-origin proxy root in the renderer (`` `${location.origin}/oc` ``);
-   *  a direct opencode URL in tests/E2E. */
+  /** Origin (or direct opencode URL). The generated client resolves every
+   *  route with `new URL("/api/…", baseUrl)`, so a path on `baseUrl` is
+   *  dropped — use `pathPrefix` for the Electron `/oc` proxy instead. */
   baseUrl: string;
-  /** Defaults to the SDK's own default (global `fetch`). */
+  /** Mount prefix inserted before `/api/…` (desktop passes `/oc`). */
+  pathPrefix?: string;
+  /** Defaults to the global `fetch` (the phone injects its iroh shim). */
   fetch?: typeof globalThis.fetch;
-  /** Extra headers on every request (the Electron proxy injects Basic auth
-   *  server-side, so the renderer passes none). */
+  /** Basic-auth password for a direct connection (tests, E2E, daemon). The
+   *  desktop proxy injects credentials server-side, so the renderer passes
+   *  none. Username is always `opencode`. */
+  password?: string;
+  /** Extra headers on every request. */
   headers?: Record<string, string>;
 }
 
-/** Thrown for non-2xx responses from the v1-compat shim below. */
-export class OcApiError extends Error {
-  readonly status: number;
-  readonly path: string;
-  constructor(status: number, path: string, body: string) {
-    super(`opencode ${path} → ${status}: ${body.slice(0, 300)}`);
-    this.name = "OcApiError";
-    this.status = status;
-    this.path = path;
-  }
-}
-
 export interface OcSessionPage {
-  sessions: SessionV2Info[];
+  sessions: SessionInfo[];
   nextCursor?: string;
 }
 
-export interface OcHistoryPage {
-  events: SessionDurableEvent[];
-  hasMore: boolean;
+export interface OcMessagePage {
+  /** Server order for the call: newest first on the first page
+   *  (`order: "desc"`), continuing older along `nextCursor`. */
+  messages: SessionMessageInfo[];
+  nextCursor?: string;
 }
 
-export interface OcStreamOptions {
+export interface OcEventStreamOptions {
   signal: AbortSignal;
+  /** Fires on every received chunk, keepalive comments included. */
+  onActivity?: () => void;
 }
 
 export interface OcClient {
-  /** Raw SDK client escape hatch (provider/model/agent listings for the
-   *  model picker, permission/question replies beyond the helpers). */
-  readonly sdk: SdkClient;
-  /** Base URL the client was created with (always without trailing `/`). */
+  /** Raw generated client escape hatch. */
+  readonly raw: OpenCodeClient;
   readonly baseUrl: string;
 
+  health(): Promise<ServiceHealth>;
   listSessions(opts?: {
     directory?: string;
     limit?: number;
     cursor?: string;
-    order?: "asc" | "desc";
   }): Promise<OcSessionPage>;
   createSession(opts: {
     directory: string;
+    title?: string;
     model?: ModelRef;
     agent?: string;
-  }): Promise<SessionV2Info>;
-  getSession(sessionID: string): Promise<SessionV2Info>;
-  /** Admit one input and schedule execution. Pass a client-minted `id` so
-   *  the durable `prompt.admitted`/`prompted` events echo it as `messageID`
-   *  and the optimistic user bubble reconciles by key. */
+  }): Promise<SessionInfo>;
+  getSession(sessionID: string): Promise<SessionInfo>;
+  /** Idempotent: an already-deleted session resolves. */
+  deleteSession(sessionID: string): Promise<void>;
+  /** One page of the `session_message` projection — the only history
+   *  source on a local service (no durable event replay, see the 4a
+   *  report). A cursor cannot be combined with `order`, so the first page
+   *  asks for `desc` and later pages pass only the cursor. */
+  listMessages(
+    sessionID: string,
+    opts?: { limit?: number; cursor?: string },
+  ): Promise<OcMessagePage>;
+  /** Admit one input. Pass a client-minted `msg_*` `id` so the durable
+   *  `session.inbox.enqueued` event (and the projection row) carry it and
+   *  the optimistic user bubble reconciles by key. */
   prompt(
     sessionID: string,
     text: string,
-    opts?: { id?: string; resume?: boolean },
-  ): Promise<SessionInputAdmitted>;
+    opts?: { id?: string },
+  ): Promise<SessionInboxUser>;
   interrupt(sessionID: string): Promise<void>;
   switchModel(sessionID: string, model: ModelRef): Promise<void>;
-  history(
-    sessionID: string,
-    after?: number,
-    limit?: number,
-  ): Promise<OcHistoryPage>;
-  /**
-   * No v2 delete route exists in 1.18.30 — documented shim over the v1
-   * compat route (`DELETE /session/:id`). Idempotent: 404 (already gone)
-   * resolves.
-   */
-  deleteSession(sessionID: string): Promise<void>;
-  /**
-   * One-shot read of the foreground drains (`/api/session/active`) —
-   * sessions absent from the set are idle. For resume-time seeding only
-   * (initial list, stream reopen); turn state otherwise comes from events,
-   * never polling. Mirrors the official GUI's bootstrap seeding.
-   */
+  /** Foreground drains owned by the service — sessions absent are idle. A
+   *  resume-time seed (startup, every `server.connected`); turn state
+   *  otherwise comes from `session.execution.*` events. */
   activeSessionIDs(): Promise<Set<string>>;
-
-  listProviders(): Promise<ProviderV2Info[]>;
-  listModels(): Promise<ModelV2Info[]>;
-  listAgents(): Promise<AgentV2Info[]>;
+  listProviders(directory?: string): Promise<ProviderInfo[]>;
+  listModels(directory?: string): Promise<ModelInfo[]>;
+  listAgents(directory?: string): Promise<AgentInfo[]>;
   replyPermission(
     sessionID: string,
     requestID: string,
-    reply: PermissionV2Reply,
+    reply: PermissionReplyInput["reply"],
     message?: string,
   ): Promise<void>;
-  answerQuestion(
-    sessionID: string,
-    requestID: string,
-    answers: QuestionV2Reply,
-  ): Promise<void>;
-  rejectQuestion(sessionID: string, requestID: string): Promise<void>;
-
   /**
-   * One session's durable events: replays everything after `after`, then
-   * follows with new durable events. Delta fragments (`*.delta`) are
-   * live-only and arrive on {@link openEventBus}, not here. Ends when
-   * `signal` aborts (the SDK client retries transparently otherwise).
+   * The global `/api/event` stream. One connection per client, fanned out
+   * to every subscriber (`SharedEvents` inside `@opencode/client`); the
+   * first event of every (re)connection is `server.connected`. No
+   * reconnect inside — see `subscribeEvents` in `events.ts`.
    */
-  openSessionStream(
-    sessionID: string,
-    after: number,
-    opts: OcStreamOptions,
-  ): AsyncGenerator<SessionDurableEvent>;
-  /** Server-wide bus: live-only deltas, `session.status`, session
-   *  create/update/delete, permission/question asks. Ends on abort. */
-  openEventBus(opts: OcStreamOptions): AsyncGenerator<V2Event>;
+  events(opts: OcEventStreamOptions): AsyncIterable<OpenCodeEvent>;
 }
 
-/** Normalize one SSE yield into an event object. The codegen types the
- *  session stream as an `{id, event, data}` envelope, but on the wire each
- *  `data:` block parses to the event itself (verified live in stage 1 with
- *  a manual parser); accept strings, envelopes, and bare events. */
-function asEvent(raw: unknown): Record<string, unknown> | null {
-  if (typeof raw === "string") {
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      return typeof parsed === "object" && parsed !== null
-        ? (parsed as Record<string, unknown>)
-        : null;
-    } catch {
-      return null;
+function base64(input: string): string {
+  // `btoa` exists in browsers, Electron, Node ≥ 16 and Hermes/Expo.
+  return btoa(input);
+}
+
+function prefixedFetch(
+  fetchImpl: typeof globalThis.fetch,
+  prefix: string,
+): typeof globalThis.fetch {
+  const rewrite = (url: string): string => {
+    const parsed = new URL(url);
+    if (parsed.pathname.startsWith("/api/") || parsed.pathname === "/api") {
+      parsed.pathname = `${prefix}${parsed.pathname}`;
     }
-  }
-  if (typeof raw === "object" && raw !== null) {
-    const record = raw as Record<string, unknown>;
-    if (typeof record.type === "string") return record;
-    const inner = record.data;
-    if (typeof inner === "string") return asEvent(inner);
-    if (typeof inner === "object" && inner !== null) {
-      const innerRecord = inner as Record<string, unknown>;
-      if (typeof innerRecord.type === "string") return innerRecord;
-    }
-  }
-  return null;
+    return parsed.toString();
+  };
+  return (input, init) => {
+    if (typeof input === "string") return fetchImpl(rewrite(input), init);
+    if (input instanceof URL) return fetchImpl(rewrite(input.toString()), init);
+    return fetchImpl(new Request(rewrite(input.url), input), init);
+  };
 }
 
 export function createOcClient(options: OcClientOptions): OcClient {
   const baseUrl = options.baseUrl.replace(/\/+$/, "");
-  const sdk = createOpencodeClient({
+  const prefix = options.pathPrefix?.replace(/\/+$/, "") ?? "";
+  const fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
+  const headers: Record<string, string> = { ...(options.headers ?? {}) };
+  if (options.password !== undefined) {
+    headers.authorization = `Basic ${base64(`opencode:${options.password}`)}`;
+  }
+  const raw = OpenCode.make({
     baseUrl,
-    ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
-    ...(options.headers !== undefined ? { headers: options.headers } : {}),
-    // Throw on non-2xx so failures surface instead of resolving undefined.
-    throwOnError: true,
+    fetch: prefix === "" ? fetchImpl : prefixedFetch(fetchImpl, prefix),
+    headers,
   });
-  // Raw fetch for the v1-compat delete shim (no SDK method exists).
-  const rawFetch = options.fetch ?? globalThis.fetch;
 
-  async function* openSessionStream(
-    sessionID: string,
-    after: number,
-    { signal }: OcStreamOptions,
-  ): AsyncGenerator<SessionDurableEvent> {
-    const { stream } = await sdk.v2.session.events(
-      { sessionID, after: String(after) },
-      { signal },
-    );
-    for await (const raw of stream) {
-      if (signal.aborted) return;
-      const event = asEvent(raw);
-      if (event !== null) yield event as unknown as SessionDurableEvent;
-    }
-  }
-
-  async function* openEventBus({
-    signal,
-  }: OcStreamOptions): AsyncGenerator<V2Event> {
-    const { stream } = await sdk.v2.event.subscribe({ signal });
-    for await (const raw of stream) {
-      if (signal.aborted) return;
-      const event = asEvent(raw);
-      if (event !== null) yield event as unknown as V2Event;
-    }
-  }
+  const location = (directory?: string) =>
+    directory === undefined ? {} : { location: { directory } };
 
   return {
-    sdk,
+    raw,
     baseUrl,
 
+    health() {
+      return raw.health.get();
+    },
+
     async listSessions(opts = {}) {
-      const { data } = await sdk.v2.session.list<true>({
+      const page = await raw.session.list({
         ...(opts.directory !== undefined ? { directory: opts.directory } : {}),
-        ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
-        ...(opts.cursor !== undefined ? { cursor: opts.cursor } : {}),
-        ...(opts.order !== undefined ? { order: opts.order } : {}),
+        limit: opts.limit ?? 100,
+        ...(opts.cursor !== undefined
+          ? { cursor: opts.cursor }
+          : { order: "desc" as const }),
       });
-      return {
-        sessions: data.data,
-        ...(data.cursor.next !== undefined
-          ? { nextCursor: data.cursor.next }
-          : {}),
-      };
+      return { sessions: page.data, nextCursor: page.cursor.next ?? undefined };
     },
 
-    async createSession(opts) {
-      const { data } = await sdk.v2.session.create<true>({
-        ...(opts.agent !== undefined ? { agent: opts.agent } : {}),
-        ...(opts.model !== undefined ? { model: opts.model } : {}),
+    createSession(opts) {
+      return raw.session.create({
         location: { directory: opts.directory },
+        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.model !== undefined ? { model: opts.model } : {}),
+        ...(opts.agent !== undefined ? { agent: opts.agent } : {}),
       });
-      // Create/get/prompt bodies wrap once more (`{data: …}`).
-      return data.data;
     },
 
-    async getSession(sessionID) {
-      const { data } = await sdk.v2.session.get<true>({ sessionID });
-      return data.data;
-    },
-
-    async prompt(sessionID, text, opts = {}) {
-      const { data } = await sdk.v2.session.prompt<true>({
-        sessionID,
-        prompt: { text },
-        ...(opts.id !== undefined ? { id: opts.id } : {}),
-        ...(opts.resume === true ? { resume: true } : {}),
-      });
-      return data.data;
-    },
-
-    async interrupt(sessionID) {
-      await sdk.v2.session.interrupt<true>({ sessionID });
-    },
-
-    async switchModel(sessionID, model) {
-      await sdk.v2.session.switchModel<true>({ sessionID, model });
-    },
-
-    async history(sessionID, after = 0, limit = 100) {
-      const { data } = await sdk.v2.session.history<true>({
-        sessionID,
-        after,
-        limit,
-      });
-      return { events: data.data, hasMore: data.hasMore };
+    getSession(sessionID) {
+      return raw.session.get({ sessionID });
     },
 
     async deleteSession(sessionID) {
-      const res = await rawFetch(
-        `${baseUrl}/session/${encodeURIComponent(sessionID)}`,
-        { method: "DELETE", headers: options.headers },
-      );
-      if (res.status === 404) return;
-      if (!res.ok) {
-        throw new OcApiError(
-          res.status,
-          `/session/${sessionID}`,
-          await res.text().catch(() => ""),
-        );
+      try {
+        await raw.session.remove({ sessionID });
+      } catch (err) {
+        if (isSessionNotFoundError(err)) return;
+        throw err;
       }
     },
 
+    async listMessages(sessionID, opts = {}) {
+      const page = await raw.message.list({
+        sessionID,
+        limit: opts.limit ?? 100,
+        ...(opts.cursor !== undefined
+          ? { cursor: opts.cursor }
+          : { order: "desc" as const }),
+      });
+      return { messages: page.data, nextCursor: page.cursor.next ?? undefined };
+    },
+
+    prompt(sessionID, text, opts = {}) {
+      return raw.session.prompt({
+        sessionID,
+        text,
+        ...(opts.id !== undefined ? { id: opts.id } : {}),
+      });
+    },
+
+    async interrupt(sessionID) {
+      await raw.session.interrupt({ sessionID });
+    },
+
+    async switchModel(sessionID, model) {
+      await raw.session.switchModel({ sessionID, model });
+    },
+
     async activeSessionIDs() {
-      const { data } = await sdk.v2.session.active<true>();
-      return new Set(Object.keys(data.data));
+      const active = await raw.session.active();
+      return new Set(Object.keys(active));
     },
 
-    async listProviders() {
-      const { data } = await sdk.v2.provider.list<true>();
-      return data.data;
+    async listProviders(directory) {
+      return (await raw.provider.list(location(directory))).data;
     },
 
-    async listModels() {
-      const { data } = await sdk.v2.model.list<true>();
-      return data.data;
+    async listModels(directory) {
+      return (await raw.model.list(location(directory))).data;
     },
 
-    async listAgents() {
-      const { data } = await sdk.v2.agent.list<true>();
-      return data.data;
+    async listAgents(directory) {
+      return (await raw.agent.list(location(directory))).data;
     },
 
     async replyPermission(sessionID, requestID, reply, message) {
-      await sdk.v2.session.permission.reply<true>({
+      await raw.permission.reply({
         sessionID,
         requestID,
         reply,
@@ -332,19 +271,13 @@ export function createOcClient(options: OcClientOptions): OcClient {
       });
     },
 
-    async answerQuestion(sessionID, requestID, answers) {
-      await sdk.v2.session.question.reply<true>({
-        sessionID,
-        requestID,
-        questionV2Reply: answers,
+    events(opts) {
+      return raw.event.subscribe({
+        signal: opts.signal,
+        ...(opts.onActivity !== undefined
+          ? { onActivity: opts.onActivity }
+          : {}),
       });
     },
-
-    async rejectQuestion(sessionID, requestID) {
-      await sdk.v2.session.question.reject<true>({ sessionID, requestID });
-    },
-
-    openSessionStream,
-    openEventBus,
   };
 }
