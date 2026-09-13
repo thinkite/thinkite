@@ -26,12 +26,64 @@ export interface OpencodeRegistration {
   password: string;
 }
 
-export interface DiscoveredOpencode {
+/** Address + Basic credentials of the opencode server (proxy use only). */
+export interface OpencodeConnection {
   baseUrl: string;
-  username: "opencode";
+  username: string;
   password: string;
+  /** Reported by `/api/health` (e.g. `2.0.2`, `0.0.0-beta-19425`). */
   version: string;
+}
+
+export interface DiscoveredOpencode extends OpencodeConnection {
+  username: "opencode";
   pid: number;
+}
+
+/**
+ * Version gate. Thinkite speaks the opencode 2 API only: stable releases
+ * from 2.0.0 (`@opencode/*@latest`), plus the `0.0.0-beta-N` builds the
+ * Beta desktop app ships (fast-forward snapshots of the `v2` trunk, so a
+ * beta is never older than 2.0.0 in API terms) and `0.0.0-dev` source
+ * builds. A 1.x service (`opencode-ai` npm, GitHub Releases, brew) never
+ * registers itself, but the check keeps a mis-registered one from
+ * answering v2 routes with 404s that would look like data.
+ */
+export const OPENCODE_MIN_STABLE = "2.0.0";
+
+export type OpencodeVersion =
+  | { channel: "stable"; major: number; minor: number; patch: number }
+  | { channel: "beta"; build: number }
+  | { channel: "dev" };
+
+export function parseOpencodeVersion(version: string): OpencodeVersion | null {
+  const stable = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (stable !== null) {
+    return {
+      channel: "stable",
+      major: Number(stable[1]),
+      minor: Number(stable[2]),
+      patch: Number(stable[3]),
+    };
+  }
+  const beta = /^0\.0\.0-beta-(\d+)$/.exec(version);
+  if (beta !== null) return { channel: "beta", build: Number(beta[1]) };
+  if (/^0\.0\.0-dev/.test(version)) return { channel: "dev" };
+  return null;
+}
+
+export function isSupportedOpencodeVersion(version: string): boolean {
+  const parsed = parseOpencodeVersion(version);
+  if (parsed === null) return false;
+  if (parsed.channel !== "stable") return true;
+  const min = parseOpencodeVersion(OPENCODE_MIN_STABLE);
+  if (min?.channel !== "stable") return false;
+  return (
+    parsed.major > min.major ||
+    (parsed.major === min.major &&
+      (parsed.minor > min.minor ||
+        (parsed.minor === min.minor && parsed.patch >= min.patch)))
+  );
 }
 
 export function registryPath(env: NodeJS.ProcessEnv = process.env): string {

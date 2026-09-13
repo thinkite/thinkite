@@ -9,11 +9,11 @@
 import type http from "node:http";
 import type { Connection } from "@number0/iroh";
 import { irohDuplex } from "./iroh-duplex.ts";
-import type { OpencodeConnection } from "./opencode/host.ts";
+import type { OpencodeConnection } from "./opencode/registry.ts";
 import { createProxyServer } from "./opencode-proxy.ts";
 
 export interface IrohHttpTunnelOptions {
-  /** Lazily-started opencode host connection (`Daemon.opencode()`). */
+  /** The registered opencode service (`Daemon.opencode()`), resolved per request. */
   opencode: () => Promise<OpencodeConnection>;
   log?: (event: string, data?: Record<string, unknown>) => void;
 }

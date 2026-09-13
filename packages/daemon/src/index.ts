@@ -22,17 +22,12 @@ import {
 } from "./local-connection.ts";
 import { foldEventDelta } from "./messages/fold.ts";
 import { extractLatestUsage, normalize } from "./messages/normalize.ts";
-import { OpencodeHost, resolveOpencodeModel } from "./opencode/host.ts";
-import { createOpencodeDiscovery } from "./opencode/registry.ts";
 import {
-  ensureOpencodeLoop,
-  getOpencodeLoop,
-  interruptOpencode,
-  opencodeColdStart,
-  opencodeLoopClient,
-  pushOpencodePrompt,
-  shutdownOpencodeLoops,
-} from "./opencode/session-loop.ts";
+  createOpencodeDiscovery,
+  isSupportedOpencodeVersion,
+  OPENCODE_MIN_STABLE,
+  type OpencodeConnection,
+} from "./opencode/registry.ts";
 import { createPairOffer } from "./pairing.ts";
 import { createPlanUsageFetcher, type PlanUsageResult } from "./plan-usage.ts";
 import { createCommandHandler } from "./router.ts";
@@ -40,7 +35,6 @@ import { ensureSessionLoop, pushPrompt } from "./runtime/run-query.ts";
 import { SessionRuntimeManager } from "./runtime/session-runtime-manager.ts";
 import {
   clearBridgeWorkerState,
-  deleteSidecodeSession,
   listSidecodeSessions,
   writeBridgeWorkerState,
 } from "./sidecode-sessions.ts";
@@ -71,7 +65,7 @@ export type {
   LocalConnection,
   LocalConnectionOptions,
 } from "./local-connection.ts";
-export type { OpencodeConnection } from "./opencode/host.ts";
+export type { OpencodeConnection } from "./opencode/registry.ts";
 export type {
   PlanUsage,
   PlanUsageResult,
@@ -127,17 +121,15 @@ export interface Daemon {
    */
   fetchPlanUsage(): Promise<PlanUsageResult>;
   /**
-   * Address + Basic credentials of the opencode server for the Electron
-   * main `/oc` reverse proxy. Starts the server lazily on first call
-   * (same idempotent start as the first opencode-hosted prompt).
-   * Credentials stay in the main process — the proxy injects them, the
-   * renderer never sees them.
+   * Address + Basic credentials of the user's registered opencode 2
+   * service (`~/.local/state/opencode/service.json`, probed via
+   * `/api/health`, cached 5 s) for the Electron main `/oc` reverse proxy
+   * and the phone's iroh HTTP tunnel. Rejects when no healthy service is
+   * registered or its version is outside the supported range — the
+   * daemon never spawns opencode itself. Credentials stay in the main
+   * process — the proxies inject them, clients never see them.
    */
-  opencode(): Promise<{
-    baseUrl: string;
-    username: string;
-    password: string;
-  }>;
+  opencode(): Promise<OpencodeConnection>;
   /**
    * Open an in-process client connection to the command router — the same
    * RPC surface remote peers get (sendPrompt, subscribe, subscribeSessions,
@@ -204,31 +196,39 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // each activity edge. Tests use a memory-only manager (no setHome)
   // and skip the persistence path.
   runtimeManager.setHome(home);
-  // Opencode agent host supervisor (stage 1). Constructed always, spawned
-  // lazily on the first opencode-hosted prompt (`host.start()` is
-  // idempotent). Stopped in `daemon.stop()` before the runtimes drain so
-  // no late stream event races shutdown.
-  const opencodeHost = new OpencodeHost();
   // opencode 2 endpoint for the desktop `/oc` proxy and the phone's iroh
   // HTTP tunnel: the user's registered background service
-  // (`~/.local/state/opencode/service.json`, see opencode/registry.ts)
-  // when one is healthy, else the stage-1 spawn path as a fallback.
+  // (`~/.local/state/opencode/service.json`, see opencode/registry.ts).
+  // The daemon never spawns opencode — the desktop app / TUI / `opencode
+  // serve --service` own that process; we attach with no version pin, so
+  // an upgrade that replaces the service is picked up on the next probe.
   const opencodeDiscovery = createOpencodeDiscovery({
     onChange: (next) =>
       console.log(
-        `[sidecode] opencode service ${next === null ? "not registered" : `${next.version} pid ${next.pid} at ${next.baseUrl}`}`,
+        `[sidecode] opencode service ${
+          next === null
+            ? "not registered"
+            : `${next.version} pid ${next.pid} at ${next.baseUrl}${
+                isSupportedOpencodeVersion(next.version)
+                  ? ""
+                  : ` (unsupported: need ≥ ${OPENCODE_MIN_STABLE} or a v2 beta)`
+              }`
+        }`,
       ),
   });
-  const resolveOpencode = async () => {
+  const resolveOpencode = async (): Promise<OpencodeConnection> => {
     const discovered = await opencodeDiscovery.resolve();
-    if (discovered !== null) {
-      return {
-        baseUrl: discovered.baseUrl,
-        username: discovered.username,
-        password: discovered.password,
-      };
+    if (discovered === null) {
+      throw new Error(
+        "no opencode service is running — start the opencode desktop app or `opencode serve --service`",
+      );
     }
-    return opencodeHost.ensureConnection();
+    if (!isSupportedOpencodeVersion(discovered.version)) {
+      throw new Error(
+        `opencode ${discovered.version} is not supported — Thinkite needs opencode ≥ ${OPENCODE_MIN_STABLE} (or a v2 beta build)`,
+      );
+    }
+    return discovered;
   };
   // CCR bridge mirror service (slice M1). One OAuthRefreshManager (the
   // keychain token is process-global) feeds every bridge; BridgeService
@@ -288,40 +288,6 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
         );
         return;
       }
-      // Opencode-hosted sessions drive the opencode loop, not the SDK
-      // query — same pushPrompt contract, different host.
-      if (runtimeManager.getMetadata(sessionId)?.host === "opencode") {
-        try {
-          const loop = await ensureOpencodeLoop(
-            runtimeManager,
-            opencodeHost,
-            runtime,
-            { text: prompt.text, images: prompt.images },
-          );
-          await pushOpencodePrompt(
-            runtimeManager,
-            opencodeHost,
-            runtime,
-            loop,
-            {
-              text: prompt.text,
-              images: prompt.images,
-              userMessageUuid: prompt.uuid,
-            },
-          );
-        } catch (err) {
-          runtime.addEvent({
-            kind: "turn_failed",
-            error: err instanceof Error ? err.message : String(err),
-          });
-          console.log(
-            `[sidecode] bridge inbound prompt failed for ${sessionId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
-        return;
-      }
       // Ensure a query loop, then feed the prompt. ensureSessionLoop is
       // idempotent (no-op if already running) and sets inputChannel
       // synchronously, so the immediately-following pushPrompt always finds
@@ -368,19 +334,6 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     // semantics). Errors are logged but never propagate (would crash the
     // SDK's SSE read loop otherwise; the transport's try/catch is a 2nd net).
     onInterrupt: async (sessionId) => {
-      const opencodeLoop = getOpencodeLoop(sessionId);
-      if (opencodeLoop !== undefined) {
-        try {
-          await interruptOpencode(runtimeManager, opencodeLoop);
-        } catch (err) {
-          console.log(
-            `[sidecode] bridge interrupt failed for ${sessionId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
-        return;
-      }
       const runtime = runtimeManager.get(sessionId);
       if (!runtime?.query) return;
       try {
@@ -409,28 +362,6 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     // nothing drifts from what the live query actually has.
     onSetModel: async (sessionId, model) => {
       const runtime = runtimeManager.get(sessionId);
-      const opencodeLoop = getOpencodeLoop(sessionId);
-      if (opencodeLoop !== undefined) {
-        try {
-          if (model !== undefined) {
-            await opencodeLoopClient(opencodeHost, opencodeLoop).switchModel(
-              opencodeLoop.opencodeSessionId,
-              resolveOpencodeModel(model),
-            );
-          }
-          const changed = runtimeManager.setModel(sessionId, model);
-          if (changed) {
-            runtime?.bridge?.reportMetadata?.({ model: model ?? null });
-          }
-        } catch (err) {
-          console.log(
-            `[sidecode] bridge setModel failed for ${sessionId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
-        return;
-      }
       try {
         if (runtime?.query?.applyFlagSettings) {
           await runtime.query.applyFlagSettings({ model });
@@ -469,12 +400,10 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
 
   const commandHandler = createCommandHandler({
     getMessages: async (cliSessionId, cwd) => {
-      // Opencode-hosted sessions read the durable v2 event log instead of
-      // JSONL — same `{ items, initialUsage }` contract towards the router.
-      const meta = runtimeManager.getMetadata(cliSessionId);
-      if (meta?.host === "opencode" && meta.opencodeSessionId !== undefined) {
-        const client = await opencodeHost.start();
-        return opencodeColdStart(client, meta.opencodeSessionId);
+      // Legacy stage-1 opencode metadata: that transcript lives on the
+      // opencode service, not in any JSONL — nothing to fold here.
+      if (runtimeManager.getMetadata(cliSessionId)?.host === "opencode") {
+        return { items: [] };
       }
       // `cwd` is a hint only — when undefined we let the SDK scan every
       // project key. Fork sessions in worktrees may have their JSONL at
@@ -511,15 +440,6 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     runtimeManager,
     bridgeService,
     hasSession: async (cliSessionId) => {
-      // Opencode-hosted sessions exist iff the server still knows the
-      // recorded server-side id. Metadata without a mapping (or without
-      // an opencode host pin) falls through to the SDK check.
-      const meta = runtimeManager.getMetadata(cliSessionId);
-      if (meta?.host === "opencode") {
-        if (meta.opencodeSessionId === undefined) return false;
-        const client = await opencodeHost.start();
-        return (await client.getSession(meta.opencodeSessionId)) !== undefined;
-      }
       const info = await getSessionInfo(cliSessionId);
       return info !== undefined;
     },
@@ -532,9 +452,6 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     claudeExecutablePath: options.claudeExecutablePath,
     gitWatchers,
     epoch,
-    opencodeHost,
-    deleteSidecodeSession: (sessionId) =>
-      deleteSidecodeSession(home, sessionId),
   });
 
   // Live in-process client connections (desktop GUI sockets). Tracked
@@ -551,8 +468,8 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     knownClients,
     commandHandler,
     isPairing: () => pairingOpen,
-    // HTTP tunnel target: the same lazily-started opencode host the desktop
-    // proxy uses. First tunneled request pays the spawn cost.
+    // HTTP tunnel target: the same registered opencode service the desktop
+    // proxy uses, re-resolved per request (5 s discovery cache).
     opencode: () => resolveOpencode(),
     log: (event, data) =>
       console.log(
@@ -655,11 +572,6 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       // racing with shutdown gets rejected before it can spawn a runtime
       // we won't drain.
       shuttingDown = true;
-      // Abort opencode streams first so their waiters resolve without
-      // emitting, then stop the server. Runtime shutdown after: opencode
-      // runtimes hold no query handle, so their drain is a no-op.
-      await shutdownOpencodeLoops();
-      await opencodeHost.stop();
       // Drain SDK queries first so each subprocess gets the chance to
       // finish its current JSONL write before the transport tears down
       // and the process exits. SDK's `close()` triggers an internal 5s

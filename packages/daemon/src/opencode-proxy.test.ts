@@ -28,7 +28,12 @@ function listen(server: Server): Promise<number> {
 }
 
 function upstreamConnection(baseUrl: string) {
-  return async () => ({ baseUrl, username: USERNAME, password: PASSWORD });
+  return async () => ({
+    baseUrl,
+    username: USERNAME,
+    password: PASSWORD,
+    version: "2.0.2",
+  });
 }
 
 /** Two Duplexes wired push-to-push — one end per side of the proxy. */

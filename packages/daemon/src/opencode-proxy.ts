@@ -3,13 +3,13 @@
 // the opencode server so the password never leaves the daemon. Streams
 // bodies both ways, so SSE passes through untouched.
 import http from "node:http";
-import type { OpencodeConnection } from "./opencode/host.ts";
+import type { OpencodeConnection } from "./opencode/registry.ts";
 
 export interface ProxyOptions {
   /**
-   * Resolve the opencode server to proxy to. Called per request so the
-   * first tunneled request starts the host lazily; a rejection (opencode
-   * could not start) becomes a 502 JSON response.
+   * Resolve the opencode server to proxy to. Called per request so a
+   * replaced service (upgrade) is picked up without a restart; a rejection
+   * (no registered service) becomes a 502 JSON response.
    */
   getUpstream: () => Promise<OpencodeConnection>;
   log?: (event: string, data?: Record<string, unknown>) => void;

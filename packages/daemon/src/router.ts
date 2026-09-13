@@ -16,17 +16,6 @@ import type { BridgeService } from "./bridge/bridge-service.ts";
 import { OAuthRefreshError } from "./bridge/oauth-refresh.ts";
 import type { CommandHandler } from "./command.ts";
 import type { GitWatcherRegistry } from "./git-watch.ts";
-import { OpencodeApiError } from "./opencode/client.ts";
-import type { OpencodeHost } from "./opencode/host.ts";
-import { agentHost, resolveOpencodeModel } from "./opencode/host.ts";
-import {
-  deleteOpencodeLoop,
-  ensureOpencodeLoop,
-  getOpencodeLoop,
-  interruptOpencode,
-  opencodeLoopClient,
-  pushOpencodePrompt,
-} from "./opencode/session-loop.ts";
 import {
   ensureSessionLoop,
   pushPrompt,
@@ -164,21 +153,6 @@ export interface RouterDeps {
    * to make assertions stable.
    */
   epoch: string;
-  /**
-   * Opencode agent host supervisor. Present in production (the daemon
-   * always constructs one); absent in unit tests, which then always take
-   * the Claude path. Sessions carrying `host: "opencode"` metadata take
-   * the opencode session loop; sessions without metadata take the branch
-   * default (`THINKITE_AGENT_HOST`, default `opencode`) unless the Claude
-   * side already owns the session id.
-   */
-  opencodeHost?: OpencodeHost;
-  /**
-   * Delete one sidecode session metadata file. Wired to
-   * `deleteSidecodeSession(home, …)` in production; the opencode
-   * delete-session path calls it after the server-side delete.
-   */
-  deleteSidecodeSession?: (sessionId: string) => boolean;
 }
 
 // ─── Per-connection ctx.state keys (G2: subscriptions) ─────────────────────
@@ -723,32 +697,27 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         }
 
         try {
+          // Legacy stage-1 opencode metadata (the daemon briefly hosted
+          // opencode turns itself): that session lives on the opencode
+          // service, which clients talk to directly — never resurrect it
+          // as a Claude session under the same id.
+          if (
+            deps.runtimeManager.getMetadata(cmd.sessionId)?.host === "opencode"
+          ) {
+            ctx.send({
+              type: "error",
+              requestId: cmd.requestId,
+              code: "unsupported",
+              message:
+                "this session is hosted by opencode — drive it through the opencode API, not sendPrompt",
+            });
+            return;
+          }
           // Decide create-vs-resume from SDK's session existence check.
           // We don't reach into the filesystem ourselves — getSessionInfo
           // owns the projectKey-sanitization rule (see
           // project_session_replay_model memory).
-          //
-          // Host decision (opencode stage 1): stored metadata wins so
-          // mixed fleets keep working; sessions without metadata take the
-          // branch default, except an id the Claude side already owns
-          // (Desktop/CLI JSONL) stays on Claude to preserve its history.
-          const storedMeta = deps.runtimeManager.getMetadata(cmd.sessionId);
-          let useOpencode = false;
-          if (storedMeta?.host === "opencode") {
-            useOpencode = true;
-          } else if (
-            storedMeta === undefined &&
-            deps.opencodeHost !== undefined
-          ) {
-            const claudeOwns =
-              agentHost() === "opencode"
-                ? await deps.hasSession(cmd.sessionId)
-                : true;
-            useOpencode = agentHost() === "opencode" && !claudeOwns;
-          }
-          const exists = useOpencode
-            ? storedMeta?.opencodeSessionId !== undefined
-            : await deps.hasSession(cmd.sessionId);
+          const exists = await deps.hasSession(cmd.sessionId);
           if (!exists && cmd.cwd === undefined) {
             ctx.send({
               type: "error",
@@ -757,44 +726,6 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
               message:
                 "cwd is required when sendPrompt creates a new session " +
                 "(no JSONL exists for this sessionId yet)",
-            });
-            return;
-          }
-
-          if (useOpencode && deps.opencodeHost !== undefined) {
-            // Opencode path: the session loop owns metadata creation
-            // (it mints the server-side id), the stream, and the turn.
-            // Admission/model failures surface as `turn_failed`, never as
-            // RPC errors — same in-band contract as the Claude path.
-            const runtime = deps.runtimeManager.getOrCreate(cmd.sessionId);
-            const loop = await ensureOpencodeLoop(
-              deps.runtimeManager,
-              deps.opencodeHost,
-              runtime,
-              {
-                text: cmd.text,
-                images: cmd.images,
-                userMessageUuid: cmd.userMessageUuid,
-                cwd: cmd.cwd,
-                model: cmd.model,
-              },
-            );
-            await pushOpencodePrompt(
-              deps.runtimeManager,
-              deps.opencodeHost,
-              runtime,
-              loop,
-              {
-                text: cmd.text,
-                images: cmd.images,
-                userMessageUuid: cmd.userMessageUuid,
-                cwd: cmd.cwd,
-                model: cmd.model,
-              },
-            );
-            ctx.send({
-              type: "sendPrompt.response",
-              requestId: cmd.requestId,
             });
             return;
           }
@@ -928,29 +859,7 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         }
         try {
           const runtime = deps.runtimeManager.get(cmd.sessionId);
-          // Opencode path: switch the server-side model (`providerID /
-          // modelID`, split on the first `/`). Same failure cascade as
-          // below — a throw skips the metadata write.
-          const opencodeLoop =
-            deps.opencodeHost !== undefined
-              ? getOpencodeLoop(cmd.sessionId)
-              : undefined;
-          if (
-            opencodeLoop !== undefined &&
-            cmd.model !== undefined &&
-            deps.opencodeHost !== undefined
-          ) {
-            await opencodeLoopClient(
-              deps.opencodeHost,
-              opencodeLoop,
-            ).switchModel(
-              opencodeLoop.opencodeSessionId,
-              resolveOpencodeModel(cmd.model),
-            );
-          } else if (
-            cmd.model !== undefined &&
-            runtime?.query?.applyFlagSettings
-          ) {
+          if (cmd.model !== undefined && runtime?.query?.applyFlagSettings) {
             // Use applyFlagSettings carrying `model` — per upstream docs
             // this behaves identically to the dedicated `setModel()`
             // setter. Keeping one entrypoint simplifies the test seam.
@@ -1200,20 +1109,6 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
         return;
       }
       case "interrupt": {
-        // Opencode path first: the loop owns the server-side interrupt +
-        // turn_canceled emission (same best-effort ack contract).
-        const opencodeLoop =
-          deps.opencodeHost !== undefined
-            ? getOpencodeLoop(cmd.sessionId)
-            : undefined;
-        if (opencodeLoop !== undefined) {
-          await interruptOpencode(deps.runtimeManager, opencodeLoop);
-          ctx.send({
-            type: "interrupt.response",
-            requestId: cmd.requestId,
-          });
-          return;
-        }
         const runtime = deps.runtimeManager.get(cmd.sessionId);
         // Interrupt is best-effort: no active runtime / no in-flight query
         // means there's nothing to interrupt. Still ack — matches the
@@ -1247,70 +1142,6 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           type: "interrupt.response",
           requestId: cmd.requestId,
         });
-        return;
-      }
-      case "deleteSession": {
-        // Opencode-only in stage 1: server-side delete (cascades the
-        // session's events) + metadata removal + runtime drop with
-        // `session_state_removed` fan-out. Claude-hosted sessions keep
-        // today's behaviour (unsupported — the router previously had no
-        // deleteSession case at all).
-        if (deps.isShuttingDown()) {
-          ctx.send({
-            type: "error",
-            requestId: cmd.requestId,
-            code: "internal",
-            message: "daemon is shutting down",
-          });
-          return;
-        }
-        try {
-          const meta = deps.runtimeManager.getMetadata(cmd.sessionId);
-          const loop =
-            deps.opencodeHost !== undefined
-              ? getOpencodeLoop(cmd.sessionId)
-              : undefined;
-          if (meta?.host !== "opencode" && loop === undefined) {
-            ctx.send({
-              type: "error",
-              requestId: cmd.requestId,
-              code: "unsupported",
-              message:
-                "deleteSession is only supported for opencode-hosted sessions",
-            });
-            return;
-          }
-          if (deps.opencodeHost === undefined) {
-            throw new Error("opencode host is not available on this daemon");
-          }
-          if (loop !== undefined) {
-            await deleteOpencodeLoop(loop);
-          } else if (meta?.opencodeSessionId !== undefined) {
-            // No live loop (e.g. after a daemon restart): delete by the
-            // recorded server-side id. 404 = already gone, still success.
-            const client = await deps.opencodeHost.start();
-            try {
-              await client.deleteSession(meta.opencodeSessionId);
-            } catch (err) {
-              if (!(err instanceof OpencodeApiError && err.status === 404)) {
-                throw err;
-              }
-            }
-          }
-          deps.deleteSidecodeSession?.(cmd.sessionId);
-          deps.runtimeManager.removeSession(cmd.sessionId);
-          ctx.send({
-            type: "deleteSession.response",
-            requestId: cmd.requestId,
-          });
-        } catch (err) {
-          ctx.send({
-            type: "error",
-            requestId: cmd.requestId,
-            code: "internal",
-            message: err instanceof Error ? err.message : String(err),
-          });
-        }
         return;
       }
       default: {

@@ -301,8 +301,8 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === "/oc" || url.pathname.startsWith("/oc/")) {
       // Same-origin opencode endpoint (see server/oc-proxy.ts): strip +
-      // forward with the daemon-owned Basic credentials. Lazy-starts the
-      // opencode server on first use; 502 while it cannot start.
+      // forward with the daemon-owned Basic credentials of the user's
+      // registered opencode service; 502 while none is running.
       if (daemon === null) {
         res.writeHead(503, { "content-type": "text/plain" });
         res.end("daemon not running in this process — opencode unavailable");

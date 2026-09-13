@@ -18,7 +18,7 @@ import type { Identity } from "./identity.ts";
 import { fingerprintFromPubkeyB64, seedFromPrivateKey } from "./identity.ts";
 import { IrohHttpTunnel } from "./iroh-http-tunnel.ts";
 import type { KnownClients } from "./known-clients.ts";
-import type { OpencodeConnection } from "./opencode/host.ts";
+import type { OpencodeConnection } from "./opencode/registry.ts";
 
 /**
  * The daemon's remote transport: an iroh QUIC listener on the daemon
@@ -69,8 +69,8 @@ export interface IrohPeerServerOptions {
   isPairing?: () => boolean;
   /**
    * Resolver for the opencode server the HTTP ALPN (`thinkite/http/1`)
-   * tunnels to. Called lazily on the first tunneled request; omitting it
-   * leaves the tunnel in place but answering 502 to every request.
+   * tunnels to. Called per tunneled request; omitting it leaves the
+   * tunnel in place but answering 502 to every request.
    */
   opencode?: () => Promise<OpencodeConnection>;
   /**
@@ -128,7 +128,7 @@ export class IrohPeerServer {
       opencode:
         options.opencode ??
         (async () => {
-          throw new Error("opencode host is not configured on this daemon");
+          throw new Error("opencode is not configured on this daemon");
         }),
       log: this.log,
     });

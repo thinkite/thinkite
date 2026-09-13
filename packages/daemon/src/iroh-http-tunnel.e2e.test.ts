@@ -1,17 +1,18 @@
 /**
  * End-to-end: HTTP + SSE through the daemon's `thinkite/http/1` tunnel
- * against a real `opencode serve`, then a v1-route delete so the scratch
- * session doesn't litter the user's opencode database.
+ * against the user's registered opencode 2 service (the same discovery
+ * `Daemon.opencode()` uses — nothing is spawned), then a delete so the
+ * scratch session doesn't litter the user's opencode database.
  *
- * Gated by `THINKITE_E2E_IROH_HTTP=1` (spawns a real server and spends one
- * cheap model turn). Uses the ambient opencode integration state for
- * credentials, like the daemon host does.
+ * Gated by `THINKITE_E2E_IROH_HTTP=1` (spends one cheap model turn on the
+ * registered service):
  *
  *   THINKITE_E2E_IROH_HTTP=1 bunx vitest run packages/daemon/src/iroh-http-tunnel.e2e.test.ts
  *
- * Port of `spikes/oc-proxy/client.ts` + `run.ts` onto the daemon's real
- * `IrohPeerServer`. Run under Node: bun's node:http ignores
- * `createConnection`.
+ * Speaks raw HTTP/1.1 over iroh bi-streams on purpose (the phone's fetch
+ * does the same) so the test covers the tunnel, not `@thinkite/oc-client`
+ * — the desktop `oc-proxy.e2e.test.ts` covers the client. Run under Node:
+ * bun's node:http ignores `createConnection`.
  */
 
 import { randomBytes } from "node:crypto";
@@ -26,15 +27,14 @@ import { fingerprintFromPubkeyB64, loadOrCreateIdentity } from "./identity.ts";
 import { irohDuplex } from "./iroh-duplex.ts";
 import { IrohPeerServer } from "./iroh-peer-server.ts";
 import { KnownClients } from "./known-clients.ts";
-import { OpencodeHost, resolveOpencodeModel } from "./opencode/host.ts";
+import { discoverOpencode } from "./opencode/registry.ts";
 
 const runIf =
   process.env.THINKITE_E2E_IROH_HTTP === "1" ? describe : describe.skip;
 
+/** One `/api/event` payload: `{ type, data: { sessionID?, … } }`. */
 interface Ev {
-  id?: string;
   type?: string;
-  durable?: { aggregateID: string; seq: number };
   data?: Record<string, unknown>;
 }
 
@@ -189,24 +189,6 @@ function dialAddr(server: IrohPeerServer): EndpointAddr {
   return new EndpointAddr(addr.id(), null, [...direct, ...loopback]);
 }
 
-/** Resolves once no event has arrived for `idleMs` — the turn settled. */
-function settleWaiter(idleMs: number): {
-  arm: () => void;
-  settled: Promise<void>;
-} {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let resolve!: () => void;
-  const settled = new Promise<void>((r) => {
-    resolve = r;
-  });
-  const arm = () => {
-    clearTimeout(timer);
-    timer = setTimeout(resolve, idleMs);
-  };
-  arm();
-  return { arm, settled };
-}
-
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     p,
@@ -219,13 +201,15 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   ]);
 }
 
-runIf("iroh http tunnel (live opencode)", () => {
-  it("health → create → prompt+SSE → abort → resume → delete", {
+runIf("iroh http tunnel (registered opencode service)", () => {
+  it("health → create → prompt+SSE → abort → fresh SSE → messages → delete", {
     timeout: 300_000,
   }, async () => {
+    const upstream = await discoverOpencode();
+    if (upstream === null)
+      throw new Error("no healthy opencode service registered");
     const home = mkdtempSync(join(tmpdir(), "iroh-http-e2e-"));
     const dir = mkdtempSync(join(tmpdir(), "oc-iroh-http-e2e-"));
-    const host = new OpencodeHost(() => {});
     const serverLog: string[] = [];
     const t0 = Date.now();
     const log = (m: string) =>
@@ -236,6 +220,8 @@ runIf("iroh http tunnel (live opencode)", () => {
     let client: IrohHttpClient | null = null;
     let server: IrohPeerServer | null = null;
     let ep: Endpoint | null = null;
+    const forSession = (e: Ev) =>
+      sid !== null && e.data?.sessionID === sid && typeof e.type === "string";
     try {
       const identity = loadOrCreateIdentity(home);
       const knownClients = KnownClients.load(home);
@@ -248,130 +234,141 @@ runIf("iroh http tunnel (live opencode)", () => {
       });
       log(`known client ${pubkeyB64.slice(0, 12)}…`);
 
-      // A real IrohPeerServer with the daemon's opencode host as the tunnel
+      // A real IrohPeerServer with the registered service as the tunnel
       // target — same wiring as index.ts, minus the desktop surfaces.
       server = new IrohPeerServer({
         identity,
         knownClients,
         preset: "minimal",
-        opencode: () => host.ensureConnection(),
+        opencode: async () => upstream,
         log: (event, data) =>
           serverLog.push(`${event}${data ? ` ${JSON.stringify(data)}` : ""}`),
       });
       await server.start();
-      client = await connectIrohHttp(clientEp, dialAddr(server), log);
+      const tunnel = await connectIrohHttp(clientEp, dialAddr(server), log);
+      client = tunnel;
 
-      // 1. health through the tunnel, no credentials on the client side.
-      const health = await client.request("GET", "/global/health");
+      // 1. health through the tunnel: credentials are injected daemon-side,
+      //    the client sends none, and the answer is the registered pid.
+      const health = await tunnel.request("GET", "/api/health");
       expect(health.status, health.text).toBe(200);
-      log("health 200");
+      expect((health.json() as { pid?: number }).pid).toBe(upstream.pid);
+      log(`health 200 (opencode ${upstream.version})`);
 
       // 2. v2 surface present.
-      const list = await client.request(
-        "GET",
-        `/api/session?directory=${encodeURIComponent(dir)}`,
-      );
+      const list = await client.request("GET", "/api/session?limit=1");
       expect(list.status, list.text.slice(0, 200)).toBe(200);
 
-      // 3. create the scratch session.
-      const model = resolveOpencodeModel();
+      // 3. create the scratch session (service default model).
       const created = await client.request("POST", "/api/session", {
-        body: { location: { directory: dir }, model },
+        body: { title: "iroh http e2e", location: { directory: dir } },
       });
-      expect([200, 201], created.text.slice(0, 200)).toContain(created.status);
+      expect(created.status, created.text.slice(0, 200)).toBe(200);
       sid = (created.json() as { data: { id: string } }).data.id;
       log(`session ${sid}`);
 
-      // 4. SSE from seq 0 (headers flush with the first event) + prompt
-      //    concurrently; abort after 3 events.
-      const seen: Ev[] = [];
-      let abortAt = -1;
+      // 4. global SSE (headers flush with `server.connected`) + prompt;
+      //    abort the stream after 3 events for this session — the phone
+      //    backgrounding mid-turn.
+      const seen: string[] = [];
       const holder: { abort?: () => void } = {};
-      const s1p = client.sse(`/api/session/${sid}/event?after=0`, (e) => {
-        const ev = parse(e.data);
-        seen.push(ev);
-        log(`  sse#1 seq=${ev.durable?.seq} ${ev.type}`);
-        if (seen.length === 3 && abortAt < 0) {
-          abortAt = ev.durable?.seq ?? -1;
-          holder.abort?.();
-          log("  sse#1 ABORTED on purpose");
-        }
-      });
-      const p = await client.request("POST", `/api/session/${sid}/prompt`, {
-        body: { prompt: { text: "reply with exactly: pong" } },
-      });
-      expect(p.status, p.text.slice(0, 200)).toBe(200);
-      const s1 = await withTimeout(s1p, 30_000, "sse#1 headers");
+      let aborted = false;
+      const s1 = await withTimeout(
+        client.sse("/api/event", (e) => {
+          const ev = parse(e.data);
+          if (!forSession(ev)) return;
+          seen.push(ev.type as string);
+          log(`  sse#1 ${ev.type}`);
+          if (seen.length === 3 && !aborted) {
+            aborted = true;
+            holder.abort?.();
+            log("  sse#1 ABORTED on purpose");
+          }
+        }),
+        30_000,
+        "sse#1 headers",
+      );
       holder.abort = s1.abort;
       expect(s1.status).toBe(200);
-      if (seen.length >= 3 && abortAt < 0) {
-        abortAt = seen[2].durable?.seq ?? -1;
-        s1.abort();
-      }
-      await s1.done;
-      expect(abortAt, `saw ${seen.length} events`).toBeGreaterThan(0);
+      const p = await client.request("POST", `/api/session/${sid}/prompt`, {
+        body: { text: "Reply with exactly: pong" },
+      });
+      expect(p.status, p.text.slice(0, 200)).toBe(200);
+      await withTimeout(s1.done, 120_000, "sse#1 abort");
+      expect(seen.length, `saw ${seen.join(",")}`).toBeGreaterThanOrEqual(3);
 
-      // 5. resume from the exact seq we stopped at; wait for settle.
-      const resumed: Ev[] = [];
-      const waiter = settleWaiter(8000);
+      // 5. a fresh stream on a new bi-stream sees the rest of the turn.
+      //    The turn may already be over (pong is quick), so `session.active`
+      //    polling is the second exit: the service drops the id from the
+      //    map once execution settles.
+      const resumed: string[] = [];
+      let settled: (() => void) | null = null;
+      const finished = new Promise<void>((resolve) => {
+        settled = resolve;
+      });
       const s2 = await withTimeout(
-        client.sse(`/api/session/${sid}/event?after=${abortAt}`, (e) => {
+        client.sse("/api/event", (e) => {
           const ev = parse(e.data);
-          resumed.push(ev);
-          waiter.arm();
-          log(`  sse#2 seq=${ev.durable?.seq} ${ev.type}`);
+          if (!forSession(ev)) return;
+          resumed.push(ev.type as string);
+          log(`  sse#2 ${ev.type}`);
+          if (ev.type === "session.execution.succeeded") settled?.();
         }),
         30_000,
         "sse#2 headers",
       );
-      await waiter.settled;
+      const started = [...seen, ...resumed].includes(
+        "session.execution.started",
+      );
+      const idle = (async () => {
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 500));
+          const active = await tunnel.request("GET", "/api/session/active");
+          const map = (active.json() as { data?: Record<string, unknown> })
+            .data;
+          if (started && map !== undefined && !((sid as string) in map)) return;
+        }
+      })();
+      await withTimeout(Promise.race([finished, idle]), 120_000, "turn end");
       s2.abort();
       await s2.done;
-      const seqs = resumed.map((e) => e.durable?.seq ?? -1);
-      expect(seqs[0], `resume starts at ${abortAt + 1}`).toBe(abortAt + 1);
-      expect(
-        seqs.every((s, i) => i === 0 || s === seqs[i - 1] + 1),
-        `no gaps/dups (${seqs.length} events, ${seqs[0]}..${seqs.at(-1)})`,
-      ).toBe(true);
-      const ended = [...seen, ...resumed].find(
-        (e) => e.type === "session.next.text.ended",
-      );
-      const finalText =
-        typeof ended?.data?.text === "string" ? ended.data.text : "";
-      expect(
-        finalText.trim(),
-        `text.ended payload: ${JSON.stringify(ended?.data)}`,
-      ).toMatch(/^pong[.!]?$/i);
-      log(`final text ${JSON.stringify(finalText)}`);
+      log(`turn settled (sse#2 saw ${resumed.length} events)`);
 
-      // 6. history pagination agrees with the stream.
-      const hist = await client.request(
+      // 6. the projection agrees: one assistant message, text "pong".
+      const page = await client.request(
         "GET",
-        `/api/session/${sid}/history?after=${abortAt}&limit=100`,
+        `/api/session/${sid}/message?limit=10&order=desc`,
       );
-      expect(hist.status, hist.text.slice(0, 200)).toBe(200);
-      const hseqs = (hist.json() as { data: Ev[] }).data.map(
-        (e) => e.durable?.seq,
-      );
-      expect(hseqs[0]).toBe(abortAt + 1);
-      expect(hseqs).toHaveLength(seqs.length);
-      log("history matches stream");
+      expect(page.status, page.text.slice(0, 200)).toBe(200);
+      const messages = (
+        page.json() as {
+          data: Array<{
+            type: string;
+            content?: Array<{ type: string; text?: string }>;
+          }>;
+        }
+      ).data;
+      const assistant = messages.find((m) => m.type === "assistant");
+      const text =
+        assistant?.content?.find((c) => c.type === "text")?.text ?? "";
+      expect(text.trim(), JSON.stringify(assistant)).toMatch(/^pong[.!]?$/i);
+      log(`final text ${JSON.stringify(text)}`);
 
-      // 7. v1-route delete so the scratch session leaves no trace.
-      const del = await client.request("DELETE", `/session/${sid}`);
-      expect(del.status, del.text.slice(0, 200)).toBe(200);
+      // 7. delete so the scratch session leaves no trace (204; a second
+      //    delete is 404 — the service is not idempotent, the client is).
+      const del = await client.request("DELETE", `/api/session/${sid}`);
+      expect(del.status, del.text.slice(0, 200)).toBe(204);
       log(`deleted ${sid}`);
       sid = null;
     } finally {
       if (sid !== null && client !== null) {
-        await client.request("DELETE", `/session/${sid}`).catch(() => {});
+        await client.request("DELETE", `/api/session/${sid}`).catch(() => {});
       }
       console.log(
         `E2E iroh-http server log tail:\n${serverLog.slice(-20).join("\n")}`,
       );
       await client?.close().catch(() => {});
       await server?.stop().catch(() => {});
-      await host.stop().catch(() => {});
       await ep?.close().catch(() => {});
       rmSync(home, { recursive: true, force: true });
       rmSync(dir, { recursive: true, force: true });

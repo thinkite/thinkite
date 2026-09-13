@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import {
   createOpencodeDiscovery,
   discoverOpencode,
+  isSupportedOpencodeVersion,
+  parseOpencodeVersion,
   readRegistration,
   registryPath,
 } from "./registry.ts";
@@ -108,5 +110,39 @@ describe("opencode registry discovery", () => {
     await discovery.resolve();
     expect(calls).toHaveLength(2);
     expect(changes).toEqual(["2.0.2"]);
+  });
+});
+
+describe("opencode version gate", () => {
+  it("parses stable, beta and dev versions", () => {
+    expect(parseOpencodeVersion("2.0.2")).toEqual({
+      channel: "stable",
+      major: 2,
+      minor: 0,
+      patch: 2,
+    });
+    expect(parseOpencodeVersion("v1.18.30")).toMatchObject({
+      channel: "stable",
+      major: 1,
+    });
+    expect(parseOpencodeVersion("0.0.0-beta-19425")).toEqual({
+      channel: "beta",
+      build: 19425,
+    });
+    expect(parseOpencodeVersion("0.0.0-dev")).toEqual({ channel: "dev" });
+    expect(parseOpencodeVersion("")).toBeNull();
+    expect(parseOpencodeVersion("latest")).toBeNull();
+  });
+
+  it("accepts stable ≥ 2.0.0 plus any v2 beta/dev build, rejects 1.x", () => {
+    expect(isSupportedOpencodeVersion("2.0.0")).toBe(true);
+    expect(isSupportedOpencodeVersion("2.0.2")).toBe(true);
+    expect(isSupportedOpencodeVersion("2.1.0")).toBe(true);
+    expect(isSupportedOpencodeVersion("3.0.0")).toBe(true);
+    expect(isSupportedOpencodeVersion("0.0.0-beta-19425")).toBe(true);
+    expect(isSupportedOpencodeVersion("0.0.0-dev")).toBe(true);
+    expect(isSupportedOpencodeVersion("1.18.30")).toBe(false);
+    expect(isSupportedOpencodeVersion("1.99.0")).toBe(false);
+    expect(isSupportedOpencodeVersion("")).toBe(false);
   });
 });
