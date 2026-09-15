@@ -2,7 +2,7 @@
   "expo": {
     "name": "Thinkite",
     "slug": "sidecode",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "thinkite",
@@ -10,7 +10,10 @@
     "ios": {
       "icon": "./assets/thinkite.icon",
       "bundleIdentifier": "dev.thinkite.ios",
-      "associatedDomains": ["applinks:sidecode.app", "applinks:thinkite.dev"],
+      "associatedDomains": [
+        "applinks:sidecode.app",
+        "applinks:thinkite.dev"
+      ],
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
