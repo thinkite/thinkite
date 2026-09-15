@@ -51,6 +51,7 @@
     "vitest": "^4.1.5"
   },
   "dependencies": {
+    "@legendapp/list": "^3.3.11",
     "expo": "58.0.0-preview.1",
     "react": "19.2.3",
     "react-native": "0.88.0-rc.0"
