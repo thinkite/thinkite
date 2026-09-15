@@ -182,6 +182,7 @@
   ],
   "patchedDependencies": {
     "@swmansion/react-native-bottom-sheet@0.15.3": "patches/@swmansion%2Freact-native-bottom-sheet@0.15.3.patch",
+    "expo-modules-jsi@58.0.1": "patches/expo-modules-jsi@58.0.1.patch",
     "expo@58.0.0-preview.1": "patches/expo@58.0.0-preview.1.patch",
   },
   "overrides": {

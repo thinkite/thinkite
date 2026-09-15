@@ -1,0 +1,22 @@
+diff --git a/apple/scripts/build-xcframework.sh b/apple/scripts/build-xcframework.sh
+index fbb40943a219cc9b63190d55e981ee300feafbcc..64ef1ea508f06f3a9be8d61d79491a5aeab9eee5 100755
+--- a/apple/scripts/build-xcframework.sh
++++ b/apple/scripts/build-xcframework.sh
+@@ -227,7 +227,16 @@ build_slice() {
+     SWIFT_COMPILATION_MODE=wholemodule \
+     CLANG_ENABLE_CODE_COVERAGE=NO \
+     CLANG_COVERAGE_MAPPING=NO \
+-  )
++  ) 2>&1 | sed -l -e 's/^error: the following command failed with exit code 0 but produced no further output/note: (nested xcodebuild) the following command failed with exit code 0 but produced no further output/'
++  # Xcode 27 quirk, two halves. (1) The nested `xcodebuild -quiet` above prints
++  # `error: the following command failed with exit code 0 but produced no further
++  # output` for a SwiftCompile task in this package even though the task and the
++  # build succeed. (2) Xcode 27 scans run-script stdout and fails the OUTER build
++  # with "Command PhaseScriptExecution emitted errors but did not return a
++  # nonzero exit code" whenever a script prints an `error:` line — which turned
++  # every `xcodebuild archive` (EAS local/cloud release builds) into ARCHIVE
++  # FAILED at the very end, after signing. Demote that one spurious line to a
++  # note; `set -o pipefail` above still propagates a real nested failure.
+ 
+   local product_path="${BUILD_PRODUCTS_PATH}/${build_dir_name}"
+   local framework_src="${product_path}/PackageFrameworks/${PACKAGE_NAME}.framework"
