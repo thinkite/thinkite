@@ -179,6 +179,10 @@
     "electron",
     "react-native-enriched-markdown",
   ],
+  "patchedDependencies": {
+    "@swmansion/react-native-bottom-sheet@0.15.3": "patches/@swmansion%2Freact-native-bottom-sheet@0.15.3.patch",
+    "expo@58.0.0-preview.1": "patches/expo@58.0.0-preview.1.patch",
+  },
   "overrides": {
     "react": "19.2.3",
     "react-dom": "19.2.3",

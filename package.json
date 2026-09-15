@@ -54,5 +54,9 @@
     "expo": "58.0.0-preview.1",
     "react": "19.2.3",
     "react-native": "0.88.0-rc.0"
+  },
+  "patchedDependencies": {
+    "expo@58.0.0-preview.1": "patches/expo@58.0.0-preview.1.patch",
+    "@swmansion/react-native-bottom-sheet@0.15.3": "patches/@swmansion%2Freact-native-bottom-sheet@0.15.3.patch"
   }
 }

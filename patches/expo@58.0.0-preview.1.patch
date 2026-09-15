@@ -1,0 +1,49 @@
+diff --git a/ios/Expo/SceneEventForwarder.swift b/ios/Expo/SceneEventForwarder.swift
+index 5e55d8c91f3b89e32460a2a46461088903f9e4b8..c95ac6e425a94a4c90e93594d9637be0f656e528 100644
+--- a/ios/Expo/SceneEventForwarder.swift
++++ b/ios/Expo/SceneEventForwarder.swift
+@@ -26,7 +26,12 @@ struct SceneEventForwarder {
+     notifyLinkingManagerUnlessAlreadyNotified(of: url) {
+       _ = delegate?.application(application, open: url, options: options)
+     } notify: {
+-      RCTLinkingManager.application(application, open: url, options: options)
++      // React Native 0.88 gates its AppDelegate entry point on `RCTIsSceneDelegateApp()` and
++      // returns NO without announcing the URL in scene-based apps, so the JS `url` event would
++      // never fire. Announce it ourselves the way `RCTLinkingManager`'s scene entry point does.
++      if !RCTLinkingManager.application(application, open: url, options: options) {
++        Self.postLinkingManagerNotification(url: url)
++      }
+     }
+   }
+ 
+@@ -39,10 +44,29 @@ struct SceneEventForwarder {
+     notifyLinkingManagerUnlessAlreadyNotified(of: userActivity.webpageURL) {
+       _ = delegate?.application(application, continue: userActivity, restorationHandler: { _ in })
+     } notify: {
+-      RCTLinkingManager.application(application, continue: userActivity, restorationHandler: { _ in })
++      // Same React Native 0.88 scene gate as in `open(url:options:)`: the AppDelegate entry point
++      // returns NO for scene-based apps, so announce browsing-web activities ourselves.
++      let handled = RCTLinkingManager.application(
++        application, continue: userActivity, restorationHandler: { _ in }
++      )
++      if !handled,
++        userActivity.activityType == NSUserActivityTypeBrowsingWeb,
++        let url = userActivity.webpageURL {
++        Self.postLinkingManagerNotification(url: url)
++      }
+     }
+   }
+ 
++  /// Mirrors the private `+[RCTLinkingManager postNotificationWithURL:]`: the notification
++  /// `RCTLinkingManager` observes to emit the JS `url` event.
++  private static func postLinkingManagerNotification(url: URL) {
++    NotificationCenter.default.post(
++      name: Notification.Name("RCTOpenURLNotification"),
++      object: nil,
++      userInfo: ["url": url.absoluteString]
++    )
++  }
++
+   func willContinueUserActivity(withType userActivityType: String) {
+     // The scene callback has no return value, unlike its app-delegate counterpart. Calling the app
+     // delegate still lets every subscriber prepare; its aggregated result is intentionally ignored.
