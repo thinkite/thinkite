@@ -5,6 +5,10 @@ import { createAtom } from "@tanstack/store";
 // reads a pref re-renders when settings change it.
 
 export interface Prefs {
+  appearance: {
+    /** Color mode; "system" follows the OS. */
+    mode: "system" | "light" | "dark";
+  };
   models: {
     /** `providerID/modelID` refs the user hid from the picker. */
     hidden: string[];
@@ -14,7 +18,10 @@ export interface Prefs {
 }
 
 const KEY = "thinkite:prefs";
-const DEFAULTS: Prefs = { models: { hidden: [], shown: [] } };
+const DEFAULTS: Prefs = {
+  appearance: { mode: "system" },
+  models: { hidden: [], shown: [] },
+};
 
 function load(): Prefs {
   try {
@@ -24,6 +31,7 @@ function load(): Prefs {
     return {
       ...DEFAULTS,
       ...parsed,
+      appearance: { ...DEFAULTS.appearance, ...parsed.appearance },
       models: { ...DEFAULTS.models, ...parsed.models },
     };
   } catch {
@@ -41,3 +49,6 @@ export function updatePrefs(update: (current: Prefs) => Prefs): void {
     // Private mode: the change still holds for this run.
   }
 }
+
+/** Whether the settings dialog is open (⌘, or the sidebar's gear). */
+export const settingsOpen = createAtom(false);

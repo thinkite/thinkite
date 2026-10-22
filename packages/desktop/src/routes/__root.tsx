@@ -2,12 +2,15 @@ import { AppShell } from "@astryxdesign/core/AppShell";
 import {
   createRootRoute,
   Outlet,
+  useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import type { CSSProperties } from "react";
+import { type CSSProperties, useEffect } from "react";
 import { PierrePool } from "../components/PierrePool";
 import { SessionSidebar } from "../components/SessionSidebar";
+import { Settings } from "../components/settings/Settings";
 import { DRAG_REGION, isDesktopShell } from "../lib/desktop-shell";
+import { settingsOpen } from "../lib/prefs";
 
 // Routes that render in their OWN BrowserWindow (tray-opened dialogs) —
 // bare content, no app chrome. Everything else gets the AppShell + global
@@ -62,7 +65,27 @@ function RootLayout() {
   );
 }
 
+/** ⌘N opens a new session, ⌘, the settings. */
+function useAppShortcuts() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey) return;
+      if (e.key === "n") {
+        e.preventDefault();
+        void navigate({ to: "/" });
+      } else if (e.key === ",") {
+        e.preventDefault();
+        settingsOpen.set(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navigate]);
+}
+
 function RootChrome({ style }: { style?: CSSProperties }) {
+  useAppShortcuts();
   return (
     <AppShell
       style={style}
@@ -77,6 +100,7 @@ function RootChrome({ style }: { style?: CSSProperties }) {
       sideNav={<SessionSidebar />}
     >
       <Outlet />
+      <Settings />
     </AppShell>
   );
 }

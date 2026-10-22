@@ -9,7 +9,11 @@ import {
 } from "@astryxdesign/core/SideNav";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
-import { PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
+import {
+  Cog6ToothIcon,
+  PencilSquareIcon,
+  TrashIcon,
+} from "@heroicons/react/24/outline";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import type { SessionInfo } from "@thinkite/oc-client";
 import {
@@ -19,6 +23,7 @@ import {
 } from "@thinkite/oc-client/react";
 import { useEffect, useMemo, useState } from "react";
 import { ocClient, ocStore } from "../lib/oc";
+import { settingsOpen } from "../lib/prefs";
 
 // Global session sidebar. Content after wisp's — a "New session" action,
 // root sessions grouped by how long ago they were last active, one line
@@ -138,7 +143,16 @@ export function SessionSidebar() {
         />
       }
       footerIcons={
-        <div className="flex min-w-0 items-center gap-2 px-1">
+        <div className="flex w-full min-w-0 items-center gap-2 px-1">
+          <Button
+            label="Settings"
+            variant="ghost"
+            size="sm"
+            isIconOnly
+            icon={<Icon icon={Cog6ToothIcon} size="sm" />}
+            onClick={() => settingsOpen.set(true)}
+          />
+          <div className="flex-1" />
           <StatusDot
             variant={service.ok ? "success" : "neutral"}
             label={service.label}

@@ -15,9 +15,10 @@ import {
   parseModelRef,
 } from "@thinkite/oc-client";
 import { useIsRunning, useSession } from "@thinkite/oc-client/react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { DiffPanel } from "../../components/DiffPanel";
 import { ModelPicker } from "../../components/ModelPicker";
+import { usePendingPrompt } from "../../components/Prompts";
 import { TerminalPane } from "../../components/TerminalPane";
 import { TranscriptPanel } from "../../components/TranscriptPanel";
 import { ocClient, ocReady, ocStore } from "../../lib/oc";
@@ -99,6 +100,9 @@ function Session({ sessionId }: { sessionId: string }) {
   // jumps the viewport), replaced by the next send, reset with the
   // per-session remount; only a failed send rolls it back.
   const [anchorUuid, setAnchorUuid] = useState<string | null>(null);
+  // A permission request or question waiting on the user takes the
+  // composer's place (components/Prompts.tsx).
+  const prompt = usePendingPrompt(sessionId);
 
   const submit = (value: string) => {
     const text = value.trim();
@@ -203,25 +207,27 @@ function Session({ sessionId }: { sessionId: string }) {
               {/* composer-col = the reading column with half its padding
                   (styles.css): the card sits 32px wider than the text. */}
               <div className="composer-col shrink-0 pb-4">
-                <ChatComposer
-                  onSubmit={submit}
-                  onStop={stop}
-                  isStopShown={running}
-                  value={draft}
-                  onChange={setDraft}
-                  placeholder={
-                    running ? "Queue a message…" : "Message opencode…"
-                  }
-                  status={
-                    sendError
-                      ? { type: "error", message: sendError }
-                      : undefined
-                  }
-                  footerActions={
-                    <ModelPicker value={currentModel} onChange={pickModel} />
-                  }
-                  input={<ChatComposerInput />}
-                />
+                {prompt ?? (
+                  <ChatComposer
+                    onSubmit={submit}
+                    onStop={stop}
+                    isStopShown={running}
+                    value={draft}
+                    onChange={setDraft}
+                    placeholder={
+                      running ? "Queue a message…" : "Message opencode…"
+                    }
+                    status={
+                      sendError
+                        ? { type: "error", message: sendError }
+                        : undefined
+                    }
+                    footerActions={
+                      <ModelPicker value={currentModel} onChange={pickModel} />
+                    }
+                    input={<ChatComposerInput />}
+                  />
+                )}
               </div>
             </div>
           </div>
