@@ -5,7 +5,6 @@ import {
   type DropdownMenuOption,
 } from "@astryxdesign/core/DropdownMenu";
 import { Icon } from "@astryxdesign/core/Icon";
-import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { useNavigate } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
@@ -173,9 +172,15 @@ export function SessionTitle({
         />
       ) : (
         <>
-          <Text size="sm" weight="medium" maxLines={1}>
-            {title}
-          </Text>
+          {/* A one-item breadcrumb, so the title has the same size and
+              weight as a subagent session's lineage. */}
+          <Breadcrumbs label="Session path">
+            <BreadcrumbItem isCurrent>
+              <span className="inline-block max-w-120 truncate align-bottom">
+                {title}
+              </span>
+            </BreadcrumbItem>
+          </Breadcrumbs>
           {/* MoreMenu's button, without the tooltip it always adds. */}
           <DropdownMenu
             button={{
