@@ -144,7 +144,7 @@ function Session({ sessionId }: { sessionId: string }) {
 
   const rightPanel = useResizable({
     defaultSize: panelSizeBySession.get(sessionId) ?? 560,
-    minSizePx: 320,
+    minSize: 320,
     onSizeChange: (size) => panelSizeBySession.set(sessionId, size),
   });
 
