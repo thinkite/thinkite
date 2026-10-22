@@ -28,6 +28,7 @@ import {
   type SessionInboxUser,
   type SessionInfo,
   type SessionMessageInfo,
+  type SessionRevert,
   type SkillInfo,
 } from "@opencode/client";
 
@@ -43,6 +44,7 @@ export type {
   SessionInboxUser,
   SessionInfo,
   SessionMessageInfo,
+  SessionRevert,
   SkillInfo,
 };
 
@@ -162,6 +164,17 @@ export interface OcClient {
   /** Summarize the session to free context. */
   compact(sessionID: string): Promise<void>;
   interrupt(sessionID: string): Promise<void>;
+  /** Resolves once the session's work has settled; at once when idle. */
+  wait(sessionID: string): Promise<void>;
+  /**
+   * Rewind to just before user message `messageID`: it and everything after
+   * it are hidden and the files the later turns changed are put back. The
+   * next prompt makes it final; `unrevert` takes it back. Fails while busy.
+   */
+  revert(sessionID: string, messageID: string): Promise<SessionRevert>;
+  unrevert(sessionID: string): Promise<void>;
+  /** A new session with the history before `before` (all of it without). */
+  fork(sessionID: string, before?: string): Promise<SessionInfo>;
   switchModel(sessionID: string, model: ModelRef): Promise<void>;
   /** Foreground drains owned by the service — sessions absent are idle. A
    *  resume-time seed (startup, every `server.connected`); turn state
@@ -314,6 +327,25 @@ export function createOcClient(options: OcClientOptions): OcClient {
 
     async interrupt(sessionID) {
       await raw.session.interrupt({ sessionID });
+    },
+
+    async wait(sessionID) {
+      await raw.session.wait({ sessionID });
+    },
+
+    revert(sessionID, messageID) {
+      return raw.session.revert.stage({ sessionID, messageID });
+    },
+
+    async unrevert(sessionID) {
+      await raw.session.revert.clear({ sessionID });
+    },
+
+    fork(sessionID, before) {
+      return raw.session.fork({
+        sessionID,
+        ...(before !== undefined ? { before } : {}),
+      });
     },
 
     async switchModel(sessionID, model) {

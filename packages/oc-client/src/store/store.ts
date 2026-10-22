@@ -136,6 +136,17 @@ export interface OcStore {
     text: string,
     parts?: PromptParts,
   ): Promise<void>;
+  /**
+   * Rewind to just before user message `messageID`, as opencode does: stop
+   * the turn, wait for it to settle, then stage the revert. The messages
+   * from there on stay in the transcript but are hidden (see
+   * `visibleMessages`) until the next prompt drops them or `unrevert`
+   * brings them back.
+   */
+  revert(sessionID: string, messageID: string): Promise<void>;
+  unrevert(sessionID: string): Promise<void>;
+  /** A new session with the history before `before`, added to the list. */
+  fork(sessionID: string, before: string): Promise<SessionInfo>;
   /** Create a session and add it to the list right away. Without a model
    *  it gets the last used one, else the directory's default — pinned. */
   createSession(options: {
@@ -327,6 +338,45 @@ export function createOcStore({
     flush();
   }
 
+  // ---- reverts ----
+
+  function setRevert(sessionID: string, revert: SessionInfo["revert"]): void {
+    stage(() =>
+      session.info.set((all) => {
+        const info = all[sessionID];
+        if (info === undefined) return all;
+        const { revert: _, ...rest } = info;
+        return put(
+          all,
+          sessionID,
+          revert === undefined ? rest : { ...rest, revert },
+        );
+      }),
+    );
+  }
+
+  /** What the service does to a staged revert once new input arrives: the
+   *  hidden messages go for good. Rows still on their way out stay. */
+  function dropReverted(sessionID: string, to: string): void {
+    updateMessages(sessionID, (rows) =>
+      rows.filter((r) => r.id < to || outbox.has(r.id)),
+    );
+  }
+
+  /** New input commits a staged revert first; show that now, so the new
+   *  row isn't hidden behind the boundary. A failed send puts it back. */
+  function commitLocally(sessionID: string): () => void {
+    const revert = session.info.get()[sessionID]?.revert;
+    if (revert === undefined) return () => {};
+    setRevert(sessionID, undefined);
+    dropReverted(sessionID, revert.messageID);
+    flush();
+    return () => {
+      void syncSession(sessionID);
+      void refreshTail(sessionID);
+    };
+  }
+
   // ---- the bus ----
 
   async function loadSessions(): Promise<void> {
@@ -432,6 +482,10 @@ export function createOcStore({
       outbox.delete(event.data.inboxID);
     }
     if (!hasMessages(sessionID)) return;
+    if (event.type === "session.revert.committed") {
+      dropReverted(sessionID, event.data.to);
+      return;
+    }
     if (STREAMING_EVENT_TYPES.has(event.type)) {
       updateMessages(sessionID, (rows) => applyTranscriptEvent(rows, event));
       return;
@@ -579,6 +633,7 @@ export function createOcStore({
       ...(files.length > 0 ? { files: files.flatMap(inlineFile) } : {}),
       time: { created: Date.now() },
     } as SessionMessageInfo;
+    const undo = commitLocally(sessionID);
     const fresh = admit(sessionID, row);
     try {
       await sendInOrder(sessionID, async () => {
@@ -597,19 +652,52 @@ export function createOcStore({
       });
     } catch (error) {
       if (fresh) rollback(sessionID, id);
+      undo();
       throw error;
     }
   }
 
-  function command(
+  async function command(
     sessionID: string,
     name: string,
     text: string,
     parts?: PromptParts,
   ) {
-    return sendInOrder(sessionID, () =>
-      client.command(sessionID, name, text, parts),
-    );
+    const undo = commitLocally(sessionID);
+    try {
+      await sendInOrder(sessionID, () =>
+        client.command(sessionID, name, text, parts),
+      );
+    } catch (error) {
+      undo();
+      throw error;
+    }
+  }
+
+  function revert(sessionID: string, messageID: string) {
+    return sendInOrder(sessionID, async () => {
+      // Interrupt answers before the turn settles, and staging a busy
+      // session fails; both calls are no-ops when idle.
+      await client.interrupt(sessionID);
+      await client.wait(sessionID);
+      setRevert(sessionID, await client.revert(sessionID, messageID));
+      flush();
+    });
+  }
+
+  function unrevert(sessionID: string) {
+    return sendInOrder(sessionID, async () => {
+      await client.unrevert(sessionID);
+      setRevert(sessionID, undefined);
+      flush();
+    });
+  }
+
+  async function fork(sessionID: string, before: string) {
+    const info = await client.fork(sessionID, before);
+    stage(() => session.info.set((all) => put(all, info.id, info)));
+    flush();
+    return info;
   }
 
   async function createSession(options: {
@@ -679,6 +767,9 @@ export function createOcStore({
     loadOlder,
     prompt,
     command,
+    revert,
+    unrevert,
+    fork,
     createSession,
     replyPermission: (request, decision) =>
       answer(
@@ -713,7 +804,6 @@ export function createOcStore({
   };
 }
 
-/** A `data:` URI file as the service stores it on the user message. */
 /** A model ref with only the fields a pick carries; no "default" variant. */
 function pickRef(m: ModelRef): ModelRef {
   return {
@@ -725,6 +815,7 @@ function pickRef(m: ModelRef): ModelRef {
   };
 }
 
+/** A `data:` URI file as the service stores it on the user message. */
 function inlineFile(file: PromptFile) {
   const match = /^data:([^;,]+);base64,(.*)$/s.exec(file.uri);
   if (match === null) return [];

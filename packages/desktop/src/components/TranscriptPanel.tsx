@@ -1,18 +1,32 @@
+import { Button } from "@astryxdesign/core/Button";
 import {
   ChatLayoutScrollButton,
   ChatMessage,
   ChatMessageBubble,
+  ChatMessageMetadata,
   ChatSystemMessage,
 } from "@astryxdesign/core/Chat";
 import { CodeBlock } from "@astryxdesign/core/CodeBlock";
+import { Icon } from "@astryxdesign/core/Icon";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { Thumbnail } from "@astryxdesign/core/Thumbnail";
 import { ChevronDownIcon } from "@heroicons/react/16/solid";
+import {
+  ArrowUturnLeftIcon,
+  ArrowUturnRightIcon,
+  CheckIcon,
+  Square2StackIcon,
+} from "@heroicons/react/24/outline";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { toolDiffs, toolOutput, toolSummary } from "@thinkite/oc-client";
-import { useMessages, usePaging } from "@thinkite/oc-client/react";
+import {
+  toolDiffs,
+  toolOutput,
+  toolSummary,
+  visibleMessages,
+} from "@thinkite/oc-client";
+import { useMessages, usePaging, useSession } from "@thinkite/oc-client/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { highlightTokens } from "../lib/highlight";
 import { ocStore } from "../lib/oc";
@@ -324,7 +338,90 @@ function OlderHeader({ loading }: { loading: boolean }) {
   );
 }
 
-function renderRow(row: TranscriptRow, live: boolean) {
+/** What a prompt in the transcript offers, after opencode's user message. */
+export interface MessageActions {
+  /** Rewind to just before this prompt (its text goes back in the composer). */
+  revert(messageId: string, text: string): Promise<void>;
+  /** Bring back what a revert hid. */
+  redo(): Promise<void>;
+}
+
+const TIME = new Intl.DateTimeFormat(undefined, { timeStyle: "short" });
+
+function ActionButton({
+  label,
+  icon,
+  onClick,
+}: {
+  label: string;
+  icon: typeof CheckIcon;
+  onClick: () => void | Promise<void>;
+}) {
+  return (
+    <Button
+      label={label}
+      tooltip={label}
+      variant="ghost"
+      size="sm"
+      isIconOnly
+      icon={<Icon icon={icon} size="sm" />}
+      clickAction={onClick}
+    />
+  );
+}
+
+/**
+ * The line under a prompt, always shown: its time, then revert and copy
+ * (opencode shows them on hover).
+ */
+function UserMeta({
+  row,
+  actions,
+}: {
+  row: Extract<TranscriptRow, { kind: "user" }>;
+  actions: MessageActions | undefined;
+}) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <ChatMessageMetadata
+      timestamp={TIME.format(row.created)}
+      footer={
+        <span className="flex items-center">
+          {actions !== undefined && (
+            <ActionButton
+              label="Revert message"
+              icon={ArrowUturnLeftIcon}
+              onClick={() => actions.revert(row.messageId, row.text)}
+            />
+          )}
+          {row.text !== "" && (
+            <ActionButton
+              label={copied ? "Copied" : "Copy message"}
+              icon={copied ? CheckIcon : Square2StackIcon}
+              onClick={() =>
+                navigator.clipboard.writeText(row.text).then(
+                  () => setCopied(true),
+                  (err: unknown) => console.warn("[copy] failed:", err),
+                )
+              }
+            />
+          )}
+        </span>
+      }
+    />
+  );
+}
+
+function renderRow(
+  row: TranscriptRow,
+  live: boolean,
+  actions: MessageActions | undefined,
+) {
   switch (row.kind) {
     case "user":
       return (
@@ -342,10 +439,14 @@ function renderRow(row: TranscriptRow, live: boolean) {
               ))}
             </div>
           )}
-          {row.text !== "" && (
-            <ChatMessageBubble>
+          {row.text !== "" ? (
+            <ChatMessageBubble
+              metadata={<UserMeta row={row} actions={actions} />}
+            >
               <Markdown components={MARKDOWN_COMPONENTS}>{row.text}</Markdown>
             </ChatMessageBubble>
+          ) : (
+            <UserMeta row={row} actions={actions} />
           )}
         </ChatMessage>
       );
@@ -369,6 +470,25 @@ function renderRow(row: TranscriptRow, live: boolean) {
           )}
         </ChatSystemMessage>
       );
+    case "reverted":
+      return (
+        <div className="flex items-center justify-center gap-2">
+          <Text size="sm" color="secondary">
+            {row.count === 1
+              ? "1 message reverted"
+              : `${row.count} messages reverted`}
+          </Text>
+          {actions !== undefined && (
+            <Button
+              label="Redo"
+              variant="ghost"
+              size="sm"
+              icon={<Icon icon={ArrowUturnRightIcon} size="sm" />}
+              clickAction={() => actions.redo()}
+            />
+          )}
+        </div>
+      );
   }
 }
 
@@ -378,8 +498,11 @@ export function TranscriptPanel({
   sessionId,
   isRunning,
   anchorUuid = null,
+  actions,
 }: {
   sessionId: string;
+  /** Revert and redo; without them prompts offer only copy. */
+  actions?: MessageActions;
   /** Renders a working indicator under the last message. */
   isRunning?: boolean;
   /** Id of the most recently sent user message — pinned near the viewport
@@ -394,11 +517,24 @@ export function TranscriptPanel({
   useEffect(() => {
     void ocStore.open(sessionId);
   }, [sessionId]);
-  const messages = useMessages(ocStore, sessionId);
+  const all = useMessages(ocStore, sessionId);
+  const revert = useSession(ocStore, sessionId)?.revert;
   const paging = usePaging(ocStore, sessionId);
   const hasOlder = paging.cursor !== undefined;
 
-  const rows = useMemo(() => rowsOf(messages), [messages]);
+  // A staged revert hides its prompt and what follows until the next
+  // prompt drops them or redo brings them back.
+  const messages = useMemo(() => visibleMessages(all, revert), [all, revert]);
+  const rows = useMemo(() => {
+    const out = rowsOf(messages);
+    const boundary = revert?.messageID;
+    if (boundary === undefined) return out;
+    const count = all.filter(
+      (m) => m.type === "user" && m.id >= boundary,
+    ).length;
+    if (count > 0) out.push({ key: "reverted", kind: "reverted", count });
+    return out;
+  }, [all, messages, revert]);
   // The group the running turn is still adding to.
   const liveKey =
     isRunning === true && rows.at(-1)?.kind === "group"
@@ -496,7 +632,7 @@ export function TranscriptPanel({
         // from blowing the column open.
         renderItem={({ item }) => (
           <div className="chat-col overflow-x-clip pb-3">
-            {renderRow(item, item.key === liveKey)}
+            {renderRow(item, item.key === liveKey, actions)}
           </div>
         )}
         getItemType={(g) => g.kind}

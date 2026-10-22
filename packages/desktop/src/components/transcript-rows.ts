@@ -30,13 +30,16 @@ export type TranscriptRow =
       kind: "user";
       messageId: string;
       text: string;
+      created: number;
       /** Files sent inline (pasted, dropped); @-mentioned ones are in the text. */
       attachments: UserAttachment[];
     }
   | { key: string; kind: "text"; text: string }
   | { key: string; kind: "group"; items: GroupItem[] }
   | { key: string; kind: "tool"; tool: ToolPart }
-  | { key: string; kind: "note"; text: string; tone: "quiet" | "danger" };
+  | { key: string; kind: "note"; text: string; tone: "quiet" | "danger" }
+  /** Below the last row while a revert hides `count` prompts. */
+  | { key: string; kind: "reverted"; count: number };
 
 /** "12s", "1m 3s", "2h 5m". */
 export function duration(ms: number): string {
@@ -124,6 +127,7 @@ export function rowsOf(
           kind: "user",
           messageId: message.id,
           text: message.text,
+          created: message.time.created,
           attachments: (message.files ?? [])
             .filter((f) => f.mention === undefined)
             .map((f, i) => ({

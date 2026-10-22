@@ -13,6 +13,7 @@ import {
   mintMessageId,
   type PromptParts,
   parseModelRef,
+  visibleMessages,
 } from "@thinkite/oc-client";
 import { useIsRunning, useSession } from "@thinkite/oc-client/react";
 import { useState } from "react";
@@ -28,7 +29,10 @@ import {
 } from "../../components/ModelPicker";
 import { usePendingPrompt } from "../../components/Prompts";
 import { TerminalPane } from "../../components/TerminalPane";
-import { TranscriptPanel } from "../../components/TranscriptPanel";
+import {
+  type MessageActions,
+  TranscriptPanel,
+} from "../../components/TranscriptPanel";
 import { ocClient, ocReady, ocStore } from "../../lib/oc";
 
 // Session screen: transcript center column with a live composer (opencode
@@ -146,6 +150,28 @@ function Session({ sessionId }: { sessionId: string }) {
   };
 
   const navigate = useNavigate();
+
+  // opencode's revert puts the prompt back in the composer for an edit and
+  // resend, replacing the draft; redo leaves the composer alone.
+  const actions: MessageActions = {
+    revert: (messageId, text) =>
+      ocStore.revert(sessionId, messageId).then(() => {
+        setDraft(text);
+        setSendError(null);
+      }, fail),
+    redo: () => ocStore.unrevert(sessionId).catch(fail),
+  };
+
+  // /undo reverts the last prompt still showing, so repeating it walks back.
+  const undo = () => {
+    const shown = visibleMessages(
+      ocStore.session.message.get()[sessionId] ?? [],
+      ocStore.session.info.get()[sessionId]?.revert,
+    );
+    const last = shown.findLast((m) => m.type === "user");
+    if (last?.type === "user") void actions.revert(last.id, last.text);
+  };
+
   const builtins: Builtin[] = [
     {
       name: "new",
@@ -156,6 +182,19 @@ function Session({ sessionId }: { sessionId: string }) {
       name: "compact",
       description: "Summarize the session to free up context",
       run: () => void ocClient.compact(sessionId).catch(fail),
+    },
+    {
+      name: "undo",
+      description: "Revert the last message",
+      run: undo,
+    },
+    {
+      name: "redo",
+      description: "Bring back reverted messages",
+      run: () => {
+        if (ocStore.session.info.get()[sessionId]?.revert !== undefined)
+          void actions.redo();
+      },
     },
   ];
 
@@ -253,6 +292,7 @@ function Session({ sessionId }: { sessionId: string }) {
                   sessionId={sessionId}
                   isRunning={running}
                   anchorUuid={anchorUuid}
+                  actions={actions}
                 />
                 {/* Fade the scrolled content into the actual backdrop just
                     above the composer. `to-surface` (astryx tailwind bridge)

@@ -10,6 +10,7 @@ import type { PermissionRequest } from "@opencode/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { OcClient, SessionInfo, SessionMessageInfo } from "../client.ts";
 import type { OcEvent } from "../events.ts";
+import { visibleMessages } from "../transcript-reducer.ts";
 import { createOcStore, type OcStore } from "./store.ts";
 
 const SES = "ses_a";
@@ -109,7 +110,26 @@ function fakeClient(opts: {
   const prompts: Array<{ id?: string; text: string }> = [];
   const switches: string[] = [];
   const created: Array<{ model?: { providerID: string; id: string } }> = [];
+  /** Revert-path calls, in order. */
+  const calls: string[] = [];
   const client = {
+    async interrupt() {
+      calls.push("interrupt");
+    },
+    async wait() {
+      calls.push("wait");
+    },
+    async revert(_sessionID: string, messageID: string) {
+      calls.push(`revert ${messageID}`);
+      return { messageID };
+    },
+    async unrevert() {
+      calls.push("unrevert");
+    },
+    async fork(_sessionID: string, before: string) {
+      calls.push(`fork ${before}`);
+      return info("ses_fork", "fork", 60);
+    },
     events: ({ signal }: { signal: AbortSignal }) => opts.bus.iterate(signal),
     async listMessages(
       _sessionID: string,
@@ -162,6 +182,7 @@ function fakeClient(opts: {
     prompts,
     switches,
     created,
+    calls,
   };
 }
 
@@ -531,5 +552,91 @@ describe("createSession", () => {
     const fake = fakeClient({ bus: new FakeBus(), defaultModel: null });
     await store(fake.client).createSession({ directory: "/tmp/x" });
     expect(fake.created[0]?.model).toBeUndefined();
+  });
+});
+
+describe("reverts", () => {
+  const history = [
+    user("msg_1", "a", 1),
+    user("msg_2", "b", 2),
+    user("msg_3", "c", 3),
+  ];
+  const visible = (s: OcStore) =>
+    visibleMessages(
+      s.session.message.get()[SES] ?? [],
+      s.session.info.get()[SES]?.revert,
+    ).map((r) => r.id);
+
+  async function opened(prompt?: () => Promise<void>) {
+    const bus = new FakeBus();
+    const fake = fakeClient({
+      bus,
+      sessions: [{ sessions: [info(SES, "a", 20)] }],
+      // Opening reads one page; a re-read after a failed send, the next.
+      pages: [
+        { messages: history.slice().reverse() },
+        { messages: history.slice().reverse() },
+      ],
+      ...(prompt ? { prompt } : {}),
+    });
+    const s = store(fake.client);
+    await s.start();
+    await s.open(SES);
+    return { s, bus, ...fake };
+  }
+
+  it("stops the turn, then hides the message and what follows", async () => {
+    const { s, calls } = await opened();
+    await s.revert(SES, "msg_2");
+    expect(calls).toEqual(["interrupt", "wait", "revert msg_2"]);
+    expect(visible(s)).toEqual(["msg_1"]);
+    expect(ids(s)).toEqual(["msg_1", "msg_2", "msg_3"]);
+
+    await s.unrevert(SES);
+    expect(visible(s)).toEqual(["msg_1", "msg_2", "msg_3"]);
+  });
+
+  it("a prompt drops the hidden messages and shows at once", async () => {
+    const { s } = await opened();
+    await s.revert(SES, "msg_2");
+    await s.prompt(SES, "again", { id: "msg_4" });
+    expect(s.session.info.get()[SES]?.revert).toBeUndefined();
+    expect(visible(s)).toEqual(["msg_1", "msg_4"]);
+  });
+
+  it("a failed prompt brings the revert back from the service", async () => {
+    const { s } = await opened(() => Promise.reject(new Error("down")));
+    await s.revert(SES, "msg_2");
+    await expect(s.prompt(SES, "again", { id: "msg_4" })).rejects.toThrow();
+    // getSession has no revert in the fake; the re-read is what counts.
+    await tick();
+    s.flush();
+    expect(ids(s)).toEqual(["msg_1", "msg_2", "msg_3"]);
+  });
+
+  it("follows another client's revert and its commit", async () => {
+    const { s, bus } = await opened();
+    bus.push(
+      ev("session.revert.staged", {
+        sessionID: SES,
+        revert: { messageID: "msg_3" },
+      }),
+    );
+    await tick();
+    s.flush();
+    expect(visible(s)).toEqual(["msg_1", "msg_2"]);
+
+    bus.push(ev("session.revert.committed", { sessionID: SES, to: "msg_3" }));
+    await tick();
+    s.flush();
+    expect(s.session.info.get()[SES]?.revert).toBeUndefined();
+    expect(ids(s)).toEqual(["msg_1", "msg_2"]);
+  });
+
+  it("forks into a new listed session", async () => {
+    const { s, calls } = await opened();
+    const forked = await s.fork(SES, "msg_2");
+    expect(calls).toEqual(["fork msg_2"]);
+    expect(s.session.info.get()[forked.id]).toBeDefined();
   });
 });

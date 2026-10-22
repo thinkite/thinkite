@@ -561,3 +561,16 @@ export function mergeProjection(
   for (const m of fetched) if (!present.has(m.id)) next.push(m);
   return next;
 }
+
+/**
+ * The rows a staged revert leaves showing: those before the boundary, as
+ * opencode desktop filters them (`visibleTimelineMessages`). Ids sort by
+ * time, so a string compare finds them.
+ */
+export function visibleMessages(
+  rows: TranscriptRows,
+  revert: { messageID: string } | undefined,
+): TranscriptRows {
+  if (revert === undefined) return rows;
+  return rows.filter((r) => r.id < revert.messageID);
+}

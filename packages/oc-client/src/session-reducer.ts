@@ -40,6 +40,14 @@ export function applySessionEvent(
       return { ...info, model: event.data.model };
     case "session.agent.selected":
       return { ...info, agent: event.data.agent };
+    case "session.revert.staged":
+      return { ...info, revert: event.data.revert };
+    case "session.revert.cleared":
+    case "session.revert.committed": {
+      if (info.revert === undefined) return info;
+      const { revert: _, ...rest } = info;
+      return rest;
+    }
     case "session.usage.updated":
       return { ...info, cost: event.data.cost, tokens: event.data.tokens };
     case "session.permissions":

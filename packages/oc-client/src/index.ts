@@ -27,6 +27,7 @@ export {
   type SessionInboxUser,
   type SessionInfo,
   type SessionMessageInfo,
+  type SessionRevert,
   type SkillInfo,
 } from "./client.ts";
 export {
@@ -66,4 +67,5 @@ export {
   STREAMING_EVENT_TYPES,
   type TranscriptRows,
   TURN_END_EVENT_TYPES,
+  visibleMessages,
 } from "./transcript-reducer.ts";
