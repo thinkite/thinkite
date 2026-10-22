@@ -1,16 +1,13 @@
 import type { IntegrationInfo } from "@thinkite/oc-client";
 
 // What Settings › Providers shows, worked out from the service's integration
-// list the way opencode desktop does (`settings/providers/providers.tsx`,
-// `providers/connect/controller.ts` at v2.1.2, MIT). Kept apart from the
+// list. The page works like DeepSeek Harness's Models settings — pick a
+// provider, paste its API key — with opencode desktop's provider order
+// (`settings/providers/providers.tsx` at v2.1.2, MIT). Kept apart from the
 // view so it can be tested on plain data.
 
-export type Method = IntegrationInfo["methods"][number];
-/** A way to connect that the dialog can run (not env, not command). */
-export type UsableMethod = Extract<
-  Method,
-  { type: "key" | "oauth" | "external" }
->;
+type Method = IntegrationInfo["methods"][number];
+export type KeyMethod = Extract<Method, { type: "key" }>;
 type Connection = IntegrationInfo["connections"][number];
 export type Account = Extract<Connection, { type: "credential" }>;
 
@@ -26,23 +23,28 @@ export const POPULAR = [
   "vercel",
 ];
 
-const RECOMMENDED = new Set(["opencode", "opencode-go"]);
-export const isRecommended = (id: string) => RECOMMENDED.has(id);
-
-/**
- * The methods the dialog offers, in the service's order. A provider with
- * none (only env vars, or a command) still takes an API key, as opencode's
- * dialog falls back to one.
- */
-export function usableMethods(integration: IntegrationInfo): UsableMethod[] {
-  const usable = integration.methods.filter(
-    (m): m is UsableMethod =>
-      m.type === "key" || m.type === "oauth" || m.type === "external",
+/** How the provider takes an API key: its own key method (some ask for an
+ *  account name or URL beside the key), or a plain key when it lists none. */
+export function keyMethod(integration: IntegrationInfo): KeyMethod {
+  return (
+    integration.methods.find((m): m is KeyMethod => m.type === "key") ?? {
+      type: "key",
+    }
   );
-  return usable.length > 0 ? usable : [{ type: "key" }];
 }
 
-/** Stored accounts; the service lists the active one first. */
+/** Environment variables the service reads the provider's key from. */
+export function envNames(integration: IntegrationInfo): string[] {
+  return integration.methods.flatMap((m) => (m.type === "env" ? m.names : []));
+}
+
+/** The environment variable the service found the key in, if any. */
+export function envDetected(integration: IntegrationInfo): string | null {
+  const env = integration.connections.find((c) => c.type === "env");
+  return env?.type === "env" ? env.name : null;
+}
+
+/** Stored credentials; the service lists the active one first. */
 export function accountsOf(integration: IntegrationInfo): Account[] {
   return integration.connections.filter(
     (c): c is Account => c.type === "credential",
@@ -58,7 +60,7 @@ export function sourceLabel(integration: IntegrationInfo): string {
   const first = integration.connections[0];
   if (first === undefined) return "Config";
   if (first.type === "env") return "Environment";
-  if (first.method === "oauth") return "Account";
+  if (first.method === "oauth") return "Signed in";
   if (first.method === "key") return "API key";
   return "External";
 }
@@ -66,7 +68,12 @@ export function sourceLabel(integration: IntegrationInfo): string {
 const byName = (a: IntegrationInfo, b: IntegrationInfo) =>
   a.name.localeCompare(b.name);
 
-/** Connected providers: OpenCode Go first, then by name. */
+const popularRank = (id: string) => {
+  const index = POPULAR.indexOf(id);
+  return index < 0 ? POPULAR.length : index;
+};
+
+/** Configured providers: OpenCode Go first, then by name. */
 export function connectedOf(
   all: readonly IntegrationInfo[],
 ): IntegrationInfo[] {
@@ -79,48 +86,10 @@ export function connectedOf(
     );
 }
 
-/** Popular providers not connected yet, in opencode's order. */
-export function popularOf(all: readonly IntegrationInfo[]): IntegrationInfo[] {
-  const byId = new Map(all.map((i) => [i.id, i]));
-  return POPULAR.flatMap((id) => {
-    const integration = byId.get(id);
-    return integration && !isConnected(integration) ? [integration] : [];
-  });
-}
-
-/** The connect dialog's picker: popular first in their order, the rest by
- *  name; `query` matches names and ids. */
-export function pickerGroups(
-  all: readonly IntegrationInfo[],
-  query: string,
-): { popular: IntegrationInfo[]; other: IntegrationInfo[] } {
-  const q = query.trim().toLowerCase();
-  const matches = all.filter(
-    (i) =>
-      q === "" ||
-      i.name.toLowerCase().includes(q) ||
-      i.id.toLowerCase().includes(q),
-  );
-  const popular = POPULAR.flatMap((id) => matches.filter((i) => i.id === id));
-  const other = matches.filter((i) => !POPULAR.includes(i.id)).sort(byName);
-  return { popular, other };
-}
-
-/**
- * The code a device sign-in asks the user to confirm: the URL's
- * `user_code`, else whatever follows the last ":" of the instructions.
- */
-export function confirmationCode(
-  url: string,
-  instructions: string,
-): string | null {
-  try {
-    const code = new URL(url).searchParams.get("user_code");
-    if (code) return code;
-  } catch {
-    // Not a URL; try the instructions.
-  }
-  const colon = instructions.lastIndexOf(":");
-  const tail = colon >= 0 ? instructions.slice(colon + 1).trim() : "";
-  return /^[A-Z0-9][A-Z0-9-]{3,}$/i.test(tail) ? tail : null;
+/** Providers that can still be added: the popular ones first in opencode's
+ *  order, then the rest by name. */
+export function addableOf(all: readonly IntegrationInfo[]): IntegrationInfo[] {
+  return all
+    .filter((i) => !isConnected(i))
+    .sort((a, b) => popularRank(a.id) - popularRank(b.id) || byName(a, b));
 }

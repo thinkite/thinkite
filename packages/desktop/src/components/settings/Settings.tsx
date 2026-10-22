@@ -308,7 +308,7 @@ const PAGES: {
   {
     id: "providers",
     label: "Providers",
-    description: "Connect and manage model providers",
+    description: "Enter API keys to use models from these providers",
     icon: ServerIcon,
     Page: Providers,
   },

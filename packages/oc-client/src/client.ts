@@ -219,11 +219,14 @@ export interface OcClient {
   /** Every provider the service can connect: how (methods) and what is
    *  connected now (connections; the active credential first). */
   listIntegrations(): Promise<IntegrationInfo[]>;
-  /** Store an API key; `answer` fills the method's form, if it has one. */
+  /** Store an API key; `answer` fills the method's form, if it has one.
+   *  Without a `label` the service names it after the provider ("DeepSeek",
+   *  then "DeepSeek 2" while that one exists). */
   connectKey(
     integrationID: string,
     key: string,
     answer?: FormInput,
+    label?: string,
   ): Promise<void>;
   /** Use credentials found outside opencode (an AWS profile, gcloud). */
   connectExternal(
@@ -343,11 +346,12 @@ export function createOcClient(options: OcClientOptions): OcClient {
       return (await raw.integration.list()).data;
     },
 
-    async connectKey(integrationID, key, answer) {
+    async connectKey(integrationID, key, answer, label) {
       await raw.integration.connect.key({
         integrationID,
         key,
         ...(answer !== undefined ? { answer: formAnswer(answer) } : {}),
+        ...(label !== undefined ? { label } : {}),
       });
     },
 

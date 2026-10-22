@@ -2,12 +2,12 @@ import type { IntegrationInfo } from "@thinkite/oc-client";
 import { describe, expect, it } from "vitest";
 import {
   accountsOf,
-  confirmationCode,
+  addableOf,
   connectedOf,
-  pickerGroups,
-  popularOf,
+  envDetected,
+  envNames,
+  keyMethod,
   sourceLabel,
-  usableMethods,
 } from "./providers-model";
 
 const integration = (
@@ -26,23 +26,38 @@ const key = (id: string, label: string) =>
   ({ type: "credential", id, label, method: "key" }) as const;
 
 describe("providers model", () => {
-  it("offers key, oauth and external methods, and a key when there are none", () => {
-    const openai = integration("openai", "OpenAI", {
+  it("takes the provider's own key method, or a plain key", () => {
+    const snowflake = integration("snowflake-cortex", "Snowflake", {
       methods: [
-        { type: "key" },
-        { type: "env", names: ["OPENAI_API_KEY"] },
-        { id: "chatgpt", type: "oauth", label: "Sign in with ChatGPT" },
+        {
+          type: "key",
+          label: "Paste PAT or bearer token",
+          form: [{ key: "account", type: "string", title: "Account" }],
+        },
+        { type: "env", names: ["SNOWFLAKE_CORTEX_TOKEN"] },
       ],
     });
-    expect(usableMethods(openai).map((m) => m.type)).toEqual(["key", "oauth"]);
+    expect(keyMethod(snowflake).label).toBe("Paste PAT or bearer token");
     const envOnly = integration("copilot", "Copilot", {
       methods: [{ type: "env", names: ["GITHUB_TOKEN"] }],
     });
-    expect(usableMethods(envOnly)).toEqual([{ type: "key" }]);
+    expect(keyMethod(envOnly)).toEqual({ type: "key" });
+    expect(envNames(envOnly)).toEqual(["GITHUB_TOKEN"]);
   });
 
-  it("lists connected providers Go first, and popular ones not connected", () => {
+  it("knows when the key comes from the environment", () => {
+    const openai = integration("openai", "OpenAI", {
+      methods: [{ type: "key" }, { type: "env", names: ["OPENAI_API_KEY"] }],
+      connections: [{ type: "env", name: "OPENAI_API_KEY" }],
+    });
+    expect(envDetected(openai)).toBe("OPENAI_API_KEY");
+    expect(sourceLabel(openai)).toBe("Environment");
+    expect(envDetected(integration("x", "X"))).toBeNull();
+  });
+
+  it("lists configured providers Go first, and the rest popular first", () => {
     const all = [
+      integration("zai", "Z.AI"),
       integration("anthropic", "Anthropic"),
       integration("deepseek", "DeepSeek", {
         connections: [key("cred_d", "DeepSeek")],
@@ -50,17 +65,19 @@ describe("providers model", () => {
       integration("opencode-go", "OpenCode Go", {
         connections: [key("cred_g", "Go")],
       }),
-      integration("openai", "OpenAI", {
-        connections: [{ type: "env", name: "OPENAI_API_KEY" }],
-      }),
+      integration("302ai", "302.AI"),
       integration("opencode", "OpenCode Console"),
     ];
     expect(connectedOf(all).map((i) => i.id)).toEqual([
       "opencode-go",
       "deepseek",
-      "openai",
     ]);
-    expect(popularOf(all).map((i) => i.id)).toEqual(["opencode", "anthropic"]);
+    expect(addableOf(all).map((i) => i.id)).toEqual([
+      "opencode",
+      "anthropic",
+      "302ai",
+      "zai",
+    ]);
   });
 
   it("names how a provider is connected and keeps the active account first", () => {
@@ -73,44 +90,8 @@ describe("providers model", () => {
     expect(accountsOf(openai).map((a) => a.label)).toEqual(["Work", "Home"]);
     expect(
       sourceLabel(
-        integration("x", "X", {
-          connections: [{ type: "env", name: "X_API_KEY" }],
-        }),
+        integration("o", "O", { connections: [accounts[1] as never] }),
       ),
-    ).toBe("Environment");
-  });
-
-  it("groups the picker and filters it by name or id", () => {
-    const all = [
-      integration("zai", "Z.AI"),
-      integration("openai", "OpenAI"),
-      integration("anthropic", "Anthropic"),
-      integration("302ai", "302.AI"),
-    ];
-    const { popular, other } = pickerGroups(all, "");
-    expect(popular.map((i) => i.id)).toEqual(["anthropic", "openai"]);
-    expect(other.map((i) => i.id)).toEqual(["302ai", "zai"]);
-    expect(pickerGroups(all, "z.a").other.map((i) => i.id)).toEqual(["zai"]);
-    expect(pickerGroups(all, "OPEN").popular.map((i) => i.id)).toEqual([
-      "openai",
-    ]);
-  });
-
-  it("finds the code a device sign-in asks to confirm", () => {
-    expect(
-      confirmationCode(
-        "https://github.com/login/device?user_code=AB12-CD34",
-        "",
-      ),
-    ).toBe("AB12-CD34");
-    expect(
-      confirmationCode(
-        "https://github.com/login/device",
-        "Enter code: WXYZ-1234",
-      ),
-    ).toBe("WXYZ-1234");
-    expect(
-      confirmationCode("https://poe.com/oauth/authorize", "Sign in to Poe."),
-    ).toBeNull();
+    ).toBe("Signed in");
   });
 });

@@ -1,294 +1,340 @@
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
-import {
-  DropdownMenu,
-  type DropdownMenuOption,
-} from "@astryxdesign/core/DropdownMenu";
 import { Icon } from "@astryxdesign/core/Icon";
+import { Selector } from "@astryxdesign/core/Selector";
+import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { useToast } from "@astryxdesign/core/Toast";
 import { useSelector } from "@tanstack/react-store";
-import type { IntegrationInfo } from "@thinkite/oc-client";
-import { CheckIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import { type SVGProps, useRef, useState } from "react";
+import type { FormAnswer, IntegrationInfo } from "@thinkite/oc-client";
+import { PlusIcon } from "lucide-react";
+import { useState } from "react";
 import { catalogVersion, ocClient } from "../../lib/oc";
-import { ConnectDialog } from "./ConnectDialog";
-import { Note, Row, Section, useLoad } from "./parts";
+import { type Field, FormFields, initialAnswer } from "../FormFields";
+import { Note, Section, useLoad } from "./parts";
 import {
-  type Account,
   accountsOf,
+  addableOf,
   connectedOf,
-  isRecommended,
-  popularOf,
+  envDetected,
+  envNames,
+  keyMethod,
   sourceLabel,
 } from "./providers-model";
 
-// Settings › Providers, after opencode desktop's
-// (`settings/providers/providers.tsx` at v2.1.2, MIT): the providers
-// connected now, each with its accounts (switch, rename, remove, add
-// another), then the popular ones not connected yet, each a Connect away;
-// "Show more providers" opens the full picker. Everything is the service's
-// integration list, read again whenever the bus says providers, accounts
-// or models changed (lib/oc's catalog version).
-
-const NoIcon = (props: SVGProps<SVGSVGElement>) => (
-  <svg aria-hidden {...props} />
-);
+// Settings › Providers, after DeepSeek Harness's Models settings: the
+// providers configured now, each with Edit (a new API key, or delete it),
+// and "Add model provider" — pick a provider from the service's catalog
+// and paste its key, or leave the key empty when the opencode service
+// finds one in its environment. Browser sign-ins (OpenAI's, Copilot's)
+// are left to opencode's own clients; accounts made there still list
+// here and can be replaced with a key or deleted. Everything reads the
+// service's integration list again whenever the bus says providers,
+// accounts or models changed (lib/oc's catalog version).
 
 const messageOf = (err: unknown) =>
   err instanceof Error ? err.message : String(err);
 
-/** An account's name, edited in place: Enter or leaving saves, Escape
- *  cancels; an empty or unchanged name just closes. */
-function AccountName({
-  account,
-  onDone,
-}: {
-  account: Account;
-  onDone: () => void;
-}) {
-  const [draft, setDraft] = useState(account.label);
-  const done = useRef(false);
-  const save = () => {
-    if (done.current) return;
-    done.current = true;
-    const next = draft.trim();
-    onDone();
-    if (next === "" || next === account.label) return;
-    ocClient
-      .renameCredential(account.id, next)
-      .then(() => catalogVersion.set((v) => v + 1))
-      .catch((err: unknown) => console.warn("[providers] rename:", err));
+const refresh = () => catalogVersion.set((v) => v + 1);
+
+/** Where the key can come from besides the field, for its placeholder and
+ *  the hint under it. */
+function envHelp(integration: IntegrationInfo | undefined): {
+  placeholder: string;
+  hint: string | null;
+  isWarning: boolean;
+} {
+  const plain = {
+    placeholder: "Enter your API key",
+    hint: null,
+    isWarning: false,
   };
-  return (
-    <TextInput
-      label="Account name"
-      isLabelHidden
-      size="sm"
-      width={200}
-      value={draft}
-      onChange={setDraft}
-      hasAutoFocus
-      onFocus={(e) => (e.target as HTMLInputElement).select()}
-      onEnter={save}
-      onBlur={save}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") {
-          done.current = true;
-          onDone();
-        }
-      }}
-    />
-  );
+  if (integration === undefined) return plain;
+  if (accountsOf(integration).length > 0)
+    return { ...plain, placeholder: "Leave blank to keep the saved key" };
+  const detected = envDetected(integration);
+  if (detected !== null)
+    return {
+      placeholder: `Leave blank to use ${detected}`,
+      hint: `Environment variable detected (${detected}).`,
+      isWarning: false,
+    };
+  const names = envNames(integration);
+  if (names.length === 0) return plain;
+  return {
+    ...plain,
+    hint: `No environment variable detected. Enter an API key, or set ${names.join(" or ")} where the opencode service runs.`,
+    isWarning: true,
+  };
 }
 
-function ConnectedRow({
+/**
+ * The card that adds a provider (`integration` null: pick one first) or
+ * edits one. A new key replaces the stored ones; an empty key keeps them.
+ */
+function ProviderEditor({
   integration,
-  onAddAccount,
+  addable,
+  onDone,
 }: {
-  integration: IntegrationInfo;
-  onAddAccount: () => void;
+  integration: IntegrationInfo | null;
+  addable: readonly IntegrationInfo[];
+  onDone: () => void;
 }) {
   const showToast = useToast();
-  const accounts = accountsOf(integration);
-  // The service lists the active account first.
-  const active = accounts[0];
-  const [renaming, setRenaming] = useState(false);
-  const [removing, setRemoving] = useState<Account | null>(null);
+  const [pickedID, setPickedID] = useState<string | null>(null);
+  const target =
+    integration ?? addable.find((i) => i.id === pickedID) ?? undefined;
+  const method = target ? keyMethod(target) : undefined;
+  const fields = (method?.form ?? []) as Field[];
+  const [key, setKey] = useState("");
+  const [answer, setAnswer] = useState<FormAnswer>(() => initialAnswer(fields));
+  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const refresh = () => catalogVersion.set((v) => v + 1);
+  const help = envHelp(target);
+  const accounts = target ? accountsOf(target) : [];
 
-  const use = (account: Account) => {
-    ocClient
-      .activateCredential(account.id)
-      .then(() => {
-        refresh();
-        showToast({
-          body: `${integration.name} account switched. Now using ${account.label}.`,
-          isAutoHide: true,
-        });
-      })
-      .catch((err: unknown) =>
-        showToast({ body: messageOf(err), type: "error" }),
-      );
+  const pick = (id: string) => {
+    setPickedID(id);
+    const next = addable.find((i) => i.id === id);
+    setAnswer(
+      next ? initialAnswer((keyMethod(next).form ?? []) as Field[]) : {},
+    );
+    setError(null);
   };
 
-  const remove = (account: Account) => {
+  const save = () => {
+    if (busy || target === undefined) return;
+    const value = key.trim();
+    if (value === "") {
+      // Nothing new: an edit keeps what is stored.
+      if (integration !== null) {
+        onDone();
+        return;
+      }
+      setError("Enter an API key.");
+      return;
+    }
     setBusy(true);
-    return ocClient
-      .removeCredential(account.id)
+    setError(null);
+    const previous = accounts.map((a) => a.id);
+    ocClient
+      .connectKey(
+        target.id,
+        value,
+        fields.length > 0 ? answer : undefined,
+        // A replaced key keeps its name.
+        accounts[0]?.label,
+      )
+      // The new key is the active credential now; drop the ones it replaces.
+      .then(() =>
+        Promise.all(previous.map((id) => ocClient.removeCredential(id))),
+      )
       .then(() => {
         refresh();
-        showToast({
-          body:
-            accounts.length === 1
-              ? `${integration.name} disconnected. Its models are no longer available.`
-              : `${account.label} removed. ${integration.name} will no longer use this account.`,
-          isAutoHide: true,
-        });
-        setRemoving(null);
+        showToast({ body: `Saved ${target.name}.`, isAutoHide: true });
+        onDone();
       })
-      .catch((err: unknown) =>
-        showToast({ body: messageOf(err), type: "error" }),
-      )
-      .finally(() => setBusy(false));
+      .catch((err: unknown) => {
+        setError(messageOf(err));
+        setBusy(false);
+      });
   };
 
-  let control = (
-    <Text size="sm" color="secondary">
-      Connected from your environment variables
-    </Text>
-  );
-  if (active !== undefined) {
-    const items: DropdownMenuOption[] = [];
-    if (accounts.length > 1)
-      items.push(
-        {
-          type: "section",
-          title: "Accounts",
-          items: accounts.map((account) => ({
-            label: account.label,
-            // An empty slot keeps the names lined up beside the check.
-            icon: account === active ? CheckIcon : NoIcon,
-            onClick: () => {
-              if (account !== active) use(account);
-            },
-          })),
-        },
-        { type: "divider" },
-      );
-    items.push(
-      {
-        label: `Rename ${active.label}`,
-        icon: PencilIcon,
-        onClick: () => setRenaming(true),
-      },
-      { label: "Add account", icon: PlusIcon, onClick: onAddAccount },
-      { type: "divider" },
-      {
-        label: `Remove ${active.label}…`,
-        icon: Trash2Icon,
-        variant: "destructive",
-        onClick: () => setRemoving(active),
-      },
-    );
-    control = renaming ? (
-      <AccountName account={active} onDone={() => setRenaming(false)} />
-    ) : (
-      <DropdownMenu
-        button={{
-          label: active.label,
-          variant: "secondary",
-          size: "sm",
-          "aria-label": `Manage ${integration.name} accounts`,
-        }}
-        items={items}
-      />
-    );
-  }
+  const remove = () => {
+    if (target === undefined) return;
+    setBusy(true);
+    return Promise.all(accounts.map((a) => ocClient.removeCredential(a.id)))
+      .then(() => {
+        refresh();
+        showToast({ body: `Deleted ${target.name}.`, isAutoHide: true });
+        setConfirmDelete(false);
+        onDone();
+      })
+      .catch((err: unknown) => {
+        setError(messageOf(err));
+        setBusy(false);
+      });
+  };
+
+  const detected = target ? envDetected(target) : null;
 
   return (
-    <Row
-      title={
-        <span className="flex items-center gap-2">
-          {integration.name}
-          <Badge label={sourceLabel(integration)} />
-        </span>
-      }
-    >
-      {control}
-      <AlertDialog
-        isOpen={removing !== null}
-        onOpenChange={(open) => {
-          if (!open) setRemoving(null);
-        }}
-        title={`Remove ${removing?.label ?? ""}?`}
-        description={
-          accounts.length === 1
-            ? `${integration.name} will be disconnected and its models will no longer be available.`
-            : `${integration.name} will no longer use this account.`
-        }
-        actionLabel="Remove"
-        isActionLoading={busy}
-        onAction={() => (removing ? remove(removing) : undefined)}
-      />
-    </Row>
+    <div className="flex flex-col gap-3 bg-[var(--color-background-secondary)] px-4 py-4">
+      {integration === null ? (
+        <>
+          <Text size="sm" color="secondary">
+            Pick OpenAI, Anthropic, DeepSeek or another provider from the
+            opencode catalog and enter its API key.
+          </Text>
+          <Selector
+            label="Provider"
+            hasSearch
+            searchPlaceholder="Search providers"
+            emptySearchText="No providers found"
+            placeholder="Choose a provider"
+            options={addable.map((i) => ({ value: i.id, label: i.name }))}
+            {...(pickedID !== null ? { value: pickedID } : {})}
+            onChange={pick}
+          />
+        </>
+      ) : null}
+      {target !== undefined ? (
+        <>
+          <div className="flex flex-col gap-1.5">
+            <TextInput
+              type="password"
+              label={method?.label ?? "API key"}
+              placeholder={help.placeholder}
+              htmlName="apiKey"
+              autoComplete="off"
+              value={key}
+              onChange={(next) => {
+                setKey(next);
+                setError(null);
+              }}
+              onEnter={save}
+              {...(error !== null
+                ? { status: { type: "error" as const, message: error } }
+                : {})}
+            />
+            {help.hint !== null ? (
+              <span
+                className={
+                  help.isWarning ? "text-[var(--color-text-orange)]" : ""
+                }
+              >
+                <Text
+                  size="sm"
+                  color={help.isWarning ? "inherit" : "secondary"}
+                >
+                  {help.hint}
+                </Text>
+              </span>
+            ) : null}
+          </div>
+          {fields.length > 0 ? (
+            <FormFields fields={fields} answer={answer} onChange={setAnswer} />
+          ) : null}
+        </>
+      ) : null}
+      <div className="flex items-center gap-2 pt-1">
+        {integration !== null && accounts.length > 0 ? (
+          <Button
+            label="Delete"
+            variant="ghost"
+            size="sm"
+            isDisabled={busy}
+            onClick={() => setConfirmDelete(true)}
+          />
+        ) : null}
+        <span className="flex-1" />
+        <Button
+          label="Cancel"
+          variant="secondary"
+          size="sm"
+          isDisabled={busy}
+          onClick={onDone}
+        />
+        <Button
+          label="Save"
+          variant="primary"
+          size="sm"
+          isLoading={busy}
+          isDisabled={target === undefined}
+          onClick={save}
+        />
+      </div>
+      {target !== undefined ? (
+        <AlertDialog
+          isOpen={confirmDelete}
+          onOpenChange={setConfirmDelete}
+          title={`Delete ${target.name}?`}
+          description={
+            detected !== null
+              ? `Its stored API key is removed. ${target.name} stays connected through ${detected}.`
+              : "Its stored API key is removed, and its models are no longer available."
+          }
+          actionLabel={`Delete ${target.name}`}
+          isActionLoading={busy}
+          onAction={remove}
+        />
+      ) : null}
+    </div>
   );
 }
 
 export function Providers() {
   const version = useSelector(catalogVersion);
   const { data, error } = useLoad(() => ocClient.listIntegrations(), version);
-  const [dialog, setDialog] = useState<{
-    isOpen: boolean;
-    start: IntegrationInfo | null;
-  }>({ isOpen: false, start: null });
+  // The one card open: a provider's id, "add", or none.
+  const [editing, setEditing] = useState<string | null>(null);
   const all = data ?? [];
   const connected = connectedOf(all);
-  const popular = popularOf(all);
-  const connect = (start: IntegrationInfo | null) =>
-    setDialog({ isOpen: true, start });
+  const addable = addableOf(all);
 
   return (
     <>
-      <Section title="Connected providers">
+      <Section title="Configured providers">
         {error && data === null ? (
           <Note text={error} />
         ) : data === null ? (
           <Note text="Loading…" />
         ) : connected.length === 0 ? (
-          <Note text="No connected providers" />
+          <Note text="No providers yet. Add one below to use its models." />
         ) : (
           connected.map((integration) => (
-            <ConnectedRow
-              key={integration.id}
-              integration={integration}
-              onAddAccount={() => connect(integration)}
-            />
+            <div key={integration.id} className="flex flex-col">
+              <div className="flex min-h-12 items-center gap-2 px-4 py-2.5">
+                <Text size="sm">{integration.name}</Text>
+                <StatusDot variant="success" label="Configured" />
+                <Badge label={sourceLabel(integration)} />
+                <span className="flex-1" />
+                {editing !== integration.id ? (
+                  <Button
+                    label="Edit"
+                    variant="secondary"
+                    size="sm"
+                    aria-label={`Edit ${integration.name}`}
+                    onClick={() => setEditing(integration.id)}
+                  />
+                ) : null}
+              </div>
+              {editing === integration.id ? (
+                <ProviderEditor
+                  integration={integration}
+                  addable={addable}
+                  onDone={() => setEditing(null)}
+                />
+              ) : null}
+            </div>
           ))
         )}
       </Section>
-      <Section title="Popular providers">
-        {popular.map((integration) => (
-          <Row
-            key={integration.id}
-            title={
-              <span className="flex items-center gap-2">
-                {integration.name}
-                {isRecommended(integration.id) ? (
-                  <Badge label="Recommended" />
-                ) : null}
-              </span>
-            }
-          >
-            <Button
-              label="Connect"
-              variant="secondary"
-              size="sm"
-              icon={<Icon icon={PlusIcon} size="sm" />}
-              onClick={() => connect(integration)}
-            />
-          </Row>
-        ))}
-        <div className="px-2 py-1.5">
+      {editing === "add" ? (
+        <Section title="Add model provider">
+          <ProviderEditor
+            integration={null}
+            addable={addable}
+            onDone={() => setEditing(null)}
+          />
+        </Section>
+      ) : (
+        <div>
           <Button
-            label="Show more providers"
-            variant="ghost"
+            label="Add model provider"
+            variant="secondary"
             size="sm"
+            icon={<Icon icon={PlusIcon} size="sm" />}
             isDisabled={data === null}
-            onClick={() => connect(null)}
+            onClick={() => setEditing("add")}
           />
         </div>
-      </Section>
-      <ConnectDialog
-        isOpen={dialog.isOpen}
-        start={dialog.start}
-        integrations={all}
-        onClose={() => setDialog({ isOpen: false, start: null })}
-      />
+      )}
     </>
   );
 }
