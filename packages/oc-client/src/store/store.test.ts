@@ -234,6 +234,26 @@ describe("session list", () => {
     expect(s.session.info.get().ses_old).toBeUndefined();
   });
 
+  it("drops a session from the list when it's archived, and back when not", async () => {
+    const bus = new FakeBus();
+    const { client } = fakeClient({
+      bus,
+      sessions: [
+        { sessions: [info("ses_old", "old", 10), info(SES, "a", 20)] },
+      ],
+    });
+    const s = store(client);
+    await s.start();
+    bus.push(ev("session.archived", { sessionID: SES }));
+    await tick();
+    s.flush();
+    expect(s.rootSessions.get().map((x) => x.id)).toEqual(["ses_old"]);
+    bus.push(ev("session.unarchived", { sessionID: SES }));
+    await tick();
+    s.flush();
+    expect(s.rootSessions.get().map((x) => x.id)).toEqual([SES, "ses_old"]);
+  });
+
   it("re-reads the list on reconnect, not on the first connect", {
     timeout: 5000,
   }, async () => {

@@ -101,7 +101,7 @@ export interface OcStore {
   };
   /** Permission requests and forms whose answer is on its way. */
   readonly replying: Atom<Records<true>>;
-  /** Root sessions, most recent first. */
+  /** Root sessions not archived, most recent first. */
   readonly rootSessions: ReadonlyAtom<readonly SessionInfo[]>;
   /** The model (and reasoning variant) of the most recently active session
    *  that names one. Read from the service's own list, so every client
@@ -187,7 +187,8 @@ export function createOcStore({
 
   const rootSessions = createAtom(() =>
     Object.values(session.info.get())
-      .filter((s) => s.parentID === undefined)
+      // An archive arrives as `session.archived` on a listed row.
+      .filter((s) => s.parentID === undefined && s.time.archived === undefined)
       .sort((a, b) => b.time.updated - a.time.updated),
   );
   const lastUsedModel = createAtom<ModelRef | undefined>(

@@ -138,6 +138,9 @@ export interface OcClient {
   getSession(sessionID: string): Promise<SessionInfo>;
   /** Idempotent: an already-deleted session resolves. */
   deleteSession(sessionID: string): Promise<void>;
+  renameSession(sessionID: string, title: string): Promise<void>;
+  /** Archived sessions keep their history but leave `listSessions`. */
+  archiveSession(sessionID: string): Promise<void>;
   /** One page of the `session_message` projection — the only history
    *  source on a local service (no durable event replay, see the 4a
    *  report). A cursor cannot be combined with `order`, so the first page
@@ -262,6 +265,8 @@ export function createOcClient(options: OcClientOptions): OcClient {
         ...(opts.directory !== undefined ? { directory: opts.directory } : {}),
         // Root sessions only: subagent sessions belong under their parent.
         parentID: null,
+        // The service lists archived sessions too unless asked not to.
+        archived: false,
         limit: opts.limit ?? 100,
         ...(opts.cursor !== undefined
           ? { cursor: opts.cursor }
@@ -277,6 +282,14 @@ export function createOcClient(options: OcClientOptions): OcClient {
         ...(opts.model !== undefined ? { model: opts.model } : {}),
         ...(opts.agent !== undefined ? { agent: opts.agent } : {}),
       });
+    },
+
+    async renameSession(sessionID, title) {
+      await raw.session.update({ sessionID, title });
+    },
+
+    async archiveSession(sessionID) {
+      await raw.session.update({ sessionID, archived: true });
     },
 
     getSession(sessionID) {

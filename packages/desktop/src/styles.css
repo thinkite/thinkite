@@ -50,3 +50,9 @@ body {
   max-width: clamp(680px, 64%, 920px);
   padding-inline: 1rem;
 }
+
+/* A session row stays lit while its menu is open, so it's clear which
+   session the menu acts on (SessionRow). The selected row keeps its fill. */
+.session-row[data-menu-open] .astryx-side-nav-item:not([data-selected]) {
+  background-color: var(--color-overlay-hover);
+}
