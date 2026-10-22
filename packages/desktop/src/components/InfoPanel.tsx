@@ -1,6 +1,7 @@
 import { Icon } from "@astryxdesign/core/Icon";
 import { ProgressBar } from "@astryxdesign/core/ProgressBar";
 import { Text } from "@astryxdesign/core/Text";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSelector } from "@tanstack/react-store";
 import {
   contextTokens,
@@ -18,9 +19,10 @@ import {
   FolderIcon,
   GitBranchIcon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { ocClient, ocStore } from "../lib/oc";
 import { prefs, updatePrefs } from "../lib/prefs";
+import { vcsKeys } from "../lib/query";
 import { findModel, useModels } from "./ModelPicker";
 
 // The session panel's default view, after Claude Code's: a column of small
@@ -279,41 +281,32 @@ function Changes({
 }
 
 /**
- * The repository state of `directory`, read again when a turn ends (the
- * agent may have edited files or switched branch) and when the window
- * comes back to the front (the user may have, elsewhere). opencode pushes
- * no event for file changes.
+ * The repository state of `directory`, cached per folder (lib/query), so
+ * the panel of another session in it — a subagent's, say — opens with it.
+ * Read again on mount, when the window comes back to the front (the user
+ * may have changed things elsewhere) and when a turn ends (the agent may
+ * have edited files or switched branch). opencode pushes no event for file
+ * changes.
  */
 function useVcs(directory: string, isRunning: boolean) {
-  const [vcs, setVcs] = useState<VcsInfo | null>(null);
-  const [status, setStatus] = useState<FileDiffInfo[] | null>(null);
-  const [focusCount, setFocusCount] = useState(0);
+  const queryClient = useQueryClient();
+  const vcs = useQuery({
+    queryKey: vcsKeys.info(directory),
+    queryFn: () => ocClient.vcs(directory),
+  });
+  // The diff panel's view, counted: the whole branch. No context lines, as
+  // only the counts are read.
+  const status = useQuery({
+    queryKey: vcsKeys.diff(directory, 0),
+    queryFn: () => ocClient.vcsDiff(directory, "branch", 0),
+  });
+  const wasRunning = useRef(isRunning);
   useEffect(() => {
-    const onFocus = () => setFocusCount((n) => n + 1);
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, []);
-  // focusCount is only a trigger: each focus reads the repository again.
-  useEffect(() => {
-    if (isRunning) return;
-    let cancelled = false;
-    Promise.all([
-      ocClient.vcs(directory),
-      // The diff panel's view, counted: the whole branch. No context
-      // lines, as only the counts are read.
-      ocClient.vcsDiff(directory, "branch", 0),
-    ])
-      .then(([info, files]) => {
-        if (cancelled) return;
-        setVcs(info);
-        setStatus(files);
-      })
-      .catch((err: unknown) => console.warn("[info] vcs failed:", err));
-    return () => {
-      cancelled = true;
-    };
-  }, [directory, isRunning, focusCount]);
-  return { vcs, status };
+    if (wasRunning.current && !isRunning)
+      void queryClient.invalidateQueries({ queryKey: vcsKeys.all(directory) });
+    wasRunning.current = isRunning;
+  }, [queryClient, directory, isRunning]);
+  return { vcs: vcs.data ?? null, status: status.data ?? null };
 }
 
 export function InfoPanel({

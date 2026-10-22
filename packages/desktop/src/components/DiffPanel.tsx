@@ -2,9 +2,10 @@ import { Button } from "@astryxdesign/core/Button";
 import { Text } from "@astryxdesign/core/Text";
 import { parsePatchFiles } from "@pierre/diffs";
 import { CodeView } from "@pierre/diffs/react";
-import type { FileDiffInfo } from "@thinkite/oc-client";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ocClient } from "../lib/oc";
+import { vcsKeys } from "../lib/query";
 
 // Diff panel: opencode's `vcs.diff` for the session's folder — everything
 // the branch changed since it left the default branch, uncommitted and
@@ -33,28 +34,18 @@ function useColorScheme(): "light" | "dark" {
 
 export function DiffPanel({ active, dir }: { active: boolean; dir: string }) {
   const scheme = useColorScheme();
-  const [files, setFiles] = useState<FileDiffInfo[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  // Cached per folder (lib/query): another session's panel in the same
+  // folder opens with the last diff. Read again on every activation (tab
+  // switch) and window focus; the old diff stays until the new one lands.
+  const diff = useQuery({
+    queryKey: vcsKeys.diff(dir),
+    queryFn: () => ocClient.vcsDiff(dir, "branch"),
+    enabled: active,
+  });
+  const files = diff.data ?? null;
+  const error = diff.error ? diff.error.message : null;
   // CodeView's scroll viewport (needs a definite height — see style below).
   const containerRef = useRef<HTMLDivElement | null>(null);
-
-  const refresh = async () => {
-    setLoading(true);
-    try {
-      setFiles(await ocClient.vcsDiff(dir, "branch"));
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-  // Refetch on every activation (tab switch). Stale-while-refetch: the old
-  // diff stays rendered until the new one lands.
-  useEffect(() => {
-    if (active) void refresh();
-  }, [active, dir]);
 
   const items = useMemo(
     () =>
@@ -87,8 +78,8 @@ export function DiffPanel({ active, dir }: { active: boolean; dir: string }) {
             label="Refresh"
             size="sm"
             variant="secondary"
-            isLoading={loading}
-            onClick={() => void refresh()}
+            isLoading={diff.isFetching}
+            onClick={() => void diff.refetch()}
           />
         </div>
       </div>
