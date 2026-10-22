@@ -14,10 +14,11 @@ import {
   visibleMessages,
 } from "@thinkite/oc-client";
 import { useIsRunning, useSession } from "@thinkite/oc-client/react";
-import { FileDiffIcon, TerminalIcon } from "lucide-react";
+import { DiffIcon, TerminalIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { type Builtin, Composer, PLACEHOLDER } from "../../components/Composer";
 import { DiffPanel } from "../../components/DiffPanel";
+import { InfoPanel } from "../../components/InfoPanel";
 import {
   findModel,
   inputsOf,
@@ -36,12 +37,11 @@ import {
 import { ocClient, ocReady, ocStore } from "../../lib/oc";
 
 // Session screen: transcript center column with a live composer (opencode
-// v2 `session.prompt` through the same-origin `/oc` proxy), and an
-// IntelliJ-style tool-window strip on the right edge — a vertical toggle
-// group that both picks the surface (terminal/diff) and closes the panel
-// (ToggleButtonGroup single mode: clicking the active button deselects →
-// null → closed). The strip stays visible when the panel is closed, so the
-// affordance never disappears.
+// v2 `session.prompt` through the same-origin `/oc` proxy), and a right
+// column laid out after Claude Code's: it shows the session's info cards
+// until a button at the end of the title bar opens a panel in their place
+// — the terminal or the diff, one at a time — and clicking the open one
+// brings the cards back (ToggleButtonGroup single mode: deselect → null).
 //
 // `$sessionId` IS the opencode `ses_*` id, aligned with the iOS routes.
 // The loader waits for the first session list (a session created from the
@@ -66,6 +66,8 @@ type Surface = "terminal" | "diff";
 // maps carry the state across remounts within one app run.
 const surfaceBySession = new Map<string, Surface | null>();
 const panelSizeBySession = new Map<string, number>();
+// The info cards keep one narrower width for every session.
+let infoPanelSize = 320;
 // A fork opens with the forked-from prompt in its composer, as opencode's.
 const draftForSession = new Map<string, string>();
 
@@ -77,12 +79,9 @@ function SessionRoute() {
 function Session({ sessionId }: { sessionId: string }) {
   const session = useSession(ocStore, sessionId);
   const running = useIsRunning(ocStore, sessionId);
-  // `has` not `??`: null is a real remembered value ("closed"), which `??`
-  // would silently swallow. Default for an unvisited session: closed.
-  const [surface, setSurface] = useState<Surface | null>(() =>
-    surfaceBySession.has(sessionId)
-      ? (surfaceBySession.get(sessionId) as Surface | null)
-      : null,
+  // null: the info cards. Default for an unvisited session.
+  const [surface, setSurface] = useState<Surface | null>(
+    () => surfaceBySession.get(sessionId) ?? null,
   );
   // Both surfaces mount on FIRST VISIT and stay mounted (t3code's drawer
   // pattern: `return null` until terminalOpen). For the terminal that
@@ -95,11 +94,20 @@ function Session({ sessionId }: { sessionId: string }) {
     surface === "terminal",
   );
 
-  const rightPanel = useResizable({
+  const toolPanel = useResizable({
     defaultSize: panelSizeBySession.get(sessionId) ?? 560,
     minSize: 320,
     onSizeChange: (size) => panelSizeBySession.set(sessionId, size),
   });
+  const infoPanel = useResizable({
+    defaultSize: infoPanelSize,
+    minSize: 260,
+    maxSize: 480,
+    onSizeChange: (size) => {
+      infoPanelSize = size;
+    },
+  });
+  const rightPanel = surface === null ? infoPanel : toolPanel;
 
   // Composer → optimistic send: the user bubble paints at once under a
   // client-minted id, and the durable `session.inbox.enqueued` echo replaces
@@ -285,7 +293,32 @@ function Session({ sessionId }: { sessionId: string }) {
             {/* Title bar after DeepSeek Harness's, no rule under it: the
                 title and its "…" menu of session actions, where opencode
                 desktop puts them. */}
-            <SessionTitle session={session} />
+            <SessionTitle
+              session={session}
+              trailing={
+                <ToggleButtonGroup
+                  label="Session panel"
+                  size="sm"
+                  value={surface}
+                  onChange={pick}
+                >
+                  <ToggleButton
+                    value="terminal"
+                    label="Terminal"
+                    isIconOnly
+                    tooltip="Terminal"
+                    icon={<Icon icon={TerminalIcon} size="sm" />}
+                  />
+                  <ToggleButton
+                    value="diff"
+                    label="Diff"
+                    isIconOnly
+                    tooltip="Diff"
+                    icon={<Icon icon={DiffIcon} size="sm" />}
+                  />
+                </ToggleButtonGroup>
+              }
+            />
             {/* Self-owned transcript shell: the LegendList inside
                 TranscriptPanel is the single scroll writer (landing, follow,
                 scroll button); the composer is a plain flex sibling — no
@@ -352,27 +385,32 @@ function Session({ sessionId }: { sessionId: string }) {
       }
       end={
         <>
-          {surface !== null && (
-            <ResizeHandle
-              direction="horizontal"
-              hasDivider
-              isReversed
-              isAlwaysVisible={false}
-              resizable={rightPanel.props}
-              label="Resize tool panel"
-            />
-          )}
-          {/* Panel body — always mounted (terminal buffer), width-zeroed when
-              closed. Plain div rather than LayoutPanel so closing doesn't
-              unmount children. */}
+          <ResizeHandle
+            direction="horizontal"
+            hasDivider
+            isReversed
+            isAlwaysVisible={false}
+            resizable={rightPanel.props}
+            label="Resize session panel"
+          />
+          {/* Panel body. The terminal and diff stay mounted once opened
+              (terminal buffer) and hide while another view shows. Plain div
+              rather than LayoutPanel so switching doesn't unmount children. */}
           <div
             style={{
-              width: surface === null ? 0 : rightPanel.size,
+              width: rightPanel.size,
               flexShrink: 0,
               overflow: "hidden",
               height: "100%",
             }}
           >
+            {surface === null ? (
+              <InfoPanel
+                session={session}
+                isRunning={running}
+                onOpenDiff={() => pick("diff")}
+              />
+            ) : null}
             {terminalVisited ? (
               <div
                 className={
@@ -393,35 +431,6 @@ function Session({ sessionId }: { sessionId: string }) {
                 />
               </div>
             ) : null}
-          </div>
-          {/* IntelliJ-style tool-window strip: always visible, single-select,
-              re-click deselects → closes the panel. */}
-          <div
-            className="flex h-full shrink-0 flex-col items-center border-l px-1 py-2"
-            style={{ borderColor: "var(--color-border)" }}
-          >
-            <ToggleButtonGroup
-              label="Tool windows"
-              orientation="vertical"
-              size="lg"
-              value={surface}
-              onChange={pick}
-            >
-              <ToggleButton
-                value="terminal"
-                label="Terminal"
-                isIconOnly
-                tooltip="Terminal"
-                icon={<Icon icon={TerminalIcon} size="md" />}
-              />
-              <ToggleButton
-                value="diff"
-                label="Diff"
-                isIconOnly
-                tooltip="Diff"
-                icon={<Icon icon={FileDiffIcon} size="md" />}
-              />
-            </ToggleButtonGroup>
           </div>
         </>
       }

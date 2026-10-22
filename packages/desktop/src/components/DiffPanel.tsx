@@ -1,12 +1,19 @@
 import { Button } from "@astryxdesign/core/Button";
+import {
+  SegmentedControl,
+  SegmentedControlItem,
+} from "@astryxdesign/core/SegmentedControl";
 import { Text } from "@astryxdesign/core/Text";
 import { parsePatchFiles } from "@pierre/diffs";
 import { CodeView } from "@pierre/diffs/react";
+import type { DiffMode, FileDiffInfo } from "@thinkite/oc-client";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ocClient } from "../lib/oc";
 
-// Working-tree diff panel: GET /api/diff (daemon `GitDiff` shape — see
-// server/diff.ts; the endpoint later swaps to the daemon's RPC, same shape)
-// → parsePatchFiles → Pierre CodeView, one virtualized section per file.
+// Diff panel: opencode's `vcs.diff` for the session's folder — what is
+// uncommitted, or everything the branch changed since it left the default
+// branch (untracked files included either way) — one patch per file,
+// parsed into Pierre's CodeView, one virtualized section per file.
 // The multifile CodeView path is the one the iOS tool-call sheet already
 // ships (pierre-view.tsx "multifile"); this is its plain-DOM sibling — no
 // expo-dom marshaling, so no encodeURIComponent dance, and Vite's `?worker`
@@ -15,13 +22,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 // Highlighting runs on the shared worker pool provided by <PierrePool> up at
 // the session screen — mounted there (not here) so the pool is already warm
 // by the time this panel first shows.
-
-interface GitDiff {
-  isRepo: boolean;
-  diff: string;
-  fileCount: number;
-  truncated: boolean;
-}
 
 function useColorScheme(): "light" | "dark" {
   const mq = useMemo(() => matchMedia("(prefers-color-scheme: dark)"), []);
@@ -36,19 +36,17 @@ function useColorScheme(): "light" | "dark" {
 
 export function DiffPanel({ active, dir }: { active: boolean; dir: string }) {
   const scheme = useColorScheme();
-  const [result, setResult] = useState<GitDiff | null>(null);
+  const [mode, setMode] = useState<DiffMode>("working");
+  const [files, setFiles] = useState<FileDiffInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   // CodeView's scroll viewport (needs a definite height — see style below).
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const refresh = async () => {
+  const refresh = async (of: DiffMode = mode) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/diff?dir=${encodeURIComponent(dir)}`);
-      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-      const next = (await res.json()) as GitDiff;
-      setResult(next);
+      setFiles(await ocClient.vcsDiff(dir, of));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -56,42 +54,46 @@ export function DiffPanel({ active, dir }: { active: boolean; dir: string }) {
       setLoading(false);
     }
   };
-  // Refetch on every activation (tab switch). Stale-while-refetch: the old
-  // diff stays rendered until the new one lands.
+  // Refetch on every activation (tab switch) and mode change.
+  // Stale-while-refetch: the old diff stays rendered until the new one lands.
   useEffect(() => {
     if (active) void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh is stable per dir
-  }, [active, dir]);
+  }, [active, dir, mode]);
 
   const items = useMemo(
     () =>
-      result?.diff
-        ? parsePatchFiles(result.diff).flatMap((patch, pi) =>
-            patch.files.map((fileDiff, fi) => ({
-              id: `${pi}-${fi}`,
-              type: "diff" as const,
-              fileDiff,
-            })),
-          )
-        : [],
-    [result?.diff],
+      parsePatchFiles(files?.map((f) => f.patch).join("\n") ?? "").flatMap(
+        (patch, pi) =>
+          patch.files.map((fileDiff, fi) => ({
+            id: `${pi}-${fi}`,
+            type: "diff" as const,
+            fileDiff,
+          })),
+      ),
+    [files],
   );
 
+  const count = files?.length ?? 0;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-3 border-b px-3 py-1.5">
-        <Text size="sm">
+        <SegmentedControl
+          label="Changes to show"
+          size="sm"
+          value={mode}
+          onChange={(next) => setMode(next as DiffMode)}
+        >
+          <SegmentedControlItem value="working" label="Uncommitted" />
+          <SegmentedControlItem value="branch" label="Branch" />
+        </SegmentedControl>
+        <Text size="sm" color="secondary">
           {error
-            ? `diff failed: ${error}`
-            : result === null
+            ? `Diff failed: ${error}`
+            : files === null
               ? "Loading…"
-              : !result.isRepo
-                ? "Not a git repository"
-                : result.fileCount === 0
-                  ? "No changes"
-                  : `${result.fileCount} file${result.fileCount === 1 ? "" : "s"} changed${
-                      result.truncated ? " (untracked truncated)" : ""
-                    }`}
+              : count === 0
+                ? "No changes"
+                : `${count} file${count === 1 ? "" : "s"} changed`}
         </Text>
         <div className="ml-auto">
           <Button

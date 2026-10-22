@@ -19,6 +19,10 @@ export interface Prefs {
     /** Hidden entirely; the window's top row then offers to bring it back. */
     collapsed: boolean;
   };
+  infoPanel: {
+    /** The session panel's cards shown as their one-line summary. */
+    closed: string[];
+  };
 }
 
 const KEY = "thinkite:prefs";
@@ -26,6 +30,7 @@ const DEFAULTS: Prefs = {
   appearance: { mode: "system" },
   models: { hidden: [], shown: [] },
   sidebar: { collapsed: false },
+  infoPanel: { closed: ["context"] },
 };
 
 function load(): Prefs {
@@ -39,6 +44,7 @@ function load(): Prefs {
       appearance: { ...DEFAULTS.appearance, ...parsed.appearance },
       models: { ...DEFAULTS.models, ...parsed.models },
       sidebar: { ...DEFAULTS.sidebar, ...parsed.sidebar },
+      infoPanel: { ...DEFAULTS.infoPanel, ...parsed.infoPanel },
     };
   } catch {
     return DEFAULTS;

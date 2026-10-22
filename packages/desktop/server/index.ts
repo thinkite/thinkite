@@ -1,7 +1,7 @@
 // Electron main (node process; bundled to dist-electron/index.js by
 // vite-plugin-electron — externals resolve from node_modules at runtime).
 // Serves the Vite-built SPA from dist/ and mounts our own routes (PTY
-// WebSocket, opencode proxy, diff, pairing) on one fixed-port node http server —
+// WebSocket, opencode proxy, pairing) on one fixed-port node http server —
 // same port and routes as the electrobun and deno predecessors, so the
 // renderer never noticed a runtime change.
 //
@@ -34,7 +34,6 @@ import {
   Tray,
 } from "electron";
 import { WebSocketServer } from "ws";
-import { handleDiff } from "./diff";
 import { handleOcProxy } from "./oc-proxy";
 import { attachPty, ptyParams } from "./pty";
 import {
@@ -86,7 +85,7 @@ const pageBase = process.env.VITE_DEV_SERVER_URL ?? BASE;
 // Same identity, same ~/.thinkite home, same iroh endpoint the iOS app
 // pairs against. `start()` only writes the liveness lock, so check it first:
 // if another daemon owns the home (`thinkite up`), the GUI keeps working
-// without one (PTY and diff don't need it; the `/oc` proxy does) rather
+// without one (the PTY doesn't need it; the `/oc` proxy does) rather
 // than publishing a twin identity to discovery.
 //
 // The daemon is external in the main bundle, resolved from node_modules at
@@ -142,17 +141,6 @@ const server = createServer(async (req, res) => {
             : { running: false },
         ),
       );
-      return;
-    }
-    if (url.pathname === "/api/diff") {
-      const r = await handleDiff(url);
-      if ("json" in r) {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(r.json));
-      } else {
-        res.writeHead(r.status, { "content-type": "text/plain" });
-        res.end(r.body);
-      }
       return;
     }
     if (url.pathname === "/api/pair/offer") {

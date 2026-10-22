@@ -9,7 +9,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { useNavigate } from "@tanstack/react-router";
 import type { SessionInfo } from "@thinkite/oc-client";
 import { ArchiveIcon, PencilIcon, Trash2Icon } from "lucide-react";
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { ocClient } from "../lib/oc";
 import { UNTITLED } from "./SessionSidebar";
 
@@ -18,9 +18,17 @@ import { UNTITLED } from "./SessionSidebar";
  * session's actions, as opencode desktop places them. Rename edits the
  * title in place: it starts selected, Enter or leaving the field saves,
  * Escape cancels. Archive and Delete (which asks first) leave the session
- * for the landing page; the bus takes the row out of the sidebar.
+ * for the landing page; the bus takes the row out of the sidebar. The
+ * panel buttons sit at the far end, where Claude Code puts them.
  */
-export function SessionTitle({ session }: { session: SessionInfo }) {
+export function SessionTitle({
+  session,
+  trailing,
+}: {
+  session: SessionInfo;
+  /** Controls at the bar's far end (the session panel's buttons). */
+  trailing?: ReactNode;
+}) {
   const navigate = useNavigate();
   const title = session.title || UNTITLED;
   const [draft, setDraft] = useState<string | null>(null);
@@ -130,6 +138,11 @@ export function SessionTitle({ session }: { session: SessionInfo }) {
           />
         </>
       )}
+      {trailing !== undefined ? (
+        <div className="ml-auto flex shrink-0 items-center pl-2">
+          {trailing}
+        </div>
+      ) : null}
       <AlertDialog
         isOpen={confirming}
         onOpenChange={setConfirming}
