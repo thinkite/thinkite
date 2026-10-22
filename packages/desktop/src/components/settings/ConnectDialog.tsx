@@ -322,7 +322,14 @@ export function ConnectDialog({
     null,
   );
 
+  // The sign-in being started, if any: back or close while it starts must
+  // cancel it once it exists, or it would hold its callback port until it
+  // expires (10 minutes), and opencode's fixed-port OpenAI sign-in would
+  // then answer the next attempt's callback with "Invalid OAuth state".
+  const starting = useRef<object | null>(null);
+
   const cancelAttempt = () => {
+    starting.current = null;
     const current = attempt.current;
     attempt.current = null;
     if (current)
@@ -374,9 +381,19 @@ export function ConnectDialog({
       return;
     }
     setStep({ kind: "signin", integration, method, attempt: null });
+    const token = {};
+    starting.current = token;
     ocClient
       .startOAuth(integration.id, method.id, answer)
       .then((started) => {
+        if (starting.current !== token) {
+          // Left while it started: let it go now.
+          void ocClient
+            .cancelOAuth(integration.id, started.attemptID)
+            .catch(() => {});
+          return;
+        }
+        starting.current = null;
         attempt.current = {
           integrationID: integration.id,
           attemptID: started.attemptID,
@@ -384,7 +401,9 @@ export function ConnectDialog({
         window.open(started.url, "_blank");
         setStep({ kind: "signin", integration, method, attempt: started });
       })
-      .catch((err: unknown) => fail(integration, method, err));
+      .catch((err: unknown) => {
+        if (starting.current === token) fail(integration, method, err);
+      });
   };
 
   const choose = (integration: IntegrationInfo, method: UsableMethod) => {
