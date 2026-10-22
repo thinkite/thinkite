@@ -14,7 +14,7 @@ import {
   visibleMessages,
 } from "@thinkite/oc-client";
 import { useIsRunning, useSession } from "@thinkite/oc-client/react";
-import { FileDiffIcon, PanelRightIcon, TerminalIcon } from "lucide-react";
+import { FileDiffIcon, LayoutListIcon, TerminalIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { type Builtin, Composer, PLACEHOLDER } from "../../components/Composer";
 import { DiffPanel } from "../../components/DiffPanel";
@@ -311,7 +311,7 @@ function Session({ sessionId }: { sessionId: string }) {
                     label="Session info"
                     isIconOnly
                     tooltip="Session info"
-                    icon={<Icon icon={PanelRightIcon} size="sm" />}
+                    icon={<Icon icon={LayoutListIcon} size="sm" />}
                   />
                   <ToggleButton
                     value="terminal"
