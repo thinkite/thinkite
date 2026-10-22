@@ -1,7 +1,6 @@
 import { Icon } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { ResizeHandle, useResizable } from "@astryxdesign/core/Resizable";
-import { Text } from "@astryxdesign/core/Text";
 import {
   ToggleButton,
   ToggleButtonGroup,
@@ -28,6 +27,7 @@ import {
   VariantPicker,
 } from "../../components/ModelPicker";
 import { usePendingPrompt } from "../../components/Prompts";
+import { SessionTitle } from "../../components/SessionTitle";
 import { TerminalPane } from "../../components/TerminalPane";
 import {
   type MessageActions,
@@ -282,16 +282,10 @@ function Session({ sessionId }: { sessionId: string }) {
       content={
         <LayoutContent padding={0}>
           <div className="flex h-full min-h-0 flex-col">
-            {/* Title bar after DeepSeek Harness's: the title alone, no
-                rule under it; the folder lives in the sidebar's context. */}
-            <div
-              className="flex h-10 shrink-0 items-center px-5"
-              title={session.location.directory}
-            >
-              <Text size="sm" weight="medium" maxLines={1}>
-                {session.title || "New session"}
-              </Text>
-            </div>
+            {/* Title bar after DeepSeek Harness's, no rule under it: the
+                title and its "…" menu of session actions, where opencode
+                desktop puts them. */}
+            <SessionTitle session={session} />
             {/* Self-owned transcript shell: the LegendList inside
                 TranscriptPanel is the single scroll writer (landing, follow,
                 scroll button); the composer is a plain flex sibling — no
