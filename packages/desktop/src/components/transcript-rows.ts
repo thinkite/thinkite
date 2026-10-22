@@ -1,4 +1,4 @@
-import type { SessionMessageInfo } from "@thinkite/oc-client";
+import type { ModelRef, SessionMessageInfo } from "@thinkite/oc-client";
 
 // The transcript's row model: opencode's messages turned into the rows the
 // list renders. Kept apart from the view so it can be tested on recorded
@@ -24,6 +24,14 @@ export interface UserAttachment {
   src: string;
 }
 
+/** What the line under a turn's last text says. */
+export interface ReplyMeta {
+  /** The model (and reasoning variant) that wrote the text. */
+  model: ModelRef;
+  /** Prompt to the turn's last finished step; absent when unknown. */
+  durationMs?: number;
+}
+
 export type TranscriptRow =
   | {
       key: string;
@@ -34,7 +42,7 @@ export type TranscriptRow =
       /** Files sent inline (pasted, dropped); @-mentioned ones are in the text. */
       attachments: UserAttachment[];
     }
-  | { key: string; kind: "text"; text: string }
+  | { key: string; kind: "text"; text: string; meta?: ReplyMeta }
   | { key: string; kind: "group"; items: GroupItem[] }
   | { key: string; kind: "tool"; tool: ToolPart }
   | { key: string; kind: "note"; text: string; tone: "quiet" | "danger" }
@@ -97,11 +105,42 @@ export function groupLabel(items: readonly GroupItem[]): string {
  * Text, notes and the next prompt end a run. A finished question stands on
  * its own (while it waits, its card replaces the composer), and the todo
  * list is not shown, as in opencode.
+ *
+ * Like opencode, a turn's last text gets a line with its model and how
+ * long the turn took, once the turn is over: every turn but the last, and
+ * the last too unless `running`.
  */
 export function rowsOf(
   messages: readonly SessionMessageInfo[],
+  running = false,
 ): TranscriptRow[] {
   const out: TranscriptRow[] = [];
+  // The turn being read: when its prompt was sent (unknown when the page
+  // starts mid-turn), its latest text row and the latest step to finish.
+  let turn: {
+    started?: number;
+    text?: { index: number; model: ModelRef };
+    completed?: number;
+  } = {};
+  const endTurn = () => {
+    const text = turn.text;
+    const row = text && out[text.index];
+    if (text !== undefined && row?.kind === "text") {
+      const { started, completed } = turn;
+      out[text.index] = {
+        ...row,
+        meta: {
+          model: text.model,
+          ...(started !== undefined &&
+          completed !== undefined &&
+          completed >= started
+            ? { durationMs: completed - started }
+            : {}),
+        },
+      };
+    }
+    turn = {};
+  };
   let group: GroupItem[] = [];
   const close = () => {
     const first = group[0];
@@ -122,6 +161,8 @@ export function rowsOf(
   messages.forEach((message, index) => {
     switch (message.type) {
       case "user":
+        endTurn();
+        turn.started = message.time.created;
         push({
           key: message.id,
           kind: "user",
@@ -141,8 +182,10 @@ export function rowsOf(
         message.content.forEach((part, i) => {
           const key = `${message.id}:${i}`;
           if (part.type === "text") {
-            if (part.text.trim() !== "")
+            if (part.text.trim() !== "") {
               push({ key, kind: "text", text: part.text });
+              turn.text = { index: out.length - 1, model: message.model };
+            }
           } else if (part.type === "reasoning") {
             if (part.text.trim() !== "")
               group.push({ key, kind: "reasoning", part });
@@ -158,6 +201,11 @@ export function rowsOf(
             group.push({ key: `tool:${part.id}`, kind: "tool", tool: part });
           }
         });
+        if (message.time.completed !== undefined)
+          turn.completed = Math.max(
+            turn.completed ?? 0,
+            message.time.completed,
+          );
         if (message.retry !== undefined)
           note(
             `${message.id}:retry`,
@@ -199,5 +247,6 @@ export function rowsOf(
     }
   });
   close();
+  if (!running) endTurn();
   return out;
 }

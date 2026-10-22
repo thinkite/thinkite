@@ -31,11 +31,13 @@ import {
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { highlightTokens } from "../lib/highlight";
 import { ocStore } from "../lib/oc";
+import { modelName, useModels, variantLabel } from "./ModelPicker";
 import {
   duration,
   type GroupItem,
   groupLabel,
   type ReasoningPart,
+  type ReplyMeta,
   rowsOf,
   type ToolPart,
   type TranscriptRow,
@@ -374,6 +376,53 @@ function ActionButton({
   );
 }
 
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <ActionButton
+      label={copied ? "Copied" : label}
+      icon={copied ? CheckIcon : CopyIcon}
+      onClick={() =>
+        navigator.clipboard.writeText(text).then(
+          () => setCopied(true),
+          (err: unknown) => console.warn("[copy] failed:", err),
+        )
+      }
+    />
+  );
+}
+
+/**
+ * The line under a turn's last text, as opencode's: copy, then the model,
+ * its reasoning effort when not the default, and how long the turn took.
+ */
+function ReplyLine({ text, meta }: { text: string; meta: ReplyMeta }) {
+  const models = useModels();
+  const { variant } = meta.model;
+  const label = [
+    modelName(models, meta.model),
+    variant !== undefined && variant !== "default" ? variantLabel(variant) : "",
+    meta.durationMs !== undefined ? duration(meta.durationMs) : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <ChatMessageMetadata
+      footer={
+        <span className="flex items-center gap-1">
+          <CopyButton text={text} label="Copy response" />
+          <span>{label}</span>
+        </span>
+      }
+    />
+  );
+}
+
 /**
  * The line under a prompt, always shown: its time, then revert, fork and
  * copy (opencode shows revert and copy on hover and forks from a dialog).
@@ -385,12 +434,6 @@ function UserMeta({
   row: Extract<TranscriptRow, { kind: "user" }>;
   actions: MessageActions | undefined;
 }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(timer);
-  }, [copied]);
   return (
     <ChatMessageMetadata
       timestamp={TIME.format(row.created)}
@@ -411,16 +454,7 @@ function UserMeta({
             </>
           )}
           {row.text !== "" && (
-            <ActionButton
-              label={copied ? "Copied" : "Copy message"}
-              icon={copied ? CheckIcon : CopyIcon}
-              onClick={() =>
-                navigator.clipboard.writeText(row.text).then(
-                  () => setCopied(true),
-                  (err: unknown) => console.warn("[copy] failed:", err),
-                )
-              }
-            />
+            <CopyButton text={row.text} label="Copy message" />
           )}
         </span>
       }
@@ -463,7 +497,12 @@ function renderRow(
       );
     case "text":
       return (
-        <ChatMessage sender="assistant">
+        <ChatMessage
+          sender="assistant"
+          {...(row.meta !== undefined
+            ? { metadata: <ReplyLine text={row.text} meta={row.meta} /> }
+            : {})}
+        >
           <Markdown components={MARKDOWN_COMPONENTS}>{row.text}</Markdown>
         </ChatMessage>
       );
@@ -537,7 +576,7 @@ export function TranscriptPanel({
   // prompt drops them or redo brings them back.
   const messages = useMemo(() => visibleMessages(all, revert), [all, revert]);
   const rows = useMemo(() => {
-    const out = rowsOf(messages);
+    const out = rowsOf(messages, isRunning === true);
     const boundary = revert?.messageID;
     if (boundary === undefined) return out;
     const count = all.filter(
@@ -545,7 +584,7 @@ export function TranscriptPanel({
     ).length;
     if (count > 0) out.push({ key: "reverted", kind: "reverted", count });
     return out;
-  }, [all, messages, revert]);
+  }, [all, messages, revert, isRunning]);
   // The group the running turn is still adding to.
   const liveKey =
     isRunning === true && rows.at(-1)?.kind === "group"

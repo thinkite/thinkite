@@ -156,6 +156,40 @@ describe("rowsOf", () => {
     expect(failed.filter((r) => r.kind === "note")).toHaveLength(1);
   });
 
+  it("puts the model and the turn's time under its last text, once it's over", () => {
+    const flash = { providerID: "deepseek", id: "flash", variant: "max" };
+    const rows = rowsOf([
+      user("u1", 1000),
+      assistant("a1", [text("looking"), tool("t1")], {
+        model: flash,
+        time: { created: 1000, completed: 3000 },
+      }),
+      assistant("a2", [text("done"), thought("hm")], {
+        model: flash,
+        time: { created: 3000, completed: 13000 },
+      }),
+      user("u2", 20000),
+      assistant("a3", [text("still going")], {
+        model: flash,
+        time: { created: 20000 },
+      }),
+    ]);
+    const metas = rows.flatMap((r) =>
+      r.kind === "text" ? [[r.text, r.meta]] : [],
+    );
+    expect(metas).toEqual([
+      ["looking", undefined],
+      ["done", { model: flash, durationMs: 12000 }],
+      // Unfinished: no time yet.
+      ["still going", { model: flash }],
+    ]);
+    const running = rowsOf(
+      [user("u1", 0), assistant("a1", [text("hi")], { model: flash })],
+      true,
+    );
+    expect(running.find((r) => r.kind === "text")).not.toHaveProperty("meta");
+  });
+
   it("gives every row a distinct key", () => {
     const rows = rowsOf([
       assistant("a0", [tool("t0"), text("tail of an older turn")]),

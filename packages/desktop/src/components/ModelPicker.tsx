@@ -5,7 +5,11 @@ import {
   type SelectorSection,
 } from "@astryxdesign/core/Selector";
 import { useSelector } from "@tanstack/react-store";
-import { formatModelRef, type ModelInfo } from "@thinkite/oc-client";
+import {
+  formatModelRef,
+  type ModelInfo,
+  type ModelRef,
+} from "@thinkite/oc-client";
 import { useEffect, useRef, useState } from "react";
 import { ocClient } from "../lib/oc";
 import { type Prefs, prefs } from "../lib/prefs";
@@ -256,8 +260,21 @@ export function inputsOf(model: ModelInfo | undefined) {
   return { image: input.includes("image"), pdf: input.includes("pdf") };
 }
 
-const titleCase = (s: string) =>
-  s === "xhigh" ? "Extra high" : s.charAt(0).toUpperCase() + s.slice(1);
+/** The name the picker shows for `ref`; its id until the list is in. */
+export function modelName(list: ModelList | null, ref: ModelRef): string {
+  const model = list?.models.find(
+    (m) => m.providerID === ref.providerID && m.id === ref.id,
+  );
+  return model ? displayName(model) : ref.id;
+}
+
+/** A reasoning variant as the effort picker names it. */
+export const variantLabel = (id: string) =>
+  id === "default"
+    ? "Default"
+    : id === "xhigh"
+      ? "Extra high"
+      : id.charAt(0).toUpperCase() + id.slice(1);
 
 /**
  * The reasoning effort picker, as opencode's: "Default" (no variant, the
@@ -301,10 +318,7 @@ export function VariantPicker({
       isLabelHidden
       variant="ghost"
       size="sm"
-      options={ids.map((id) => ({
-        value: id,
-        label: id === "default" ? "Default" : titleCase(id),
-      }))}
+      options={ids.map((id) => ({ value: id, label: variantLabel(id) }))}
       value={current}
       onChange={onChange}
     />
