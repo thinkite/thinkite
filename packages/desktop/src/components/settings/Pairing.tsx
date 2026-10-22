@@ -1,7 +1,7 @@
 import { Button } from "@astryxdesign/core/Button";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Row, Section } from "./parts";
 
 // Settings › Pairing, after opencode desktop's page of the same name: pair
@@ -19,26 +19,15 @@ interface DaemonStatus {
 
 /** The daemon's status, read again every few seconds while shown. */
 function useDaemonStatus(): DaemonStatus | null {
-  const [status, setStatus] = useState<DaemonStatus | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const read = () =>
+  const { data } = useQuery({
+    queryKey: ["daemon", "status"],
+    queryFn: () =>
       fetch("/api/daemon/status")
         .then((res) => res.json() as Promise<DaemonStatus>)
-        .then((next) => {
-          if (!cancelled) setStatus(next);
-        })
-        .catch(() => {
-          if (!cancelled) setStatus({ running: false });
-        });
-    void read();
-    const timer = setInterval(read, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
-  return status;
+        .catch((): DaemonStatus => ({ running: false })),
+    refetchInterval: 5000,
+  });
+  return data ?? null;
 }
 
 export function Pairing() {

@@ -33,6 +33,7 @@ import {
 } from "react";
 import { ocClient, ocStore } from "../../lib/oc";
 import { prefs, settingsOpen, updatePrefs } from "../../lib/prefs";
+import { serviceInfoKey } from "../../lib/query";
 import { isVisible, newestOfFamilies, useModels } from "../ModelPicker";
 import { Pairing } from "./Pairing";
 import { Providers } from "./Providers";
@@ -154,8 +155,12 @@ function Models() {
 }
 
 function Extensions() {
-  const mcp = useLoad(() => ocClient.raw.mcp.list().then((r) => r.data));
-  const skills = useLoad(() => ocClient.raw.skill.list().then((r) => r.data));
+  const mcp = useLoad(["mcp"], () =>
+    ocClient.raw.mcp.list().then((r) => r.data),
+  );
+  const skills = useLoad(["skills"], () =>
+    ocClient.raw.skill.list().then((r) => r.data),
+  );
   return (
     <>
       <Section title="MCP servers">
@@ -204,8 +209,8 @@ async function loadShells() {
 
 function Server() {
   const status = useConnectionStatus(ocStore);
-  const info = useLoad(() => ocClient.info());
-  const shells = useLoad(loadShells);
+  const info = useLoad(serviceInfoKey, () => ocClient.info());
+  const shells = useLoad(["shells"], loadShells);
   const [shell, setShell] = useState<string | null>(null);
   const current = shell ?? shells.data?.configured ?? "auto";
   const change = (next: string) => {
@@ -266,7 +271,7 @@ function Server() {
 }
 
 function About() {
-  const info = useLoad(() => ocClient.info());
+  const info = useLoad(serviceInfoKey, () => ocClient.info());
   return (
     <Section title="Versions">
       <Row title="opencode service">

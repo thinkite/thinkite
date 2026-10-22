@@ -7,11 +7,11 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { useToast } from "@astryxdesign/core/Toast";
-import { useSelector } from "@tanstack/react-store";
 import type { FormAnswer, IntegrationInfo } from "@thinkite/oc-client";
 import { PlusIcon } from "lucide-react";
 import { useState } from "react";
-import { catalogVersion, ocClient } from "../../lib/oc";
+import { ocClient } from "../../lib/oc";
+import { catalogKeys, invalidateCatalog } from "../../lib/query";
 import { type Field, FormFields, initialAnswer } from "../FormFields";
 import { Note, Section, useLoad } from "./parts";
 import {
@@ -32,12 +32,12 @@ import {
 // are left to opencode's own clients; accounts made there still list
 // here and can be replaced with a key or deleted. Everything reads the
 // service's integration list again whenever the bus says providers,
-// accounts or models changed (lib/oc's catalog version).
+// accounts or models changed (the catalog queries, lib/query).
 
 const messageOf = (err: unknown) =>
   err instanceof Error ? err.message : String(err);
 
-const refresh = () => catalogVersion.set((v) => v + 1);
+const refresh = () => void invalidateCatalog();
 
 /** Where the key can come from besides the field, for its placeholder and
  *  the hint under it. */
@@ -269,8 +269,9 @@ function ProviderEditor({
 }
 
 export function Providers() {
-  const version = useSelector(catalogVersion);
-  const { data, error } = useLoad(() => ocClient.listIntegrations(), version);
+  const { data, error } = useLoad(catalogKeys.integrations, () =>
+    ocClient.listIntegrations(),
+  );
   // The one card open: a provider's id, "add", or none.
   const [editing, setEditing] = useState<string | null>(null);
   const all = data ?? [];

@@ -1,9 +1,10 @@
 import { focusManager, QueryClient } from "@tanstack/react-query";
 
 // Server state the bus doesn't push — the repository of a session's folder,
-// for now — cached by key, so a screen that mounts again (each session
-// screen is keyed by its id) shows the last answer while it reads again
-// instead of starting empty.
+// the model catalog, what Settings shows — cached by key, so a screen that
+// mounts again (each session screen is keyed by its id) shows the last
+// answer while it reads again instead of starting empty. Sessions, their
+// messages and their requests are pushed, and live in the oc-client store.
 export const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 0, retry: 1 } },
 });
@@ -20,6 +21,27 @@ focusManager.setEventListener((setFocused) => {
     window.removeEventListener("blur", onBlur);
   };
 });
+
+/**
+ * Keys of the reads about the service's providers, accounts and models, all
+ * under `["catalog"]`: they change only when the bus says so (lib/oc), so
+ * they never go stale on their own.
+ */
+export const catalogKeys = {
+  all: ["catalog"] as const,
+  models: ["catalog", "models"] as const,
+  defaultModel: (directory: string) =>
+    ["catalog", "default-model", directory] as const,
+  integrations: ["catalog", "integrations"] as const,
+};
+
+/** Read every catalog query again (a provider was connected, say). */
+export const invalidateCatalog = () =>
+  queryClient.invalidateQueries({ queryKey: catalogKeys.all });
+
+/** The attached service's identity and version: the sidebar's footer and
+ *  Settings share one read. */
+export const serviceInfoKey = ["service", "info"] as const;
 
 /** Keys of the repository reads, all under `["vcs", directory]`. */
 export const vcsKeys = {

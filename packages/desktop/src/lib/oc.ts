@@ -1,10 +1,10 @@
-import { createAtom } from "@tanstack/store";
 import {
   createOcClient,
   createOcStore,
   type OcClient,
   subscribeEvents,
 } from "@thinkite/oc-client";
+import { invalidateCatalog } from "./query";
 
 // Renderer-wide opencode 2 access. Same-origin `/oc` (the Electron main
 // reverse proxy injects Basic auth — credentials never reach this process),
@@ -23,13 +23,9 @@ export const ocReady = ocStore.start();
 // A failed first read shows up in `ocStore.status`; loaders see it too.
 ocReady.catch(() => {});
 
-/**
- * Bumped whenever the service's providers, accounts or models change, on
- * the events opencode's own client re-reads them on. Views that list them
- * (the model picker, Settings › Providers) read again when it moves.
- */
-export const catalogVersion = createAtom(0);
-
+// Whenever the service's providers, accounts or models change, on the
+// events opencode's own client re-reads them on, the catalog queries
+// (the model picker, Settings › Providers; lib/query) read again.
 const CATALOG_EVENTS = new Set([
   "integration.updated",
   "provider.updated",
@@ -42,7 +38,7 @@ const catalogBus = new AbortController();
 void subscribeEvents(
   ocClient,
   (event) => {
-    if (CATALOG_EVENTS.has(event.type)) catalogVersion.set((v) => v + 1);
+    if (CATALOG_EVENTS.has(event.type)) void invalidateCatalog();
   },
   { signal: catalogBus.signal, onError: () => {} },
 );

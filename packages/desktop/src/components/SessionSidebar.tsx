@@ -8,6 +8,7 @@ import {
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
 import { isUnread, rootOf, type SessionInfo } from "@thinkite/oc-client";
@@ -19,9 +20,10 @@ import {
   useWaiting,
 } from "@thinkite/oc-client/react";
 import { PanelLeftCloseIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { ocClient, ocStore } from "../lib/oc";
 import { settingsOpen, updatePrefs } from "../lib/prefs";
+import { serviceInfoKey } from "../lib/query";
 import { UNREAD_SINCE } from "../lib/unread";
 
 // Global session sidebar. Content after wisp's — a "New session" action,
@@ -48,20 +50,13 @@ function groupName(updatedAt: number, now: number): string {
 /** "opencode 2.1.2" once connected; what is wrong otherwise. */
 function useServiceStatus(): { ok: boolean; label: string } {
   const status = useConnectionStatus(ocStore);
-  const [version, setVersion] = useState<string | null>(null);
-  useEffect(() => {
-    if (status !== "ready") return;
-    let cancelled = false;
-    ocClient
-      .info()
-      .then((info) => {
-        if (!cancelled) setVersion(info.version);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [status]);
+  // Read on each (re)connect: a restarted service may be a newer one.
+  const { data: info } = useQuery({
+    queryKey: serviceInfoKey,
+    queryFn: () => ocClient.info(),
+    enabled: status === "ready",
+  });
+  const version = info?.version;
   if (status === "ready")
     return { ok: true, label: version ? `opencode ${version}` : "opencode" };
   if (status === "error") return { ok: false, label: "No opencode service" };

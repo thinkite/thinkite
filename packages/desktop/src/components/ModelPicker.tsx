@@ -4,15 +4,17 @@ import {
   type SelectorOptionData,
   type SelectorSection,
 } from "@astryxdesign/core/Selector";
+import { useQuery } from "@tanstack/react-query";
 import { useSelector } from "@tanstack/react-store";
 import {
   formatModelRef,
   type ModelInfo,
   type ModelRef,
 } from "@thinkite/oc-client";
-import { useEffect, useRef, useState } from "react";
-import { catalogVersion, ocClient } from "../lib/oc";
+import { useEffect, useRef } from "react";
+import { ocClient } from "../lib/oc";
 import { type Prefs, prefs } from "../lib/prefs";
+import { catalogKeys } from "../lib/query";
 
 // The composer's model picker, after opencode desktop's
 // (`packages/app/src/providers/models/` at v2.1.2, MIT): a searchable list
@@ -42,87 +44,44 @@ export interface ModelList {
   providers: Map<string, string>;
 }
 
-// One read per catalog version: every composer shares the list, and a
-// connected or removed provider moves the version (lib/oc).
-let pending: { version: number; list: Promise<ModelList> } | null = null;
-
-function loadModels(version: number): Promise<ModelList> {
-  if (pending?.version === version) return pending.list;
-  const list = Promise.all([ocClient.listProviders(), ocClient.listModels()])
-    .then(([providers, models]) => ({
-      providers: new Map(providers.map((p) => [p.id, p.name])),
-      models: models.filter((m) => m.enabled && m.status !== "deprecated"),
-    }))
-    .catch((err: unknown) => {
-      if (pending?.list === list) pending = null;
-      throw err;
-    });
-  pending = { version, list };
-  return list;
-}
-
 /** The models the user's connected providers offer; null while loading.
- *  A re-read keeps the last list on screen until the new one is in. */
+ *  One read shared by every composer (lib/query), read again when the
+ *  catalog changes; the last list stays on screen until the new one is in. */
 export function useModels(): ModelList | null {
-  const version = useSelector(catalogVersion);
-  const [list, setList] = useState<ModelList | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    loadModels(version)
-      .then((l) => {
-        if (!cancelled) setList(l);
-      })
-      .catch((err: unknown) => console.warn("[models] list failed:", err));
-    return () => {
-      cancelled = true;
-    };
-  }, [version]);
-  return list;
-}
-
-// Catalog version and directory → its default model ref (a project can
-// configure its own; a new provider can change the user's default).
-const defaults = new Map<string, Promise<string | null>>();
-
-function loadDefault(
-  directory: string,
-  version: number,
-): Promise<string | null> {
-  const key = `${version}:${directory}`;
-  let pending = defaults.get(key);
-  if (pending === undefined) {
-    pending = ocClient
-      .defaultModel(directory)
-      .then((m) => (m ? formatModelRef(m.providerID, m.id) : null))
-      .catch((err: unknown) => {
-        defaults.delete(key);
-        throw err;
-      });
-    defaults.set(key, pending);
-  }
-  return pending;
+  const { data } = useQuery({
+    queryKey: catalogKeys.models,
+    queryFn: async (): Promise<ModelList> => {
+      const [providers, models] = await Promise.all([
+        ocClient.listProviders(),
+        ocClient.listModels(),
+      ]);
+      return {
+        providers: new Map(providers.map((p) => [p.id, p.name])),
+        models: models.filter((m) => m.enabled && m.status !== "deprecated"),
+      };
+    },
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  return data ?? null;
 }
 
 /**
  * The model a session in `directory` runs on when it names none, as a
- * `providerID/modelID` ref; null while loading or with no directory.
+ * `providerID/modelID` ref; null while loading or with no directory. A
+ * project can configure its own; a new provider can change the user's
+ * default, so it is read again with the catalog.
  */
 export function useDefaultModel(directory: string | null): string | null {
-  const version = useSelector(catalogVersion);
-  const [found, setFound] = useState<{ dir: string; ref: string | null }>();
-  useEffect(() => {
-    if (directory === null) return;
-    let cancelled = false;
-    loadDefault(directory, version)
-      .then((ref) => {
-        if (!cancelled) setFound({ dir: directory, ref });
-      })
-      .catch((err: unknown) => console.warn("[models] default failed:", err));
-    return () => {
-      cancelled = true;
-    };
-  }, [directory, version]);
-  return found !== undefined && found.dir === directory ? found.ref : null;
+  const { data } = useQuery({
+    queryKey: catalogKeys.defaultModel(directory ?? ""),
+    queryFn: async () => {
+      const m = await ocClient.defaultModel(directory as string);
+      return m ? formatModelRef(m.providerID, m.id) : null;
+    },
+    enabled: directory !== null,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  return directory !== null ? (data ?? null) : null;
 }
 
 const refOf = (m: ModelInfo) => formatModelRef(m.providerID, m.id);

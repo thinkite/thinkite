@@ -1,40 +1,22 @@
 import { Heading } from "@astryxdesign/core/Heading";
 import { Text } from "@astryxdesign/core/Text";
-import { type ReactNode, useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 
 // The pieces every settings page is made of.
 
-/** A read from the service, with its error and a reload. */
+/** A read from the service and its error, cached under `queryKey`
+ *  (lib/query): a page opened again shows the last data while it reads
+ *  again. */
 export function useLoad<T>(
+  queryKey: readonly unknown[],
   load: () => Promise<T>,
-  /** Read again when this changes; the last data stays until then. */
-  key: unknown = null,
 ): {
   data: T | null;
   error: string | null;
 } {
-  const [state, setState] = useState<{ data: T | null; error: string | null }>({
-    data: null,
-    error: null,
-  });
-  useEffect(() => {
-    let cancelled = false;
-    load()
-      .then((data) => {
-        if (!cancelled) setState({ data, error: null });
-      })
-      .catch((err: unknown) => {
-        if (!cancelled)
-          setState({
-            data: null,
-            error: err instanceof Error ? err.message : String(err),
-          });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [key]);
-  return state;
+  const { data, error } = useQuery({ queryKey, queryFn: load });
+  return { data: data ?? null, error: error ? error.message : null };
 }
 
 export function PageTitle({
