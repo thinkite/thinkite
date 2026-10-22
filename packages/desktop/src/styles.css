@@ -53,16 +53,39 @@ body {
 
 /* Window dragging in the Electron shell (lib/desktop-shell), after
    DeepSeek Harness's base.css: a chrome row marks itself
-   `data-window-drag`, and every control, menu and dialog takes itself back
-   out wherever it renders, so a press on a control never drags the window.
-   Electron composes app-regions from geometry in document order, so a
-   later no-drag box wins over an earlier drag row. */
+   `data-window-drag`, and the controls inside it, and anything that floats
+   over it (portaled menus and dialogs, the collapsed sidebar's seat, which
+   marks itself `data-window-no-drag`), take themselves back out, so a press
+   on a control never drags the window. Electron composes app-regions from
+   geometry in document order, and a later no-drag box wins over an earlier
+   drag row even where it is clipped out of view: so only controls inside a
+   drag row are marked, never every control in the app, or the transcript's
+   and sidebar's buttons scrolled up under the top rows would punch holes
+   in them. */
 html[data-desktop-shell] [data-window-drag] {
   -webkit-app-region: drag;
 }
 
+/* While a menu, popover or dialog is open, the drag rows stand down: a
+   press on a drag row never reaches the page, so it couldn't light-dismiss
+   what is open (the title bar's "…" menu stayed up). */
+html[data-desktop-shell]:has(:popover-open, dialog[open])
+  [data-window-drag] {
+  -webkit-app-region: no-drag;
+}
+
 html[data-desktop-shell] body > :not(#root),
+html[data-desktop-shell] [data-window-no-drag],
 html[data-desktop-shell]
+  :is(
+    [role="dialog"],
+    [role="alertdialog"],
+    [role="menu"],
+    [role="listbox"],
+    [role="tooltip"]
+  ),
+html[data-desktop-shell]
+  [data-window-drag]
   :is(
     button,
     a,
@@ -72,11 +95,6 @@ html[data-desktop-shell]
     summary,
     [contenteditable="true"],
     [tabindex],
-    [role="dialog"],
-    [role="alertdialog"],
-    [role="menu"],
-    [role="listbox"],
-    [role="tooltip"],
     [role="button"],
     [role="link"],
     [role="tab"],

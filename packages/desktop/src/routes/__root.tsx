@@ -87,6 +87,8 @@ function LeadingSeat() {
       // top 10 centres the 28px buttons on y 24, with the lights.
       className="fixed top-2.5 z-20 flex items-center gap-1"
       style={{ left: SEAT_LEFT }}
+      // Floats over the title bar's drag row; its buttons must click.
+      data-window-no-drag
     >
       <Button
         label="Expand sidebar"

@@ -10,7 +10,8 @@ export const isDesktopShell =
 // drag contract: a row marks itself `data-window-drag` and its own box is
 // the drag geometry, so no fixed band has to match any row's height; one
 // rule in styles.css (under `html[data-desktop-shell]`) turns the marks on
-// and takes every control back out.
+// and takes the controls inside those rows, and whatever floats over them
+// (`data-window-no-drag`), back out.
 if (isDesktopShell) document.documentElement.dataset.desktopShell = "";
 
 // Chromium's native app-region CSS — preventDefaults drags properly, so no
