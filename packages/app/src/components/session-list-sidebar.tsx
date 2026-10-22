@@ -18,10 +18,12 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SessionRow } from "@/components/session-row";
 import { useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
-import { useSessions } from "@/hooks/use-sessions";
+import {
+  type OcSessionRow as SessionRowData,
+  useSessions,
+} from "@/hooks/use-sessions";
 import { useDrawerUI } from "@/lib/drawer-ui";
 import { type DaySection, groupSessionsByDay } from "@/lib/session-sections";
-import type { OcSessionRow as SessionRowData } from "@/lib/sessions-collection";
 
 // Floating-header content height, below the status-bar inset. We set our own
 // (instead of react-navigation's getDefaultHeaderHeight, which hardcodes the
@@ -259,9 +261,7 @@ function Body({
   }
 
   if (query.isError) {
-    // useLiveQuery surfaces error state via `status`/`isError` but not an
-    // error object — show a static message (the daemon facade retries the
-    // underlying fetch forever, so this is a transient first-load state).
+    // The first list read failed; the gate retries on the next online edge.
     return (
       <View className="flex-1 items-center justify-center px-6">
         <Text className="text-center text-base font-medium text-red-600 dark:text-red-400">
@@ -281,8 +281,8 @@ function Body({
     );
   }
 
-  // Day-sectioned, recency-first (Claude Desktop style). Sort is done by
-  // useSessions' `orderBy`; groupSessionsByDay just buckets in order. No row
+  // Day-sectioned, recency-first (Claude Desktop style). useSessions
+  // already sorts; groupSessionsByDay just buckets in order. No row
   // separators and non-sticky headers so the whole list flows under the
   // gradient scrim as one quiet column.
   return (

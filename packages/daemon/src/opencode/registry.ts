@@ -11,7 +11,7 @@
  * the file and never start a contender against it.
  *
  * Validation mirrors `@opencode/client`'s `discover`: the registered
- * `pid` must match `/api/health`, otherwise the file is stale.
+ * `pid` must match `/api/info`, otherwise the file is stale.
  */
 
 import { readFile } from "node:fs/promises";
@@ -31,7 +31,7 @@ export interface OpencodeConnection {
   baseUrl: string;
   username: string;
   password: string;
-  /** Reported by `/api/health` (e.g. `2.0.2`, `0.0.0-beta-19425`). */
+  /** Reported by `/api/info` (e.g. `2.1.2`, `0.0.0-beta-19425`). */
   version: string;
 }
 
@@ -41,15 +41,16 @@ export interface DiscoveredOpencode extends OpencodeConnection {
 }
 
 /**
- * Version gate. Thinkite speaks the opencode 2 API only: stable releases
- * from 2.0.0 (`@opencode/*@latest`), plus the `0.0.0-beta-N` builds the
+ * Version gate. Thinkite speaks the opencode 2.1 API only (the client is
+ * pinned to 2.1.2; 2.0 had `/api/health` where 2.1 has `/api/info`): stable
+ * releases from 2.1.0, plus the `0.0.0-beta-N` builds the
  * Beta desktop app ships (fast-forward snapshots of the `v2` trunk, so a
  * beta is never older than 2.0.0 in API terms) and `0.0.0-dev` source
  * builds. A 1.x service (`opencode-ai` npm, GitHub Releases, brew) never
  * registers itself, but the check keeps a mis-registered one from
  * answering v2 routes with 404s that would look like data.
  */
-export const OPENCODE_MIN_STABLE = "2.0.0";
+export const OPENCODE_MIN_STABLE = "2.1.0";
 
 export type OpencodeVersion =
   | { channel: "stable"; major: number; minor: number; patch: number }
@@ -128,24 +129,20 @@ export async function discoverOpencode(
   const registration = await readRegistration(path);
   if (registration === null) return null;
   try {
-    const res = await fetchImpl(`${registration.url}/api/health`, {
+    const res = await fetchImpl(`${registration.url}/api/info`, {
       headers: {
         authorization: `Basic ${Buffer.from(`opencode:${registration.password}`).toString("base64")}`,
       },
       signal: AbortSignal.timeout(2000),
     });
     if (!res.ok) return null;
-    const health = (await res.json()) as {
-      healthy?: boolean;
-      version?: string;
-      pid?: number;
-    };
-    if (health.healthy !== true || health.pid !== registration.pid) return null;
+    const info = (await res.json()) as { version?: string; pid?: number };
+    if (info.pid !== registration.pid) return null;
     return {
       baseUrl: registration.url,
       username: "opencode",
       password: registration.password,
-      version: health.version ?? registration.version,
+      version: info.version ?? registration.version,
       pid: registration.pid,
     };
   } catch {

@@ -14,22 +14,18 @@ import {
   CommandLineIcon,
   DocumentPlusIcon,
 } from "@heroicons/react/24/outline";
-import { eq, useLiveQuery } from "@tanstack/react-db";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import {
   formatModelRef,
   mintMessageId,
   parseModelRef,
 } from "@thinkite/oc-client";
+import { useIsRunning, useSession } from "@thinkite/oc-client/react";
 import { useEffect, useState } from "react";
 import { DiffPanel } from "../../components/DiffPanel";
 import { TerminalPane } from "../../components/TerminalPane";
 import { TranscriptPanel } from "../../components/TranscriptPanel";
-import {
-  getOcClient,
-  sendUserMessage,
-  sessionStateCollection,
-} from "../../lib/oc";
+import { ocClient, ocReady, ocStore } from "../../lib/oc";
 
 // Session screen: transcript center column with a live composer (opencode
 // v2 `session.prompt` through the same-origin `/oc` proxy), and an
@@ -39,23 +35,17 @@ import {
 // null → closed). The strip stays visible when the panel is closed, so the
 // affordance never disappears.
 //
-// `$sessionId` IS the opencode `ses_*` id — the collection key, aligned
-// with the iOS routes. The loader gates on the collection's first snapshot
-// (plus a short wait for the create→navigate race); a stale link bounces
-// to the landing page. The component then reads the LIVE row so title /
-// activity keep updating while the screen is open.
+// `$sessionId` IS the opencode `ses_*` id, aligned with the iOS routes.
+// The loader waits for the first session list (a session created from the
+// landing page is already in it); a stale link bounces to the landing page.
+// The component then reads the LIVE row so title and busy state keep
+// updating while the screen is open.
 export const Route = createFileRoute("/session/$sessionId")({
   loader: async ({ params }) => {
-    await sessionStateCollection.preload();
-    if (sessionStateCollection.get(params.sessionId) !== undefined) return;
-    // Created from the landing page a beat ago: the `session.created` bus
-    // event may not have landed yet. Poll briefly before giving up.
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 150));
-      if (sessionStateCollection.get(params.sessionId) !== undefined) return;
+    await ocReady.catch(() => {});
+    if (ocStore.session.info.get()[params.sessionId] === undefined) {
+      throw redirect({ to: "/" });
     }
-    throw redirect({ to: "/" });
   },
   component: SessionRoute,
 });
@@ -81,10 +71,9 @@ function useModelOptions(): ModelOption[] | null {
     let cancelled = false;
     void (async () => {
       try {
-        const client = getOcClient();
         const [providers, models] = await Promise.all([
-          client.listProviders(),
-          client.listModels(),
+          ocClient.listProviders(),
+          ocClient.listModels(),
         ]);
         if (cancelled) return;
         const names = new Map(providers.map((p) => [p.id, p.name]));
@@ -116,14 +105,8 @@ function SessionRoute() {
 }
 
 function Session({ sessionId }: { sessionId: string }) {
-  const { data: rows } = useLiveQuery(
-    (q) =>
-      q
-        .from({ s: sessionStateCollection })
-        .where(({ s }) => eq(s.id, sessionId)),
-    [sessionId],
-  );
-  const session = rows[0];
+  const session = useSession(ocStore, sessionId);
+  const running = useIsRunning(ocStore, sessionId);
   // `has` not `??`: null is a real remembered value ("closed"), which `??`
   // would silently swallow. Default for an unvisited session: closed.
   const [surface, setSurface] = useState<Surface | null>(() =>
@@ -148,12 +131,11 @@ function Session({ sessionId }: { sessionId: string }) {
     onSizeChange: (size) => panelSizeBySession.set(sessionId, size),
   });
 
-  // Composer → optimistic send (lib/oc.ts): the user
-  // bubble paints synchronously via the collection's optimistic overlay
-  // under a client-minted input id; the durable `prompt.admitted` event
-  // (same id as `messageID`) lands on it seamlessly through the session
-  // stream. A rejected send auto-rolls the bubble back — here we just
-  // restore the draft and surface the error in the composer's status slot.
+  // Composer → optimistic send: the user bubble paints at once under a
+  // client-minted id, and the durable `session.inbox.enqueued` echo replaces
+  // it in place. A rejected send takes the bubble back; here we restore the
+  // draft and surface the error in the composer's status slot. Sending while
+  // a turn runs queues the message, as in opencode's own clients.
   const [draft, setDraft] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
   // The just-sent prompt's id — TranscriptPanel pins that row near the top
@@ -165,33 +147,24 @@ function Session({ sessionId }: { sessionId: string }) {
 
   const submit = (value: string) => {
     const text = value.trim();
-    // Not `isDisabled={running}`: Astryx's disabled composer swallows
-    // pointer events for the Stop button too. Refusing here keeps Stop
-    // clickable while a turn runs (queued prompts are a later slice).
-    if (running) return;
     if (text === "" || session === undefined) return;
     setDraft("");
     setSendError(null);
     const userMessageUuid = mintMessageId();
     setAnchorUuid(userMessageUuid);
-    const tx = sendUserMessage({
-      sessionId,
-      userMessageUuid,
-      text,
-    });
-    void tx.isPersisted.promise.catch((err: unknown) => {
-      setDraft(value);
-      setAnchorUuid((cur) => (cur === userMessageUuid ? null : cur));
-      setSendError(err instanceof Error ? err.message : String(err));
-    });
+    ocStore
+      .prompt(sessionId, text, { id: userMessageUuid })
+      .catch((err: unknown) => {
+        setDraft(value);
+        setAnchorUuid((cur) => (cur === userMessageUuid ? null : cur));
+        setSendError(err instanceof Error ? err.message : String(err));
+      });
   };
 
   const stop = () => {
-    void getOcClient()
-      .interrupt(sessionId)
-      .catch((err) => {
-        setSendError(err instanceof Error ? err.message : String(err));
-      });
+    void ocClient.interrupt(sessionId).catch((err) => {
+      setSendError(err instanceof Error ? err.message : String(err));
+    });
   };
 
   // Model picker (official astryx pattern: DropdownMenu in footerActions,
@@ -204,7 +177,11 @@ function Session({ sessionId }: { sessionId: string }) {
   // rolls back to the previous pick.
   const modelOptions = useModelOptions();
   const [pickedModel, setPickedModel] = useState<string | null>(null);
-  const currentModel = pickedModel ?? session?.model ?? null;
+  const currentModel =
+    pickedModel ??
+    (session?.model !== undefined
+      ? formatModelRef(session.model.providerID, session.model.id)
+      : null);
 
   const pickModel = (model: string) => {
     if (model === currentModel) return;
@@ -212,12 +189,10 @@ function Session({ sessionId }: { sessionId: string }) {
     setPickedModel(model);
     setSendError(null);
     const ref = parseModelRef(model);
-    void getOcClient()
-      .switchModel(sessionId, ref)
-      .catch((err) => {
-        setPickedModel(previous);
-        setSendError(err instanceof Error ? err.message : String(err));
-      });
+    void ocClient.switchModel(sessionId, ref).catch((err) => {
+      setPickedModel(previous);
+      setSendError(err instanceof Error ? err.message : String(err));
+    });
   };
 
   const pick = (v: string | null) => {
@@ -231,8 +206,6 @@ function Session({ sessionId }: { sessionId: string }) {
   // Row deleted while the screen is open (bus pushed `session.deleted`) —
   // nothing to render; the sidebar link is gone.
   if (session === undefined) return null;
-
-  const running = session.activity === "running";
 
   return (
     <Layout
@@ -248,10 +221,10 @@ function Session({ sessionId }: { sessionId: string }) {
             >
               <div className="flex min-w-0 items-baseline gap-3">
                 <Heading level={5} maxLines={1}>
-                  {session.title === "" ? "Untitled session" : session.title}
+                  {session.title || "Untitled session"}
                 </Heading>
                 <Text size="sm" color="secondary" maxLines={1}>
-                  {session.directory}
+                  {session.location.directory}
                 </Text>
               </div>
             </div>
@@ -292,7 +265,7 @@ function Session({ sessionId }: { sessionId: string }) {
                   value={draft}
                   onChange={setDraft}
                   placeholder={
-                    running ? "opencode is working…" : "Message opencode…"
+                    running ? "Queue a message…" : "Message opencode…"
                   }
                   status={
                     sendError
@@ -358,14 +331,17 @@ function Session({ sessionId }: { sessionId: string }) {
                   surface === "terminal" ? "h-full min-h-0 p-2" : "hidden"
                 }
               >
-                <TerminalPane sessionId={sessionId} cwd={session.directory} />
+                <TerminalPane
+                  sessionId={sessionId}
+                  cwd={session.location.directory}
+                />
               </div>
             ) : null}
             {diffVisited ? (
               <div className={surface === "diff" ? "h-full min-h-0" : "hidden"}>
                 <DiffPanel
                   active={surface === "diff"}
-                  dir={session.directory}
+                  dir={session.location.directory}
                 />
               </div>
             ) : null}

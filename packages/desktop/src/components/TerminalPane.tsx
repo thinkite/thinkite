@@ -105,8 +105,8 @@ export function TerminalPane({
       const proto = location.protocol === "https:" ? "wss" : "ws";
       // Relative host: same-origin in packaged mode, Vite proxy in dev.
       // cwd + size ride along for the FIRST attach: cwd is the shell spawn
-      // dir (the client owns the session→cwd mapping via the sessions
-      // collection), and cols/rows are the pty's SPAWN size — the server
+      // dir (the client owns the session→cwd mapping via the session's
+      // location), and cols/rows are the pty's SPAWN size — the server
       // opens the pty at these dimensions (pty-ffi ≥0.41), so the shell's
       // first prompt renders at the real width instead of a default 80x24
       // that would reflow into stray blank lines. Both are ignored when

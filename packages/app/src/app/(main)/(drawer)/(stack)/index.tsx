@@ -1,4 +1,4 @@
-import { mintMessageId, parseModelRef } from "@thinkite/oc-client";
+import { parseModelRef } from "@thinkite/oc-client";
 import type { ImageAttachment } from "@thinkite/protocol";
 import { router, Stack } from "expo-router";
 import { useCallback } from "react";
@@ -12,7 +12,7 @@ import { InputBar } from "@/components/transcript/input-bar";
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { useDrawerUI } from "@/lib/drawer-ui";
-import { getOcClient, sendUserMessage } from "@/lib/sessions-collection";
+import { ocStore } from "@/lib/oc";
 
 /**
  * (drawer)/(stack)/index — new-session create page, URL `/`. Lives inside
@@ -37,13 +37,11 @@ import { getOcClient, sendUserMessage } from "@/lib/sessions-collection";
  *      cwd picker. Send button stays disabled until cwd resolves.
  *
  * Flow on first send (stage 3b-1: opencode over the iroh HTTP tunnel):
- *   1. `getOcClient().createSession({ location.directory: cwd })` on the
- *      daemon's opencode — it mints the canonical `ses_*` id.
- *   2. Fire the first prompt under a client-minted `msg_*` id
- *      (`sendUserMessage`) so the durable admitted event echoes it and
- *      the transcript can reconcile the optimistic bubble once 3b-2
- *      swaps that screen. A failed prompt still leaves a valid empty
- *      session to type into.
+ *   1. `ocStore.createSession({ directory: cwd })` on the daemon's
+ *      opencode — it mints the canonical `ses_*` id.
+ *   2. Send the first prompt through the store, which shows it at once
+ *      under a client-minted `msg_*` id. A failed prompt still leaves a
+ *      valid empty session to type into.
  *   3. `router.replace("/session/[cliSessionId]")` with the `ses_*` id.
  *      Until 3b-2 the detail screen runs the old daemon-RPC transcript
  *      path, finds nothing for that id, and shows its empty state — the
@@ -80,7 +78,7 @@ export default function NewSessionScreen() {
       setLastUsedCwd.mutate(cwd);
       void (async () => {
         try {
-          const session = await getOcClient().createSession({
+          const session = await ocStore.createSession({
             directory: cwd,
             // The input bar's picker still lists Claude ids until 3b-2;
             // only a `provider/model` ref is meaningful to opencode — a
@@ -89,11 +87,7 @@ export default function NewSessionScreen() {
             // and let opencode pick its default.
             ...(model.includes("/") ? { model: parseModelRef(model) } : {}),
           });
-          void sendUserMessage({
-            sessionId: session.id,
-            userMessageUuid: mintMessageId(),
-            text,
-          }).isPersisted.promise.catch((err: unknown) => {
+          ocStore.prompt(session.id, text).catch((err: unknown) => {
             console.warn("[new-session] first prompt failed:", err);
           });
           router.replace({

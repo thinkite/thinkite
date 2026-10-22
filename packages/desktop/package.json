@@ -25,7 +25,6 @@
     "@legendapp/list": "catalog:",
     "@lydell/node-pty": "^1.2.0-beta.15",
     "@pierre/diffs": "catalog:",
-    "@tanstack/react-db": "catalog:",
     "@tanstack/react-router": "^1.170.25",
     "@thinkite/daemon": "workspace:*",
     "@thinkite/oc-client": "workspace:*",

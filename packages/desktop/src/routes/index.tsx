@@ -6,15 +6,13 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { FolderOpenIcon, SparklesIcon } from "@heroicons/react/24/outline";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { mintMessageId } from "@thinkite/oc-client";
 import { useState } from "react";
-import { getOcClient, sendUserMessage } from "../lib/oc";
+import { ocStore } from "../lib/oc";
 
 // New-session landing (astryx ai-chat-landing template, simplified):
 // greeting + directory row + composer. Submit creates the opencode
-// session (`location.directory`, default model/agent), admits the first
-// prompt under a client-minted id, and navigates to `/session/<ses_id>`
-// — the transcript reconciles the optimistic bubble by that id. The last
+// session (`location.directory`, default model/agent), shows the first
+// prompt optimistically, and navigates to `/session/<ses_id>`. The last
 // picked directory persists in localStorage.
 export const Route = createFileRoute("/")({
   component: NewSession,
@@ -74,16 +72,10 @@ function NewSession() {
     }
     void (async () => {
       try {
-        const session = await getOcClient().createSession({ directory: dir });
-        const userMessageUuid = mintMessageId();
-        // Fire-and-forget: the session screen's collection picks the
-        // admitted prompt up off the stream; a prompt failure still
-        // leaves a valid (empty) session behind to type into.
-        void sendUserMessage({
-          sessionId: session.id,
-          userMessageUuid,
-          text,
-        }).isPersisted.promise.catch((err: unknown) => {
+        const session = await ocStore.createSession({ directory: dir });
+        // Not awaited: a failed first prompt still leaves a valid (empty)
+        // session behind to type into.
+        ocStore.prompt(session.id, text).catch((err: unknown) => {
           console.warn("[landing] first prompt failed:", err);
         });
         await navigate({

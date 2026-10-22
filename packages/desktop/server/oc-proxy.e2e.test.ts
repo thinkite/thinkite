@@ -13,7 +13,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createOcClient, subscribeEvents } from "@thinkite/oc-client";
+import {
+  createOcClient,
+  parseModelRef,
+  subscribeEvents,
+} from "@thinkite/oc-client";
 import { describe, expect, it } from "vitest";
 // Source import (not the built dist): keeps this test off the native
 // `@number0/iroh` binding the daemon entry pulls in.
@@ -47,11 +51,15 @@ runIf("oc proxy + client (registered service)", () => {
         pathPrefix: "/oc",
       });
       // Credentials are injected by the proxy: the client sends none.
-      expect((await client.health()).pid).toBe(upstream.pid);
+      expect((await client.info()).version).toBe(upstream.version);
 
       const session = await client.createSession({
         directory: dir,
         title: "oc proxy e2e",
+        // A free model, so the gated run costs nothing (MODEL overrides).
+        model: parseModelRef(
+          process.env.MODEL ?? "opencode/deepseek-v4.1-flash-free",
+        ),
       });
       sessionId = session.id;
       const seen: string[] = [];

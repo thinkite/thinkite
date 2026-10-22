@@ -13,19 +13,15 @@ import {
   PlusIcon,
   TrashIcon,
 } from "@heroicons/react/24/outline";
-import { useLiveQuery } from "@tanstack/react-db";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import type { SessionRow } from "@thinkite/oc-client/tanstack";
+import type { SessionInfo } from "@thinkite/oc-client";
+import { useRunning, useSessions } from "@thinkite/oc-client/react";
 import { useMemo, useState } from "react";
-import {
-  evictTranscriptCollection,
-  getOcClient,
-  sessionStateCollection,
-} from "../lib/oc";
+import { ocClient, ocStore } from "../lib/oc";
 
 // Global session sidebar (t3code-style, grouped by day instead of project).
 // Rows come from the opencode session list + `/api/event` bus via the
-// session-states collection — new sessions and busy/idle flips appear live,
+// store — new sessions and busy/idle flips appear live,
 // no polling. The dot marks sessions opencode is actively working in.
 
 function dayLabel(ts: number, now: Date): string {
@@ -55,16 +51,15 @@ function basename(dir: string): string {
   return slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
 }
 
+const titleOf = (s: SessionInfo) => s.title ?? "";
+
 export function SessionSidebar() {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const { data: sessions } = useLiveQuery((q) =>
-    q
-      .from({ s: sessionStateCollection })
-      .orderBy(({ s }) => s.updatedAt, "desc"),
-  );
+  const sessions = useSessions(ocStore);
+  const running = useRunning(ocStore);
 
   // Current session id, straight off the location — the sidebar sits outside
   // the route tree, so route params aren't available via useParams here.
@@ -74,35 +69,32 @@ export function SessionSidebar() {
   const deleteSession = (id: string) => {
     if (deletingId !== null) return;
     setDeletingId(id);
-    // v1 compat DELETE (no v2 delete route); the `session.deleted` bus
-    // event removes the row. Evict the cached transcript either way so a
-    // recreated id never serves stale rows.
-    void getOcClient()
+    // The `session.deleted` bus event removes the row.
+    void ocClient
       .deleteSession(id)
       .catch((err) => {
         console.warn("[sidebar] delete failed:", err);
       })
       .finally(() => {
-        evictTranscriptCollection(id);
         setDeletingId((cur) => (cur === id ? null : cur));
         if (selectedId === id) void navigate({ to: "/" });
       });
   };
 
-  // Day groups, newest first (rows arrive sorted by updatedAt desc).
+  // Day groups, newest first (rows arrive most recently updated first).
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
     const filtered = q
       ? sessions.filter(
           (s) =>
-            s.title.toLowerCase().includes(q) ||
-            s.directory.toLowerCase().includes(q),
+            titleOf(s).toLowerCase().includes(q) ||
+            s.location.directory.toLowerCase().includes(q),
         )
       : sessions;
     const now = new Date();
-    const out: { label: string; rows: SessionRow[] }[] = [];
+    const out: { label: string; rows: SessionInfo[] }[] = [];
     for (const s of filtered) {
-      const label = dayLabel(s.updatedAt, now);
+      const label = dayLabel(s.time.updated, now);
       const last = out.at(-1);
       if (last?.label === label) last.rows.push(s);
       else out.push({ label, rows: [s] });
@@ -148,7 +140,7 @@ export function SessionSidebar() {
             {g.rows.map((s) => (
               <SideNavItem
                 key={s.id}
-                label={s.title === "" ? "Untitled session" : s.title}
+                label={titleOf(s) || "Untitled session"}
                 isSelected={s.id === selectedId}
                 onClick={() =>
                   void navigate({
@@ -164,9 +156,9 @@ export function SessionSidebar() {
                   <span className="group/meta flex items-center gap-1">
                     <span className="flex flex-col items-end">
                       <Text size="xsm" color="secondary" maxLines={1}>
-                        {basename(s.directory)}
+                        {basename(s.location.directory)}
                       </Text>
-                      {s.activity === "running" ? (
+                      {running.has(s.id) ? (
                         <StatusDot variant="success" label="opencode running" />
                       ) : deletingId === s.id ? (
                         <Text size="xsm" color="secondary">
@@ -174,7 +166,7 @@ export function SessionSidebar() {
                         </Text>
                       ) : (
                         <Text size="xsm" color="secondary">
-                          {timeLabel(s.updatedAt)}
+                          {timeLabel(s.time.updated)}
                         </Text>
                       )}
                     </span>
@@ -187,7 +179,7 @@ export function SessionSidebar() {
                       <span
                         role="button"
                         tabIndex={0}
-                        aria-label={`Delete ${s.title === "" ? "untitled session" : s.title}`}
+                        aria-label={`Delete ${titleOf(s) || "untitled session"}`}
                         title="Delete session"
                         onClick={(e) => {
                           e.stopPropagation();

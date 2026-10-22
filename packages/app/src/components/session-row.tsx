@@ -12,11 +12,8 @@ import { StyleSheet, Text, useColorScheme, View } from "react-native";
 // pressed/active background needs the Pressable's `{ pressed }` state callback —
 // which the className→style merge would flatten away.
 import { Pressable } from "react-native-gesture-handler";
-import {
-  evictTranscriptCollection,
-  getOcClient,
-  type OcSessionRow as SessionRowData,
-} from "@/lib/sessions-collection";
+import type { OcSessionRow as SessionRowData } from "@/hooks/use-sessions";
+import { getOcClient } from "@/lib/oc";
 
 export interface SessionRowProps {
   session: SessionRowData;
@@ -85,7 +82,7 @@ const ROW_HEIGHT = 44;
  */
 export function SessionRow({ session, onPress, isActive }: SessionRowProps) {
   const title = session.title || "Untitled session";
-  const isRunning = session.activity === "running";
+  const isRunning = session.running;
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
 
   const menuConfig: MenuConfig = {
@@ -99,18 +96,13 @@ export function SessionRow({ session, onPress, isActive }: SessionRowProps) {
     ],
   };
 
-  // v1 compat DELETE (no v2 delete route in 1.18.30); the session.deleted
-  // bus event removes the row. Evict the cached transcript either way so a
-  // recreated id never serves stale rows.
+  // The session.deleted bus event removes the row.
   const onAction = (actionKey: string) => {
     if (actionKey !== "delete") return;
     void getOcClient()
       .deleteSession(session.id)
       .catch((err) => {
         console.warn("[session-row] delete failed:", err);
-      })
-      .finally(() => {
-        evictTranscriptCollection(session.id);
       });
   };
 

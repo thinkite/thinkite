@@ -116,7 +116,11 @@ export interface OcStore {
   prompt(
     sessionID: string,
     text: string,
-    options?: { model?: ModelRef },
+    options?: {
+      model?: ModelRef;
+      /** The row's `msg_*` id, when the caller needs it up front (scroll anchoring). */
+      id?: string;
+    },
   ): Promise<void>;
   /** Create a session and add it to the list right away. */
   createSession(options: {
@@ -429,6 +433,9 @@ export function createOcStore({
       await loadSessions();
       status.set({ status: "ready", error: null });
     } catch (error) {
+      // Drop the bus too, so the next start() tries again from scratch.
+      events.abort();
+      events = null;
       status.set({ status: "error", error: String(error) });
       throw error;
     }
@@ -519,9 +526,9 @@ export function createOcStore({
   async function prompt(
     sessionID: string,
     text: string,
-    options?: { model?: ModelRef },
+    options?: { model?: ModelRef; id?: string },
   ) {
-    const id = mintMessageId();
+    const id = options?.id ?? mintMessageId();
     const row = {
       id,
       type: "user",

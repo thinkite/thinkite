@@ -10,14 +10,10 @@ import { Markdown } from "@astryxdesign/core/Markdown";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { eq, useLiveQuery } from "@tanstack/react-db";
 import type { SessionMessageInfo } from "@thinkite/oc-client";
+import { useMessages, usePaging } from "@thinkite/oc-client/react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  getTranscriptCollection,
-  loadOlderTranscript,
-  transcriptPaging,
-} from "../lib/oc";
+import { ocStore } from "../lib/oc";
 
 // Live transcript for ONE opencode session. Rows are opencode's own
 // `SessionMessageInfo` projection (see oc-client): the newest page is read
@@ -96,7 +92,7 @@ function toolCall(tool: ToolItem): ChatToolCallItem {
   };
 }
 
-function toGroups(messages: SessionMessageInfo[]): TranscriptGroup[] {
+function toGroups(messages: readonly SessionMessageInfo[]): TranscriptGroup[] {
   const groups: TranscriptGroup[] = [];
   const pushTool = (call: ChatToolCallItem) => {
     const prev = groups.at(-1);
@@ -189,6 +185,9 @@ function toGroups(messages: SessionMessageInfo[]): TranscriptGroup[] {
           text: `Skill: ${message.name}`,
         });
         break;
+      // Turn boundaries; the working indicator already says when one ends.
+      case "idle":
+        break;
     }
   }
   return groups;
@@ -273,8 +272,7 @@ export function TranscriptPanel({
   anchorUuid = null,
 }: {
   sessionId: string;
-  /** Renders a working indicator under the last message (busy/idle from
-   *  the session-states collection). */
+  /** Renders a working indicator under the last message. */
   isRunning?: boolean;
   /** Id of the most recently sent user message — pinned near the viewport
    *  top while the response streams into reserved space below it. The iOS
@@ -285,26 +283,12 @@ export function TranscriptPanel({
    *  dormant until the user scrolls or jumps to the tail. */
   anchorUuid?: string | null;
 }) {
-  const collection = useMemo(
-    () => getTranscriptCollection(sessionId),
-    [sessionId],
-  );
-  const { data: messages, isLoading } = useLiveQuery(
-    (q) =>
-      q
-        .from({ t: collection })
-        .orderBy(({ t }) => t.time.created, "asc")
-        .orderBy(({ t }) => t.id, "asc"),
-    [collection],
-  );
-  const { data: pagingRows } = useLiveQuery(
-    (q) =>
-      q.from({ p: transcriptPaging }).where(({ p }) => eq(p.id, sessionId)),
-    [sessionId],
-  );
-  const paging = pagingRows[0];
-  const hasOlder = paging?.hasOlder === true;
-  const loadingOlder = paging?.loading === true;
+  useEffect(() => {
+    void ocStore.open(sessionId);
+  }, [sessionId]);
+  const messages = useMessages(ocStore, sessionId);
+  const paging = usePaging(ocStore, sessionId);
+  const hasOlder = paging.cursor !== undefined;
 
   const groups = useMemo(() => toGroups(messages), [messages]);
 
@@ -355,7 +339,7 @@ export function TranscriptPanel({
   if (!hasRows) {
     return (
       <div className="flex h-full items-center justify-center">
-        {isLoading || paging?.hydrated !== true || isRunning === true ? (
+        {!paging.hydrated || isRunning === true ? (
           <Spinner size="sm" label="Loading transcript…" />
         ) : (
           <Text size="sm" color="secondary">
@@ -391,13 +375,12 @@ export function TranscriptPanel({
         maintainScrollAtEnd
         maintainVisibleContentPosition
         // Older pages: half a viewport from the top asks for the next page;
-        // the collection ignores the call while one is in flight or when
-        // nothing older exists.
+        // the store ignores the call while one is in flight.
         onStartReached={
-          hasOlder ? () => void loadOlderTranscript(sessionId) : undefined
+          hasOlder ? () => void ocStore.loadOlder(sessionId) : undefined
         }
         onStartReachedThreshold={0.5}
-        ListHeaderComponent={<OlderHeader loading={loadingOlder} />}
+        ListHeaderComponent={<OlderHeader loading={paging.loadingOlder} />}
         ListFooterComponent={<ThinkingFooter active={isThinking} />}
         // t3code container hygiene: horizontal padding lives on the scroll
         // container (rows stay full-width), overscroll stays contained, and

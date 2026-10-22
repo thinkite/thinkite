@@ -28,7 +28,7 @@ async function registration(overrides: Record<string, unknown> = {}) {
   return path;
 }
 
-function fakeFetch(health: unknown, status = 200) {
+function fakeFetch(info: unknown, status = 200) {
   const calls: Array<{ url: string; auth: string | undefined }> = [];
   const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
@@ -36,7 +36,7 @@ function fakeFetch(health: unknown, status = 200) {
       url: String(input),
       auth: headers.get("authorization") ?? undefined,
     });
-    return new Response(JSON.stringify(health), { status });
+    return new Response(JSON.stringify(info), { status });
   }) as typeof fetch;
   return { impl, calls };
 }
@@ -59,42 +59,37 @@ describe("opencode registry discovery", () => {
     expect(await readRegistration("/nonexistent/service.json")).toBeNull();
   });
 
-  it("accepts a healthy service whose pid matches, with Basic auth on the probe", async () => {
+  it("accepts a service whose pid matches, with Basic auth on the probe", async () => {
     const path = await registration();
-    const { impl, calls } = fakeFetch({
-      healthy: true,
-      version: "2.0.2",
-      pid: 42,
-    });
+    const { impl, calls } = fakeFetch({ version: "2.1.2", pid: 42 });
     const found = await discoverOpencode(path, impl);
     expect(found).toMatchObject({
       baseUrl: "http://127.0.0.1:49374",
       username: "opencode",
       password: "secret",
-      version: "2.0.2",
+      version: "2.1.2",
       pid: 42,
     });
-    expect(calls[0]?.url).toBe("http://127.0.0.1:49374/api/health");
+    expect(calls[0]?.url).toBe("http://127.0.0.1:49374/api/info");
     expect(calls[0]?.auth).toBe(
       `Basic ${Buffer.from("opencode:secret").toString("base64")}`,
     );
   });
 
-  it("treats a pid mismatch or an unhealthy probe as stale", async () => {
+  it("treats a pid mismatch or a failed probe as stale", async () => {
     const path = await registration();
     expect(
-      await discoverOpencode(path, fakeFetch({ healthy: true, pid: 43 }).impl),
+      await discoverOpencode(
+        path,
+        fakeFetch({ version: "2.1.2", pid: 43 }).impl,
+      ),
     ).toBeNull();
     expect(await discoverOpencode(path, fakeFetch({}, 503).impl)).toBeNull();
   });
 
   it("caches a hit for the ttl and reports replacements", async () => {
     const path = await registration();
-    const { impl, calls } = fakeFetch({
-      healthy: true,
-      version: "2.0.2",
-      pid: 42,
-    });
+    const { impl, calls } = fakeFetch({ version: "2.1.2", pid: 42 });
     const changes: Array<string | null> = [];
     const discovery = createOpencodeDiscovery({
       path,
@@ -105,11 +100,11 @@ describe("opencode registry discovery", () => {
     await discovery.resolve();
     await discovery.resolve();
     expect(calls).toHaveLength(1);
-    expect(changes).toEqual(["2.0.2"]);
+    expect(changes).toEqual(["2.1.2"]);
     discovery.invalidate();
     await discovery.resolve();
     expect(calls).toHaveLength(2);
-    expect(changes).toEqual(["2.0.2"]);
+    expect(changes).toEqual(["2.1.2"]);
   });
 });
 
@@ -134,10 +129,10 @@ describe("opencode version gate", () => {
     expect(parseOpencodeVersion("latest")).toBeNull();
   });
 
-  it("accepts stable ≥ 2.0.0 plus any v2 beta/dev build, rejects 1.x", () => {
-    expect(isSupportedOpencodeVersion("2.0.0")).toBe(true);
-    expect(isSupportedOpencodeVersion("2.0.2")).toBe(true);
+  it("accepts stable ≥ 2.1.0 plus any v2 beta/dev build, rejects 1.x and 2.0", () => {
+    expect(isSupportedOpencodeVersion("2.0.2")).toBe(false);
     expect(isSupportedOpencodeVersion("2.1.0")).toBe(true);
+    expect(isSupportedOpencodeVersion("2.1.2")).toBe(true);
     expect(isSupportedOpencodeVersion("3.0.0")).toBe(true);
     expect(isSupportedOpencodeVersion("0.0.0-beta-19425")).toBe(true);
     expect(isSupportedOpencodeVersion("0.0.0-dev")).toBe(true);
