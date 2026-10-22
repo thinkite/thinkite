@@ -170,6 +170,19 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify(daemon.createPairOffer(hostname())));
       return;
     }
+    if (url.pathname === "/api/pair/window" && req.method === "POST") {
+      // Settings › Pairing's button. Pairing stays the pair window's job:
+      // admission is open exactly while that window is visible.
+      if (daemon === null) {
+        res.writeHead(503, { "content-type": "text/plain" });
+        res.end("daemon not running in this process — pairing unavailable");
+        return;
+      }
+      openPairWindow();
+      res.writeHead(204);
+      res.end();
+      return;
+    }
     if (url.pathname === "/api/pick-directory") {
       // Landing-page directory picker: native Electron dialog (renderer
       // has no fs access). Remembers nothing server-side — the renderer

@@ -20,6 +20,7 @@ import {
   PaintbrushIcon,
   PuzzleIcon,
   ServerIcon,
+  SmartphoneIcon,
   TerminalIcon,
   XIcon,
 } from "lucide-react";
@@ -33,6 +34,7 @@ import {
 import { ocClient, ocStore } from "../../lib/oc";
 import { prefs, settingsOpen, updatePrefs } from "../../lib/prefs";
 import { isVisible, newestOfFamilies, useModels } from "../ModelPicker";
+import { Pairing } from "./Pairing";
 import { Providers } from "./Providers";
 import { Note, PageTitle, Row, Section, useLoad } from "./parts";
 
@@ -295,6 +297,13 @@ const PAGES: {
     description: "Keyboard shortcuts",
     icon: TerminalIcon,
     Page: Shortcuts,
+  },
+  {
+    id: "pairing",
+    label: "Pairing",
+    description: "Connect your phone to this Mac",
+    icon: SmartphoneIcon,
+    Page: Pairing,
   },
   {
     id: "providers",
