@@ -1,5 +1,4 @@
 import { ModalBottomSheet } from "@swmansion/react-native-bottom-sheet";
-import type { ToolCallDetail } from "@thinkite/protocol";
 import { Asset } from "expo-asset";
 import {
   createContext,
@@ -25,7 +24,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkingTreeDiff } from "@/hooks/use-working-tree-diff";
 import { ChatMarkdown } from "@/lib/markdown";
 import { toolVerb } from "@/lib/tool-verbs";
-import type { ToolRenderBlock } from "@/lib/transcript-blocks";
+import type { ToolDetail, ToolRenderBlock } from "@/lib/transcript-blocks";
 import workerPortableAsset from "../../../assets/pierre/worker-portable.pwt";
 import PierreView from "./pierre-view";
 
@@ -408,10 +407,10 @@ type Descriptor =
 
 /**
  * Map a tool block to how its body renders. Diffs and code-shaped output
- * (bash/read/grep/glob/monitor) go to the Pierre webview; everything else —
+ * (bash/read/grep/glob) go to the Pierre webview; everything else —
  * errors, empty output, markdown-bearing tools (web_fetch/agent via
- * ChatMarkdown), field-shaped tools (tasks, schedule_wakeup, ask_user),
- * and `unknown` — renders natively inside the sheet's ScrollView.
+ * ChatMarkdown) and `unknown` — renders natively inside the sheet's
+ * ScrollView.
  */
 function describeDetail(block: ToolRenderBlock): Descriptor {
   const isError = block.status === "failed";
@@ -471,49 +470,12 @@ function describeDetail(block: ToolRenderBlock): Descriptor {
       return detail.output.length === 0
         ? NATIVE_EMPTY
         : { mode: "native", node: <FieldText>{detail.output}</FieldText> };
-    case "monitor": {
-      // Monitor is a watch command — same command+output body as Bash.
-      const body = formatBashBody(detail.command, detail.output);
-      return body.length === 0
-        ? NATIVE_EMPTY
-        : {
-            mode: "webview",
-            kind: "code",
-            content: body,
-            name: "command.sh",
-            noHeader: true,
-            noLineNumbers: true,
-          };
-    }
     case "web_fetch":
       if (isError) return errorNative(error ?? "Fetch failed.");
       return { mode: "native", node: <WebFetchDetail detail={detail} /> };
     case "agent":
       if (isError) return errorNative(error ?? "Agent failed.");
       return { mode: "native", node: <AgentDetail detail={detail} /> };
-    case "ask_user":
-      return { mode: "native", node: <AskUserDetail detail={detail} /> };
-    case "task_create":
-      return labeledFields([
-        ["Subject", detail.subject],
-        ["Description", detail.description],
-        ["Active form", detail.activeForm],
-        ["Task ID", detail.taskId ? `#${detail.taskId}` : undefined],
-      ]);
-    case "task_update":
-      return labeledFields([
-        ["Task ID", `#${detail.taskId}`],
-        ["Status", detail.status],
-        ["Active form", detail.activeForm],
-      ]);
-    case "task_stop":
-      return labeledFields([["Task ID", `#${detail.taskId}`]]);
-    case "schedule_wakeup":
-      return labeledFields([
-        ["Delay", `${detail.delaySeconds}s`],
-        ["Reason", detail.reason],
-        ["Prompt", detail.prompt],
-      ]);
     case "unknown":
       return {
         mode: "native",
@@ -558,7 +520,7 @@ function UnknownDetail({
   isError,
   error,
 }: {
-  detail: Extract<ToolCallDetail, { type: "unknown" }>;
+  detail: Extract<ToolDetail, { type: "unknown" }>;
   isError: boolean;
   error: string | null;
 }) {
@@ -608,48 +570,19 @@ function FieldText({ children }: { children: string }) {
   );
 }
 
-/** Labeled-fields native body; skips empty/undefined values. */
-function labeledFields(
-  fields: Array<[label: string, value: string | undefined]>,
-): Descriptor {
-  const visible = fields.filter(
-    (f): f is [string, string] => f[1] !== undefined && f[1].length > 0,
-  );
-  if (visible.length === 0) return NATIVE_EMPTY;
-  return {
-    mode: "native",
-    node: (
-      <View>
-        {visible.map(([label, value], i) => (
-          <View key={label} className={i > 0 ? "mt-3" : undefined}>
-            <SectionLabel>{label}</SectionLabel>
-            <FieldText>{value}</FieldText>
-          </View>
-        ))}
-      </View>
-    ),
-  };
-}
-
 function WebFetchDetail({
   detail,
 }: {
-  detail: Extract<ToolCallDetail, { type: "web_fetch" }>;
+  detail: Extract<ToolDetail, { type: "web_fetch" }>;
 }) {
   return (
     <View>
       <SectionLabel>URL</SectionLabel>
       <FieldText>{detail.url}</FieldText>
       <View className="mt-3">
-        <SectionLabel>Prompt</SectionLabel>
-        <FieldText>{detail.prompt}</FieldText>
-      </View>
-      <View className="mt-3">
         <SectionLabel>Output</SectionLabel>
-        {/* WebFetch output is the fetch-side model's prose summary —
-            markdown, not raw page text. Render it like chat. */}
         {detail.output.length > 0 ? (
-          <ChatMarkdown markdown={detail.output} />
+          <FieldText>{detail.output}</FieldText>
         ) : (
           <EmptyOutput />
         )}
@@ -661,7 +594,7 @@ function WebFetchDetail({
 function AgentDetail({
   detail,
 }: {
-  detail: Extract<ToolCallDetail, { type: "agent" }>;
+  detail: Extract<ToolDetail, { type: "agent" }>;
 }) {
   return (
     <View>
@@ -670,41 +603,13 @@ function AgentDetail({
       <View className="mt-3">
         <SectionLabel>Output</SectionLabel>
         {/* The subagent's final text — markdown prose, render like chat.
-            Its intermediate tool calls live in the subagent JSONL and are
-            not surfaced here (V0.5+ Background Tasks panel). */}
+            Its own tool calls live in the child session. */}
         {detail.output.length > 0 ? (
           <ChatMarkdown markdown={detail.output} />
         ) : (
           <EmptyOutput />
         )}
       </View>
-    </View>
-  );
-}
-
-function AskUserDetail({
-  detail,
-}: {
-  detail: Extract<ToolCallDetail, { type: "ask_user" }>;
-}) {
-  return (
-    <View>
-      {detail.questions.map((q, i) => (
-        <View key={i} className={i > 0 ? "mt-3" : undefined}>
-          <SectionLabel>{q.header || `Question ${i + 1}`}</SectionLabel>
-          <Text
-            selectable
-            className="mb-1 text-sm text-gray-900 dark:text-gray-100"
-          >
-            {q.question}
-          </Text>
-          <Text className="text-sm text-gray-500 dark:text-gray-400">
-            {detail.answers?.[i]
-              ? `Answered: ${detail.answers[i]}`
-              : "(unanswered)"}
-          </Text>
-        </View>
-      ))}
     </View>
   );
 }
@@ -732,7 +637,7 @@ function SectionLabel({
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 /**
- * Compose a Bash detail body the way Claude Desktop does: the command prefixed
+ * Compose a bash detail body the way Claude Desktop does: the command prefixed
  * with `$ ` (continuation lines with `> ` like an interactive shell), then the
  * captured output below. We always show the command — even when output is empty
  * — so a Bash invocation stays visible after its expected silence (`cd`, etc.).

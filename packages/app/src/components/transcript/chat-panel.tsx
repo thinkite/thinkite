@@ -6,15 +6,9 @@ import {
   useKeyboardScrollToEnd,
 } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
-import {
-  type Collection,
-  eq,
-  useLiveQuery,
-  useLiveQueryEffect,
-} from "@tanstack/react-db";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ImageAttachment } from "@thinkite/protocol";
-import * as Crypto from "expo-crypto";
+import type { ModelRef } from "@thinkite/oc-client";
+import { useIsRunning } from "@thinkite/oc-client/react";
 import { useHeaderHeight } from "expo-router/react-navigation";
 import {
   type ComponentRef,
@@ -24,6 +18,7 @@ import {
   useState,
 } from "react";
 import {
+  Text,
   useColorScheme,
   useWindowDimensions,
   View,
@@ -44,12 +39,12 @@ import { ThinkingIndicator } from "@/components/transcript/thinking-indicator";
 import { ToolBlock } from "@/components/transcript/tool-block";
 import { useToolCallSheet } from "@/components/transcript/tool-call-sheet";
 import { haptics } from "@/lib/haptics";
-import { sessionStateCollection } from "@/lib/sessions-collection";
-import type { RenderBlock } from "@/lib/transcript-blocks";
+import { ocStore } from "@/lib/oc";
 import {
-  type OrderedTimelineItem,
-  sendUserMessage,
-} from "@/lib/transcript-collection-factory";
+  type ImageAttachment,
+  type RenderBlock,
+  toPromptFiles,
+} from "@/lib/transcript-blocks";
 
 // ToolBlock row height, derived from its styles (keep in sync with
 // tool-block.tsx): Pressable py-1.5 (12) + one text-base line (lineHeight
@@ -60,14 +55,9 @@ const TOOL_ROW_PADDING_V = 12;
 const TOOL_ROW_LINE_HEIGHT = 24;
 
 type ChatPanelProps = {
-  cliSessionId: string;
+  sessionID: string;
   cwd: string | undefined;
   blocks: RenderBlock[];
-  /** The raw per-session transcript collection (from useSessionTranscript).
-   *  Threaded in rather than re-derived via the factory so the onEnter
-   *  haptics effect runs over the exact instance the screen already
-   *  subscribed — same object, no second cache lookup. */
-  collection: Collection<OrderedTimelineItem, string>;
 };
 
 /**
@@ -115,9 +105,8 @@ type ChatPanelProps = {
  *
  * Per-session lifecycle: because this whole surface mounts fresh per
  * session (the detail screen swaps it on the loading→ready transition),
- * `initialScrollAtEnd`, the composer-inset measurement, the KCSV keyboard
- * scroll-state, and the daemon live-fanout registration all start clean on
- * every switch — no cross-mount state to reset by hand. (A persistent
+ * `initialScrollAtEnd`, the composer-inset measurement and the KCSV keyboard
+ * scroll-state all start clean on every switch — no cross-mount state to reset by hand. (A persistent
  * ChatPanel was tried and removed: it saved the mount cost but left
  * LegendList/KCSV's per-mount keyboard + scroll state stale across
  * switches, which couldn't be re-seeded from outside the wrapper.)
@@ -127,12 +116,7 @@ type ChatPanelProps = {
  * Claude Desktop / ChatGPT handle session-switch loading — input is
  * hidden until the session is ready to receive it.
  */
-export function ChatPanel({
-  cliSessionId,
-  cwd,
-  blocks,
-  collection,
-}: ChatPanelProps) {
+export function ChatPanel({ sessionID, cwd, blocks }: ChatPanelProps) {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
   const { fontScale } = useWindowDimensions();
@@ -153,7 +137,7 @@ export function ChatPanel({
   const composerRef = useRef<ComponentRef<typeof View>>(null);
   const isDark = useColorScheme() === "dark";
   // Tap the workspace status bar → open the working-tree diff in the shared
-  // sheet (the provider wraps this screen, see session/[cliSessionId].tsx).
+  // sheet (the provider wraps this screen, see session/[sessionID].tsx).
   const { openGitDiff } = useToolCallSheet();
   // Git changes → invalidate the diff query so an OPEN diff sheet refetches
   // (no-op while closed → query inactive). Wired through GitStatusBar's
@@ -181,42 +165,35 @@ export function ChatPanel({
   // maintainVisibleContentPosition during the animation so it doesn't fight it.
   const { freeze, scrollMessageToEnd } = useKeyboardScrollToEnd({ listRef });
 
-  // isThinking: the turn is running (daemon-pushed activity, #17) but the last
-  // block isn't Claude's text yet — the initial think window + tool gaps. Drives
-  // the resident footer.
-  const { data: sessionRow } = useLiveQuery(
-    (q) =>
-      q
-        .from({ s: sessionStateCollection })
-        .where(({ s }) => eq(s.cliSessionId, cliSessionId))
-        .findOne(),
-    [cliSessionId],
-  );
-  const isRunning = sessionRow?.activity === "running";
+  // isThinking: the turn is running but the last block isn't the agent's text
+  // yet — the initial think window + tool gaps. Drives the resident footer.
+  const isRunning = useIsRunning(ocStore, sessionID);
   const lastBlock = blocks[blocks.length - 1];
   const isThinking =
     isRunning &&
     !(lastBlock?.kind === "text" && lastBlock.role === "assistant");
 
-  // Message haptics, driven from the on-screen ChatPanel (not the collection
-  // sync, which can run off-screen within gcTime and buzz a session you're not
-  // in). skipInitial mutes the open-backlog; a reconnect re-ingests as one batch
-  // so unchanged rows are updates, not re-enters. Per message that enters:
-  // user_message → send, assistant_message → genStart (each agent segment buzzes).
-  useLiveQueryEffect<OrderedTimelineItem>(
-    {
-      query: (q) => q.from({ t: collection }),
-      skipInitial: true,
-      onEnter: (e) => {
-        if (e.value.type === "user_message") haptics.send();
-        if (e.value.type === "assistant_message") haptics.genStart();
-      },
-    },
-    [collection],
-  );
+  // Message haptics, driven from the on-screen ChatPanel so a session you're
+  // not in never buzzes. The rows on screen at mount are the backlog and stay
+  // quiet; after that, each text row that appears buzzes: user → send,
+  // assistant → genStart (each agent segment buzzes).
+  const seen = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const texts = blocks.filter((b) => b.kind === "text");
+    if (seen.current === null) {
+      seen.current = new Set(texts.map((b) => b.id));
+      return;
+    }
+    for (const b of texts) {
+      if (seen.current.has(b.id)) continue;
+      seen.current.add(b.id);
+      if (b.role === "user") haptics.send();
+      else haptics.genStart();
+    }
+  }, [blocks]);
 
-  // genEnd on the turn ending — not a transcript delta, so it tracks the
-  // daemon-pushed activity flag going running→idle. Transition-guarded: fires
+  // genEnd on the turn ending — not a transcript row, so it tracks the
+  // session's busy flag going running→idle. Transition-guarded: fires
   // once, and never on unmount (navigating away mid-turn stays quiet).
   const prevRunning = useRef(false);
   useEffect(() => {
@@ -258,21 +235,21 @@ export function ChatPanel({
   // commands; only plain text + whitelisted passthroughs (/init, /review,
   // /compact) reach here.
   const rawSend = useCallback(
-    (text: string, images: ImageAttachment[] | undefined, model: string) => {
-      // Optimistic insert (instant paint) + sendPrompt under one client uuid the
-      // daemon reuses, so the synced row dedupes by key. cwd/model ride along for
-      // --resume project-key resolution and the daemon-restart respawn seed.
-      const userMessageUuid = Crypto.randomUUID();
-      void sendUserMessage({
-        cliSessionId,
-        userMessageUuid,
-        text,
-        cwd,
-        images,
-        model,
-      }).isPersisted.promise.catch((err) => {
-        console.error("sendPrompt failed", err);
-      });
+    (
+      text: string,
+      images: ImageAttachment[] | undefined,
+      model: ModelRef | null,
+    ) => {
+      // The store shows the prompt at once and replaces it in place when the
+      // service echoes it; a failed send takes it back.
+      ocStore
+        .prompt(sessionID, text, {
+          ...(model !== null ? { model } : {}),
+          files: toPromptFiles(images),
+        })
+        .catch((err: unknown) => {
+          console.error("prompt failed", err);
+        });
       // Anchor the new message and scroll synchronously — scrollToEnd is
       // "committed" since @legendapp/list 3.0.4: the list queues the scroll
       // until the data commit lands and the anchored tail has measured, and
@@ -283,14 +260,11 @@ export function ChatPanel({
       setAnchorIndex(blocks.length);
       void scrollMessageToEnd({ animated: true, closeKeyboard: true });
     },
-    [cliSessionId, cwd, blocks.length, scrollMessageToEnd],
+    [sessionID, blocks.length, scrollMessageToEnd],
   );
 
-  // No first-send-after-create effect here anymore: the new-session
-  // screen fires the first sendPrompt itself via `createSession` (the
-  // daemon seeds an empty settled snapshot for the new query, so that
-  // pre-subscribe send is race-free — see index.tsx). ChatPanel only
-  // owns subsequent in-session sends (rawSend above).
+  // The new-session screen sends a session's first prompt itself; ChatPanel
+  // only owns subsequent in-session sends (rawSend above).
 
   return (
     <>
@@ -325,8 +299,8 @@ export function ChatPanel({
               <TextBlock
                 block={item}
                 // The streaming message = the LAST block, assistant role,
-                // while the daemon-pushed activity says the turn is
-                // running. No protocol settle signal exists; this
+                // while the session's busy flag says the turn is
+                // running. No per-row settle signal is used; this
                 // derivation is correct at every boundary (tool_call
                 // append → no longer last; interrupt/idle → not running;
                 // cold resume → not running). Worst case of a wrong beat:
@@ -339,11 +313,7 @@ export function ChatPanel({
               />
             );
           if (item.kind === "tool") return <ToolBlock block={item} />;
-          // `compact_divider` — placeholder renders nothing for this
-          // commit. Actual divider component (horizontal line + caption)
-          // lands in the next Slice 2 commit alongside the reducer
-          // wiring that materializes the item.
-          return null;
+          return <NoteBlock text={item.text} />;
         }}
         // Manual top inset to clear the transparent Stack.Header.
         // With `contentInsetAdjustmentBehavior="never"` below, iOS no
@@ -543,9 +513,18 @@ export function ChatPanel({
                 : undefined
             }
           />
-          <InputBar cliSessionId={cliSessionId} onSend={rawSend} />
+          <InputBar sessionID={sessionID} onSend={rawSend} />
         </View>
       </KeyboardStickyView>
     </>
+  );
+}
+
+/** A one-line system notice (compaction, a model switch, a failed turn). */
+function NoteBlock({ text }: { text: string }) {
+  return (
+    <Text className="px-4 py-1.5 text-center text-sm text-gray-500 dark:text-gray-400">
+      {text}
+    </Text>
   );
 }

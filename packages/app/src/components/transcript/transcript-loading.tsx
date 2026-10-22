@@ -14,7 +14,7 @@ import { useDaemonClient } from "@/lib/daemon-client-context";
  *   - not online → an offline message; the transcript loads automatically
  *     when the transport reattaches (facade replays the subscription).
  *
- * Lives in its own component (not inlined in `session/[cliSessionId].tsx`)
+ * Lives in its own component (not inlined in `session/[sessionID].tsx`)
  * so the detail screen stays free of `useDaemonClient` — the same split as
  * `SessionBridgeToolbar`. See the screen's header note.
  */

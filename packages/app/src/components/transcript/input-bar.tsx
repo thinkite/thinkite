@@ -1,17 +1,19 @@
-import { eq, useLiveQuery } from "@tanstack/react-db";
 import {
-  type CommandContext,
-  DEFAULT_MODEL,
-  getCommandsForContext,
-  type ImageAttachment,
-  MODELS,
-} from "@thinkite/protocol";
+  formatModelRef,
+  type ModelRef,
+  parseModelRef,
+} from "@thinkite/oc-client";
+import {
+  useIsRunning,
+  useMessages,
+  useSession,
+} from "@thinkite/oc-client/react";
 import { ContextMenu, type MenuAction } from "@yyq1025/react-native-nitro-menu";
 import { GlassView } from "expo-glass-effect";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { SymbolView } from "expo-symbols";
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -20,26 +22,17 @@ import {
   useColorScheme,
   View,
 } from "react-native";
-import { SlashPanel } from "@/components/transcript/slash-panel";
-import { useContextUsage } from "@/hooks/use-context-usage";
-import { useSlashCommandHandler } from "@/hooks/use-slash-command-handler";
+import { useOcModels } from "@/hooks/use-oc-models";
 import { statusColor, useDaemonClient } from "@/lib/daemon-client-context";
-import { useSessionTurnResult } from "@/lib/session-turn-result";
-import {
-  sessionStateCollection,
-  updateSessionModel,
-} from "@/lib/sessions-collection";
+import { getOcClient, ocStore } from "@/lib/oc";
 import { Image } from "@/lib/styled";
-
-/** Stable no-op passthrough for the (theoretical) no-`onSend` case, so the
- *  internal slash-handler's callback identity doesn't churn per render. */
-const NOOP_SEND = () => {};
+import type { ImageAttachment } from "@/lib/transcript-blocks";
 
 /**
  * Local-only id so the pill row can have stable React keys + a cheap
- * remove path; never sent to the daemon (protocol's ImageAttachment
- * is just {data, mediaType}). Generated with a monotonic counter so we
- * don't pull in a UUID lib for what's effectively a render hint.
+ * remove path; never sent (an ImageAttachment is just {data, mediaType}).
+ * Generated with a monotonic counter so we don't pull in a UUID lib for
+ * what's effectively a render hint.
  */
 interface DraftAttachment extends ImageAttachment {
   id: string;
@@ -55,16 +48,15 @@ interface DraftAttachment extends ImageAttachment {
  *     mode (chip background `bg-black/5` is pale, so blue at 0.30
  *     reads too saturated); kept at 0.30 in dark mode (chip
  *     `bg-white/10` needs more contrast).
- *   - 70–90%: amber — "you should consider /compact soon."
+ *   - 70–90%: amber — "you should consider compacting soon."
  *   - ≥90%: red — "next turn likely to auto-compact or get clipped."
  *
  * Warning tiers (amber/red) use a single opacity on both themes — both
  * read as alarming enough either way. Only the informational blue
  * needs the theme-aware split.
  *
- * Thresholds are picked to roughly mirror Claude Code's auto-compact
- * heuristic — Claude Code starts surfacing context warnings in the
- * mid-70s and aggressively compacts in the high 80s/90s.
+ * Thresholds roughly mirror the agents' auto-compact heuristics —
+ * warnings in the mid-70s, compaction in the high 80s/90s.
  */
 function meterFillColor(percentage: number, isDark: boolean): string {
   if (percentage >= 90) return "rgba(239, 68, 68, 0.50)"; // red-500
@@ -88,15 +80,28 @@ function formatTokensK(n: number): string {
   return `${Math.round(n / 1000)}k`;
 }
 
-/** Compose Anthropic Claude 4.x's vision input cap: long edge 2576px,
- *  ≤3.75MP. We resize the long edge then let JPEG q0.85 do the bytes
- *  work; SDK accepts base64 inline so daemon writes nothing to disk. */
+/** Tokens the last assistant message put through the context window. */
+function lastContextTokens(
+  messages: ReturnType<typeof useMessages>,
+): number | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.type !== "assistant" || m.tokens === undefined) continue;
+    const t = m.tokens;
+    return t.input + t.output + t.reasoning + t.cache.read + t.cache.write;
+  }
+  return undefined;
+}
+
+/** Vision input cap of the large models: long edge 2576px, ≤3.75MP. We
+ *  resize the long edge then let JPEG q0.85 do the bytes work; the image
+ *  goes inline as a data URI, so nothing is written to disk. */
 const MAX_LONG_EDGE = 2576;
 const JPEG_QUALITY = 0.85;
-/** Total draft attachment cap per message. 8 = Opus 4.7 high-res
- *  budget headroom (4K tok/image × 8 = 32K of a 200K window) +
- *  matches PHPicker's single-pick max so users hit the cap in one
- *  Photos tap, not by re-tapping `+` repeatedly. Tune in one spot. */
+/** Total draft attachment cap per message: a high-res vision budget
+ *  (~4K tok/image × 8 = 32K of a 200K window) that also matches
+ *  PHPicker's single-pick max, so users hit the cap in one Photos tap.
+ *  Tune in one spot. */
 const MAX_TOTAL_IMAGES = 8;
 
 async function compressToAttachment(
@@ -130,24 +135,20 @@ async function compressToAttachment(
  * Chat input bar — pill-shaped GlassView with optional attachment
  * pill row + text input + action row (plus + model chip | spacer | send).
  *
- * Self-sourcing: pass `cliSessionId` and InputBar derives EVERYTHING it
- * can from it — the model picker / context meter / running state (from the
- * session's collections, or a local draft when `cliSessionId` is null =
- * new-session), the slash-command context + interception (internal
- * `useSlashCommandHandler`, context derived from cliSessionId presence),
- * and interrupt (`daemonClient.interrupt(cliSessionId)`). The ONLY prop is
- * `onSend` — the screen-specific "what does sending mean here" action
- * (new-session: createSession + navigate; detail: optimistic sendPrompt),
- * which InputBar can't own (routing / pre-create cwd are screen state).
- * `onSend` receives only REAL sends — slash commands are intercepted
- * internally and never reach it.
+ * Self-sourcing: pass `sessionID` and InputBar derives the model picker,
+ * the context meter and the running state from the oc-client store (or a
+ * local draft model when `sessionID` is null = new-session), and owns
+ * interrupt. The ONLY other prop is `onSend` — the screen-specific "what
+ * does sending mean here" action (new-session: createSession + navigate;
+ * detail: optimistic prompt), which InputBar can't own.
  *
  * The send button has two icon states (+ a disabled/dimmed idle):
  *   - `arrow.up` (active): user has text OR attached images, tap → onSend.
- *     Empty composer → same arrow, but disabled + dimmed (`sendActive`).
- *   - `stop.fill` (running): turn is in flight, tap → interrupt (internal)
+ *     While a turn runs the message queues behind it, as in opencode's own
+ *     clients. Empty composer → same arrow, but disabled + dimmed.
+ *   - `stop.fill` (running, empty composer): tap → interrupt.
  * Offline → disabled + dimmed in every state (write gate); a status dot
- * sits just left of the button. (The old `waveform` voice slot was dropped.)
+ * sits just left of the button.
  *
  * Attachment flow: `+` button opens a native attachment menu (Camera
  * / Photos via the nitro tap menu `@yyq1025/react-native-nitro-menu` —
@@ -156,154 +157,79 @@ async function compressToAttachment(
  * keyboard avoidance, drifting the trigger above sibling icons on first
  * keyboard show under system IME); picked assets are compressed (long
  * edge 2576 / JPEG q0.85) and shown as a horizontal pill row above the
- * TextInput until the user sends or removes them. Cap: 8 images per
- * message (Opus 4.7 vision token budget).
+ * TextInput until the user sends or removes them.
  *
  * Liquid Glass requires iOS 26+. On older iOS / Android the GlassView
  * silently falls back to a plain View; the inline `backgroundColor`
  * provides the fallback fill so the surface stays visible.
  */
 export function InputBar({
-  cliSessionId,
+  sessionID,
   onSend,
 }: {
   /** The session this composer drives, or `null` on the new-session
-   *  screen (no session exists yet). The single source InputBar derives
-   *  everything from:
-   *    - non-null → model + running state from the #17
-   *      `sessionStateCollection` row, context meter from the
-   *      transcript-fed `sessionTurnResultCollection` (latestUsage),
-   *      slash context = "in-session", interrupt = interrupt(cliSessionId).
-   *    - null → local draft model (seeded DEFAULT_MODEL); not running; no
-   *      context meter; slash context = "new-session"; no interrupt. The
-   *      draft pick rides out on `onSend`'s `model` arg. */
-  cliSessionId: string | null;
-  /** Fired ONLY on a real (non-slash) send — slash commands are
-   *  intercepted internally and never reach here. `images` carries the
-   *  compressed base64 payloads (local DraftAttachment ids stripped);
-   *  `model` is the current picker selection — the parent forwards it into
-   *  `createSession` (new-session) / `sendPrompt` (resume seed). Send is
-   *  gated by hasText OR images.length > 0 so an images-only message is
-   *  valid (Claude vision accepts that).
-   *
-   *  This is the one prop InputBar can't self-source: "what sending means
-   *  here" is screen-specific orchestration (new-session: createSession +
-   *  router.replace to the new session, using the cwd picked on that
-   *  screen; detail: optimistic sendUserMessage). Return `false` is
-   *  unused by callers today but kept in the type for symmetry. */
+   *  screen (no session exists yet; the draft model rides out on `onSend`). */
+  sessionID: string | null;
+  /** Fired on send. `images` carries the compressed base64 payloads
+   *  (local DraftAttachment ids stripped); `model` is the picked model, or
+   *  null for the session's (or the service's) current one. Send is gated
+   *  by hasText OR images.length > 0, so an images-only message is valid. */
   onSend?: (
     text: string,
     images: ImageAttachment[] | undefined,
-    model: string,
-    // biome-ignore lint/suspicious/noConfusingVoidType: optional-return callback — `| undefined` would reject the void-returning handlers callers pass
-  ) => boolean | void;
+    model: ModelRef | null,
+  ) => void;
 }) {
-  const { client, connectionStatus } = useDaemonClient();
-  // Write gate: only an established transport (online) accepts sends /
-  // interrupts. connecting / offline / error all gate. The facade also
-  // fail-fasts these RPCs (OfflineError) as a backstop, but disabling the
+  const { connectionStatus } = useDaemonClient();
+  // Write gate: only an established tunnel (online) accepts sends /
+  // interrupts. connecting / offline / error all gate. Disabling the
   // affordance here is the primary prevention — no optimistic bubble, no
   // hung promise. Reads (model draft, attachments) stay usable offline.
   const online = connectionStatus === "online";
   const [text, setText] = useState("");
   const [images, setImages] = useState<DraftAttachment[]>([]);
 
-  // ─── Self-sourced session state ─────────────────────────────────────
-  // Detail (cliSessionId non-null): derive the picker model + running
-  // state from the session's #17 sessionStateCollection row, and the
-  // context meter from the transcript-fed sessionTurnResultCollection
-  // (latestUsage). New-session (null): local draft model, not running, no
-  // meter. A picked model commits via `updateSessionModel` (optimistic +
-  // RPC) when a session exists, else just updates the draft (which leaves
-  // on `onSend`'s model arg).
-  const [draftModel, setDraftModel] = useState(DEFAULT_MODEL.model);
-  const { data: sessionRow } = useLiveQuery(
-    (q) =>
-      cliSessionId
-        ? q
-            .from({ s: sessionStateCollection })
-            .where(({ s }) => eq(s.cliSessionId, cliSessionId))
-            .findOne()
-        : null,
-    [cliSessionId],
+  // ─── Session state from the store ───────────────────────────────────
+  // Detail: the session's model, busy flag and last turn's context use.
+  // New-session: a local draft pick (null = the service default). A pick
+  // on an existing session switches it right away; the picked value wins
+  // until the session's model.selected event catches up.
+  const models = useOcModels();
+  const session = useSession(ocStore, sessionID);
+  const messages = useMessages(ocStore, sessionID);
+  const isRunning = useIsRunning(ocStore, sessionID);
+  const [picked, setPicked] = useState<string | null>(null);
+  const sessionModel =
+    session?.model !== undefined
+      ? formatModelRef(session.model.providerID, session.model.id)
+      : null;
+  const model = picked ?? sessionModel;
+  const currentModel = models.find(
+    (m) => formatModelRef(m.providerID, m.id) === model,
   );
-  const turnResult = useSessionTurnResult(cliSessionId);
-  const model = cliSessionId
-    ? (sessionRow?.model ?? DEFAULT_MODEL.model)
-    : draftModel;
-  // Running-state is daemon-authoritative (#17 sessionState.activity), not
-  // a separate client signal anymore.
-  const isRunning = cliSessionId ? sessionRow?.activity === "running" : false;
-  const contextUsage = useContextUsage(
-    cliSessionId ? turnResult.latestUsage : null,
-    model,
-  );
-  const onPickModel = (m: string) => {
-    if (cliSessionId) updateSessionModel({ cliSessionId, model: m });
-    else setDraftModel(m);
+  const used = sessionID ? lastContextTokens(messages) : undefined;
+  const max = currentModel?.limit.context;
+  const contextUsage =
+    used !== undefined && max !== undefined && max > 0
+      ? { used, max, percentage: Math.min(100, (used / max) * 100) }
+      : undefined;
+  const onPickModel = (ref: string) => {
+    if (ref === model) return;
+    const previous = picked;
+    setPicked(ref);
+    if (sessionID === null) return;
+    getOcClient()
+      .switchModel(sessionID, parseModelRef(ref))
+      .catch((err: unknown) => {
+        console.error("model switch failed", err);
+        setPicked(previous);
+      });
   };
 
-  // ─── Slash-command interception (internal) ──────────────────────────
-  // Context is derived 1:1 from cliSessionId presence; the handler wraps
-  // `onSend` so slash commands (/clear, /model) are intercepted +
-  // dispatched here and never reach `onSend` (only real sends do). Tap-to-
-  // send calls `handleSend`, not `onSend` directly.
-  const slashContext: CommandContext = cliSessionId
-    ? "in-session"
-    : "new-session";
-  const handleSend = useSlashCommandHandler(
-    cliSessionId
-      ? {
-          context: "in-session",
-          sessionId: cliSessionId,
-          onPassthrough: onSend ?? NOOP_SEND,
-        }
-      : { context: "new-session", onPassthrough: onSend ?? NOOP_SEND },
-  );
-
-  // Tracks the TextInput's text cursor / selection range. Powers the
-  // cursor-aware slash trigger: panel opens only when the segment from
-  // start-of-text up to the cursor starts with `/` and has no space.
-  // Lets the user cursor BACK into a command name to re-open the picker
-  // after they've typed parameter text (e.g. fix a typo in `/modle`).
-  const [textCursor, setTextCursor] = useState({ start: 0, end: 0 });
   const draftIdRef = useRef(0);
   const colorScheme = useColorScheme() ?? "light";
   const hasText = text.length > 0;
 
-  // ─── Slash-command picker state ──────────────────────────────────────
-  // Compute the prefix segment (start-of-text → cursor) and whether
-  // we're in slash mode at all. Both are cheap O(n) string ops; no
-  // need to memoize.
-  const beforeCursor = text.slice(0, textCursor.start);
-  const isCommandMode =
-    beforeCursor.startsWith("/") && !beforeCursor.includes(" ");
-  const commandPrefix = isCommandMode ? beforeCursor.slice(1) : "";
-  // Filter the context's allowed commands by the live prefix. Memoize
-  // since the filter result drives a list render — stable identity
-  // helps the panel skip work when only `text` after a space changes.
-  const filteredCommands = useMemo(
-    () =>
-      getCommandsForContext(slashContext).filter((c) =>
-        c.name.startsWith(commandPrefix),
-      ),
-    [slashContext, commandPrefix],
-  );
-
-  // IDE-style replace on pick: swap ONLY the command-name segment (from
-  // `/` through the first space, or to end of text if no space), keep
-  // any parameter text after that space. So `/mo|del claude-opus` +
-  // pick `/model` → `/model claude-opus`, cursor at start of params.
-  const pickCommand = (cmdName: string) => {
-    const firstSpace = text.indexOf(" ");
-    const head = `/${cmdName}`;
-    const tail = firstSpace >= 0 ? text.slice(firstSpace) : " ";
-    setText(head + tail);
-    const cursor = head.length + 1; // right after `/cmd ` — at param start
-    setTextCursor({ start: cursor, end: cursor });
-  };
-
-  const currentModel = MODELS.find((m) => m.model === model);
   // Cap is enforced in three places: PHPicker's selectionLimit
   // (per-pick), Camera early-return guard, and the attachment menu's
   // `disabled` attribute. We DON'T dim the `+` button itself — the menu
@@ -362,81 +288,46 @@ export function InputBar({
     addAttachments(compressed);
   };
 
-  // Images-only messages are valid (Claude vision can answer "what's
+  // Images-only messages are valid (a vision model can answer "what's
   // in this image" without any text), so the send button activates as
   // soon as EITHER text OR images is non-empty.
   const canSend = hasText || images.length > 0;
 
   const handlePress = () => {
     // Write gate: offline → no send, no interrupt (both need a live
-    // round-trip to the daemon and would otherwise hang / accidental-queue).
-    // The button is also visually disabled below; this is the logic guard.
+    // round-trip and would otherwise hang). The button is also visually
+    // disabled below; this is the logic guard.
     if (!online) return;
-    if (isRunning) {
-      // Interrupt the in-flight turn (only a session that exists can be
-      // running). Best-effort — interrupt is idempotent daemon-side.
-      if (cliSessionId) {
-        void client.interrupt(cliSessionId).catch((err) => {
-          console.error("interrupt failed", err);
-        });
+    if (!canSend) {
+      // Empty composer during a turn = the stop button.
+      if (isRunning && sessionID) {
+        getOcClient()
+          .interrupt(sessionID)
+          .catch((err: unknown) => {
+            console.error("interrupt failed", err);
+          });
       }
       return;
     }
-    if (!canSend) return;
-    // Strip local-only `id` field before handing off — daemon protocol
-    // only knows {data, mediaType}.
+    // Strip the local-only `id` before handing off.
     const payload: ImageAttachment[] | undefined =
       images.length > 0
         ? images.map(({ data, mediaType }) => ({ data, mediaType }))
         : undefined;
-    // `model` rides out so `onSend` can seed createSession (new-session)
-    // / sendPrompt (resume respawn-inherit). Mid-session model APPLY is
-    // owned by `updateSessionModel` at pick time (onPickModel); this arg
-    // is only the seed value.
-    // `handleSend` (internal slash pipeline) returns `false` to signal
-    // "rejected, keep input" (slash command not whitelisted / wrong
-    // screen / invalid arg). Anything else = "consumed, clear input".
-    // Real (non-slash) sends pass through to `onSend`.
-    const result = handleSend(text, payload, model);
-    if (result === false) return;
+    onSend?.(text, payload, picked !== null ? parseModelRef(picked) : null);
     setText("");
     setImages([]);
-    // textCursor doesn't need an explicit reset: iOS clamps the
-    // selection when value shrinks and fires onSelectionChange with the
-    // clamped position, which React then writes back into state.
   };
 
-  const sendIconName: "arrow.up" | "stop.fill" = isRunning
-    ? "stop.fill"
-    : "arrow.up";
+  const sendIconName: "arrow.up" | "stop.fill" =
+    isRunning && !canSend ? "stop.fill" : "arrow.up";
   // The send button is actionable only when online AND there's something
   // to do (text/images to send, or a running turn to interrupt). Empty
-  // composer or offline → dimmed + disabled. (Replaces the old `waveform`
-  // idle state — the voice/recording slot was dropped.)
+  // composer or offline → dimmed + disabled.
   const sendActive = online && (canSend || isRunning);
 
   return (
     <View className="px-4">
-      {/* SlashPanel as absolute overlay above the composer.
-          `bottom-full` anchors the panel's bottom edge to the top of
-          this wrap (outside, above); `pb-2` adds the 8pt gap to the
-          GlassView below. Briefly obscures GitStatusBar (a sibling
-          above InputBar in ChatPanel) — acceptable trade since slash
-          mode is a focused state. `pointerEvents="box-none"` lets
-          taps outside the panel's rows pass through (e.g. dismissing
-          the keyboard). */}
-      {isCommandMode && (
-        <View
-          pointerEvents="box-none"
-          // `bottom-full` = bottom:100% → panel's bottom edge sits at
-          // the top of this wrap (outside it, above). `left-4 right-4`
-          // matches the wrap's px-4 padding so the panel aligns with
-          // the GlassView below. `pb-2` adds the 8pt visual gap.
-          className="absolute left-4 right-4 bottom-full pb-2"
-        >
-          <SlashPanel commands={filteredCommands} onPick={pickCommand} />
-        </View>
-      )}
       <GlassView
         isInteractive
         glassEffectStyle="regular"
@@ -493,12 +384,7 @@ export function InputBar({
             numberOfLines={5}
             value={text}
             onChangeText={setText}
-            // Track cursor / selection so the slash picker can detect
-            // command mode (start-of-text→cursor prefix). Cheap — fires
-            // on any cursor move incl. typing.
-            selection={textCursor}
-            onSelectionChange={(e) => setTextCursor(e.nativeEvent.selection)}
-            placeholder="Reply to Claude"
+            placeholder="Message opencode"
             // placeholderTextColor is a native prop with no className
             // equivalent — keep the colorScheme ternary for this one.
             placeholderTextColor={
@@ -549,10 +435,8 @@ export function InputBar({
                 </View>
               </ContextMenu>
               {/* Model picker chip — flat nitro tap menu (UIMenu on iOS,
-                  PopupMenu on Android). One row per non-deprecated model from
-                  the bundled MODELS table; `state: "on"` on the active row
-                  gives the native ✓. Effort isn't exposed (sidecode V0 trusts
-                  SDK adaptive thinking + per-account Settings.effortLevel). */}
+                  PopupMenu on Android). One row per model the service offers;
+                  `state: "on"` on the active row gives the native ✓. */}
               <ContextMenu
                 trigger="tap"
                 menuConfig={{
@@ -564,11 +448,14 @@ export function InputBar({
                   title: contextUsage
                     ? `Context usage: ${formatTokensK(contextUsage.used)} / ${formatTokensK(contextUsage.max)}`
                     : undefined,
-                  items: MODELS.map<MenuAction>((m) => ({
-                    actionKey: m.model,
-                    title: m.displayName,
-                    state: m.model === model ? "on" : "off",
-                  })),
+                  items: models.map<MenuAction>((m) => {
+                    const ref = formatModelRef(m.providerID, m.id);
+                    return {
+                      actionKey: ref,
+                      title: m.name,
+                      state: ref === model ? "on" : "off",
+                    };
+                  }),
                 }}
                 onPressAction={(actionKey) => {
                   onPickModel(actionKey);
@@ -595,7 +482,7 @@ export function InputBar({
                     />
                   )}
                   <Text className="text-sm text-zinc-700 dark:text-zinc-200">
-                    {currentModel?.displayName ?? "Model"}
+                    {currentModel?.name ?? "Model"}
                   </Text>
                 </View>
               </ContextMenu>

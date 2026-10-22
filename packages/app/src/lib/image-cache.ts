@@ -1,5 +1,5 @@
-import type { ImageAttachment } from "@thinkite/protocol";
 import { Directory, File, Paths } from "expo-file-system";
+import type { ImageAttachment } from "@/lib/transcript-blocks";
 
 /**
  * Materialize base64 ImageAttachments to on-disk files in the OS cache

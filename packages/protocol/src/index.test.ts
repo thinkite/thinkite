@@ -1,20 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  approveCommand,
   clientFrame,
   command,
   daemonFrame,
   decodePairOfferPayload,
-  deleteSessionCommand,
-  deleteSessionResponse,
   encodePairOffer,
   errorFrame,
-  event,
-  eventDelta,
-  eventFrame,
   helloCommand,
-  interruptCommand,
-  interruptResponse,
   isProtocolCompatible,
   outdatedSide,
   PAIR_OFFER_VERSION,
@@ -22,17 +14,7 @@ import {
   pairOfferFrame,
   pingFrame,
   pongFrame,
-  sendPromptCommand,
-  sendPromptResponse,
   serverInfoEvent,
-  sessionDivergedEvent,
-  setSessionSelectionCommand,
-  setSessionSelectionResponse,
-  subscribeCommand,
-  subscribeResponse,
-  timelineItem,
-  unsubscribeCommand,
-  unsubscribeResponse,
 } from "./index.ts";
 
 describe("PROTOCOL_VERSION", () => {
@@ -165,236 +147,6 @@ describe("pair offer", () => {
   });
 });
 
-describe("event union", () => {
-  it("accepts session.updated", () => {
-    expect(
-      event.parse({ type: "session.updated", sessionId: "x", lastModified: 1 })
-        .type,
-    ).toBe("session.updated");
-  });
-
-  it("rejects unknown event type", () => {
-    expect(event.safeParse({ type: "session.bogus" }).success).toBe(false);
-  });
-
-  it("session.diverged requires ≥2 branches", () => {
-    expect(
-      sessionDivergedEvent.safeParse({
-        type: "session.diverged",
-        sessionId: "a",
-        branches: ["only-one"],
-      }).success,
-    ).toBe(false);
-  });
-});
-
-describe("command union", () => {
-  it("accepts a minimal sendPrompt (resume — no cwd)", () => {
-    expect(
-      sendPromptCommand.parse({
-        type: "sendPrompt",
-        requestId: "r1",
-        sessionId: "x",
-        text: "hi",
-      }).text,
-    ).toBe("hi");
-  });
-
-  it("accepts a sendPrompt with cwd (new-session create path)", () => {
-    expect(
-      sendPromptCommand.parse({
-        type: "sendPrompt",
-        requestId: "r2",
-        sessionId: "x",
-        text: "hi",
-        cwd: "/repo",
-      }).cwd,
-    ).toBe("/repo");
-  });
-
-  it("rejects sendPrompt missing requestId", () => {
-    expect(
-      sendPromptCommand.safeParse({
-        type: "sendPrompt",
-        sessionId: "x",
-        text: "hi",
-      }).success,
-    ).toBe(false);
-  });
-
-  it("accepts a sendPrompt with model (picker selection)", () => {
-    const r = sendPromptCommand.parse({
-      type: "sendPrompt",
-      requestId: "r3",
-      sessionId: "x",
-      text: "hi",
-      model: "claude-opus-4-7[1m]",
-    });
-    expect(r.model).toBe("claude-opus-4-7[1m]");
-  });
-
-  it("rejects approve with bad decision", () => {
-    expect(
-      approveCommand.safeParse({
-        type: "approve",
-        requestId: "x",
-        decision: "maybe",
-      }).success,
-    ).toBe(false);
-  });
-
-  it("includes deleteSession", () => {
-    expect(
-      command.parse({ type: "deleteSession", requestId: "r2", sessionId: "s" })
-        .type,
-    ).toBe("deleteSession");
-  });
-
-  it("includes streaming-session commands", () => {
-    expect(
-      command.parse({ type: "subscribe", requestId: "r1", sessionId: "s" })
-        .type,
-    ).toBe("subscribe");
-    expect(
-      command.parse({ type: "unsubscribe", requestId: "r2", sessionId: "s" })
-        .type,
-    ).toBe("unsubscribe");
-    expect(
-      command.parse({ type: "interrupt", requestId: "r3", sessionId: "s" })
-        .type,
-    ).toBe("interrupt");
-  });
-});
-
-describe("eventDelta union", () => {
-  it("parses turn lifecycle variants", () => {
-    expect(eventDelta.parse({ kind: "turn_started" }).kind).toBe(
-      "turn_started",
-    );
-    expect(eventDelta.parse({ kind: "turn_canceled" }).kind).toBe(
-      "turn_canceled",
-    );
-    expect(eventDelta.parse({ kind: "turn_failed", error: "boom" }).kind).toBe(
-      "turn_failed",
-    );
-    expect(eventDelta.parse({ kind: "turn_completed" }).kind).toBe(
-      "turn_completed",
-    );
-  });
-
-  it("turn_completed accepts optional usage stats", () => {
-    const p = eventDelta.parse({
-      kind: "turn_completed",
-      usage: { inputTokens: 100, outputTokens: 50 },
-    });
-    if (p.kind !== "turn_completed") throw new Error("unexpected kind");
-    expect(p.usage?.inputTokens).toBe(100);
-  });
-
-  it("rejects unknown kind", () => {
-    expect(eventDelta.safeParse({ kind: "garbage" }).success).toBe(false);
-  });
-});
-
-describe("streaming-session response + event frames", () => {
-  it("subscribe.response carries settled + cursor + epoch + recovered", () => {
-    const p = subscribeResponse.parse({
-      type: "subscribe.response",
-      requestId: "r1",
-      sessionId: "s",
-      settled: [],
-      cursor: 0,
-      epoch: "test-epoch",
-      recovered: false,
-    });
-    expect(p.cursor).toBe(0);
-    expect(p.epoch).toBe("test-epoch");
-    expect(p.recovered).toBe(false);
-  });
-
-  it("subscribeCommand accepts optional resume hints", () => {
-    // No resume hints — cold path.
-    const cold = subscribeCommand.parse({
-      type: "subscribe",
-      requestId: "r1",
-      sessionId: "s",
-    });
-    expect(cold.sinceCursor).toBeUndefined();
-    expect(cold.sinceEpoch).toBeUndefined();
-    // Warm path — both hints present.
-    const warm = subscribeCommand.parse({
-      type: "subscribe",
-      requestId: "r2",
-      sessionId: "s",
-      sinceCursor: 42,
-      sinceEpoch: "epoch-prev",
-    });
-    expect(warm.sinceCursor).toBe(42);
-    expect(warm.sinceEpoch).toBe("epoch-prev");
-  });
-
-  it("unsubscribe / sendPrompt / interrupt responses are minimal", () => {
-    expect(
-      unsubscribeResponse.parse({
-        type: "unsubscribe.response",
-        requestId: "r1",
-      }).requestId,
-    ).toBe("r1");
-    expect(
-      sendPromptResponse.parse({
-        type: "sendPrompt.response",
-        requestId: "r2",
-      }).requestId,
-    ).toBe("r2");
-    expect(
-      interruptResponse.parse({
-        type: "interrupt.response",
-        requestId: "r3",
-      }).requestId,
-    ).toBe("r3");
-  });
-
-  it("event frame wraps an EventDelta with sessionId + cursor", () => {
-    const p = eventFrame.parse({
-      type: "event",
-      sessionId: "s",
-      cursor: 5,
-      delta: { kind: "turn_started" },
-    });
-    expect(p.delta.kind).toBe("turn_started");
-  });
-
-  it("subscribe / unsubscribe / interrupt commands require requestId", () => {
-    expect(
-      subscribeCommand.safeParse({ type: "subscribe", sessionId: "s" }).success,
-    ).toBe(false);
-    expect(
-      unsubscribeCommand.safeParse({ type: "unsubscribe", sessionId: "s" })
-        .success,
-    ).toBe(false);
-    expect(
-      interruptCommand.safeParse({ type: "interrupt", sessionId: "s" }).success,
-    ).toBe(false);
-  });
-});
-
-describe("request/response correlation", () => {
-  it("deleteSession roundtrip", () => {
-    expect(
-      deleteSessionCommand.parse({
-        type: "deleteSession",
-        requestId: "r",
-        sessionId: "s",
-      }).requestId,
-    ).toBe(
-      deleteSessionResponse.parse({
-        type: "deleteSession.response",
-        requestId: "r",
-      }).requestId,
-    );
-  });
-});
-
 describe("hello / server_info wire-version handshake", () => {
   it("helloCommand parses with protocolVersion semver string", () => {
     const p = helloCommand.parse({
@@ -480,421 +232,68 @@ describe("error frame", () => {
   });
 });
 
-describe("clientFrame union (commands only — no application-layer handshake)", () => {
-  it("accepts ping and commands", () => {
+describe("command union", () => {
+  it("accepts the git and folder commands", () => {
+    for (const frame of [
+      { type: "getGitStatus", requestId: "r1", cwd: "/p" },
+      { type: "subscribeGitStatus", requestId: "r2", cwd: "/p" },
+      { type: "unsubscribeGitStatus", requestId: "r3", cwd: "/p" },
+      { type: "getWorkingTreeDiff", requestId: "r4", cwd: "/p" },
+      { type: "listDirectory", requestId: "r5", path: "~" },
+      { type: "getFilesystemRoots", requestId: "r6" },
+    ]) {
+      expect(command.parse(frame).type).toBe(frame.type);
+    }
+  });
+
+  it("no longer carries session commands — sessions are opencode's", () => {
+    expect(
+      command.safeParse({
+        type: "sendPrompt",
+        requestId: "r",
+        sessionId: "s",
+        text: "x",
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("clientFrame union", () => {
+  it("accepts hello, ping and commands", () => {
     expect(clientFrame.parse({ type: "ping", t: 0 }).type).toBe("ping");
     expect(
-      clientFrame.parse({
-        type: "subscribe",
-        requestId: "r1",
-        sessionId: "s",
-      }).type,
-    ).toBe("subscribe");
-    expect(
-      clientFrame.parse({
-        type: "unsubscribe",
-        requestId: "r2",
-        sessionId: "s",
-      }).type,
-    ).toBe("unsubscribe");
-    expect(
-      clientFrame.parse({
-        type: "interrupt",
-        requestId: "r3",
-        sessionId: "s",
-      }).type,
-    ).toBe("interrupt");
+      clientFrame.parse({ type: "getFilesystemRoots", requestId: "r" }).type,
+    ).toBe("getFilesystemRoots");
   });
 
   it("rejects daemon-only frames sent by a client", () => {
     expect(
-      clientFrame.safeParse({
-        type: "session.updated",
-        sessionId: "x",
-        lastModified: 0,
-      }).success,
-    ).toBe(false);
-    expect(
-      clientFrame.safeParse({
-        type: "sendPrompt.response",
-        requestId: "r",
-      }).success,
+      clientFrame.safeParse({ type: "gitStatus", cwd: "/p", status: {} })
+        .success,
     ).toBe(false);
   });
 });
 
 describe("daemonFrame union", () => {
-  it("accepts events + responses", () => {
+  it("accepts responses", () => {
     expect(
       daemonFrame.parse({
-        type: "session.updated",
-        sessionId: "s",
-        lastModified: 0,
-      }).type,
-    ).toBe("session.updated");
-    expect(
-      daemonFrame.parse({
-        type: "subscribe.response",
+        type: "listDirectory.response",
         requestId: "r",
-        sessionId: "s",
-        settled: [],
-        cursor: 0,
-        epoch: "test-epoch",
-        recovered: false,
+        path: "/p",
+        parent: "/",
+        entries: [],
       }).type,
-    ).toBe("subscribe.response");
-    expect(
-      daemonFrame.parse({
-        type: "event",
-        sessionId: "s",
-        cursor: 1,
-        delta: { kind: "turn_started" },
-      }).type,
-    ).toBe("event");
-    expect(
-      daemonFrame.parse({
-        type: "sendPrompt.response",
-        requestId: "r",
-      }).type,
-    ).toBe("sendPrompt.response");
+    ).toBe("listDirectory.response");
   });
 
   it("rejects client-only frames sent by daemon", () => {
     expect(
       daemonFrame.safeParse({
-        type: "sendPrompt",
-        sessionId: "s",
-        text: "x",
+        type: "listDirectory",
+        requestId: "r",
+        path: "~",
       }).success,
     ).toBe(false);
-  });
-});
-
-describe("setSessionSelection schemas", () => {
-  it("accepts a command with model", () => {
-    const r = setSessionSelectionCommand.parse({
-      type: "setSessionSelection",
-      requestId: "r1",
-      sessionId: "s",
-      model: "claude-opus-4-7[1m]",
-    });
-    expect(r.model).toBe("claude-opus-4-7[1m]");
-  });
-
-  it("accepts a command with no model (defensive no-op)", () => {
-    const r = setSessionSelectionCommand.parse({
-      type: "setSessionSelection",
-      requestId: "r1",
-      sessionId: "s",
-    });
-    expect(r.model).toBeUndefined();
-  });
-
-  it("response is an empty ack", () => {
-    const r = setSessionSelectionResponse.parse({
-      type: "setSessionSelection.response",
-      requestId: "r1",
-    });
-    expect(r.requestId).toBe("r1");
-  });
-
-  it("plumbs through clientFrame + daemonFrame unions", () => {
-    expect(
-      clientFrame.parse({
-        type: "setSessionSelection",
-        requestId: "r1",
-        sessionId: "s",
-        model: "x",
-      }).type,
-    ).toBe("setSessionSelection");
-    expect(
-      daemonFrame.parse({
-        type: "setSessionSelection.response",
-        requestId: "r1",
-      }).type,
-    ).toBe("setSessionSelection.response");
-  });
-});
-
-// ─── V0 image-attachment / extended-metadata schema additions ─────────────
-//
-// These tests exist mostly as a written contract — they pin down the
-// schema shape so a careless rename / field-typo in index.ts is caught
-// at test time rather than at iOS runtime. They do NOT exercise the
-// daemon emitter (Phase 2) or mobile renderer (Phase 3+) for these
-// fields; those are integration concerns.
-
-describe("imageAttachment schema", () => {
-  it("accepts JPEG with base64 data", () => {
-    expect(() =>
-      sendPromptCommand.parse({
-        type: "sendPrompt",
-        requestId: "r",
-        sessionId: "s",
-        text: "see screenshot",
-        images: [{ data: "/9j/4AAQSkZ...", mediaType: "image/jpeg" }],
-      }),
-    ).not.toThrow();
-  });
-
-  it("accepts PNG too", () => {
-    expect(() =>
-      sendPromptCommand.parse({
-        type: "sendPrompt",
-        requestId: "r",
-        sessionId: "s",
-        text: "",
-        images: [{ data: "iVBORw0KGgo...", mediaType: "image/png" }],
-      }),
-    ).not.toThrow();
-  });
-
-  it("rejects unsupported media types (heic/webp/gif)", () => {
-    expect(
-      sendPromptCommand.safeParse({
-        type: "sendPrompt",
-        requestId: "r",
-        sessionId: "s",
-        text: "x",
-        images: [{ data: "...", mediaType: "image/heic" }],
-      }).success,
-    ).toBe(false);
-  });
-
-  it("sendPrompt without images still parses (back-compat)", () => {
-    const parsed = sendPromptCommand.parse({
-      type: "sendPrompt",
-      requestId: "r",
-      sessionId: "s",
-      text: "plain text",
-    });
-    expect(parsed.images).toBeUndefined();
-  });
-});
-
-describe("user_message with images", () => {
-  it("carries images inline in timeline", () => {
-    const item = timelineItem.parse({
-      type: "user_message",
-      uuid: "m-img",
-      text: "see attached",
-      images: [{ data: "/9j/...", mediaType: "image/jpeg" }],
-    });
-    if (item.type !== "user_message") throw new Error("expected user_message");
-    expect(item.images).toHaveLength(1);
-    expect(item.images?.[0]?.mediaType).toBe("image/jpeg");
-  });
-
-  it("user_message without images still parses (back-compat)", () => {
-    const item = timelineItem.parse({
-      type: "user_message",
-      uuid: "m",
-      text: "no images here",
-    });
-    expect(item.type).toBe("user_message");
-  });
-});
-
-describe("assistant_message stopReason", () => {
-  it("null stopReason is significant — encodes user-interrupted", () => {
-    const item = timelineItem.parse({
-      type: "assistant_message",
-      uuid: "m",
-      text: "(interrupted mid-stream)",
-      stopReason: null,
-    });
-    if (item.type !== "assistant_message")
-      throw new Error("expected assistant_message");
-    // null is preserved (vs being normalized away to undefined)
-    expect(item.stopReason).toBeNull();
-  });
-
-  it("accepts every documented stop_reason enum value", () => {
-    const values = [
-      "end_turn",
-      "tool_use",
-      "max_tokens",
-      "stop_sequence",
-      "pause_turn",
-      "refusal",
-      "model_context_window_exceeded",
-    ] as const;
-    for (const v of values) {
-      expect(() =>
-        timelineItem.parse({
-          type: "assistant_message",
-          uuid: "m",
-          text: "x",
-          stopReason: v,
-        }),
-      ).not.toThrow();
-    }
-  });
-
-  it("rejects unknown stop_reason values", () => {
-    expect(
-      timelineItem.safeParse({
-        type: "assistant_message",
-        uuid: "m",
-        text: "x",
-        stopReason: "completed_normally",
-      }).success,
-    ).toBe(false);
-  });
-});
-
-describe("toolCallDetail — new V0 variants", () => {
-  function makeToolCall<T>(detail: T) {
-    return {
-      type: "tool_call" as const,
-      callId: "tu",
-      name: "X",
-      summary: "x",
-      status: "completed" as const,
-      error: null,
-      detail,
-    };
-  }
-  function parseOne(detail: unknown) {
-    return timelineItem.parse(makeToolCall(detail));
-  }
-
-  it("bash variant carries runInBackground + taskId", () => {
-    const item = parseOne({
-      type: "bash",
-      command: "pnpm dev",
-      description: "Start menubar dev server",
-      output: "",
-      runInBackground: true,
-      taskId: "b3v2ethee",
-    });
-    if (item.type !== "tool_call" || item.detail.type !== "bash")
-      throw new Error("expected bash detail");
-    expect(item.detail.runInBackground).toBe(true);
-    expect(item.detail.taskId).toBe("b3v2ethee");
-  });
-
-  it("bash without background fields still parses (back-compat)", () => {
-    expect(() =>
-      parseOne({ type: "bash", command: "ls", output: "" }),
-    ).not.toThrow();
-  });
-
-  it("agent variant", () => {
-    expect(() =>
-      parseOne({
-        type: "agent",
-        subagentType: "Explore",
-        description: "Verify SDK image persistence",
-        prompt: "Read x and report y...",
-        output: "Found that...",
-      }),
-    ).not.toThrow();
-  });
-
-  it("web_fetch variant", () => {
-    expect(() =>
-      parseOne({
-        type: "web_fetch",
-        url: "https://example.com/api",
-        prompt: "extract X",
-        output: "the extracted X",
-      }),
-    ).not.toThrow();
-  });
-
-  it("web_search variant", () => {
-    expect(() =>
-      parseOne({
-        type: "web_search",
-        query: "react native keyboard controller",
-        output: "1. Title - URL\n2. Title - URL",
-      }),
-    ).not.toThrow();
-  });
-
-  it("task_create + task_update + task_stop carry taskId", () => {
-    expect(() =>
-      parseOne({
-        type: "task_create",
-        taskId: "1",
-        subject: "Install foo",
-        activeForm: "Installing foo",
-      }),
-    ).not.toThrow();
-    expect(() =>
-      parseOne({
-        type: "task_update",
-        taskId: "1",
-        status: "in_progress",
-      }),
-    ).not.toThrow();
-    expect(() => parseOne({ type: "task_stop", taskId: "1" })).not.toThrow();
-  });
-
-  it("task_update status enum is closed", () => {
-    expect(
-      timelineItem.safeParse(
-        makeToolCall({
-          type: "task_update",
-          taskId: "1",
-          status: "in-progress", // hyphen instead of underscore
-        }),
-      ).success,
-    ).toBe(false);
-  });
-
-  it("ask_user variant carries questions + optional answers", () => {
-    expect(() =>
-      parseOne({
-        type: "ask_user",
-        questions: [
-          {
-            question: "Which font?",
-            header: "Font choice",
-            multiSelect: false,
-            options: [
-              { label: "Inter", description: "Modern sans-serif" },
-              { label: "Mono", description: "Monospace for code" },
-            ],
-          },
-        ],
-        answers: ["Inter"],
-      }),
-    ).not.toThrow();
-  });
-
-  it("schedule_wakeup variant", () => {
-    expect(() =>
-      parseOne({
-        type: "schedule_wakeup",
-        delaySeconds: 90,
-        reason: "check dev server boot",
-        prompt: "Read /tmp/.../tasks/X.output and report",
-      }),
-    ).not.toThrow();
-  });
-
-  it("monitor variant", () => {
-    expect(() =>
-      parseOne({
-        type: "monitor",
-        command: "gh pr checks 123 --watch",
-        description: "Watch PR CI status",
-        taskId: "m9k2ab",
-        output: "Started watching...",
-      }),
-    ).not.toThrow();
-  });
-
-  it("unknown variant remains the fallback for unrecognized SDK tools", () => {
-    expect(() =>
-      parseOne({
-        type: "unknown",
-        toolName: "mcp__sentry__list_errors",
-        input: { project_id: "abc" },
-        output: "no errors",
-      }),
-    ).not.toThrow();
   });
 });

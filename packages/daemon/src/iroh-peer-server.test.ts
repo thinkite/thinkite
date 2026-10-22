@@ -275,18 +275,17 @@ describe("IrohPeerServer", () => {
     await sendFrame(bi, { type: "hello", protocolVersion: PROTOCOL_VERSION });
     await readFrame(bi); // server_info
 
-    const bigPrompt = "汉字emoji🎏".repeat(20_000); // ~180k chars, multi-byte
+    const bigPath = "/汉字emoji🎏".repeat(20_000); // ~180k chars, multi-byte
     await sendFrame(bi, {
-      type: "sendPrompt",
+      type: "listDirectory",
       requestId: "big",
-      sessionId: "s1",
-      text: bigPrompt,
+      path: bigPath,
     });
     const reply = await readFrame(bi);
     expect(reply).toMatchObject({ type: "error", requestId: "big" });
     expect((reply as { message: string }).message).toHaveLength(200_000);
-    expect((captured as unknown as { text: string } | null)?.text).toBe(
-      bigPrompt,
+    expect((captured as unknown as { path: string } | null)?.path).toBe(
+      bigPath,
     );
   });
 });

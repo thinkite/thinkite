@@ -51,19 +51,24 @@ function makeDeps(
 
 describe("createCommandHandler — unsupported commands", () => {
   it("replies error/unsupported with the inbound requestId", async () => {
-    // deleteSession is reserved for V1+ (per project_sidecode_persistence
-    // memory) — router falls through to the unsupported-default branch.
+    // Session commands moved to opencode; an old client that still sends
+    // one falls through to the unsupported-default branch.
     const handler = createCommandHandler(makeDeps());
     const { ctx, sent } = makeCtx();
     await handler(
-      { type: "deleteSession", requestId: "del-1", sessionId: "s" },
+      {
+        type: "sendPrompt",
+        requestId: "send-1",
+        sessionId: "s",
+        text: "hi",
+      } as unknown as Command,
       ctx,
     );
     expect(sent[0]).toMatchObject({
       type: "error",
       code: "unsupported",
     });
-    expect((sent[0] as { requestId?: string }).requestId).toBe("del-1");
+    expect((sent[0] as { requestId?: string }).requestId).toBe("send-1");
   });
 });
 

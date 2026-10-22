@@ -1,37 +1,44 @@
-import type {
-  ImageAttachment,
-  TimelineItem,
-  ToolCallDetail,
-} from "@thinkite/protocol";
+import {
+  type PromptFile,
+  type SessionMessageInfo,
+  toolDiffs,
+  toolOutput,
+  toolSummary,
+} from "@thinkite/oc-client";
 
 /**
- * Annotate `TimelineItem[]` with render hints the FlatList rows need:
- * a stable id and a flattened shape (`{ kind: "text", role, text }` or
- * `{ kind: "tool", ... }`) so the row components dispatch on `kind`
+ * Turn opencode's transcript (`SessionMessageInfo` rows, oldest first) into
+ * the flat rows the list renders: one row per text part and one per tool
+ * call, each with a stable id, so the row components dispatch on `kind`
  * without re-discriminating the protocol union.
- *
- * Pairing tool_use+tool_result, flattening ContentBlock[], computing per-tool
- * summaries — all that lives in the daemon (Slice D, see
- * daemon/src/messages/normalize.ts). This module is purely a render-side
- * shape adapter.
  */
 
-export type RenderBlock =
-  | TextRenderBlock
-  | ToolRenderBlock
-  | CompactDividerRenderBlock;
+/** An image sent with a prompt: base64 bytes plus their media type. */
+export interface ImageAttachment {
+  data: string;
+  mediaType: string;
+}
+
+/** Picked images as prompt files: inline data URIs the service stores as-is. */
+export function toPromptFiles(
+  images: readonly ImageAttachment[] | undefined,
+): PromptFile[] {
+  return (images ?? []).map((image, i) => ({
+    uri: `data:${image.mediaType};base64,${image.data}`,
+    name: `image-${i + 1}.${image.mediaType.split("/")[1] ?? "jpg"}`,
+  }));
+}
+
+export type RenderBlock = TextRenderBlock | ToolRenderBlock | NoteRenderBlock;
 
 export interface TextRenderBlock {
   kind: "text";
-  /** Stable key for FlatList. `<itemUuid>:<itemIndex>`. */
+  /** Stable list key: `<messageId>:<partIndex>`. */
   id: string;
   role: "user" | "assistant";
   text: string;
-  /** Raw `ImageAttachment[]` (base64 + mediaType) for user-message
-   *  attachments, in the order the user picked them. Assistant messages
-   *  never carry images (model output is text + tool_use only), so this
-   *  is only populated for `role === "user"`. Render layer is responsible
-   *  for materializing these to `file://` URIs via `image-cache.ts` —
+  /** Images on a user message, in the order they were picked. The render
+   *  layer materializes them to `file://` URIs via `image-cache.ts` —
    *  Galeria's native iOS viewer can't decode `data:` URIs directly. */
   images?: ImageAttachment[];
 }
@@ -39,82 +46,194 @@ export interface TextRenderBlock {
 export interface ToolRenderBlock {
   kind: "tool";
   id: string;
-  /** Anthropic tool_use id (preserved from the wire `callId`). */
+  /** opencode's tool call id. */
   callId: string;
-  /** Raw SDK tool name (e.g. "Bash", "Edit", "WebFetch"). */
+  /** opencode tool name (`bash`, `edit`, `read`, …). */
   name: string;
-  /** Daemon-computed row object label — basename, command summary, pattern,
-   *  etc. Rendered after the past-tense verb from tool-verbs.ts. */
+  /** Row object label — a path, command or pattern. Rendered after the verb. */
   summary: string;
   status: "completed" | "failed" | "running";
-  /** Tool result error text when `status === "failed"`, null otherwise. */
+  /** Tool error text when `status === "failed"`, null otherwise. */
   error: string | null;
-  /** Server-computed structured detail; ToolBlock dispatches on `detail.type`. */
-  detail: ToolCallDetail;
+  /** What the shared tool sheet shows; it dispatches on `detail.type`. */
+  detail: ToolDetail;
 }
 
-/**
- * Visual divider rendered where the conversation was compacted.
- * Sourced ONLY from the reducer consuming a live `compact_applied`
- * EventDelta — resume can't produce one (SDK's getSessionMessages
- * strips the system-message subtype + compactMetadata needed to
- * identify boundaries on disk; see thinkite/thinkite#13). Renders
- * as a horizontal line + caption ("Context compacted · 215k → 18k").
- * The actual component lands in the next Slice 2 commit; ChatPanel's
- * renderItem currently renders a placeholder.
- */
-export interface CompactDividerRenderBlock {
-  kind: "compact_divider";
+/** A one-line system notice: compaction, a model or agent switch, a failed turn. */
+export interface NoteRenderBlock {
+  kind: "note";
   id: string;
-  trigger: "manual" | "auto";
-  preTokens: number;
-  postTokens: number;
+  text: string;
 }
 
-export function flattenToBlocks(items: readonly TimelineItem[]): RenderBlock[] {
-  return items.map((item, idx): RenderBlock => {
-    switch (item.type) {
-      case "user_message":
-        return {
-          kind: "text",
-          id: `${item.uuid}:${idx}`,
-          role: "user",
-          text: item.text,
-          images:
-            item.images && item.images.length > 0 ? item.images : undefined,
-        };
-      case "assistant_message":
-        return {
-          kind: "text",
-          id: `${item.uuid}:${idx}`,
-          role: "assistant",
-          text: item.text,
-        };
-      case "tool_call":
-        return {
-          kind: "tool",
-          id: `${item.callId}:${idx}`,
-          callId: item.callId,
-          name: item.name,
-          summary: item.summary,
-          status: item.status,
-          error: item.error,
-          detail: item.detail,
-        };
-      case "compact_divider":
-        return {
-          kind: "compact_divider",
-          id: `${item.uuid}:${idx}`,
-          trigger: item.trigger,
-          preTokens: item.preTokens,
-          postTokens: item.postTokens,
-        };
-      default: {
-        const _exhaustive: never = item;
-        throw new Error(
-          `unhandled timeline item: ${JSON.stringify(_exhaustive)}`,
-        );
-      }
+/** The tool sheet's view of a call, per family of opencode's built-in tools. */
+export type ToolDetail =
+  | { type: "bash"; command: string; description?: string; output: string }
+  | { type: "read"; filePath: string; content: string }
+  | { type: "edit"; filePath: string; unifiedDiff: string }
+  | { type: "write"; filePath: string; unifiedDiff: string }
+  | { type: "grep"; pattern: string; path?: string; output: string }
+  | { type: "glob"; pattern: string; path?: string; output: string }
+  | {
+      type: "agent";
+      subagentType: string;
+      description: string;
+      prompt: string;
+      output: string;
     }
-  });
+  | { type: "web_fetch"; url: string; output: string }
+  | { type: "web_search"; query: string; output: string }
+  | { type: "unknown"; toolName: string; input: unknown; output: string };
+
+type AssistantMessage = Extract<SessionMessageInfo, { type: "assistant" }>;
+type ToolItem = Extract<AssistantMessage["content"][number], { type: "tool" }>;
+
+const STATUS = {
+  streaming: "running",
+  running: "running",
+  completed: "completed",
+  error: "failed",
+} as const;
+
+const text = (value: unknown): string =>
+  typeof value === "string" ? value : "";
+
+function toolDetail(tool: ToolItem): ToolDetail {
+  const raw = tool.state.input;
+  const input: Record<string, unknown> =
+    raw !== null && typeof raw === "object"
+      ? (raw as Record<string, unknown>)
+      : {};
+  const output = toolOutput(tool);
+  const filePath = text(input.filePath) || text(input.path);
+  switch (tool.name) {
+    case "bash":
+      return {
+        type: "bash",
+        command: text(input.command),
+        ...(text(input.description)
+          ? { description: text(input.description) }
+          : {}),
+        output,
+      };
+    case "read":
+      return { type: "read", filePath, content: output };
+    case "edit":
+    case "write":
+    case "apply_patch":
+    case "patch":
+      return {
+        type: tool.name === "write" ? "write" : "edit",
+        filePath,
+        unifiedDiff: toolDiffs(tool)
+          .map((d) => d.patch)
+          .join("\n"),
+      };
+    case "grep":
+    case "glob":
+      return {
+        type: tool.name,
+        pattern: text(input.pattern),
+        ...(text(input.path) ? { path: text(input.path) } : {}),
+        output,
+      };
+    case "task":
+      return {
+        type: "agent",
+        subagentType: text(input.subagent_type),
+        description: text(input.description),
+        prompt: text(input.prompt),
+        output,
+      };
+    case "webfetch":
+      return { type: "web_fetch", url: text(input.url), output };
+    case "websearch":
+      return { type: "web_search", query: text(input.query), output };
+    default:
+      return { type: "unknown", toolName: tool.name, input: raw, output };
+  }
+}
+
+function toolBlock(tool: ToolItem, id: string): ToolRenderBlock {
+  return {
+    kind: "tool",
+    id,
+    callId: tool.id,
+    name: tool.name,
+    summary: toolSummary(tool),
+    status: STATUS[tool.state.status],
+    error: tool.state.status === "error" ? tool.state.error.message : null,
+    detail: toolDetail(tool),
+  };
+}
+
+function images(message: SessionMessageInfo): ImageAttachment[] | undefined {
+  if (message.type !== "user" || message.files === undefined) return undefined;
+  const out = message.files.flatMap((f) =>
+    "data" in f && typeof f.data === "string" && f.mime.startsWith("image/")
+      ? [{ data: f.data, mediaType: f.mime }]
+      : [],
+  );
+  return out.length > 0 ? out : undefined;
+}
+
+export function flattenToBlocks(
+  messages: readonly SessionMessageInfo[],
+): RenderBlock[] {
+  const blocks: RenderBlock[] = [];
+  const note = (id: string, value: string) =>
+    blocks.push({ kind: "note", id, text: value });
+  for (const message of messages) {
+    switch (message.type) {
+      case "user":
+        blocks.push({
+          kind: "text",
+          id: `${message.id}:0`,
+          role: "user",
+          text: message.text,
+          ...(images(message) ? { images: images(message) } : {}),
+        });
+        break;
+      case "assistant":
+        message.content.forEach((item, index) => {
+          const id = `${message.id}:${index}`;
+          if (item.type === "text") {
+            if (item.text !== "")
+              blocks.push({
+                kind: "text",
+                id,
+                role: "assistant",
+                text: item.text,
+              });
+          } else if (item.type === "tool") {
+            blocks.push(toolBlock(item, id));
+          }
+          // Reasoning stays hidden on the phone.
+        });
+        if (message.error !== undefined)
+          note(`${message.id}:error`, message.error.message);
+        break;
+      case "compaction":
+        note(
+          message.id,
+          message.status === "running"
+            ? "Compacting context…"
+            : "Context compacted",
+        );
+        break;
+      case "model-switched":
+        note(message.id, `Model: ${message.model.id}`);
+        break;
+      case "agent-switched":
+        note(message.id, `Agent: ${message.agent}`);
+        break;
+      case "shell":
+        note(message.id, `$ ${message.command}`);
+        break;
+      // Turn boundaries and service-side notes the phone does not show.
+      default:
+        break;
+    }
+  }
+  return blocks;
 }

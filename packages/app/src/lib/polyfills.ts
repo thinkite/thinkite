@@ -3,13 +3,10 @@
  *
  * Import this FIRST in app/_layout.tsx (before anything else) so the
  * standards-based crypto globals exist before any consumer touches them —
- * `@noble/ed25519` identity key gen and, notably, TanStack DB, which ids
- * every optimistic mutation via the global `crypto.randomUUID()`
- * (createTransaction → Transaction#constructor).
+ * `@noble/ed25519` identity key gen and oc-client's message ids.
  *
- * Why global rather than calling expo-crypto at each call site: the
- * `crypto.randomUUID()` calls live inside @tanstack/db itself (a call site
- * we don't control), and the library exposes no id-generator injector.
+ * Why global rather than calling expo-crypto at each call site: those
+ * call sites live inside libraries we don't control.
  * `crypto.getRandomValues` / `crypto.randomUUID` are Web Crypto platform
  * standards present in browsers / Node 19+ / Deno / Bun; Hermes is the
  * outlier, so we polyfill to match the contract libraries expect — exactly

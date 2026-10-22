@@ -1,5 +1,5 @@
 // Must be first: installs the global crypto polyfills (getRandomValues +
-// randomUUID) before any consumer — ed25519 identity, TanStack DB — runs.
+// randomUUID) before any consumer — ed25519 identity, oc-client ids — runs.
 import "@/lib/polyfills";
 import "@/global.css";
 import { BottomSheetProvider } from "@swmansion/react-native-bottom-sheet";

@@ -1,5 +1,4 @@
-import { parseModelRef } from "@thinkite/oc-client";
-import type { ImageAttachment } from "@thinkite/protocol";
+import type { ModelRef } from "@thinkite/oc-client";
 import { router, Stack } from "expo-router";
 import { useCallback } from "react";
 import { Alert, Pressable, Text, View } from "react-native";
@@ -13,6 +12,7 @@ import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { useDrawerUI } from "@/lib/drawer-ui";
 import { ocStore } from "@/lib/oc";
+import { type ImageAttachment, toPromptFiles } from "@/lib/transcript-blocks";
 
 /**
  * (drawer)/(stack)/index — new-session create page, URL `/`. Lives inside
@@ -36,16 +36,14 @@ import { ocStore } from "@/lib/oc";
  *      shows a "Select a project" placeholder + chevron; tap opens the
  *      cwd picker. Send button stays disabled until cwd resolves.
  *
- * Flow on first send (stage 3b-1: opencode over the iroh HTTP tunnel):
+ * Flow on first send (opencode over the iroh HTTP tunnel):
  *   1. `ocStore.createSession({ directory: cwd })` on the daemon's
  *      opencode — it mints the canonical `ses_*` id.
  *   2. Send the first prompt through the store, which shows it at once
  *      under a client-minted `msg_*` id. A failed prompt still leaves a
  *      valid empty session to type into.
- *   3. `router.replace("/session/[cliSessionId]")` with the `ses_*` id.
- *      Until 3b-2 the detail screen runs the old daemon-RPC transcript
- *      path, finds nothing for that id, and shows its empty state — the
- *      session row is still live in the drawer list.
+ *   3. `router.replace("/session/[sessionID]")` with the `ses_*` id; the
+ *      store already holds the session and its optimistic first prompt.
  */
 export default function NewSessionScreen() {
   const { openDrawer } = useDrawerUI();
@@ -58,14 +56,12 @@ export default function NewSessionScreen() {
   const cwd = lastUsedCwd ?? roots?.recentCwds[0]?.path ?? undefined;
   const setLastUsedCwd = useSetLastUsedCwd();
 
-  // Raw send — invoked for non-slash text AND for whitelisted
-  // passthrough commands (/init, /review). On new-session only those
-  // two passthrough commands are reachable; intercept commands aren't
-  // in the new-session picker so the slash hook never dispatches
-  // /clear or /model from here. Images are not admitted yet on this
-  // path (3b-2), so only `text` rides out on the prompt.
   const rawSend = useCallback(
-    (text: string, _images: ImageAttachment[] | undefined, model: string) => {
+    (
+      text: string,
+      images: ImageAttachment[] | undefined,
+      model: ModelRef | null,
+    ) => {
       if (cwd === undefined) {
         // Placeholder state — user hasn't picked and there's no
         // recent history to fall back on. InputBar.canSend already
@@ -80,19 +76,17 @@ export default function NewSessionScreen() {
         try {
           const session = await ocStore.createSession({
             directory: cwd,
-            // The input bar's picker still lists Claude ids until 3b-2;
-            // only a `provider/model` ref is meaningful to opencode — a
-            // bare id parses to `{providerID: id, id: ""}` and the runner
-            // fails the turn with ModelUnavailable (seen live). Omit it
-            // and let opencode pick its default.
-            ...(model.includes("/") ? { model: parseModelRef(model) } : {}),
+            // No pick = the service's default model.
+            ...(model !== null ? { model } : {}),
           });
-          ocStore.prompt(session.id, text).catch((err: unknown) => {
-            console.warn("[new-session] first prompt failed:", err);
-          });
+          ocStore
+            .prompt(session.id, text, { files: toPromptFiles(images) })
+            .catch((err: unknown) => {
+              console.warn("[new-session] first prompt failed:", err);
+            });
           router.replace({
-            pathname: "/session/[cliSessionId]",
-            params: { cliSessionId: session.id, cwd },
+            pathname: "/session/[sessionID]",
+            params: { sessionID: session.id, cwd },
           });
         } catch (err) {
           Alert.alert(
@@ -169,7 +163,7 @@ export default function NewSessionScreen() {
               onPress={openCwdPicker}
               showChanges={false}
             />
-            <InputBar cliSessionId={null} onSend={rawSend} />
+            <InputBar sessionID={null} onSend={rawSend} />
           </View>
         </KeyboardAvoidingView>
       </View>

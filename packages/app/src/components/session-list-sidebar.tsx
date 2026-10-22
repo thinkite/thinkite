@@ -73,8 +73,8 @@ export function SessionListSidebar() {
   // Params (not Local: the sidebar isn't a route screen) re-renders this on
   // nav, but the parent already re-renders on every drawer toggle via
   // useDrawerUI, so on the drawer-switch path it costs nothing extra.
-  const { cliSessionId: activeSessionId } = useGlobalSearchParams<{
-    cliSessionId?: string;
+  const { sessionID: activeSessionId } = useGlobalSearchParams<{
+    sessionID?: string;
   }>();
 
   // Full floating-header band = status-bar inset + content height. Shared with
@@ -103,13 +103,11 @@ export function SessionListSidebar() {
   // Drawer-style switching uses `router.replace` not `push`: tapping a
   // session in the sidebar should swap the active screen, not accumulate a
   // back stack of session instances. With `push`, switching A → B → A
-  // builds Stack [A, B, A] (because the inner Stack's [cliSessionId] route
+  // builds Stack [A, B, A] (because the inner Stack's [sessionID] route
   // treats different params as different instances by default), and the
   // user gets a back chevron in the UINavigationBar that pops to a session
   // they don't expect to "go back" to.
   const setLastUsedCwd = useSetLastUsedCwd();
-  // The route param keeps its `cliSessionId` name until 3b-2; it now
-  // carries the opencode `ses_*` id.
   const handleOpenSession = (session: SessionRowData) => {
     // Tapping the already-open session: just close the drawer. router.replace
     // to the same path-param route still mints a fresh route key → remounts
@@ -129,16 +127,12 @@ export function SessionListSidebar() {
     // frame-deferral needed.
     closeDrawer(session.id);
     router.replace({
-      pathname: "/session/[cliSessionId]",
+      pathname: "/session/[sessionID]",
       params: {
-        cliSessionId: session.id,
-        // No title param — the detail screen reads it from the session's
-        // collection row (filtered live query), so it stays correct as
-        // the daemon's canonical title lands.
-        //
-        // Pass cwd so the session screen can hand it to sendPrompt — the
-        // SDK derives the project key from cwd to locate the JSONL for
-        // `claude --resume`.
+        sessionID: session.id,
+        // No title param — the detail screen reads it from the store, so it
+        // stays correct as opencode's title lands. cwd feeds the screen's
+        // git status bar.
         cwd: session.directory,
       },
     });
@@ -243,8 +237,8 @@ function Body({
   // re-render every time the active route changes.
   const query = useSessions();
   const sessions = query.data ?? [];
-  const { cliSessionId: activeCliSessionId } = useGlobalSearchParams<{
-    cliSessionId?: string;
+  const { sessionID: activeSessionID } = useGlobalSearchParams<{
+    sessionID?: string;
   }>();
 
   // Day-grouped sections. Memoized so the linear bucketing only re-runs when
@@ -294,7 +288,7 @@ function Body({
         <SessionRow
           session={item}
           onPress={onOpenSession}
-          isActive={item.id === activeCliSessionId}
+          isActive={item.id === activeSessionID}
         />
       )}
       renderSectionHeader={({ section }) => (

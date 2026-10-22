@@ -126,10 +126,6 @@ export default function SettingsIndexScreen() {
           {__DEV__ && (
             <Section title="Developer">
               <DisclosureRow
-                label="KeyboardExtender spike"
-                onPress={() => router.push("/dev/keyboard-extender")}
-              />
-              <DisclosureRow
                 label="iroh probe"
                 onPress={() => router.push("/dev/iroh")}
               />

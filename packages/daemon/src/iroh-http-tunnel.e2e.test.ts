@@ -202,7 +202,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 }
 
 runIf("iroh http tunnel (registered opencode service)", () => {
-  it("health → create → prompt+SSE → abort → fresh SSE → messages → delete", {
+  it("info → create → prompt+SSE → abort → fresh SSE → messages → delete", {
     timeout: 300_000,
   }, async () => {
     const upstream = await discoverOpencode();
@@ -248,20 +248,27 @@ runIf("iroh http tunnel (registered opencode service)", () => {
       const tunnel = await connectIrohHttp(clientEp, dialAddr(server), log);
       client = tunnel;
 
-      // 1. health through the tunnel: credentials are injected daemon-side,
+      // 1. info through the tunnel: credentials are injected daemon-side,
       //    the client sends none, and the answer is the registered pid.
-      const health = await tunnel.request("GET", "/api/health");
-      expect(health.status, health.text).toBe(200);
-      expect((health.json() as { pid?: number }).pid).toBe(upstream.pid);
-      log(`health 200 (opencode ${upstream.version})`);
+      const info = await tunnel.request("GET", "/api/info");
+      expect(info.status, info.text).toBe(200);
+      expect((info.json() as { pid?: number }).pid).toBe(upstream.pid);
+      log(`info 200 (opencode ${upstream.version})`);
 
       // 2. v2 surface present.
       const list = await client.request("GET", "/api/session?limit=1");
       expect(list.status, list.text.slice(0, 200)).toBe(200);
 
-      // 3. create the scratch session (service default model).
+      // 3. create the scratch session on a free model (MODEL overrides).
+      const [providerID, ...modelID] = (
+        process.env.MODEL ?? "opencode/deepseek-v4.1-flash-free"
+      ).split("/");
       const created = await client.request("POST", "/api/session", {
-        body: { title: "iroh http e2e", location: { directory: dir } },
+        body: {
+          title: "iroh http e2e",
+          location: { directory: dir },
+          model: { providerID, id: modelID.join("/") },
+        },
       });
       expect(created.status, created.text.slice(0, 200)).toBe(200);
       sid = (created.json() as { data: { id: string } }).data.id;

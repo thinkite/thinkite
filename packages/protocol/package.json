@@ -1,9 +1,9 @@
 {
   "name": "@thinkite/protocol",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "Apache-2.0",
-  "description": "Wire protocol shared between sidecode daemon and clients",
+  "description": "Wire protocol between the Thinkite daemon and its clients",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

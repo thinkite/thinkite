@@ -26,7 +26,7 @@ const CARD_RADIUS = Platform.OS === "ios" ? 53 : 0;
  *
  * Sole child is the `(stack)` group (see ./(stack)/_layout.tsx) — its
  * inner Stack contains both the new-session page (`index` → URL `/`) and
- * the detail page (`session/[cliSessionId]` → URL `/session/<id>`). All
+ * the detail page (`session/[sessionID]` → URL `/session/<id>`). All
  * app navigation happens inside that Stack via `router.replace`. The
  * `(stack)` group is invisible in URLs, so cold launch lands on `/` (the
  * new-session page) directly without any redirect.

@@ -4,7 +4,7 @@ import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 /**
  * `(stack)` — invisible route group whose only purpose is to wrap the
  * new-session page (`index` → URL `/`) and the detail page
- * (`session/[cliSessionId]` → URL `/session/<id>`) in a shared Stack.
+ * (`session/[sessionID]` → URL `/session/<id>`) in a shared Stack.
  *
  * Both screens share this Stack so they get a real UIKit
  * `UINavigationBar` (rendered via react-native-screens) instead of
@@ -53,7 +53,7 @@ export default function StackLayout() {
         }}
       >
         <Stack.Screen name="index" />
-        <Stack.Screen name="session/[cliSessionId]" />
+        <Stack.Screen name="session/[sessionID]" />
       </Stack>
     </ToolCallSheetProvider>
   );

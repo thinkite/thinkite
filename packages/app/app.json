@@ -10,10 +10,7 @@
     "ios": {
       "icon": "./assets/thinkite.icon",
       "bundleIdentifier": "dev.thinkite.ios",
-      "associatedDomains": [
-        "applinks:sidecode.app",
-        "applinks:thinkite.dev"
-      ],
+      "associatedDomains": ["applinks:sidecode.app", "applinks:thinkite.dev"],
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
