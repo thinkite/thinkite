@@ -61,16 +61,8 @@ export function TerminalPanel({
             </TabList>
           ) : null}
         </div>
-        <Button
-          label="New terminal"
-          tooltip="New terminal"
-          icon={<Icon icon={PlusIcon} size="sm" />}
-          isIconOnly
-          variant="ghost"
-          size="sm"
-          isDisabled={open.length >= MAX_TERMINALS}
-          onClick={add}
-        />
+        {/* + stays at the end, where it is with no terminals: × comes and
+            goes to its left, never under a pointer that just pressed +. */}
         {open.length > 0 ? (
           <Button
             label="Close terminal"
@@ -82,6 +74,16 @@ export function TerminalPanel({
             onClick={() => closeTerminal(sessionId, active)}
           />
         ) : null}
+        <Button
+          label="New terminal"
+          tooltip="New terminal"
+          icon={<Icon icon={PlusIcon} size="sm" />}
+          isIconOnly
+          variant="ghost"
+          size="sm"
+          isDisabled={open.length >= MAX_TERMINALS}
+          onClick={add}
+        />
       </div>
       {open.length === 0 ? (
         <div className="flex flex-1 items-center justify-center">
