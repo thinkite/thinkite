@@ -51,7 +51,7 @@ export function materializeImagesSync(
     const file = new File(CACHE_DIR, `${cacheKey(img.data)}.${ext}`);
     if (!file.exists) {
       file.create();
-      file.write(img.data, { encoding: "base64" });
+      file.writeSync(img.data, { encoding: "base64" });
     }
     return file.uri;
   });

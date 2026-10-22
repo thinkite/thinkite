@@ -16,7 +16,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { ImageAttachment } from "@thinkite/protocol";
 import * as Crypto from "expo-crypto";
 import { useHeaderHeight } from "expo-router/react-navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type ComponentRef,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   useColorScheme,
   useWindowDimensions,
@@ -144,7 +150,7 @@ export function ChatPanel({
         : undefined,
     [fontScale],
   );
-  const composerRef = useRef<View>(null);
+  const composerRef = useRef<ComponentRef<typeof View>>(null);
   const isDark = useColorScheme() === "dark";
   // Tap the workspace status bar → open the working-tree diff in the shared
   // sheet (the provider wraps this screen, see session/[cliSessionId].tsx).
