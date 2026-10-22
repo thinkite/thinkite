@@ -5,27 +5,31 @@ import {
   SideNavItem,
   SideNavSection,
 } from "@astryxdesign/core/SideNav";
+import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import type { SessionInfo } from "@thinkite/oc-client";
+import { isUnread, type SessionInfo } from "@thinkite/oc-client";
 import {
   useConnectionStatus,
+  useFailed,
   useRunning,
   useSessions,
+  useWaiting,
 } from "@thinkite/oc-client/react";
 import { PanelLeftCloseIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ocClient, ocStore } from "../lib/oc";
 import { settingsOpen, updatePrefs } from "../lib/prefs";
+import { UNREAD_SINCE } from "../lib/unread";
 
 // Global session sidebar. Content after wisp's — a "New session" action,
 // root sessions grouped by how long ago they were last active, one line
 // each, the service's status at the bottom — laid out after DeepSeek
 // Harness's: 280px wide (264–420), a full-width bordered New session
 // button, and a status slot at the start of every row so titles line up.
-// Rows come from the store, so new sessions, titles and busy flags appear
-// live.
+// Rows come from the store, so new sessions, titles and each row's status
+// (waiting for you, working, failed, new reply) appear live.
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -63,11 +67,38 @@ function useServiceStatus(): { ok: boolean; label: string } {
   return { ok: false, label: "Connecting…" };
 }
 
-/** A fixed slot at the row's start: a dot while the session works. */
-function RowStatus({ running }: { running: boolean }) {
+type RowState = "waiting" | "running" | "failed" | "unread";
+
+/** What the row's status slot shows, most urgent first: a permission
+ *  request or question waiting (on the session or a subagent of it), a
+ *  turn in flight, then a finished turn not looked at yet — failed or not. */
+function rowState(
+  s: SessionInfo,
+  waiting: ReadonlySet<string>,
+  running: ReadonlySet<string>,
+  failed: Readonly<Record<string, true>>,
+): RowState | null {
+  if (waiting.has(s.id)) return "waiting";
+  if (running.has(s.id)) return "running";
+  if (!isUnread(s, UNREAD_SINCE)) return null;
+  return failed[s.id] ? "failed" : "unread";
+}
+
+/** A fixed slot at the row's start, so titles line up. */
+function RowStatus({ state }: { state: RowState | null }) {
   return (
     <span className="inline-flex size-4 items-center justify-center">
-      {running ? <StatusDot variant="success" label="Working" /> : null}
+      {state === "waiting" ? (
+        <StatusDot variant="warning" label="Waiting for you" />
+      ) : state === "running" ? (
+        <span className="inline-flex" title="Working">
+          <Spinner size="sm" shade="subtle" />
+        </span>
+      ) : state === "failed" ? (
+        <StatusDot variant="error" label="Failed" />
+      ) : state === "unread" ? (
+        <StatusDot variant="accent" label="New reply" />
+      ) : null}
     </span>
   );
 }
@@ -76,6 +107,8 @@ export function SessionSidebar() {
   const navigate = useNavigate();
   const sessions = useSessions(ocStore);
   const running = useRunning(ocStore);
+  const waiting = useWaiting(ocStore);
+  const failed = useFailed(ocStore);
   const service = useServiceStatus();
 
   // The sidebar sits outside the route tree, so the open session comes off
@@ -171,7 +204,7 @@ export function SessionSidebar() {
                   params: { sessionId: s.id },
                 })
               }
-              icon={<RowStatus running={running.has(s.id)} />}
+              icon={<RowStatus state={rowState(s, waiting, running, failed)} />}
             />
           ))}
         </SideNavSection>

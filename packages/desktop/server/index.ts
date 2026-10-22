@@ -158,6 +158,14 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify(daemon.createPairOffer(hostname())));
       return;
     }
+    if (url.pathname === "/api/badge" && req.method === "POST") {
+      // The Dock badge: how many sessions wait on the user (sidebar).
+      const count = Number(url.searchParams.get("count") ?? 0);
+      app.setBadgeCount(Number.isInteger(count) && count > 0 ? count : 0);
+      res.writeHead(204);
+      res.end();
+      return;
+    }
     if (url.pathname === "/api/pair/window" && req.method === "POST") {
       // Settings › Pairing's button. Pairing stays the pair window's job:
       // admission is open exactly while that window is visible.

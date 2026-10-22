@@ -8,12 +8,14 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
+import { useWaiting } from "@thinkite/oc-client/react";
 import { PanelLeftOpenIcon, SquarePenIcon } from "lucide-react";
 import { type CSSProperties, useEffect } from "react";
 import { PierrePool } from "../components/PierrePool";
 import { SessionSidebar } from "../components/SessionSidebar";
 import { Settings } from "../components/settings/Settings";
 import { isDesktopShell } from "../lib/desktop-shell";
+import { ocStore } from "../lib/oc";
 import { prefs, settingsOpen, updatePrefs } from "../lib/prefs";
 
 // Routes that render in their OWN BrowserWindow (tray-opened dialogs) —
@@ -112,8 +114,21 @@ function LeadingSeat() {
   );
 }
 
+/** The Dock badge counts the sessions waiting for an answer from the user
+ *  (a permission request or a question, theirs or a subagent's). */
+function useDockBadge() {
+  const waiting = useWaiting(ocStore).size;
+  useEffect(() => {
+    if (!isDesktopShell) return;
+    void fetch(`/api/badge?count=${waiting}`, { method: "POST" }).catch(
+      () => {},
+    );
+  }, [waiting]);
+}
+
 function RootChrome() {
   useAppShortcuts();
+  useDockBadge();
   // Collapsed means gone, not a rail: AppShell takes no sideNav, and the
   // top rows start after the seat (two 28px buttons and a gap).
   const collapsed = useSelector(prefs, (p) => p.sidebar.collapsed);

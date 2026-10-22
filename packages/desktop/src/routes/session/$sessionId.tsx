@@ -117,6 +117,18 @@ function Session({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     draftForSession.delete(sessionId);
   }, [sessionId]);
+  // A finished turn counts as seen once its session is on screen in the
+  // focused window (the sidebar's "new reply" dot goes, on every client).
+  const idle = session?.time.idle;
+  useEffect(() => {
+    if (idle === undefined) return;
+    const mark = () => {
+      if (document.hasFocus()) ocStore.markViewed(sessionId);
+    };
+    mark();
+    window.addEventListener("focus", mark);
+    return () => window.removeEventListener("focus", mark);
+  }, [sessionId, idle]);
   const [sendError, setSendError] = useState<string | null>(null);
   // The just-sent prompt's id — TranscriptPanel pins that row near the top
   // while the reply streams below it (anchoredEndSpace). iOS ChatPanel

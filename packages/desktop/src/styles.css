@@ -69,8 +69,7 @@ html[data-desktop-shell] [data-window-drag] {
 /* While a menu, popover or dialog is open, the drag rows stand down: a
    press on a drag row never reaches the page, so it couldn't light-dismiss
    what is open (the title bar's "…" menu stayed up). */
-html[data-desktop-shell]:has(:popover-open, dialog[open])
-  [data-window-drag] {
+html[data-desktop-shell]:has(:popover-open, dialog[open]) [data-window-drag] {
   -webkit-app-region: no-drag;
 }
 
