@@ -289,48 +289,52 @@ function Session({ sessionId }: { sessionId: string }) {
   if (session === undefined) return null;
 
   return (
-    <Layout
-      height="fill"
-      content={
-        <LayoutContent padding={0}>
-          <div className="flex h-full min-h-0 flex-col">
-            {/* Title bar after DeepSeek Harness's, no rule under it: the
-                title and its "…" menu of session actions, where opencode
-                desktop puts them. */}
-            <SessionTitle
-              session={session}
-              trailing={
-                <ToggleButtonGroup
-                  label="Session panel"
-                  size="sm"
-                  value={surface}
-                  onChange={pick}
-                >
-                  <ToggleButton
-                    value="info"
-                    label="Session info"
-                    isIconOnly
-                    tooltip="Session info"
-                    icon={<Icon icon={LayoutListIcon} size="sm" />}
-                  />
-                  <ToggleButton
-                    value="terminal"
-                    label="Terminal"
-                    isIconOnly
-                    tooltip="Terminal"
-                    icon={<Icon icon={TerminalIcon} size="sm" />}
-                  />
-                  <ToggleButton
-                    value="diff"
-                    label="Diff"
-                    isIconOnly
-                    tooltip="Diff"
-                    icon={<Icon icon={FileDiffIcon} size="sm" />}
-                  />
-                </ToggleButtonGroup>
-              }
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Title bar after DeepSeek Harness's, no rule under it: the
+          title and its "…" menu of session actions, where opencode
+          desktop puts them, and the panel buttons. It runs the full
+          width over the panel too, as Claude Code's does, so the whole
+          top row drags the window. */}
+      <SessionTitle
+        session={session}
+        trailing={
+          <ToggleButtonGroup
+            label="Session panel"
+            size="sm"
+            value={surface}
+            onChange={pick}
+          >
+            <ToggleButton
+              value="info"
+              label="Session info"
+              isIconOnly
+              tooltip="Session info"
+              icon={<Icon icon={LayoutListIcon} size="sm" />}
             />
-            {/* Self-owned transcript shell: the LegendList inside
+            <ToggleButton
+              value="terminal"
+              label="Terminal"
+              isIconOnly
+              tooltip="Terminal"
+              icon={<Icon icon={TerminalIcon} size="sm" />}
+            />
+            <ToggleButton
+              value="diff"
+              label="Diff"
+              isIconOnly
+              tooltip="Diff"
+              icon={<Icon icon={FileDiffIcon} size="sm" />}
+            />
+          </ToggleButtonGroup>
+        }
+      />
+      <div className="min-h-0 flex-1">
+        <Layout
+          height="fill"
+          content={
+            <LayoutContent padding={0}>
+              <div className="flex h-full min-h-0 flex-col">
+                {/* Self-owned transcript shell: the LegendList inside
                 TranscriptPanel is the single scroll writer (landing, follow,
                 scroll button); the composer is a plain flex sibling — no
                 ChatLayout, so nothing else ever touches scrollTop. The whole
@@ -340,15 +344,15 @@ function Session({ sessionId }: { sessionId: string }) {
                 Composer slots stay reserved for their rightful owners
                 (headerContext = context usage, drawer = attachments); the
                 git status bar will wrap this composer in a stack. */}
-            <div className="flex min-h-0 flex-1 flex-col">
-              <div className="relative min-h-0 flex-1">
-                <TranscriptPanel
-                  sessionId={sessionId}
-                  isRunning={running}
-                  anchorUuid={anchorUuid}
-                  actions={actions}
-                />
-                {/* Fade the scrolled content into the actual backdrop just
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <div className="relative min-h-0 flex-1">
+                    <TranscriptPanel
+                      sessionId={sessionId}
+                      isRunning={running}
+                      anchorUuid={anchorUuid}
+                      actions={actions}
+                    />
+                    {/* Fade the scrolled content into the actual backdrop just
                     above the composer. `to-surface` (astryx tailwind bridge)
                     = --color-background-surface — what AppShell's content
                     section paints behind the transcript (measured): white in
@@ -356,98 +360,102 @@ function Session({ sessionId }: { sessionId: string }) {
                     so a hardcoded white (or card's darker #1b1b1b) would
                     streak in dark mode. Sits below the scroll button (z-10),
                     scroll-transparent. */}
-                <div className="chat-col pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-linear-to-b from-transparent to-surface" />
-              </div>
-              {/* composer-col = the reading column with half its padding
+                    <div className="chat-col pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-linear-to-b from-transparent to-surface" />
+                  </div>
+                  {/* composer-col = the reading column with half its padding
                   (styles.css): the card sits 32px wider than the text. */}
-              <div className="composer-col shrink-0 pb-4">
-                {prompt ?? (
-                  <Composer
-                    directory={session?.location.directory ?? null}
-                    value={draft}
-                    onChange={setDraft}
-                    onSend={send}
-                    onCommand={runCommand}
-                    builtins={builtins}
-                    accepts={inputsOf(modelInfo)}
-                    onStop={stop}
-                    isStopShown={running}
-                    placeholder={running ? "Queue a message…" : PLACEHOLDER}
-                    error={sendError}
-                    footerActions={
-                      <>
-                        <ModelPicker
-                          value={currentModel}
-                          onChange={pickModel}
-                        />
-                        <VariantPicker
-                          model={modelInfo}
-                          value={currentVariant}
-                          onChange={pickVariant}
-                        />
-                      </>
-                    }
-                  />
-                )}
+                  <div className="composer-col shrink-0 pb-4">
+                    {prompt ?? (
+                      <Composer
+                        directory={session?.location.directory ?? null}
+                        value={draft}
+                        onChange={setDraft}
+                        onSend={send}
+                        onCommand={runCommand}
+                        builtins={builtins}
+                        accepts={inputsOf(modelInfo)}
+                        onStop={stop}
+                        isStopShown={running}
+                        placeholder={running ? "Queue a message…" : PLACEHOLDER}
+                        error={sendError}
+                        footerActions={
+                          <>
+                            <ModelPicker
+                              value={currentModel}
+                              onChange={pickModel}
+                            />
+                            <VariantPicker
+                              model={modelInfo}
+                              value={currentVariant}
+                              onChange={pickVariant}
+                            />
+                          </>
+                        }
+                      />
+                    )}
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-        </LayoutContent>
-      }
-      end={
-        <>
-          {surface !== null && (
-            <ResizeHandle
-              direction="horizontal"
-              hasDivider
-              isReversed
-              isAlwaysVisible={false}
-              resizable={rightPanel.props}
-              label="Resize session panel"
-            />
-          )}
-          {/* Panel body — width-zeroed when closed. The terminal and diff
+            </LayoutContent>
+          }
+          end={
+            <>
+              {surface !== null && (
+                <ResizeHandle
+                  direction="horizontal"
+                  hasDivider
+                  isReversed
+                  isAlwaysVisible={false}
+                  resizable={rightPanel.props}
+                  label="Resize session panel"
+                />
+              )}
+              {/* Panel body — width-zeroed when closed. The terminal and diff
               stay mounted once opened (terminal buffer) and hide while
               another view shows. Plain div rather than LayoutPanel so
               closing doesn't unmount children. */}
-          <div
-            style={{
-              width: surface === null ? 0 : rightPanel.size,
-              flexShrink: 0,
-              overflow: "hidden",
-              height: "100%",
-            }}
-          >
-            {surface === "info" ? (
-              <InfoPanel
-                session={session}
-                isRunning={running}
-                onOpenDiff={() => pick("diff")}
-              />
-            ) : null}
-            {terminalVisited ? (
               <div
-                className={
-                  surface === "terminal" ? "h-full min-h-0 p-2" : "hidden"
-                }
+                style={{
+                  width: surface === null ? 0 : rightPanel.size,
+                  flexShrink: 0,
+                  overflow: "hidden",
+                  height: "100%",
+                }}
               >
-                <TerminalPane
-                  sessionId={sessionId}
-                  cwd={session.location.directory}
-                />
+                {surface === "info" ? (
+                  <InfoPanel
+                    session={session}
+                    isRunning={running}
+                    onOpenDiff={() => pick("diff")}
+                  />
+                ) : null}
+                {terminalVisited ? (
+                  <div
+                    className={
+                      surface === "terminal" ? "h-full min-h-0 p-2" : "hidden"
+                    }
+                  >
+                    <TerminalPane
+                      sessionId={sessionId}
+                      cwd={session.location.directory}
+                    />
+                  </div>
+                ) : null}
+                {diffVisited ? (
+                  <div
+                    className={surface === "diff" ? "h-full min-h-0" : "hidden"}
+                  >
+                    <DiffPanel
+                      active={surface === "diff"}
+                      dir={session.location.directory}
+                    />
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-            {diffVisited ? (
-              <div className={surface === "diff" ? "h-full min-h-0" : "hidden"}>
-                <DiffPanel
-                  active={surface === "diff"}
-                  dir={session.location.directory}
-                />
-              </div>
-            ) : null}
-          </div>
-        </>
-      }
-    />
+            </>
+          }
+        />
+      </div>
+    </div>
   );
 }
