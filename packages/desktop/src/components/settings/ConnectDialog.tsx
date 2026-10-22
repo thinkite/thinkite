@@ -333,6 +333,9 @@ export function ConnectDialog({
 
   const finish = (integration: IntegrationInfo) => {
     attempt.current = null;
+    // Off the sign-in step, so nothing keeps polling a finished attempt
+    // (the dialog stays mounted while closed).
+    setStep({ kind: "pick" });
     catalogVersion.set((v) => v + 1);
     showToast({
       body: `${integration.name} connected. Its models are now available to use.`,
@@ -424,32 +427,35 @@ export function ConnectDialog({
     return cancelAttempt;
   }, [isOpen, startID]);
 
-  // An automatic sign-in finishes on the service: poll it each second.
-  const signin = step.kind === "signin" ? step : null;
+  // An automatic sign-in finishes on the service: poll it each second
+  // while the dialog is open, and stop at the first final status, which
+  // the service keeps reporting afterwards.
+  const signin = isOpen && step.kind === "signin" ? step : null;
   useEffect(() => {
     if (signin === null || signin.attempt?.mode !== "auto") return;
     const { integration, method } = signin;
     const attemptID = signin.attempt.attemptID;
     let stopped = false;
+    const stop = () => {
+      stopped = true;
+      clearInterval(timer);
+    };
     const timer = setInterval(() => {
       ocClient
         .oauthStatus(integration.id, attemptID)
         .then((status) => {
-          if (stopped) return;
+          if (stopped || status.status === "pending") return;
+          stop();
           if (status.status === "complete") finish(integration);
           else if (status.status === "failed")
             fail(integration, method, new Error(status.message));
-          else if (status.status === "expired")
-            fail(integration, method, new Error("Authorization expired"));
+          else fail(integration, method, new Error("Authorization expired"));
         })
         .catch(() => {
           // A missed poll; the next one tries again.
         });
     }, 1000);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
+    return stop;
   }, [signin?.attempt?.attemptID]);
 
   const back = () => {
