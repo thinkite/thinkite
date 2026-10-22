@@ -15,12 +15,17 @@ export interface Prefs {
     /** Refs the user showed although they are not the latest of their family. */
     shown: string[];
   };
+  sidebar: {
+    /** Hidden entirely; the window's top row then offers to bring it back. */
+    collapsed: boolean;
+  };
 }
 
 const KEY = "thinkite:prefs";
 const DEFAULTS: Prefs = {
   appearance: { mode: "system" },
   models: { hidden: [], shown: [] },
+  sidebar: { collapsed: false },
 };
 
 function load(): Prefs {
@@ -33,6 +38,7 @@ function load(): Prefs {
       ...parsed,
       appearance: { ...DEFAULTS.appearance, ...parsed.appearance },
       models: { ...DEFAULTS.models, ...parsed.models },
+      sidebar: { ...DEFAULTS.sidebar, ...parsed.sidebar },
     };
   } catch {
     return DEFAULTS;

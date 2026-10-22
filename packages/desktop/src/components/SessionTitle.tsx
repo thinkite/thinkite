@@ -86,8 +86,13 @@ export function SessionTitle({ session }: { session: SessionInfo }) {
   return (
     <div
       ref={barRef}
-      className="flex h-10 min-w-0 shrink-0 items-center gap-1 px-5"
+      // 48px, so the title centres on y 24 with the sidebar's top row; the
+      // bar is one of the window's drag regions (lib/desktop-shell).
+      // With the sidebar hidden, --leading-inset clears the traffic lights
+      // and the seat beside them (__root).
+      className="flex h-12 min-w-0 shrink-0 items-center gap-1 pr-5 pl-[var(--leading-inset,1.25rem)]"
       title={session.location.directory}
+      data-window-drag
     >
       {draft !== null ? (
         <TextInput

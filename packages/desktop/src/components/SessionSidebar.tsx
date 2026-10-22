@@ -2,7 +2,6 @@ import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import {
   SideNav,
-  SideNavCollapseButton,
   SideNavItem,
   SideNavSection,
 } from "@astryxdesign/core/SideNav";
@@ -15,10 +14,10 @@ import {
   useRunning,
   useSessions,
 } from "@thinkite/oc-client/react";
-import { SettingsIcon, SquarePenIcon } from "lucide-react";
+import { PanelLeftCloseIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ocClient, ocStore } from "../lib/oc";
-import { settingsOpen } from "../lib/prefs";
+import { settingsOpen, updatePrefs } from "../lib/prefs";
 
 // Global session sidebar. Content after wisp's — a "New session" action,
 // root sessions grouped by how long ago they were last active, one line
@@ -106,10 +105,25 @@ export function SessionSidebar() {
         minWidth: 264,
         maxWidth: 420,
       }}
-      collapsible={{ hasButton: false }}
+      // The window's top row: the traffic lights at its start (Electron
+      // places them), the collapse button at its end, both centred on
+      // y 24. The negative margins take back the nav's 8px padding so the
+      // whole row drags.
       header={
-        <div className="flex justify-end">
-          <SideNavCollapseButton />
+        <div
+          className="-mx-2 -mt-2 flex h-12 items-center justify-end px-2"
+          data-window-drag
+        >
+          <Button
+            label="Collapse sidebar"
+            variant="ghost"
+            size="sm"
+            isIconOnly
+            icon={<Icon icon={PanelLeftCloseIcon} size="sm" />}
+            onClick={() =>
+              updatePrefs((p) => ({ ...p, sidebar: { collapsed: true } }))
+            }
+          />
         </div>
       }
       topContent={

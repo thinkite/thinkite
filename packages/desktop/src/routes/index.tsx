@@ -201,7 +201,9 @@ function NewSession() {
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-5 px-6 pb-16">
+    <div className="relative flex h-full min-h-0 flex-col items-center justify-center gap-5 px-6 pb-16">
+      {/* The window's top row here: no title, but it still drags. */}
+      <div className="absolute inset-x-0 top-0 h-12" data-window-drag />
       <Icon icon={SparklesIcon} size="md" color="accent" />
       {directory === null ? (
         <div className="flex flex-col items-center gap-3">

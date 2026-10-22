@@ -1,16 +1,20 @@
 import { AppShell } from "@astryxdesign/core/AppShell";
+import { Button } from "@astryxdesign/core/Button";
+import { Icon } from "@astryxdesign/core/Icon";
 import {
   createRootRoute,
   Outlet,
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
+import { useSelector } from "@tanstack/react-store";
+import { PanelLeftOpenIcon, SquarePenIcon } from "lucide-react";
 import { type CSSProperties, useEffect } from "react";
 import { PierrePool } from "../components/PierrePool";
 import { SessionSidebar } from "../components/SessionSidebar";
 import { Settings } from "../components/settings/Settings";
-import { DRAG_REGION, isDesktopShell } from "../lib/desktop-shell";
-import { settingsOpen } from "../lib/prefs";
+import { isDesktopShell } from "../lib/desktop-shell";
+import { prefs, settingsOpen, updatePrefs } from "../lib/prefs";
 
 // Routes that render in their OWN BrowserWindow (tray-opened dialogs) —
 // bare content, no app chrome. Everything else gets the AppShell + global
@@ -30,9 +34,10 @@ export const Route = createRootRoute({
   component: RootLayout,
 });
 
-// Electron hiddenInset: the window has a TRANSPARENT titlebar — render a
-// drag strip and push the app below the traffic lights (detection + style
-// shared with the pair window via lib/desktop-shell).
+// Electron hiddenInset: the window has a transparent titlebar. Nothing is
+// pushed down for it: the traffic lights sit in the sidebar's top row, and
+// that row, the session title bar and the landing page's top row are the
+// window's drag regions (lib/desktop-shell).
 
 function RootLayout() {
   const pathname = useRouterState({
@@ -40,23 +45,6 @@ function RootLayout() {
   });
   if (BARE_ROUTES.has(pathname)) {
     return <Outlet />;
-  }
-  if (isDesktopShell) {
-    return (
-      <PierrePool>
-        <div className="flex h-dvh flex-col">
-          <div className="h-7 shrink-0 cursor-default" style={DRAG_REGION} />
-          <div className="min-h-0 flex-1">
-            {/* height="fill" compiles to 100dvh — viewport-fixed, which
-                would overflow by the strip's 28px and grow a window
-                scrollbar. Inline style outranks the stylex atom; the PROP
-                stays "fill" so the shell's internal isScrollable panes
-                keep working. */}
-            <RootChrome style={{ height: "100%" }} />
-          </div>
-        </div>
-      </PierrePool>
-    );
   }
   return (
     <PierrePool>
@@ -84,8 +72,52 @@ function useAppShortcuts() {
   }, [navigate]);
 }
 
-function RootChrome({ style }: { style?: CSSProperties }) {
+// The traffic lights end at x 77; the seat starts a little after them.
+const SEAT_LEFT = isDesktopShell ? 84 : 8;
+
+/**
+ * With the sidebar hidden, its two buttons wait in the window's top row,
+ * after the traffic lights (DeepSeek Harness's leading seat): bring the
+ * sidebar back, or start a new session.
+ */
+function LeadingSeat() {
+  const navigate = useNavigate();
+  return (
+    <div
+      // top 10 centres the 28px buttons on y 24, with the lights.
+      className="fixed top-2.5 z-20 flex items-center gap-1"
+      style={{ left: SEAT_LEFT }}
+    >
+      <Button
+        label="Expand sidebar"
+        variant="ghost"
+        size="sm"
+        isIconOnly
+        icon={<Icon icon={PanelLeftOpenIcon} size="sm" />}
+        onClick={() =>
+          updatePrefs((p) => ({ ...p, sidebar: { collapsed: false } }))
+        }
+      />
+      <Button
+        label="New session"
+        variant="ghost"
+        size="sm"
+        isIconOnly
+        icon={<Icon icon={SquarePenIcon} size="sm" />}
+        onClick={() => void navigate({ to: "/" })}
+      />
+    </div>
+  );
+}
+
+function RootChrome() {
   useAppShortcuts();
+  // Collapsed means gone, not a rail: AppShell takes no sideNav, and the
+  // top rows start after the seat (two 28px buttons and a gap).
+  const collapsed = useSelector(prefs, (p) => p.sidebar.collapsed);
+  const style = collapsed
+    ? ({ "--leading-inset": `${SEAT_LEFT + 76}px` } as CSSProperties)
+    : undefined;
   return (
     <AppShell
       style={style}
@@ -97,10 +129,11 @@ function RootChrome({ style }: { style?: CSSProperties }) {
       // default md(768px) breakpoint still hides the SideNav, leaving no
       // navigation at all in a narrow window.
       mobileNav={{ breakpoint: "none" }}
-      sideNav={<SessionSidebar />}
+      sideNav={collapsed ? undefined : <SessionSidebar />}
     >
       <Outlet />
       <Settings />
+      {collapsed && <LeadingSeat />}
     </AppShell>
   );
 }

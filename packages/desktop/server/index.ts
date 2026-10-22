@@ -284,10 +284,12 @@ function openMain(): void {
     y: 120,
     width: 1200,
     height: 800,
-    // Transparent titlebar: native traffic lights inset over the page; the
-    // renderer detects Electron (userAgent) and renders a strip with native
-    // `-webkit-app-region: drag` — no preload needed.
+    // Transparent titlebar: the traffic lights sit in the sidebar's top
+    // row, centred on y 24 like its collapse button and the session title
+    // (DeepSeek Harness's placement). The renderer marks those rows as drag
+    // regions (lib/desktop-shell) — no preload needed.
     titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 16, y: 18 },
   });
   void mainWin.loadURL(`${pageBase}/`);
   mainWin.on("closed", () => {
