@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { OcClient, SessionInfo, SessionMessageInfo } from "../client.ts";
 import type { OcEvent } from "../events.ts";
 import { visibleMessages } from "../transcript-reducer.ts";
-import { createOcStore, type OcStore } from "./store.ts";
+import { createOcStore, isUnread, type OcStore } from "./store.ts";
 
 const SES = "ses_a";
 
@@ -104,6 +104,10 @@ function fakeClient(opts: {
   replyPermission?: () => Promise<void>;
   /** null = the default can't be read. */
   defaultModel?: { providerID: string; id: string } | null;
+  /** Subagent sessions' parents, for `getSession`. */
+  parents?: Record<string, string>;
+  /** Rows `getSession` returns, by id (after a turn ends, say). */
+  rows?: Record<string, SessionInfo>;
 }) {
   const messageCalls: Array<{ cursor?: string }> = [];
   const listCalls: number[] = [];
@@ -112,6 +116,7 @@ function fakeClient(opts: {
   const created: Array<{ model?: { providerID: string; id: string } }> = [];
   /** Revert-path calls, in order. */
   const calls: string[] = [];
+  const views: Array<{ sessionID: string; idle: number }> = [];
   const client = {
     async interrupt() {
       calls.push("interrupt");
@@ -143,7 +148,9 @@ function fakeClient(opts: {
       return opts.sessions?.shift() ?? { sessions: [] };
     },
     async getSession(id: string) {
-      return info(id, "created", 50);
+      const row = opts.rows?.[id] ?? info(id, "created", 50);
+      const parentID = opts.parents?.[id];
+      return parentID === undefined ? row : { ...row, parentID };
     },
     async createSession(o: { model?: { providerID: string; id: string } }) {
       created.push(o);
@@ -171,7 +178,12 @@ function fakeClient(opts: {
       await opts.replyPermission?.();
     },
     raw: {
-      session: { form: { list: async () => [] } },
+      session: {
+        form: { list: async () => [] },
+        view: async (input: { sessionID: string; idle: number }) => {
+          views.push(input);
+        },
+      },
       permission: { list: async () => [] },
     },
   };
@@ -183,6 +195,7 @@ function fakeClient(opts: {
     switches,
     created,
     calls,
+    views,
   };
 }
 
@@ -658,5 +671,104 @@ describe("reverts", () => {
     const forked = await s.fork(SES, "msg_2");
     expect(calls).toEqual(["fork msg_2"]);
     expect(s.session.info.get()[forked.id]).toBeDefined();
+  });
+});
+
+describe("agent state", () => {
+  it("files a subagent's request under the session that started it", async () => {
+    const bus = new FakeBus();
+    const { client } = fakeClient({
+      bus,
+      sessions: [{ sessions: [info(SES, "a", 20)] }],
+      parents: { ses_child: SES },
+    });
+    const s = store(client);
+    await s.start();
+    const request = {
+      id: "per_1",
+      sessionID: "ses_child",
+      action: "read",
+      resources: [".env.local"],
+    } as unknown as PermissionRequest;
+    bus.push(
+      ev("permission.asked", request as unknown as Record<string, unknown>),
+    );
+    await tick();
+    s.flush();
+    expect(s.pending.get()[SES]?.permissions.map((p) => p.id)).toEqual([
+      "per_1",
+    ]);
+    // The child row is read for its parent, but stays out of the list.
+    expect(s.rootSessions.get().map((x) => x.id)).toEqual([SES]);
+
+    bus.push(
+      ev("permission.replied", { sessionID: "ses_child", requestID: "per_1" }),
+    );
+    await tick();
+    s.flush();
+    expect(s.pending.get()[SES]).toBeUndefined();
+  });
+
+  it("flags a failed turn until the next one starts", async () => {
+    const bus = new FakeBus();
+    const { client } = fakeClient({
+      bus,
+      sessions: [{ sessions: [info(SES, "a", 20)] }],
+    });
+    const s = store(client);
+    await s.start();
+    bus.push(ev("session.execution.failed", { sessionID: SES, error: {} }));
+    await tick();
+    s.flush();
+    expect(s.session.failed.get()[SES]).toBe(true);
+    bus.push(ev("session.execution.started", { sessionID: SES }));
+    await tick();
+    s.flush();
+    expect(s.session.failed.get()[SES]).toBeUndefined();
+  });
+
+  it("reads the row when a turn ends, and marks it viewed for every client", async () => {
+    const bus = new FakeBus();
+    const idleRow = {
+      ...info(SES, "a", 30),
+      time: { created: 1, updated: 30, idle: 30 },
+    } as SessionInfo;
+    const { client, views } = fakeClient({
+      bus,
+      sessions: [{ sessions: [info(SES, "a", 20)] }],
+      rows: { [SES]: idleRow },
+    });
+    const s = store(client);
+    await s.start();
+    bus.push(ev("session.execution.succeeded", { sessionID: SES }));
+    await tick();
+    s.flush();
+    const row = s.session.info.get()[SES] as SessionInfo;
+    expect(row.time.idle).toBe(30);
+    expect(isUnread(row)).toBe(true);
+    // Turns from before the client tracked this don't count.
+    expect(isUnread(row, 40)).toBe(false);
+
+    s.markViewed(SES);
+    expect(views).toEqual([{ sessionID: SES, idle: 30 }]);
+    expect(isUnread(s.session.info.get()[SES] as SessionInfo)).toBe(false);
+    s.markViewed(SES);
+    expect(views).toHaveLength(1);
+  });
+
+  it("takes another client's view from the bus", async () => {
+    const bus = new FakeBus();
+    const row = {
+      ...info(SES, "a", 30),
+      time: { created: 1, updated: 30, idle: 30 },
+    } as SessionInfo;
+    const { client } = fakeClient({ bus, sessions: [{ sessions: [row] }] });
+    const s = store(client);
+    await s.start();
+    expect(isUnread(s.session.info.get()[SES] as SessionInfo)).toBe(true);
+    bus.push(ev("session.viewed", { sessionID: SES, idle: 30 }));
+    await tick();
+    s.flush();
+    expect(isUnread(s.session.info.get()[SES] as SessionInfo)).toBe(false);
   });
 });

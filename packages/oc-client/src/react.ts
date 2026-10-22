@@ -66,24 +66,38 @@ export function usePaging(store: OcStore, sessionID: string | null): Paging {
   );
 }
 
+/** Permission requests waiting in the session or its subagents. */
 export function usePermissions(
   store: OcStore,
   sessionID: string | null,
 ): readonly PermissionRequest[] {
   return useSelector(
-    store.session.permission,
-    (all) => (sessionID ? all[sessionID] : undefined) ?? EMPTY,
+    store.pending,
+    (all) => (sessionID ? all[sessionID]?.permissions : undefined) ?? EMPTY,
   );
 }
 
+/** Questions waiting in the session or its subagents. */
 export function useForms(
   store: OcStore,
   sessionID: string | null,
 ): readonly FormInfo[] {
   return useSelector(
-    store.session.form,
-    (all) => (sessionID ? all[sessionID] : undefined) ?? EMPTY,
+    store.pending,
+    (all) => (sessionID ? all[sessionID]?.forms : undefined) ?? EMPTY,
   );
+}
+
+/** Root sessions with a permission request or question waiting. */
+export function useWaiting(store: OcStore): ReadonlySet<string> {
+  return useSelector(store.pending, (all) => new Set(Object.keys(all)), {
+    compare: (a, b) => a.size === b.size && [...a].every((id) => b.has(id)),
+  });
+}
+
+/** Sessions whose last turn failed. */
+export function useFailed(store: OcStore): Readonly<Record<string, true>> {
+  return useSelector(store.session.failed);
 }
 
 /** Whether an answer to this permission request or form is on its way. */

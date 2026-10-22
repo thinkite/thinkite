@@ -87,6 +87,30 @@ export interface OcStoreOptions {
   onError?: (scope: string, error: unknown) => void;
 }
 
+export interface Pending {
+  readonly permissions: readonly PermissionRequest[];
+  readonly forms: readonly FormInfo[];
+}
+
+/** The session at the top of `sessionID`'s subagent chain, as far as the
+ *  rows read so far reach. */
+export function rootOf(sessionID: string, info: Records<SessionInfo>): string {
+  let id = sessionID;
+  for (let depth = 0; depth < 32; depth++) {
+    const parent = info[id]?.parentID;
+    if (parent === undefined) return id;
+    id = parent;
+  }
+  return id;
+}
+
+/** Whether a session finished a turn after it was last viewed (and after
+ *  `since`, so turns from before a client tracked this don't count). */
+export function isUnread(info: SessionInfo, since = 0): boolean {
+  const idle = info.time.idle;
+  return idle !== undefined && idle > Math.max(info.time.viewed ?? 0, since);
+}
+
 export interface OcStore {
   readonly client: OcClient;
   readonly status: Atom<{ status: ConnectionStatus; error: string | null }>;
@@ -98,6 +122,8 @@ export interface OcStore {
     readonly permission: Atom<Records<readonly PermissionRequest[]>>;
     readonly form: Atom<Records<readonly FormInfo[]>>;
     readonly paging: Atom<Records<Paging>>;
+    /** Sessions whose last turn failed (cleared when the next one starts). */
+    readonly failed: Atom<Records<true>>;
   };
   /** Permission requests and forms whose answer is on its way. */
   readonly replying: Atom<Records<true>>;
@@ -109,12 +135,19 @@ export interface OcStore {
   readonly lastUsedModel: ReadonlyAtom<ModelRef | undefined>;
   /** Sessions with a turn in flight. */
   readonly running: ReadonlyAtom<ReadonlySet<string>>;
+  /** Permission requests and questions waiting on the user, by ROOT
+   *  session: a subagent's land on the session that started it, where they
+   *  are answered (opencode's request tree). */
+  readonly pending: ReadonlyAtom<Records<Pending>>;
 
   /** Read the session list and follow the bus. Resolves once the list is in. */
   start(): Promise<void>;
   stop(): void;
   flush(): void;
 
+  /** Mark the session's latest finished turn as seen, for every client
+   *  (opencode's `session.view`); a no-op when it already is. */
+  markViewed(sessionID: string): void;
   /** Keep a session's transcript live and read its newest page and pending cards. */
   open(sessionID: string): Promise<void>;
   loadOlder(sessionID: string): Promise<void>;
@@ -182,6 +215,7 @@ export function createOcStore({
     permission: createAtom<Records<readonly PermissionRequest[]>>({}),
     form: createAtom<Records<readonly FormInfo[]>>({}),
     paging: createAtom<Records<Paging>>({}),
+    failed: createAtom<Records<true>>({}),
   };
   const replying = createAtom<Records<true>>({});
 
@@ -208,6 +242,21 @@ export function createOcStore({
     return new Set(
       Object.keys(active).filter((id) => active[id] === "running"),
     );
+  });
+
+  const pending = createAtom<Records<Pending>>(() => {
+    const info = session.info.get();
+    const out: Record<
+      string,
+      { permissions: PermissionRequest[]; forms: FormInfo[] }
+    > = {};
+    const at = (sessionID: string) =>
+      (out[rootOf(sessionID, info)] ??= { permissions: [], forms: [] });
+    for (const [id, list] of Object.entries(session.permission.get()))
+      if (list.length > 0) at(id).permissions.push(...list);
+    for (const [id, list] of Object.entries(session.form.get()))
+      if (list.length > 0) at(id).forms.push(...list);
+    return out;
   });
 
   // ---- staged writes ----
@@ -394,6 +443,13 @@ export function createOcStore({
       );
     });
     flush();
+    // A request or question waiting on the user holds its turn open, so the
+    // running sessions are the only ones that can have one; reading them
+    // (and their parents, for the root) avoids a read per listed session.
+    for (const id of active) {
+      void loadPending(id);
+      void ensureAncestry(id);
+    }
   }
 
   /** A session the bus announced: read the full row, as createData does. */
@@ -403,6 +459,26 @@ export function createOcStore({
       stage(() => session.info.set((all) => put(all, info.id, info)));
     } catch (error) {
       onError("session", error);
+    }
+  }
+
+  /** Read the rows up a subagent chain the list didn't include, so its
+   *  requests can find their root. */
+  async function ensureAncestry(sessionID: string): Promise<void> {
+    let id: string | undefined = sessionID;
+    for (let depth = 0; id !== undefined && depth < 32; depth++) {
+      let info: SessionInfo | undefined = session.info.get()[id];
+      if (info === undefined) {
+        try {
+          info = await client.getSession(id);
+        } catch (error) {
+          onError("session", error);
+          return;
+        }
+        const row = info;
+        session.info.set((all) => put(all, row.id, row));
+      }
+      id = info.parentID;
     }
   }
 
@@ -435,6 +511,7 @@ export function createOcStore({
       }
       case "permission.asked": {
         const request = event.data as PermissionRequest;
+        void ensureAncestry(request.sessionID);
         stage(() =>
           session.permission.set((all) =>
             upsertIn(all, request.sessionID, request),
@@ -449,6 +526,7 @@ export function createOcStore({
       }
       case "form.created": {
         const form = event.data.form as FormInfo;
+        void ensureAncestry(form.sessionID);
         stage(() =>
           session.form.set((all) => upsertIn(all, form.sessionID, form)),
         );
@@ -474,6 +552,14 @@ export function createOcStore({
     const next = statusFromEvent(event);
     if (next !== undefined)
       stage(() => session.active.set((all) => put(all, sessionID, next)));
+    if (event.type === "session.execution.started")
+      stage(() => session.failed.set((all) => drop(all, sessionID)));
+    if (event.type === "session.execution.failed")
+      stage(() => session.failed.set((all) => put(all, sessionID, true)));
+    // A turn's end sets the row's `time.idle` on the service, which sends
+    // no event for it: read the row again, as opencode's own clients do.
+    if (next === "idle" && session.info.get()[sessionID] !== undefined)
+      void syncSession(sessionID);
 
     // The echo of an input makes it server state: no longer ours to roll back.
     if (
@@ -761,6 +847,19 @@ export function createOcStore({
     rootSessions,
     lastUsedModel,
     running,
+    pending,
+    markViewed(sessionID) {
+      const info = session.info.get()[sessionID];
+      const idle = info?.time.idle;
+      if (info === undefined || idle === undefined || !isUnread(info)) return;
+      // The `session.viewed` echo carries the same value.
+      session.info.set((all) =>
+        put(all, sessionID, { ...info, time: { ...info.time, viewed: idle } }),
+      );
+      client.raw.session
+        .view({ sessionID, idle })
+        .catch((error: unknown) => onError("view", error));
+    },
     start,
     stop,
     flush,

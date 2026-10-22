@@ -54,6 +54,11 @@ export function applySessionEvent(
       return { ...info, permissions: event.data.permissions };
     case "session.archived":
       return { ...info, time: { ...info.time, archived: event.created } };
+    case "session.viewed":
+      return info.time.viewed !== undefined &&
+        info.time.viewed >= event.data.idle
+        ? info
+        : { ...info, time: { ...info.time, viewed: event.data.idle } };
     case "session.unarchived": {
       const { archived: _, ...time } = info.time;
       return { ...info, time };

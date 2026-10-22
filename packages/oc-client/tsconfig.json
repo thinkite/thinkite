@@ -12,5 +12,10 @@
   },
   "include": ["src/**/*", "src/__fixtures__/*.json"],
   "references": [],
-  "exclude": ["src/**/*.test.ts", "src/**/*.e2e.test.ts", "scripts/**"]
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.e2e.ts",
+    "src/**/*.e2e.test.ts",
+    "scripts/**"
+  ]
 }

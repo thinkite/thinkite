@@ -59,9 +59,12 @@ export {
   type ConnectionStatus,
   createOcStore,
   type FormAnswer,
+  isUnread,
   type OcStore,
   type OcStoreOptions,
   type Paging,
+  type Pending,
+  rootOf,
 } from "./store/store.ts";
 export {
   type FileDiff,

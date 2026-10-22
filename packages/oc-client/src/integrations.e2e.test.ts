@@ -10,81 +10,26 @@
  *   THINKITE_E2E_PROVIDERS=1 bunx vitest run packages/oc-client/src/integrations.e2e.test.ts
  */
 
-import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createOcClient, type OcClient } from "./client.ts";
+import type { OcClient } from "./client.ts";
+import {
+  type IsolatedService,
+  startIsolatedService,
+} from "./isolated-service.e2e.ts";
 
 const runIf =
   process.env.THINKITE_E2E_PROVIDERS === "1" ? describe : describe.skip;
 
-const PASSWORD = "thinkite-e2e";
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-async function waitForService(baseUrl: string): Promise<void> {
-  const deadline = Date.now() + 30_000;
-  const auth = `Basic ${btoa(`opencode:${PASSWORD}`)}`;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`${baseUrl}/api/info`, {
-        headers: { authorization: auth },
-      });
-      if (res.ok) return;
-    } catch {
-      // Not listening yet.
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  throw new Error("isolated opencode service did not start");
-}
-
 runIf("provider connections (isolated service)", () => {
-  let dir = "";
-  let service: ChildProcess | null = null;
+  let service: IsolatedService;
   let client: OcClient;
 
   beforeAll(async () => {
-    dir = mkdtempSync(join(tmpdir(), "oc-providers-e2e-"));
-    const port = await freePort();
-    service = spawn(
-      "opencode",
-      ["serve", "--hostname", "127.0.0.1", "--port", String(port)],
-      {
-        cwd: dir,
-        stdio: "ignore",
-        env: {
-          ...process.env,
-          XDG_STATE_HOME: join(dir, "state"),
-          XDG_DATA_HOME: join(dir, "data"),
-          XDG_CONFIG_HOME: join(dir, "config"),
-          XDG_CACHE_HOME: join(dir, "cache"),
-          OPENCODE_SERVER_PASSWORD: PASSWORD,
-        },
-      },
-    );
-    const baseUrl = `http://127.0.0.1:${port}`;
-    await waitForService(baseUrl);
-    client = createOcClient({ baseUrl, password: PASSWORD });
+    service = await startIsolatedService("oc-providers-e2e-");
+    client = service.client;
   }, 40_000);
 
-  afterAll(() => {
-    service?.kill();
-    if (dir !== "") rmSync(dir, { recursive: true, force: true });
-  });
+  afterAll(() => service?.stop());
 
   const deepseek = async () =>
     (await client.listIntegrations()).find((i) => i.id === "deepseek");
