@@ -367,7 +367,8 @@ function ActionButton({
       variant="ghost"
       size="sm"
       isIconOnly
-      icon={<Icon icon={icon} size="sm" />}
+      // Sized and tinted like the time beside it.
+      icon={<Icon icon={icon} size="xsm" color="secondary" />}
       clickAction={onClick}
     />
   );
