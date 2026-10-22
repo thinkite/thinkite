@@ -7,7 +7,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { parseModelRef, type SessionInfo } from "@thinkite/oc-client";
 import { useSessions } from "@thinkite/oc-client/react";
 import { useMemo, useState } from "react";
-import { ModelPicker, useModels } from "../components/ModelPicker";
+import { ModelPicker, useDefaultModel } from "../components/ModelPicker";
 import { ocStore } from "../lib/oc";
 
 // The new-session draft. The words are wisp's (after Waku's New task):
@@ -71,7 +71,6 @@ interface PickResponse {
 function NewSession() {
   const navigate = useNavigate();
   const sessions = useSessions(ocStore);
-  const models = useModels();
   const [picked, setPicked] = useState<string | null>(loadLastDir);
   // No pick yet: the folder of the most recent session.
   const directory = picked ?? sessions[0]?.location.directory ?? null;
@@ -80,6 +79,7 @@ function NewSession() {
     [sessions, directory],
   );
   const [model, setModel] = useState<string | null>(null);
+  const defaultModel = useDefaultModel(directory);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -111,7 +111,7 @@ function NewSession() {
       try {
         const session = await ocStore.createSession({
           directory,
-          // No pick = the service's default model.
+          // No pick = the store pins the folder's default model.
           ...(model !== null ? { model: parseModelRef(model) } : {}),
         });
         // Not awaited: a failed first prompt still leaves a valid (empty)
@@ -139,10 +139,7 @@ function NewSession() {
       isDisabled={busy || directory === null}
       status={error ? { type: "error", message: error } : undefined}
       footerActions={
-        <ModelPicker
-          value={model ?? models?.defaultRef ?? null}
-          onChange={setModel}
-        />
+        <ModelPicker value={model ?? defaultModel} onChange={setModel} />
       }
       input={<ChatComposerInput style={{ minHeight: 52 }} />}
     />

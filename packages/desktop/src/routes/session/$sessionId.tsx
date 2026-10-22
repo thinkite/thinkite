@@ -17,7 +17,7 @@ import {
 import { useIsRunning, useSession } from "@thinkite/oc-client/react";
 import { useState } from "react";
 import { DiffPanel } from "../../components/DiffPanel";
-import { ModelPicker } from "../../components/ModelPicker";
+import { ModelPicker, useDefaultModel } from "../../components/ModelPicker";
 import { usePendingPrompt } from "../../components/Prompts";
 import { TerminalPane } from "../../components/TerminalPane";
 import { TranscriptPanel } from "../../components/TranscriptPanel";
@@ -130,15 +130,21 @@ function Session({ sessionId }: { sessionId: string }) {
   // provider. A pick commits at once through the session's model route;
   // the picked value wins over the live row until the bus push catches up
   // (they converge to equal), and a rejected commit rolls back.
+  // A session without a model (made before new sessions pinned one) runs
+  // on its folder's default, so the picker shows that.
   const [pickedModel, setPickedModel] = useState<string | null>(null);
-  const currentModel =
+  const pinnedModel =
     pickedModel ??
     (session?.model !== undefined
       ? formatModelRef(session.model.providerID, session.model.id)
       : null);
+  const defaultModel = useDefaultModel(
+    pinnedModel === null ? (session?.location.directory ?? null) : null,
+  );
+  const currentModel = pinnedModel ?? defaultModel;
 
   const pickModel = (model: string) => {
-    if (model === currentModel) return;
+    if (model === pinnedModel) return;
     const previous = pickedModel;
     setPickedModel(model);
     setSendError(null);

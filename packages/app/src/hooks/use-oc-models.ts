@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ModelInfo } from "@thinkite/oc-client";
+import { formatModelRef, type ModelInfo } from "@thinkite/oc-client";
 import { useDaemonClient } from "@/lib/daemon-client-context";
 import { getOcClient } from "@/lib/oc";
 
@@ -21,4 +21,25 @@ export function useOcModels(): ModelInfo[] {
     staleTime: 5 * 60_000,
   });
   return data ?? [];
+}
+
+/**
+ * The model a session in `directory` runs on when it names none (the
+ * project's configured model, else the user's), as a `providerID/modelID`
+ * ref. Null while loading, offline or with no directory.
+ */
+export function useOcDefaultModel(
+  directory: string | undefined,
+): string | null {
+  const { connectionStatus } = useDaemonClient();
+  const { data } = useQuery({
+    queryKey: ["ocDefaultModel", directory],
+    queryFn: async () => {
+      const m = await getOcClient().defaultModel(directory);
+      return m ? formatModelRef(m.providerID, m.id) : null;
+    },
+    enabled: connectionStatus === "online" && directory !== undefined,
+    staleTime: 5 * 60_000,
+  });
+  return data ?? null;
 }

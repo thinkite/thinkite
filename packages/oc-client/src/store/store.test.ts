@@ -101,11 +101,14 @@ function fakeClient(opts: {
   active?: string[];
   prompt?: (text: string) => Promise<void>;
   replyPermission?: () => Promise<void>;
+  /** null = the default can't be read. */
+  defaultModel?: { providerID: string; id: string } | null;
 }) {
   const messageCalls: Array<{ cursor?: string }> = [];
   const listCalls: number[] = [];
   const prompts: Array<{ id?: string; text: string }> = [];
   const switches: string[] = [];
+  const created: Array<{ model?: { providerID: string; id: string } }> = [];
   const client = {
     events: ({ signal }: { signal: AbortSignal }) => opts.bus.iterate(signal),
     async listMessages(
@@ -121,6 +124,15 @@ function fakeClient(opts: {
     },
     async getSession(id: string) {
       return info(id, "created", 50);
+    },
+    async createSession(o: { model?: { providerID: string; id: string } }) {
+      created.push(o);
+      return info(SES, "created", 50);
+    },
+    async defaultModel() {
+      return opts.defaultModel === null
+        ? Promise.reject(new Error("no default"))
+        : (opts.defaultModel ?? { providerID: "opencode", id: "flint" });
     },
     async activeSessionIDs() {
       return new Set(opts.active ?? []);
@@ -149,6 +161,7 @@ function fakeClient(opts: {
     listCalls,
     prompts,
     switches,
+    created,
   };
 }
 
@@ -461,5 +474,29 @@ describe("permission requests", () => {
     s.flush();
     expect(s.session.permission.get()[SES]).toHaveLength(1);
     expect(s.replying.get().per_1).toBeUndefined();
+  });
+});
+
+describe("createSession", () => {
+  it("pins the default model when none is picked", async () => {
+    const fake = fakeClient({ bus: new FakeBus() });
+    await store(fake.client).createSession({ directory: "/tmp/x" });
+    expect(fake.created[0]?.model).toEqual({
+      providerID: "opencode",
+      id: "flint",
+    });
+  });
+
+  it("keeps a picked model", async () => {
+    const fake = fakeClient({ bus: new FakeBus() });
+    const model = { providerID: "opencode-go", id: "deepseek-v4.1-flash" };
+    await store(fake.client).createSession({ directory: "/tmp/x", model });
+    expect(fake.created[0]?.model).toEqual(model);
+  });
+
+  it("leaves the pick to the service when the default can't be read", async () => {
+    const fake = fakeClient({ bus: new FakeBus(), defaultModel: null });
+    await store(fake.client).createSession({ directory: "/tmp/x" });
+    expect(fake.created[0]?.model).toBeUndefined();
   });
 });

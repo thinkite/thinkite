@@ -76,7 +76,7 @@ export default function NewSessionScreen() {
         try {
           const session = await ocStore.createSession({
             directory: cwd,
-            // No pick = the service's default model.
+            // No pick = the store pins the folder's default model.
             ...(model !== null ? { model } : {}),
           });
           ocStore
@@ -163,7 +163,7 @@ export default function NewSessionScreen() {
               onPress={openCwdPicker}
               showChanges={false}
             />
-            <InputBar sessionID={null} onSend={rawSend} />
+            <InputBar sessionID={null} directory={cwd} onSend={rawSend} />
           </View>
         </KeyboardAvoidingView>
       </View>

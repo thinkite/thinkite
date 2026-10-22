@@ -132,6 +132,9 @@ export interface OcClient {
   activeSessionIDs(): Promise<Set<string>>;
   listProviders(directory?: string): Promise<ProviderInfo[]>;
   listModels(directory?: string): Promise<ModelInfo[]>;
+  /** The model a session in `directory` runs on when it names none: the
+   *  project's configured model, else the user's. */
+  defaultModel(directory?: string): Promise<ModelRef | undefined>;
   listAgents(directory?: string): Promise<AgentInfo[]>;
   replyPermission(
     sessionID: string,
@@ -272,6 +275,11 @@ export function createOcClient(options: OcClientOptions): OcClient {
 
     async listModels(directory) {
       return (await raw.model.list(location(directory))).data;
+    },
+
+    async defaultModel(directory) {
+      const m = (await raw.model.default(location(directory))).data;
+      return m ? { providerID: m.providerID, id: m.id } : undefined;
     },
 
     async listAgents(directory) {

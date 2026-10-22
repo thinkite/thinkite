@@ -124,7 +124,8 @@ export interface OcStore {
       files?: readonly PromptFile[];
     },
   ): Promise<void>;
-  /** Create a session and add it to the list right away. */
+  /** Create a session and add it to the list right away. Without a model
+   *  it gets the directory's default model, pinned. */
   createSession(options: {
     directory: string;
     model?: ModelRef;
@@ -578,7 +579,16 @@ export function createOcStore({
     directory: string;
     model?: ModelRef;
   }) {
-    const info = await client.createSession(options);
+    // A session created without a model follows whatever the default is at
+    // each turn and has no `model` to show. Pin the default the picker
+    // showed instead; if it can't be read, the service picks as before.
+    const model =
+      options.model ??
+      (await client.defaultModel(options.directory).catch(() => undefined));
+    const info = await client.createSession({
+      directory: options.directory,
+      ...(model !== undefined ? { model } : {}),
+    });
     stage(() => session.info.set((all) => put(all, info.id, info)));
     holdMessages(info.id);
     setPaging(info.id, { hydrated: true });

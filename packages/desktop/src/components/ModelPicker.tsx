@@ -36,8 +36,6 @@ export interface ModelList {
   models: ModelInfo[];
   /** Provider id → display name. */
   providers: Map<string, string>;
-  /** The service's default model, as a `providerID/modelID` ref. */
-  defaultRef: string | null;
 }
 
 // One read per app run: the service's models change rarely, and every
@@ -45,17 +43,10 @@ export interface ModelList {
 let pending: Promise<ModelList> | null = null;
 
 function loadModels(): Promise<ModelList> {
-  pending ??= Promise.all([
-    ocClient.listProviders(),
-    ocClient.listModels(),
-    ocClient.raw.model.default({}).catch(() => undefined),
-  ])
-    .then(([providers, models, fallback]) => ({
+  pending ??= Promise.all([ocClient.listProviders(), ocClient.listModels()])
+    .then(([providers, models]) => ({
       providers: new Map(providers.map((p) => [p.id, p.name])),
       models: models.filter((m) => m.enabled && m.status !== "deprecated"),
-      defaultRef: fallback?.data
-        ? formatModelRef(fallback.data.providerID, fallback.data.id)
-        : null,
     }))
     .catch((err: unknown) => {
       pending = null;
@@ -79,6 +70,45 @@ export function useModels(): ModelList | null {
     };
   }, []);
   return list;
+}
+
+// Directory → its default model ref (a project can configure its own).
+const defaults = new Map<string, Promise<string | null>>();
+
+function loadDefault(directory: string): Promise<string | null> {
+  let pending = defaults.get(directory);
+  if (pending === undefined) {
+    pending = ocClient
+      .defaultModel(directory)
+      .then((m) => (m ? formatModelRef(m.providerID, m.id) : null))
+      .catch((err: unknown) => {
+        defaults.delete(directory);
+        throw err;
+      });
+    defaults.set(directory, pending);
+  }
+  return pending;
+}
+
+/**
+ * The model a session in `directory` runs on when it names none, as a
+ * `providerID/modelID` ref; null while loading or with no directory.
+ */
+export function useDefaultModel(directory: string | null): string | null {
+  const [found, setFound] = useState<{ dir: string; ref: string | null }>();
+  useEffect(() => {
+    if (directory === null) return;
+    let cancelled = false;
+    loadDefault(directory)
+      .then((ref) => {
+        if (!cancelled) setFound({ dir: directory, ref });
+      })
+      .catch((err: unknown) => console.warn("[models] default failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [directory]);
+  return found !== undefined && found.dir === directory ? found.ref : null;
 }
 
 const refOf = (m: ModelInfo) => formatModelRef(m.providerID, m.id);

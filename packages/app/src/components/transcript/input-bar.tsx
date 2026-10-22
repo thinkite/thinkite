@@ -22,7 +22,7 @@ import {
   useColorScheme,
   View,
 } from "react-native";
-import { useOcModels } from "@/hooks/use-oc-models";
+import { useOcDefaultModel, useOcModels } from "@/hooks/use-oc-models";
 import { statusColor, useDaemonClient } from "@/lib/daemon-client-context";
 import { getOcClient, ocStore } from "@/lib/oc";
 import { Image } from "@/lib/styled";
@@ -165,11 +165,15 @@ async function compressToAttachment(
  */
 export function InputBar({
   sessionID,
+  directory,
   onSend,
 }: {
   /** The session this composer drives, or `null` on the new-session
    *  screen (no session exists yet; the draft model rides out on `onSend`). */
   sessionID: string | null;
+  /** New-session only: the folder the session will open in, whose default
+   *  model the picker shows until the user picks one. */
+  directory?: string;
   /** Fired on send. `images` carries the compressed base64 payloads
    *  (local DraftAttachment ids stripped); `model` is the picked model, or
    *  null for the session's (or the service's) current one. Send is gated
@@ -191,9 +195,11 @@ export function InputBar({
 
   // ─── Session state from the store ───────────────────────────────────
   // Detail: the session's model, busy flag and last turn's context use.
-  // New-session: a local draft pick (null = the service default). A pick
-  // on an existing session switches it right away; the picked value wins
-  // until the session's model.selected event catches up.
+  // New-session: a local draft pick (null = the folder's default, which
+  // the store pins on create). A pick on an existing session switches it
+  // right away; the picked value wins until the session's model.selected
+  // event catches up. Without a pick or a session model (sessions made
+  // before new ones were pinned) the folder's default is what runs.
   const models = useOcModels();
   const session = useSession(ocStore, sessionID);
   const messages = useMessages(ocStore, sessionID);
@@ -203,7 +209,11 @@ export function InputBar({
     session?.model !== undefined
       ? formatModelRef(session.model.providerID, session.model.id)
       : null;
-  const model = picked ?? sessionModel;
+  const pinned = picked ?? sessionModel;
+  const defaultModel = useOcDefaultModel(
+    pinned === null ? (session?.location.directory ?? directory) : undefined,
+  );
+  const model = pinned ?? defaultModel;
   const currentModel = models.find(
     (m) => formatModelRef(m.providerID, m.id) === model,
   );
@@ -214,7 +224,7 @@ export function InputBar({
       ? { used, max, percentage: Math.min(100, (used / max) * 100) }
       : undefined;
   const onPickModel = (ref: string) => {
-    if (ref === model) return;
+    if (ref === pinned) return;
     const previous = picked;
     setPicked(ref);
     if (sessionID === null) return;
