@@ -17,8 +17,22 @@ export type GroupItem =
   | { key: string; kind: "tool"; tool: ToolPart }
   | { key: string; kind: "reasoning"; part: ReasoningPart };
 
+export interface UserAttachment {
+  name: string;
+  mime: string;
+  /** `data:` URI of the file. */
+  src: string;
+}
+
 export type TranscriptRow =
-  | { key: string; kind: "user"; messageId: string; text: string }
+  | {
+      key: string;
+      kind: "user";
+      messageId: string;
+      text: string;
+      /** Files sent inline (pasted, dropped); @-mentioned ones are in the text. */
+      attachments: UserAttachment[];
+    }
   | { key: string; kind: "text"; text: string }
   | { key: string; kind: "group"; items: GroupItem[] }
   | { key: string; kind: "tool"; tool: ToolPart }
@@ -110,6 +124,13 @@ export function rowsOf(
           kind: "user",
           messageId: message.id,
           text: message.text,
+          attachments: (message.files ?? [])
+            .filter((f) => f.mention === undefined)
+            .map((f, i) => ({
+              name: f.name ?? `attachment-${i + 1}`,
+              mime: f.mime,
+              src: `data:${f.mime};base64,${f.data}`,
+            })),
         });
         break;
       case "assistant":

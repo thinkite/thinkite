@@ -7,7 +7,9 @@
 
 export {
   type AgentInfo,
+  type CommandInfo,
   createOcClient,
+  type FoundPath,
   type ModelInfo,
   type ModelRef,
   type OcClient,
@@ -18,11 +20,14 @@ export {
   type OpenCodeClient,
   type OpenCodeEvent,
   type PromptFile,
+  type PromptMention,
+  type PromptParts,
   type ProviderInfo,
   type ServerInfo,
   type SessionInboxUser,
   type SessionInfo,
   type SessionMessageInfo,
+  type SkillInfo,
 } from "./client.ts";
 export {
   durableSeq,

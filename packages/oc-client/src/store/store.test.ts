@@ -516,15 +516,15 @@ describe("createSession", () => {
     });
     const s = store(fake.client);
     await s.start();
-    expect(s.lastUsedModel.get()).toEqual({
+    // The reasoning variant comes along with the model.
+    const used = {
       providerID: "opencode-go",
       id: "deepseek-v4.1-flash",
-    });
+      variant: "max",
+    };
+    expect(s.lastUsedModel.get()).toEqual(used);
     await s.createSession({ directory: "/tmp/x" });
-    expect(fake.created[0]?.model).toEqual({
-      providerID: "opencode-go",
-      id: "deepseek-v4.1-flash",
-    });
+    expect(fake.created[0]?.model).toEqual(used);
   });
 
   it("leaves the pick to the service when the default can't be read", async () => {

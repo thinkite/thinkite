@@ -6,7 +6,7 @@ import {
 } from "@astryxdesign/core/Selector";
 import { useSelector } from "@tanstack/react-store";
 import { formatModelRef, type ModelInfo } from "@thinkite/oc-client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ocClient } from "../lib/oc";
 import { type Prefs, prefs } from "../lib/prefs";
 
@@ -237,6 +237,75 @@ export function ModelPicker({
       renderOption={(option) => <ModelOption option={option} />}
       renderValue={(option) => option.label}
       {...(value !== null ? { value } : {})}
+      onChange={onChange}
+    />
+  );
+}
+
+/** The model `ref` names in the list, if the list has it. */
+export function findModel(
+  list: ModelList | null,
+  ref: string | null,
+): ModelInfo | undefined {
+  return ref === null ? undefined : list?.models.find((m) => refOf(m) === ref);
+}
+
+/** What `model` reads besides text; unknown models get text only. */
+export function inputsOf(model: ModelInfo | undefined) {
+  const input = model?.capabilities.input ?? [];
+  return { image: input.includes("image"), pdf: input.includes("pdf") };
+}
+
+const titleCase = (s: string) =>
+  s === "xhigh" ? "Extra high" : s.charAt(0).toUpperCase() + s.slice(1);
+
+/**
+ * The reasoning effort picker, as opencode's: "Default" (no variant, the
+ * model's own setting) and each variant the model lists; shift+mod+D
+ * cycles them. Hidden for models without variants.
+ */
+export function VariantPicker({
+  model,
+  value,
+  onChange,
+}: {
+  model: ModelInfo | undefined;
+  /** A variant id, or "default". */
+  value: string;
+  onChange: (variant: string) => void;
+}) {
+  const ids = ["default", ...(model?.variants.map((v) => v.id) ?? [])];
+  const current = ids.includes(value) ? value : "default";
+  const cycle = useRef({ ids, current, onChange });
+  cycle.current = { ids, current, onChange };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        !(e.metaKey || e.ctrlKey) ||
+        !e.shiftKey ||
+        e.key.toLowerCase() !== "d"
+      )
+        return;
+      const { ids, current, onChange } = cycle.current;
+      if (ids.length < 2) return;
+      e.preventDefault();
+      onChange(ids[(ids.indexOf(current) + 1) % ids.length] as string);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  if (ids.length < 2) return null;
+  return (
+    <Selector
+      label="Reasoning effort"
+      isLabelHidden
+      variant="ghost"
+      size="sm"
+      options={ids.map((id) => ({
+        value: id,
+        label: id === "default" ? "Default" : titleCase(id),
+      }))}
+      value={current}
       onChange={onChange}
     />
   );

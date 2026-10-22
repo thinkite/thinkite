@@ -15,6 +15,7 @@
 
 import {
   type AgentInfo,
+  type CommandInfo,
   isSessionNotFoundError,
   type ModelInfo,
   type ModelRef,
@@ -27,10 +28,12 @@ import {
   type SessionInboxUser,
   type SessionInfo,
   type SessionMessageInfo,
+  type SkillInfo,
 } from "@opencode/client";
 
 export type {
   AgentInfo,
+  CommandInfo,
   ModelInfo,
   ModelRef,
   OpenCodeClient,
@@ -40,6 +43,7 @@ export type {
   SessionInboxUser,
   SessionInfo,
   SessionMessageInfo,
+  SkillInfo,
 };
 
 export interface OcClientOptions {
@@ -67,6 +71,30 @@ export interface OcClientOptions {
 export interface PromptFile {
   uri: string;
   name?: string;
+  /** Where the prompt text names it (`@path`), for files picked from @. */
+  mention?: PromptMention;
+}
+
+/** A span of the prompt text that names an attachment, such as `@General`. */
+export interface PromptMention {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/** What a prompt or a command carries besides its text. */
+export interface PromptParts {
+  files?: readonly PromptFile[];
+  /** Subagents named with @. */
+  agents?: readonly { name: string; mention?: PromptMention }[];
+  /** Skills named with @. */
+  skills?: readonly { id: string; mention?: PromptMention }[];
+}
+
+/** A path a file search matched, relative to the directory searched. */
+export interface FoundPath {
+  path: string;
+  type: "file" | "directory";
 }
 
 export interface OcSessionPage {
@@ -122,8 +150,17 @@ export interface OcClient {
   prompt(
     sessionID: string,
     text: string,
-    opts?: { id?: string; files?: readonly PromptFile[] },
+    opts?: { id?: string } & PromptParts,
   ): Promise<SessionInboxUser>;
+  /** Run a command the service defines (`/review …`); `text` is its arguments. */
+  command(
+    sessionID: string,
+    name: string,
+    text: string,
+    parts?: PromptParts,
+  ): Promise<void>;
+  /** Summarize the session to free context. */
+  compact(sessionID: string): Promise<void>;
   interrupt(sessionID: string): Promise<void>;
   switchModel(sessionID: string, model: ModelRef): Promise<void>;
   /** Foreground drains owned by the service — sessions absent are idle. A
@@ -136,6 +173,14 @@ export interface OcClient {
    *  project's configured model, else the user's. */
   defaultModel(directory?: string): Promise<ModelRef | undefined>;
   listAgents(directory?: string): Promise<AgentInfo[]>;
+  listCommands(directory?: string): Promise<CommandInfo[]>;
+  listSkills(directory?: string): Promise<SkillInfo[]>;
+  /** Fuzzy path search under `directory`, files and directories alike. */
+  findFiles(
+    directory: string,
+    query: string,
+    limit?: number,
+  ): Promise<FoundPath[]>;
   replyPermission(
     sessionID: string,
     requestID: string,
@@ -250,10 +295,21 @@ export function createOcClient(options: OcClientOptions): OcClient {
         sessionID,
         text,
         ...(opts.id !== undefined ? { id: opts.id } : {}),
-        ...(opts.files !== undefined && opts.files.length > 0
-          ? { files: opts.files }
-          : {}),
+        ...nonEmptyParts(opts),
       });
+    },
+
+    async command(sessionID, name, text, parts = {}) {
+      await raw.session.command({
+        sessionID,
+        name,
+        text,
+        ...nonEmptyParts(parts),
+      });
+    },
+
+    async compact(sessionID) {
+      await raw.session.compact({ sessionID });
     },
 
     async interrupt(sessionID) {
@@ -286,6 +342,23 @@ export function createOcClient(options: OcClientOptions): OcClient {
       return (await raw.agent.list(location(directory))).data;
     },
 
+    async listCommands(directory) {
+      return (await raw.command.list(location(directory))).data;
+    },
+
+    async listSkills(directory) {
+      return (await raw.skill.list(location(directory))).data;
+    },
+
+    async findFiles(directory, query, limit) {
+      const found = await raw.file.find({
+        location: { directory },
+        query,
+        ...(limit !== undefined ? { limit } : {}),
+      });
+      return found.data;
+    },
+
     async replyPermission(sessionID, requestID, decision, message) {
       await raw.permission.reply({
         sessionID,
@@ -303,5 +376,14 @@ export function createOcClient(options: OcClientOptions): OcClient {
           : {}),
       });
     },
+  };
+}
+
+/** The parts that have entries; the service's lists may not be empty-but-present. */
+function nonEmptyParts(parts: PromptParts): PromptParts {
+  return {
+    ...(parts.files?.length ? { files: parts.files } : {}),
+    ...(parts.agents?.length ? { agents: parts.agents } : {}),
+    ...(parts.skills?.length ? { skills: parts.skills } : {}),
   };
 }

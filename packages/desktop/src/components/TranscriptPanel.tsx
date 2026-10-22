@@ -8,6 +8,7 @@ import { CodeBlock } from "@astryxdesign/core/CodeBlock";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
+import { Thumbnail } from "@astryxdesign/core/Thumbnail";
 import { ChevronDownIcon } from "@heroicons/react/16/solid";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { toolDiffs, toolOutput, toolSummary } from "@thinkite/oc-client";
@@ -328,9 +329,24 @@ function renderRow(row: TranscriptRow, live: boolean) {
     case "user":
       return (
         <ChatMessage sender="user">
-          <ChatMessageBubble>
-            <Markdown components={MARKDOWN_COMPONENTS}>{row.text}</Markdown>
-          </ChatMessageBubble>
+          {row.attachments.length > 0 && (
+            <div className="mb-2 flex flex-wrap justify-end gap-2">
+              {row.attachments.map((a, i) => (
+                <Thumbnail
+                  // Files never change once sent; their order is stable.
+                  key={i}
+                  {...(a.mime.startsWith("image/") ? { src: a.src } : {})}
+                  alt={a.name}
+                  label={a.name}
+                />
+              ))}
+            </div>
+          )}
+          {row.text !== "" && (
+            <ChatMessageBubble>
+              <Markdown components={MARKDOWN_COMPONENTS}>{row.text}</Markdown>
+            </ChatMessageBubble>
+          )}
         </ChatMessage>
       );
     case "text":

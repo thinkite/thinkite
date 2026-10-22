@@ -1,13 +1,25 @@
-import { ChatComposer, ChatComposerInput } from "@astryxdesign/core/Chat";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Text } from "@astryxdesign/core/Text";
 import { FolderIcon, SparklesIcon } from "@heroicons/react/24/outline";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { parseModelRef, type SessionInfo } from "@thinkite/oc-client";
+import { useSelector } from "@tanstack/react-store";
+import {
+  type PromptParts,
+  parseModelRef,
+  type SessionInfo,
+} from "@thinkite/oc-client";
 import { useLastUsedModel, useSessions } from "@thinkite/oc-client/react";
 import { useMemo, useState } from "react";
-import { ModelPicker, useDefaultModel } from "../components/ModelPicker";
+import { Composer, PLACEHOLDER } from "../components/Composer";
+import {
+  findModel,
+  inputsOf,
+  ModelPicker,
+  useDefaultModel,
+  useModels,
+  VariantPicker,
+} from "../components/ModelPicker";
 import { ocStore } from "../lib/oc";
 
 // The new-session draft. The words are wisp's (after Waku's New task):
@@ -71,24 +83,33 @@ interface PickResponse {
 function NewSession() {
   const navigate = useNavigate();
   const sessions = useSessions(ocStore);
-  const [picked, setPicked] = useState<string | null>(loadLastDir);
+  const [pickedDir, setPickedDir] = useState<string | null>(loadLastDir);
   // No pick yet: the folder of the most recent session.
-  const directory = picked ?? sessions[0]?.location.directory ?? null;
+  const directory = pickedDir ?? sessions[0]?.location.directory ?? null;
   const recent = useMemo(
     () => recentDirectories(sessions, directory),
     [sessions, directory],
   );
-  const [model, setModel] = useState<string | null>(null);
-  // No pick: the last used model, else the folder's default — what the
-  // store will pin on create.
+  // No pick: the last used model and its reasoning variant, else the
+  // folder's default — what the store will pin on create.
+  const [picked, setPicked] = useState<{
+    model: string;
+    variant: string;
+  } | null>(null);
   const lastUsed = useLastUsedModel(ocStore);
+  const lastVariant = useSelector(ocStore.lastUsedModel, (m) => m?.variant);
   const defaultModel = useDefaultModel(lastUsed === null ? directory : null);
+  const model = picked?.model ?? lastUsed ?? defaultModel;
+  const variant =
+    picked?.variant ??
+    (lastUsed !== null ? (lastVariant ?? "default") : "default");
+  const modelInfo = findModel(useModels(), model);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const pick = (dir: string) => {
-    setPicked(dir);
+    setPickedDir(dir);
     saveLastDir(dir);
   };
 
@@ -104,22 +125,33 @@ function NewSession() {
     }
   };
 
-  const submit = (value: string) => {
-    const text = value.trim();
-    if (text === "" || directory === null || busy) return;
+  // Sending creates the session first; a service command then runs in it.
+  const start = (
+    first: (sessionID: string) => Promise<unknown>,
+  ): Promise<void> => {
+    if (directory === null || busy) return Promise.resolve();
     setBusy(true);
     setError(null);
     saveLastDir(directory);
-    void (async () => {
+    return (async () => {
       try {
         const session = await ocStore.createSession({
           directory,
           // No pick = the store pins the last used or default model.
-          ...(model !== null ? { model: parseModelRef(model) } : {}),
+          ...(picked !== null
+            ? {
+                model: {
+                  ...parseModelRef(picked.model),
+                  ...(picked.variant !== "default"
+                    ? { variant: picked.variant }
+                    : {}),
+                },
+              }
+            : {}),
         });
         // Not awaited: a failed first prompt still leaves a valid (empty)
         // session behind to type into.
-        ocStore.prompt(session.id, text).catch((err: unknown) => {
+        first(session.id).catch((err: unknown) => {
           console.warn("[new-session] first prompt failed:", err);
         });
         await navigate({
@@ -129,25 +161,42 @@ function NewSession() {
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         setBusy(false);
+        throw err;
       }
     })();
   };
 
   const composer = (
-    <ChatComposer
-      onSubmit={submit}
+    <Composer
+      directory={directory}
       value={draft}
       onChange={setDraft}
-      placeholder={busy ? "Creating session…" : "Ask anything…"}
-      isDisabled={busy || directory === null}
-      status={error ? { type: "error", message: error } : undefined}
-      footerActions={
-        <ModelPicker
-          value={model ?? lastUsed ?? defaultModel}
-          onChange={setModel}
-        />
+      onSend={(text: string, parts: PromptParts) =>
+        start((id) => ocStore.prompt(id, text, parts))
       }
-      input={<ChatComposerInput style={{ minHeight: 52 }} />}
+      onCommand={(name, args, parts) =>
+        start((id) => ocStore.command(id, name, args, parts))
+      }
+      accepts={inputsOf(modelInfo)}
+      placeholder={busy ? "Creating session…" : PLACEHOLDER}
+      isDisabled={busy || directory === null}
+      error={error}
+      inputStyle={{ minHeight: 52 }}
+      footerActions={
+        <>
+          <ModelPicker
+            value={model}
+            onChange={(m) => setPicked({ model: m, variant: "default" })}
+          />
+          <VariantPicker
+            model={modelInfo}
+            value={variant}
+            onChange={(v) => {
+              if (model !== null) setPicked({ model, variant: v });
+            }}
+          />
+        </>
+      }
     />
   );
 

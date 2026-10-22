@@ -1,4 +1,3 @@
-import { ChatComposer, ChatComposerInput } from "@astryxdesign/core/Chat";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { ResizeHandle, useResizable } from "@astryxdesign/core/Resizable";
@@ -8,16 +7,25 @@ import {
   ToggleButtonGroup,
 } from "@astryxdesign/core/ToggleButton";
 import { CommandLineIcon, DocumentPlusIcon } from "@heroicons/react/24/outline";
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import {
   formatModelRef,
   mintMessageId,
+  type PromptParts,
   parseModelRef,
 } from "@thinkite/oc-client";
 import { useIsRunning, useSession } from "@thinkite/oc-client/react";
 import { useState } from "react";
+import { type Builtin, Composer, PLACEHOLDER } from "../../components/Composer";
 import { DiffPanel } from "../../components/DiffPanel";
-import { ModelPicker, useDefaultModel } from "../../components/ModelPicker";
+import {
+  findModel,
+  inputsOf,
+  ModelPicker,
+  useDefaultModel,
+  useModels,
+  VariantPicker,
+} from "../../components/ModelPicker";
 import { usePendingPrompt } from "../../components/Prompts";
 import { TerminalPane } from "../../components/TerminalPane";
 import { TranscriptPanel } from "../../components/TranscriptPanel";
@@ -104,26 +112,55 @@ function Session({ sessionId }: { sessionId: string }) {
   // composer's place (components/Prompts.tsx).
   const prompt = usePendingPrompt(sessionId);
 
-  const submit = (value: string) => {
-    const text = value.trim();
-    if (text === "" || session === undefined) return;
+  const fail = (err: unknown) =>
+    setSendError(err instanceof Error ? err.message : String(err));
+
+  const send = (text: string, parts: PromptParts) => {
+    if (session === undefined) return Promise.resolve();
+    const value = draft;
     setDraft("");
     setSendError(null);
     const userMessageUuid = mintMessageId();
     setAnchorUuid(userMessageUuid);
-    ocStore
-      .prompt(sessionId, text, { id: userMessageUuid })
+    return ocStore
+      .prompt(sessionId, text, { id: userMessageUuid, ...parts })
       .catch((err: unknown) => {
         setDraft(value);
         setAnchorUuid((cur) => (cur === userMessageUuid ? null : cur));
-        setSendError(err instanceof Error ? err.message : String(err));
+        fail(err);
+        throw err;
       });
   };
 
-  const stop = () => {
-    void ocClient.interrupt(sessionId).catch((err) => {
-      setSendError(err instanceof Error ? err.message : String(err));
+  // A service command's user message comes from the service, so there is
+  // no bubble to anchor until it lands.
+  const runCommand = (name: string, args: string, parts: PromptParts) => {
+    const value = draft;
+    setDraft("");
+    setSendError(null);
+    return ocStore.command(sessionId, name, args, parts).catch((err) => {
+      setDraft(value);
+      fail(err);
+      throw err;
     });
+  };
+
+  const navigate = useNavigate();
+  const builtins: Builtin[] = [
+    {
+      name: "new",
+      description: "Start a new session",
+      run: () => void navigate({ to: "/" }),
+    },
+    {
+      name: "compact",
+      description: "Summarize the session to free up context",
+      run: () => void ocClient.compact(sessionId).catch(fail),
+    },
+  ];
+
+  const stop = () => {
+    void ocClient.interrupt(sessionId).catch(fail);
   };
 
   // Model picker: the models the user's connected providers expose, by
@@ -131,10 +168,15 @@ function Session({ sessionId }: { sessionId: string }) {
   // the picked value wins over the live row until the bus push catches up
   // (they converge to equal), and a rejected commit rolls back.
   // A session without a model (made before new sessions pinned one) runs
-  // on its folder's default, so the picker shows that.
-  const [pickedModel, setPickedModel] = useState<string | null>(null);
+  // on its folder's default, so the picker shows that. The reasoning
+  // variant rides on the same route; a new model starts at its default.
+  const models = useModels();
+  const [picked, setPicked] = useState<{
+    model: string;
+    variant: string;
+  } | null>(null);
   const pinnedModel =
-    pickedModel ??
+    picked?.model ??
     (session?.model !== undefined
       ? formatModelRef(session.model.providerID, session.model.id)
       : null);
@@ -142,17 +184,29 @@ function Session({ sessionId }: { sessionId: string }) {
     pinnedModel === null ? (session?.location.directory ?? null) : null,
   );
   const currentModel = pinnedModel ?? defaultModel;
+  const currentVariant =
+    picked?.variant ?? session?.model?.variant ?? "default";
+  const modelInfo = findModel(models, currentModel);
 
-  const pickModel = (model: string) => {
-    if (model === pinnedModel) return;
-    const previous = pickedModel;
-    setPickedModel(model);
+  const switchTo = (model: string, variant: string) => {
+    const previous = picked;
+    setPicked({ model, variant });
     setSendError(null);
-    const ref = parseModelRef(model);
+    const ref = {
+      ...parseModelRef(model),
+      ...(variant !== "default" ? { variant } : {}),
+    };
     void ocClient.switchModel(sessionId, ref).catch((err) => {
-      setPickedModel(previous);
-      setSendError(err instanceof Error ? err.message : String(err));
+      setPicked(previous);
+      fail(err);
     });
+  };
+  const pickModel = (model: string) => {
+    if (model !== pinnedModel) switchTo(model, "default");
+  };
+  const pickVariant = (variant: string) => {
+    if (currentModel !== null && variant !== currentVariant)
+      switchTo(currentModel, variant);
   };
 
   const pick = (v: string | null) => {
@@ -214,24 +268,31 @@ function Session({ sessionId }: { sessionId: string }) {
                   (styles.css): the card sits 32px wider than the text. */}
               <div className="composer-col shrink-0 pb-4">
                 {prompt ?? (
-                  <ChatComposer
-                    onSubmit={submit}
-                    onStop={stop}
-                    isStopShown={running}
+                  <Composer
+                    directory={session?.location.directory ?? null}
                     value={draft}
                     onChange={setDraft}
-                    placeholder={
-                      running ? "Queue a message…" : "Message opencode…"
-                    }
-                    status={
-                      sendError
-                        ? { type: "error", message: sendError }
-                        : undefined
-                    }
+                    onSend={send}
+                    onCommand={runCommand}
+                    builtins={builtins}
+                    accepts={inputsOf(modelInfo)}
+                    onStop={stop}
+                    isStopShown={running}
+                    placeholder={running ? "Queue a message…" : PLACEHOLDER}
+                    error={sendError}
                     footerActions={
-                      <ModelPicker value={currentModel} onChange={pickModel} />
+                      <>
+                        <ModelPicker
+                          value={currentModel}
+                          onChange={pickModel}
+                        />
+                        <VariantPicker
+                          model={modelInfo}
+                          value={currentVariant}
+                          onChange={pickVariant}
+                        />
+                      </>
                     }
-                    input={<ChatComposerInput />}
                   />
                 )}
               </div>

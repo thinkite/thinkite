@@ -39,6 +39,7 @@ import type {
   ModelRef,
   OcClient,
   PromptFile,
+  PromptParts,
   SessionInfo,
   SessionMessageInfo,
 } from "../client.ts";
@@ -102,8 +103,9 @@ export interface OcStore {
   readonly replying: Atom<Records<true>>;
   /** Root sessions, most recent first. */
   readonly rootSessions: ReadonlyAtom<readonly SessionInfo[]>;
-  /** The model of the most recently active session that names one. Read
-   *  from the service's own list, so every client agrees. */
+  /** The model (and reasoning variant) of the most recently active session
+   *  that names one. Read from the service's own list, so every client
+   *  agrees. */
   readonly lastUsedModel: ReadonlyAtom<ModelRef | undefined>;
   /** Sessions with a turn in flight. */
   readonly running: ReadonlyAtom<ReadonlySet<string>>;
@@ -124,8 +126,15 @@ export interface OcStore {
       model?: ModelRef;
       /** The row's `msg_*` id, when the caller needs it up front (scroll anchoring). */
       id?: string;
-      files?: readonly PromptFile[];
-    },
+    } & PromptParts,
+  ): Promise<void>;
+  /** Run a service command (`/review …`) in the session's send order. Its
+   *  user message arrives from the service; nothing shows before. */
+  command(
+    sessionID: string,
+    name: string,
+    text: string,
+    parts?: PromptParts,
   ): Promise<void>;
   /** Create a session and add it to the list right away. Without a model
    *  it gets the last used one, else the directory's default — pinned. */
@@ -173,11 +182,13 @@ export function createOcStore({
   const lastUsedModel = createAtom<ModelRef | undefined>(
     () => {
       const m = rootSessions.get().find((s) => s.model !== undefined)?.model;
-      // Model only: the pickers don't show a variant, so none is carried.
-      return m && { providerID: m.providerID, id: m.id };
+      return m && pickRef(m);
     },
     {
-      compare: (a, b) => a?.providerID === b?.providerID && a?.id === b?.id,
+      compare: (a, b) =>
+        a?.providerID === b?.providerID &&
+        a?.id === b?.id &&
+        a?.variant === b?.variant,
     },
   );
   const running = createAtom<ReadonlySet<string>>(() => {
@@ -554,10 +565,12 @@ export function createOcStore({
   async function prompt(
     sessionID: string,
     text: string,
-    options?: { model?: ModelRef; id?: string; files?: readonly PromptFile[] },
+    options?: { model?: ModelRef; id?: string } & PromptParts,
   ) {
     const id = options?.id ?? mintMessageId();
     const files = options?.files ?? [];
+    const agents = options?.agents ?? [];
+    const skills = options?.skills ?? [];
     const row = {
       id,
       type: "user",
@@ -580,12 +593,23 @@ export function createOcStore({
         ) {
           await client.switchModel(sessionID, model);
         }
-        await client.prompt(sessionID, text, { id, files });
+        await client.prompt(sessionID, text, { id, files, agents, skills });
       });
     } catch (error) {
       if (fresh) rollback(sessionID, id);
       throw error;
     }
+  }
+
+  function command(
+    sessionID: string,
+    name: string,
+    text: string,
+    parts?: PromptParts,
+  ) {
+    return sendInOrder(sessionID, () =>
+      client.command(sessionID, name, text, parts),
+    );
   }
 
   async function createSession(options: {
@@ -654,6 +678,7 @@ export function createOcStore({
     open,
     loadOlder,
     prompt,
+    command,
     createSession,
     replyPermission: (request, decision) =>
       answer(
@@ -689,6 +714,17 @@ export function createOcStore({
 }
 
 /** A `data:` URI file as the service stores it on the user message. */
+/** A model ref with only the fields a pick carries; no "default" variant. */
+function pickRef(m: ModelRef): ModelRef {
+  return {
+    providerID: m.providerID,
+    id: m.id,
+    ...(m.variant !== undefined && m.variant !== "default"
+      ? { variant: m.variant }
+      : {}),
+  };
+}
+
 function inlineFile(file: PromptFile) {
   const match = /^data:([^;,]+);base64,(.*)$/s.exec(file.uri);
   if (match === null) return [];

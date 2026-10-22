@@ -38,6 +38,35 @@ const shape = (rows: ReturnType<typeof rowsOf>) =>
   );
 
 describe("rowsOf", () => {
+  it("shows inline files on the user row, not @-mentioned ones", () => {
+    const message = {
+      ...user("u1", 1),
+      files: [
+        {
+          data: "AAAA",
+          mime: "image/png",
+          source: { type: "inline" },
+          name: "shot.png",
+        },
+        {
+          data: "BBBB",
+          mime: "text/plain",
+          source: { type: "file" },
+          name: "a.ts",
+          mention: { start: 0, end: 5, text: "@a.ts" },
+        },
+      ],
+    } as unknown as SessionMessageInfo;
+    const [row] = rowsOf([message]);
+    expect(row?.kind === "user" ? row.attachments : null).toEqual([
+      {
+        name: "shot.png",
+        mime: "image/png",
+        src: "data:image/png;base64,AAAA",
+      },
+    ]);
+  });
+
   it("stacks a run of tools and thinking into one group, across steps", () => {
     const rows = rowsOf([
       user("u1", 1),
