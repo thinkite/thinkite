@@ -1,8 +1,9 @@
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
-import { Dialog } from "@astryxdesign/core/Dialog";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Kbd } from "@astryxdesign/core/Kbd";
+import { Layout, LayoutContent, LayoutPanel } from "@astryxdesign/core/Layout";
 import {
   SegmentedControl,
   SegmentedControlItem,
@@ -22,7 +23,6 @@ import {
   ServerIcon,
   SmartphoneIcon,
   TerminalIcon,
-  XIcon,
 } from "lucide-react";
 import {
   type ComponentType,
@@ -347,53 +347,55 @@ export function Settings() {
   const open = useSelector(settingsOpen);
   const [page, setPage] = useState(PAGES[0]?.id ?? "appearance");
   const current = PAGES.find((p) => p.id === page) ?? PAGES[0];
-  const close = () => settingsOpen.set(false);
   return (
     <Dialog
       isOpen={open}
       onOpenChange={(next) => settingsOpen.set(next)}
       width={880}
       maxHeight="80vh"
-      padding={0}
     >
-      <div className="flex h-[min(620px,80vh)]">
-        <nav className="flex w-52 shrink-0 flex-col gap-0.5 border-r border-[var(--color-border)] p-3">
-          {PAGES.map((p) => (
-            <Button
-              key={p.id}
-              label={p.label}
-              variant={p.id === page ? "secondary" : "ghost"}
-              icon={<Icon icon={p.icon} size="sm" />}
-              style={{ width: "100%", justifyContent: "flex-start" }}
-              onClick={() => setPage(p.id)}
-            />
-          ))}
-        </nav>
-        {/* The page's title and the close button stay put; only the
-            page below them scrolls. */}
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex shrink-0 items-start gap-4 px-8 pt-6 pb-4">
-            <div className="min-w-0 flex-1">
-              {current ? (
+      {/* One header across the dialog holds the title and the close button,
+          as in DeepSeek Harness; the pages and the page beside them scroll
+          on their own below it. */}
+      <Layout
+        className="h-[min(620px,80vh)]"
+        header={
+          <DialogHeader
+            title="Settings"
+            hasDivider
+            onOpenChange={(next) => settingsOpen.set(next)}
+          />
+        }
+        start={
+          <LayoutPanel width={208} hasDivider label="Settings pages">
+            <div className="flex flex-col gap-0.5">
+              {PAGES.map((p) => (
+                <Button
+                  key={p.id}
+                  label={p.label}
+                  variant={p.id === page ? "secondary" : "ghost"}
+                  icon={<Icon icon={p.icon} size="sm" />}
+                  style={{ width: "100%", justifyContent: "flex-start" }}
+                  onClick={() => setPage(p.id)}
+                />
+              ))}
+            </div>
+          </LayoutPanel>
+        }
+        content={
+          <LayoutContent key={current?.id}>
+            {current ? (
+              <>
                 <PageTitle
                   title={current.label}
                   description={current.description}
                 />
-              ) : null}
-            </div>
-            <Button
-              label="Close"
-              variant="ghost"
-              isIconOnly
-              icon={<Icon icon={XIcon} size="sm" />}
-              onClick={close}
-            />
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-6">
-            {current ? <current.Page key={current.id} /> : null}
-          </div>
-        </div>
-      </div>
+                <current.Page />
+              </>
+            ) : null}
+          </LayoutContent>
+        }
+      />
     </Dialog>
   );
 }

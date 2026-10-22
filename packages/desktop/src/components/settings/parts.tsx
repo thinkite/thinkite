@@ -45,7 +45,7 @@ export function PageTitle({
   description: string;
 }) {
   return (
-    <div className="flex flex-col gap-1">
+    <div className="mb-5 flex flex-col gap-1">
       <Heading level={4}>{title}</Heading>
       <Text size="sm" color="secondary">
         {description}
