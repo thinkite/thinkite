@@ -24,6 +24,10 @@ const fixture = JSON.parse(
   ),
 ) as { events: OcEvent[]; messages: SessionMessageInfo[] };
 
+// The service writes an `idle` row when a turn ends. No event carries its
+// id, so it only ever arrives with the tail re-read that follows the turn.
+const streamed = fixture.messages.filter((m) => m.type !== "idle");
+
 function fold(events: readonly OcEvent[]): TranscriptRows {
   let rows: TranscriptRows = [];
   for (const event of events) rows = applyTranscriptEvent(rows, event);
@@ -33,8 +37,8 @@ function fold(events: readonly OcEvent[]): TranscriptRows {
 describe("transcript reducer", () => {
   it("folds a recorded pong + read-tool turn into the server projection", () => {
     const rows = fold(fixture.events);
-    expect(rows.map((r) => r.id)).toEqual(fixture.messages.map((m) => m.id));
-    expect(rows).toEqual(fixture.messages);
+    expect(rows.map((r) => r.id)).toEqual(streamed.map((m) => m.id));
+    expect(rows).toEqual(streamed);
   });
 
   it("only touches rows for the streaming subset and keeps identity otherwise", () => {

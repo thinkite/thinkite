@@ -3,16 +3,16 @@
   "version": "0.0.0",
   "private": true,
   "license": "Apache-2.0",
-  "description": "Framework-agnostic opencode 2 client + reducers + TanStack DB collections for Thinkite frontends (desktop + iOS)",
+  "description": "Framework-agnostic opencode 2 client, reducers and a TanStack Store data layer for Thinkite frontends (desktop + iOS)",
   "type": "module",
   "exports": {
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
-    "./tanstack": {
-      "types": "./src/tanstack/index.ts",
-      "default": "./src/tanstack/index.ts"
+    "./react": {
+      "types": "./src/react.ts",
+      "default": "./src/react.ts"
     }
   },
   "files": [
@@ -22,10 +22,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@opencode/client": "2.0.2",
-    "@tanstack/db": "catalog:"
+    "@opencode/client": "2.1.2",
+    "@tanstack/store": "catalog:",
+    "@tanstack/react-store": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "catalog:"
+    "@types/node": "catalog:",
+    "@types/react": "~19.2.0",
+    "react": "catalog:"
+  },
+  "peerDependencies": {
+    "react": ">=19"
   }
 }

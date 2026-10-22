@@ -4,9 +4,9 @@
  * Thin wrapper over the published `@opencode/client` promise entry (exact
  * pin in `package.json`; the service it talks to is discovered from the
  * opencode registry, never spawned by us) plus the few helpers the UI and
- * the TanStack collections need.
+ * the store needs.
  *
- * Runtime constraints (the phone reuses this on Hermes under Expo 57): no
+ * Runtime constraints (the phone reuses this on Hermes): no
  * `node:*` imports, no DOM-only globals beyond what Expo provides (`fetch`,
  * `ReadableStream`, `TextDecoder`), no `Buffer`. The promise entry itself
  * only needs `fetch` + streaming bodies (verified: 32 KB browser bundle,
@@ -23,7 +23,7 @@ import {
   type OpenCodeEvent,
   type PermissionReplyInput,
   type ProviderInfo,
-  type ServiceHealth,
+  type ServerInfo,
   type SessionInboxUser,
   type SessionInfo,
   type SessionMessageInfo,
@@ -36,7 +36,7 @@ export type {
   OpenCodeClient,
   OpenCodeEvent,
   ProviderInfo,
-  ServiceHealth,
+  ServerInfo,
   SessionInboxUser,
   SessionInfo,
   SessionMessageInfo,
@@ -82,7 +82,8 @@ export interface OcClient {
   readonly raw: OpenCodeClient;
   readonly baseUrl: string;
 
-  health(): Promise<ServiceHealth>;
+  /** Version and identity of the attached service. */
+  info(): Promise<ServerInfo>;
   listSessions(opts?: {
     directory?: string;
     limit?: number;
@@ -125,7 +126,7 @@ export interface OcClient {
   replyPermission(
     sessionID: string,
     requestID: string,
-    reply: PermissionReplyInput["reply"],
+    decision: PermissionReplyInput["decision"],
     message?: string,
   ): Promise<void>;
   /**
@@ -181,13 +182,15 @@ export function createOcClient(options: OcClientOptions): OcClient {
     raw,
     baseUrl,
 
-    health() {
-      return raw.health.get();
+    info() {
+      return raw.server.info();
     },
 
     async listSessions(opts = {}) {
       const page = await raw.session.list({
         ...(opts.directory !== undefined ? { directory: opts.directory } : {}),
+        // Root sessions only: subagent sessions belong under their parent.
+        parentID: null,
         limit: opts.limit ?? 100,
         ...(opts.cursor !== undefined
           ? { cursor: opts.cursor }
@@ -262,11 +265,11 @@ export function createOcClient(options: OcClientOptions): OcClient {
       return (await raw.agent.list(location(directory))).data;
     },
 
-    async replyPermission(sessionID, requestID, reply, message) {
+    async replyPermission(sessionID, requestID, decision, message) {
       await raw.permission.reply({
         sessionID,
         requestID,
-        reply,
+        decision,
         ...(message !== undefined ? { message } : {}),
       });
     },

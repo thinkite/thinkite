@@ -5,8 +5,9 @@
  *   THINKITE_E2E_OPENCODE=1 bunx vitest run packages/oc-client/src/opencode.e2e.test.ts
  *
  * Creates a scratch session in a temp directory, sends one prompt through
- * the transcript collection, waits for the turn to end, asserts the
- * collection settled onto the projection, and deletes the session.
+ * the store, waits for the turn to end, asserts the transcript settled onto
+ * the projection, and deletes the session. `MODEL=provider/id` picks the
+ * model (default: a free one).
  */
 
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -14,9 +15,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createOcClient } from "./client.ts";
-import { mintMessageId } from "./identifier.ts";
-import { createSessionsCollection } from "./tanstack/sessions.ts";
-import { createTranscriptCollections } from "./tanstack/transcript.ts";
+import { parseModelRef } from "./model-ref.ts";
+import { createOcStore } from "./store/store.ts";
 
 const enabled = process.env.THINKITE_E2E_OPENCODE === "1";
 
@@ -34,51 +34,34 @@ describe.skipIf(!enabled)("opencode 2 live", () => {
       baseUrl: registry.url,
       password: registry.password,
     });
-    const health = await client.health();
-    expect(health.healthy).toBe(true);
+    expect((await client.info()).version).toMatch(/^2\./);
 
     const dir = await mkdtemp(join(tmpdir(), "thinkite-e2e-"));
-    const sessions = createSessionsCollection({ client });
-    const transcripts = createTranscriptCollections({ client });
+    const store = createOcStore({ client });
     try {
-      await sessions.preload();
-      const session = await client.createSession({
+      await store.start();
+      const session = await store.createSession({
         directory: dir,
-        title: "thinkite e2e",
+        model: parseModelRef(
+          process.env.MODEL ?? "opencode/deepseek-v4.1-flash-free",
+        ),
       });
-      const coll = transcripts.get(session.id);
-      await coll.preload();
+      expect(store.rootSessions.get().map((s) => s.id)).toContain(session.id);
 
-      const id = mintMessageId();
-      const tx = transcripts.sendUserMessage({
-        sessionId: session.id,
-        userMessageUuid: id,
-        text: "Reply with exactly: pong",
-      });
-      await tx.isPersisted.promise;
-
+      await store.prompt(session.id, "Reply with exactly: pong");
+      const rows = () => store.session.message.get()[session.id] ?? [];
       const deadline = Date.now() + 120_000;
       while (Date.now() < deadline) {
-        const row = sessions.get(session.id);
-        const last = [...coll.values()]
-          .sort((a, b) => a.time.created - b.time.created)
-          .at(-1);
-        if (
-          row?.activity === "idle" &&
-          last?.type === "assistant" &&
-          last.time.completed !== undefined
-        )
+        const last = rows().at(-1);
+        if (!store.running.get().has(session.id) && last?.type === "idle")
           break;
         await new Promise((r) => setTimeout(r, 250));
       }
+      store.flush();
+
       // Settled: the tail read after execution.succeeded merged the server rows.
-      await new Promise((r) => setTimeout(r, 500));
-      const rows = [...coll.values()].sort(
-        (a, b) => a.time.created - b.time.created,
-      );
-      expect(rows.map((r) => r.type)).toEqual(["user", "assistant"]);
-      expect(rows[0]?.id).toBe(id);
-      const assistant = rows[1];
+      expect(rows().map((r) => r.type)).toEqual(["user", "assistant", "idle"]);
+      const assistant = rows()[1];
       expect(assistant?.type === "assistant" ? assistant.finish : null).toBe(
         "stop",
       );
@@ -87,24 +70,21 @@ describe.skipIf(!enabled)("opencode 2 live", () => {
           ? assistant.content.find((c) => c.type === "text")?.text.trim()
           : null,
       ).toBe("pong");
-      // Collection rows carry TanStack's virtual `$…` props and the keys the
-      // reducer set to undefined; every projection field must match.
       const projection = await client.listMessages(session.id, { limit: 10 });
-      expect(rows).toMatchObject(projection.messages.slice().reverse());
-      expect(sessions.get(session.id)).toMatchObject({
-        title: "thinkite e2e",
-        activity: "idle",
-      });
+      expect(rows()).toMatchObject(projection.messages.slice().reverse());
 
       await client.deleteSession(session.id);
       const gone = Date.now() + 5000;
-      while (Date.now() < gone && sessions.get(session.id) !== undefined) {
+      while (
+        Date.now() < gone &&
+        store.session.info.get()[session.id] !== undefined
+      ) {
         await new Promise((r) => setTimeout(r, 100));
+        store.flush();
       }
-      expect(sessions.get(session.id)).toBeUndefined();
+      expect(store.session.info.get()[session.id]).toBeUndefined();
     } finally {
-      transcripts.disposeAll();
-      await sessions.cleanup();
+      store.stop();
       await rm(dir, { recursive: true, force: true });
     }
   }, 150_000);

@@ -12,7 +12,7 @@
  * this reducer built, so its only job is to be right *during* a turn.
  *
  * Ported case by case from `handleEvent` in
- * `packages/client/src/solid/data.ts` on anomalyco/opencode `v2` (MIT),
+ * `packages/client/src/solid/data.ts` on anomalyco/opencode `v2.1.2` (MIT),
  * rewritten as immutable updates: untouched rows keep their identity, so a
  * `!==` check is the whole diff for the collection mirror.
  */
@@ -91,6 +91,15 @@ function append(
 ): TranscriptRows {
   if (indexOf(rows, item.id) >= 0) return rows;
   return [...rows, item];
+}
+
+/** Insert, or replace a row with the same id (an optimistic guess) in place. */
+function upsert(
+  rows: TranscriptRows,
+  item: SessionMessageInfo,
+): TranscriptRows {
+  const index = indexOf(rows, item.id);
+  return index < 0 ? [...rows, item] : replaceAt(rows, index, item);
 }
 
 function editAssistant(
@@ -185,7 +194,7 @@ export function applyTranscriptEvent(
     case "session.inbox.enqueued": {
       const { item, inboxID } = event.data;
       if (item.type === "user") {
-        return append(rows, {
+        return upsert(rows, {
           id: inboxID,
           type: "user",
           text: item.payload.text,
@@ -205,7 +214,7 @@ export function applyTranscriptEvent(
         });
       }
       if (item.type === "synthetic") {
-        return append(rows, {
+        return upsert(rows, {
           id: inboxID,
           type: "synthetic",
           text: item.payload.text,
@@ -281,7 +290,7 @@ export function applyTranscriptEvent(
         time: { ...a.time, completed: event.created },
         finish: event.data.finish,
         rawFinish: event.data.rawFinish,
-        providerState: event.data.providerState,
+        native: event.data.native,
         cost: event.data.cost,
         tokens: event.data.tokens,
         ...(event.data.snapshot !== undefined
@@ -294,7 +303,7 @@ export function applyTranscriptEvent(
         time: { ...a.time, completed: event.created },
         finish: event.data.finish ?? "error",
         rawFinish: event.data.rawFinish,
-        providerState: event.data.providerState,
+        native: event.data.native,
         error: event.data.error,
         retry: undefined,
         ...(event.data.cost !== undefined && event.data.tokens !== undefined
@@ -315,7 +324,6 @@ export function applyTranscriptEvent(
       return editText(rows, event.data.assistantMessageID, (t) => ({
         ...t,
         text: event.data.text,
-        ...(event.data.state !== undefined ? { state: event.data.state } : {}),
       }));
     case "session.reasoning.started":
       return editAssistant(rows, event.data.assistantMessageID, (a) => ({
@@ -325,8 +333,8 @@ export function applyTranscriptEvent(
           {
             type: "reasoning",
             text: "",
-            ...(event.data.state !== undefined
-              ? { state: event.data.state }
+            ...(event.data.native !== undefined
+              ? { native: event.data.native }
               : {}),
             time: { created: event.created },
           },
@@ -345,7 +353,9 @@ export function applyTranscriptEvent(
           created: r.time?.created ?? event.created,
           completed: event.created,
         },
-        ...(event.data.state !== undefined ? { state: event.data.state } : {}),
+        ...(event.data.native !== undefined
+          ? { native: event.data.native }
+          : {}),
       }));
     case "session.tool.input.started":
       return editAssistant(rows, event.data.assistantMessageID, (a) => ({
@@ -396,8 +406,8 @@ export function applyTranscriptEvent(
           ...tool,
           time: { ...tool.time, ran: event.created },
           executed: event.data.executed,
-          ...(event.data.state !== undefined
-            ? { providerState: event.data.state }
+          ...(event.data.native !== undefined
+            ? { native: event.data.native }
             : {}),
           state: { status: "running", input: event.data.input, metadata: {} },
         }),
@@ -433,8 +443,8 @@ export function applyTranscriptEvent(
               content: [...event.data.content],
             },
             executed: event.data.executed || tool.executed === true,
-            ...(event.data.resultState !== undefined
-              ? { providerResultState: event.data.resultState }
+            ...(event.data.native !== undefined
+              ? { native: { ...tool.native, ...event.data.native } }
               : {}),
             time: { ...tool.time, completed: event.created },
           };
@@ -466,8 +476,8 @@ export function applyTranscriptEvent(
                 : {}),
             },
             executed: event.data.executed || tool.executed === true,
-            ...(event.data.resultState !== undefined
-              ? { providerResultState: event.data.resultState }
+            ...(event.data.native !== undefined
+              ? { native: { ...tool.native, ...event.data.native } }
               : {}),
             time: { ...tool.time, completed: event.created },
           };
@@ -504,8 +514,8 @@ function stepStarted(
       error: undefined,
       finish: undefined,
       rawFinish: undefined,
-      providerState: undefined,
-      time: { created: existing.time.created },
+      native: undefined,
+      time: { created: event.data.started },
       ...(event.data.snapshot !== undefined
         ? { snapshot: { ...existing.snapshot, start: event.data.snapshot } }
         : {}),
@@ -531,7 +541,7 @@ function stepStarted(
     ...(event.data.snapshot !== undefined
       ? { snapshot: { start: event.data.snapshot } }
       : {}),
-    time: { created: event.created },
+    time: { created: event.data.started },
   });
 }
 

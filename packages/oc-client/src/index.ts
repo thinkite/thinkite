@@ -18,7 +18,7 @@ export {
   type OpenCodeClient,
   type OpenCodeEvent,
   type ProviderInfo,
-  type ServiceHealth,
+  type ServerInfo,
   type SessionInboxUser,
   type SessionInfo,
   type SessionMessageInfo,
@@ -36,11 +36,17 @@ export { mintMessageId } from "./identifier.ts";
 export { formatModelRef, parseModelRef } from "./model-ref.ts";
 export {
   applySessionEvent,
-  type SessionActivity,
-  type SessionRow,
-  sessionRowFromCreated,
-  sessionRowFromInfo,
+  type SessionStatus,
+  statusFromEvent,
 } from "./session-reducer.ts";
+export {
+  type ConnectionStatus,
+  createOcStore,
+  type FormAnswer,
+  type OcStore,
+  type OcStoreOptions,
+  type Paging,
+} from "./store/store.ts";
 export {
   applyTranscriptEvent,
   mergeProjection,

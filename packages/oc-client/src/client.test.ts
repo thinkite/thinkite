@@ -32,19 +32,15 @@ function capture(body: unknown = { data: [], cursor: {} }) {
 
 describe("oc client", () => {
   it("keeps the mount prefix on routes and injects Basic auth", async () => {
-    const { fetchImpl, calls } = capture({
-      healthy: true,
-      version: "2.0.2",
-      pid: 1,
-    });
+    const { fetchImpl, calls } = capture({ version: "2.1.2" });
     const client = createOcClient({
       baseUrl: "http://localhost:5183",
       pathPrefix: "/oc",
       password: "pw",
       fetch: fetchImpl,
     });
-    await client.health();
-    expect(calls[0]?.url).toBe("http://localhost:5183/oc/api/health");
+    await client.info();
+    expect(calls[0]?.url).toMatch(/^http:\/\/localhost:5183\/oc\/api\//);
     expect(calls[0]?.auth).toBe(`Basic ${btoa("opencode:pw")}`);
   });
 

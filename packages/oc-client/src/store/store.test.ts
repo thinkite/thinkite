@@ -1,0 +1,436 @@
+/**
+ * Store tests over a fake `OcClient`: a push-driven event stream
+ * (`server.connected` first, like the real bus), projection pages, and the
+ * session list. Covers the list and busy flags, transcript hydration and
+ * paging, live folding and the turn-end re-read, optimistic prompts, staged
+ * writes, and answering permission requests.
+ */
+
+import type { PermissionRequest } from "@opencode/client";
+import { afterEach, describe, expect, it } from "vitest";
+import type { OcClient, SessionInfo, SessionMessageInfo } from "../client.ts";
+import type { OcEvent } from "../events.ts";
+import { createOcStore, type OcStore } from "./store.ts";
+
+const SES = "ses_a";
+
+class FakeBus {
+  private queue: OcEvent[] = [];
+  private wake: (() => void) | null = null;
+  private closeWake: (() => void) | null = null;
+  connections = 0;
+
+  push(event: OcEvent): void {
+    this.queue.push(event);
+    this.wake?.();
+    this.wake = null;
+  }
+
+  /** End the current stream (server restart); the next subscribe reconnects. */
+  close(): void {
+    this.closeWake?.();
+    this.closeWake = null;
+  }
+
+  async *iterate(signal: AbortSignal): AsyncGenerator<OcEvent> {
+    this.connections += 1;
+    yield ev("server.connected", {});
+    let closed = false;
+    while (!signal.aborted && !closed) {
+      if (this.queue.length === 0) {
+        await new Promise<void>((resolve) => {
+          this.wake = resolve;
+          this.closeWake = () => {
+            closed = true;
+            resolve();
+          };
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        continue;
+      }
+      yield this.queue.shift() as OcEvent;
+    }
+  }
+}
+
+function ev(
+  type: string,
+  data: Record<string, unknown>,
+  created = Date.now(),
+): OcEvent {
+  return {
+    type,
+    id: `evt_${Math.random().toString(36).slice(2, 10)}`,
+    created,
+    data,
+    durable: { seq: 1 },
+  } as unknown as OcEvent;
+}
+
+const enqueued = (id: string, text: string, created: number) =>
+  ev(
+    "session.inbox.enqueued",
+    {
+      sessionID: SES,
+      inboxID: id,
+      item: { type: "user", payload: { text }, delivery: "steer" },
+    },
+    created,
+  );
+
+function user(id: string, text: string, created: number): SessionMessageInfo {
+  return { id, type: "user", text, time: { created } };
+}
+
+function info(id: string, title: string, updated: number): SessionInfo {
+  return {
+    id,
+    projectID: "p",
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: { created: 1, updated },
+    title,
+    location: { directory: `/tmp/${id}` },
+  } as SessionInfo;
+}
+
+function fakeClient(opts: {
+  bus: FakeBus;
+  pages?: Array<{ messages: SessionMessageInfo[]; nextCursor?: string }>;
+  sessions?: Array<{ sessions: SessionInfo[]; nextCursor?: string }>;
+  active?: string[];
+  prompt?: (text: string) => Promise<void>;
+  replyPermission?: () => Promise<void>;
+}) {
+  const messageCalls: Array<{ cursor?: string }> = [];
+  const listCalls: number[] = [];
+  const prompts: Array<{ id?: string; text: string }> = [];
+  const switches: string[] = [];
+  const client = {
+    events: ({ signal }: { signal: AbortSignal }) => opts.bus.iterate(signal),
+    async listMessages(
+      _sessionID: string,
+      o: { limit?: number; cursor?: string } = {},
+    ) {
+      messageCalls.push(o);
+      return opts.pages?.shift() ?? { messages: [] };
+    },
+    async listSessions() {
+      listCalls.push(Date.now());
+      return opts.sessions?.shift() ?? { sessions: [] };
+    },
+    async getSession(id: string) {
+      return info(id, "created", 50);
+    },
+    async activeSessionIDs() {
+      return new Set(opts.active ?? []);
+    },
+    async switchModel(
+      _sessionID: string,
+      model: { providerID: string; id: string },
+    ) {
+      switches.push(`${model.providerID}/${model.id}`);
+    },
+    async prompt(_sessionID: string, text: string, o: { id?: string } = {}) {
+      prompts.push({ id: o.id, text });
+      await opts.prompt?.(text);
+    },
+    async replyPermission() {
+      await opts.replyPermission?.();
+    },
+    raw: {
+      session: { form: { list: async () => [] } },
+      permission: { list: async () => [] },
+    },
+  };
+  return {
+    client: client as unknown as OcClient,
+    messageCalls,
+    listCalls,
+    prompts,
+    switches,
+  };
+}
+
+const made: OcStore[] = [];
+function store(client: OcClient): OcStore {
+  const s = createOcStore({
+    client,
+    pageSize: 2,
+    settleMs: 5,
+    frameMs: 1,
+    onError: () => {},
+  });
+  made.push(s);
+  return s;
+}
+afterEach(() => {
+  for (const s of made.splice(0)) s.stop();
+});
+
+const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
+const ids = (s: OcStore) =>
+  (s.session.message.get()[SES] ?? []).map((r) => r.id);
+
+describe("session list", () => {
+  it("lists, seeds busy flags from the active snapshot, and patches from the bus", async () => {
+    const bus = new FakeBus();
+    const { client } = fakeClient({
+      bus,
+      sessions: [
+        { sessions: [info("ses_old", "old", 10), info(SES, "a", 20)] },
+      ],
+      active: ["ses_old"],
+    });
+    const s = store(client);
+    await s.start();
+    expect(s.status.get().status).toBe("ready");
+    expect(s.rootSessions.get().map((x) => x.id)).toEqual([SES, "ses_old"]);
+    expect([...s.running.get()]).toEqual(["ses_old"]);
+
+    bus.push(ev("session.renamed", { sessionID: SES, title: "renamed" }));
+    bus.push(ev("session.execution.started", { sessionID: SES }));
+    bus.push(ev("session.created", { sessionID: "ses_new" }));
+    bus.push(ev("session.deleted", { sessionID: "ses_old" }));
+    await tick();
+    s.flush();
+    expect(s.session.info.get()[SES]?.title).toBe("renamed");
+    expect(s.running.get().has(SES)).toBe(true);
+    expect(s.session.info.get().ses_new?.title).toBe("created");
+    expect(s.session.info.get().ses_old).toBeUndefined();
+  });
+
+  it("re-reads the list on reconnect, not on the first connect", {
+    timeout: 5000,
+  }, async () => {
+    const bus = new FakeBus();
+    const { client, listCalls } = fakeClient({ bus });
+    const s = store(client);
+    await s.start();
+    await tick();
+    expect(listCalls).toHaveLength(1);
+    bus.close();
+    // subscribeEvents waits 1 s before it reconnects.
+    await tick(1200);
+    expect(bus.connections).toBeGreaterThan(1);
+    expect(listCalls.length).toBeGreaterThan(1);
+  });
+});
+
+describe("transcripts", () => {
+  it("hydrates from the newest page and prepends older pages on demand", async () => {
+    const bus = new FakeBus();
+    const { client, messageCalls } = fakeClient({
+      bus,
+      pages: [
+        {
+          messages: [user("msg_4", "d", 4), user("msg_3", "c", 3)],
+          nextCursor: "c1",
+        },
+        { messages: [user("msg_2", "b", 2), user("msg_1", "a", 1)] },
+      ],
+    });
+    const s = store(client);
+    await s.start();
+    await s.open(SES);
+    expect(ids(s)).toEqual(["msg_3", "msg_4"]);
+    expect(s.session.paging.get()[SES]).toMatchObject({
+      cursor: "c1",
+      hydrated: true,
+    });
+
+    await s.loadOlder(SES);
+    expect(messageCalls.at(-1)?.cursor).toBe("c1");
+    expect(ids(s)).toEqual(["msg_1", "msg_2", "msg_3", "msg_4"]);
+    expect(s.session.paging.get()[SES]?.cursor).toBeUndefined();
+  });
+
+  it("folds streaming events live, then re-reads the tail when the turn ends", async () => {
+    const bus = new FakeBus();
+    const { client, messageCalls } = fakeClient({
+      bus,
+      pages: [
+        { messages: [] },
+        { messages: [user("msg_1", "server copy", 1)] },
+      ],
+    });
+    const s = store(client);
+    await s.start();
+    await s.open(SES);
+    bus.push(enqueued("msg_1", "hi", 1));
+    await tick();
+    s.flush();
+    expect(ids(s)).toEqual(["msg_1"]);
+
+    bus.push(ev("session.execution.succeeded", { sessionID: SES }));
+    await tick(40);
+    s.flush();
+    expect(messageCalls).toHaveLength(2);
+    expect(s.session.message.get()[SES]?.[0]).toMatchObject({
+      text: "server copy",
+    });
+  });
+
+  it("keeps a few transcripts and forgets the oldest", async () => {
+    const bus = new FakeBus();
+    const { client } = fakeClient({ bus });
+    const s = createOcStore({
+      client,
+      keepTranscripts: 2,
+      frameMs: 1,
+      onError: () => {},
+    });
+    made.push(s);
+    await s.start();
+    await s.open("ses_1");
+    await s.open("ses_2");
+    await s.open("ses_3");
+    expect(Object.keys(s.session.message.get()).sort()).toEqual([
+      "ses_2",
+      "ses_3",
+    ]);
+  });
+});
+
+describe("optimistic prompts", () => {
+  it("shows at once; the echo replaces the guess in place", async () => {
+    const bus = new FakeBus();
+    const { client, prompts } = fakeClient({ bus });
+    const s = store(client);
+    await s.start();
+    await s.open(SES);
+    const sent = s.prompt(SES, "hi");
+    expect(ids(s)).toHaveLength(1);
+    await sent;
+    const id = prompts[0]?.id as string;
+    expect(ids(s)).toEqual([id]);
+
+    bus.push(enqueued(id, "hi", 9));
+    await tick();
+    s.flush();
+    expect(ids(s)).toEqual([id]);
+    expect(s.session.message.get()[SES]?.[0]?.time.created).toBe(9);
+  });
+
+  it("a failed send takes the row back, unless the echo arrived first", async () => {
+    const bus = new FakeBus();
+    let echoFirst = false;
+    const { client, prompts } = fakeClient({
+      bus,
+      prompt: async (text) => {
+        if (echoFirst) {
+          bus.push(enqueued(prompts.at(-1)?.id as string, text, 5));
+          await tick();
+        }
+        throw new Error("boom");
+      },
+    });
+    const s = store(client);
+    await s.start();
+    await s.open(SES);
+    await expect(s.prompt(SES, "lost")).rejects.toThrow("boom");
+    expect(ids(s)).toEqual([]);
+
+    echoFirst = true;
+    await expect(s.prompt(SES, "kept")).rejects.toThrow("boom");
+    s.flush();
+    expect(ids(s)).toEqual([prompts.at(-1)?.id]);
+  });
+
+  it("sends in submission order, with a model switch ahead of its text", async () => {
+    const bus = new FakeBus();
+    const order: string[] = [];
+    const { client, switches } = fakeClient({
+      bus,
+      sessions: [{ sessions: [info(SES, "a", 1)] }],
+      prompt: async (text) => {
+        if (text === "first") await tick(20);
+        order.push(text);
+      },
+    });
+    const s = store(client);
+    await s.start();
+    await s.open(SES);
+    await Promise.all([
+      s.prompt(SES, "first"),
+      s.prompt(SES, "second", { model: { providerID: "p", id: "m" } }),
+    ]);
+    expect(order).toEqual(["first", "second"]);
+    expect(switches).toEqual(["p/m"]);
+  });
+});
+
+describe("staged writes", () => {
+  it("one frame of bus events reaches subscribers once", async () => {
+    const bus = new FakeBus();
+    const { client } = fakeClient({
+      bus,
+      sessions: [{ sessions: [info(SES, "a", 1)] }],
+    });
+    const s = createOcStore({ client, frameMs: 10, onError: () => {} });
+    made.push(s);
+    await s.start();
+    let heard = 0;
+    const sub = s.session.info.subscribe(() => heard++);
+    bus.push(ev("session.renamed", { sessionID: SES, title: "b" }));
+    bus.push(ev("session.renamed", { sessionID: SES, title: "c" }));
+    await tick(40);
+    expect(s.session.info.get()[SES]?.title).toBe("c");
+    expect(heard).toBe(1);
+    sub.unsubscribe();
+  });
+});
+
+describe("permission requests", () => {
+  const request = { id: "per_1", sessionID: SES } as PermissionRequest;
+
+  it("stay until the server has the answer; not found counts as answered", async () => {
+    const bus = new FakeBus();
+    let release: () => void = () => {};
+    const { client } = fakeClient({
+      bus,
+      replyPermission: () =>
+        new Promise((_, reject) => {
+          release = () => reject({ _tag: "PermissionNotFoundError" });
+        }),
+    });
+    const s = store(client);
+    await s.start();
+    bus.push(
+      ev("permission.asked", request as unknown as Record<string, unknown>),
+    );
+    await tick();
+    s.flush();
+    expect(s.session.permission.get()[SES]).toHaveLength(1);
+
+    const reply = s.replyPermission(request, "once");
+    expect(s.replying.get().per_1).toBe(true);
+    expect(s.session.permission.get()[SES]).toHaveLength(1);
+    release();
+    await reply;
+    expect(s.replying.get().per_1).toBeUndefined();
+    expect(s.session.permission.get()[SES]).toBeUndefined();
+  });
+
+  it("any other failure keeps the card and rejects", async () => {
+    const bus = new FakeBus();
+    const { client } = fakeClient({
+      bus,
+      replyPermission: async () => {
+        throw new Error("offline");
+      },
+    });
+    const s = store(client);
+    await s.start();
+    bus.push(
+      ev("permission.asked", request as unknown as Record<string, unknown>),
+    );
+    await tick();
+    await expect(s.replyPermission(request, "reject")).rejects.toThrow(
+      "offline",
+    );
+    s.flush();
+    expect(s.session.permission.get()[SES]).toHaveLength(1);
+    expect(s.replying.get().per_1).toBeUndefined();
+  });
+});

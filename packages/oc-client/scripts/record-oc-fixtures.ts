@@ -13,6 +13,7 @@
  * projection (see transcript-reducer.test.ts for what is compared).
  *
  * Usage: bun scripts/record-oc-fixtures.ts [outDir]
+ * `MODEL=provider/id` picks the model (default: a free one).
  */
 
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -33,13 +34,18 @@ const client = OpenCode.make({
   baseUrl: registry.url,
   headers: { authorization: `Basic ${btoa(`opencode:${registry.password}`)}` },
 });
-console.log("service", await client.health.get());
+const info = await client.server.info();
+console.log("service", info.version);
+const [providerID, ...rest] = (
+  process.env.MODEL ?? "opencode/deepseek-v4.1-flash-free"
+).split("/");
 
 const dir = await mkdtemp(join(tmpdir(), "thinkite-oc-fixture-"));
 await writeFile(join(dir, "hello.txt"), "thinkite fixture 42\n");
 const session = await client.session.create({
   location: { directory: dir },
   title: "thinkite fixture",
+  model: { providerID: providerID as string, id: rest.join("/") },
 });
 console.log("session", session.id);
 
