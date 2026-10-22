@@ -1,6 +1,6 @@
 import type { SessionMessageInfo } from "@thinkite/oc-client";
 import { describe, expect, it } from "vitest";
-import { duration, rowsOf } from "./transcript-rows";
+import { duration, groupLabel, rowsOf } from "./transcript-rows";
 
 const user = (id: string, created: number) =>
   ({ id, type: "user", text: id, time: { created } }) as SessionMessageInfo;
@@ -8,127 +8,165 @@ const user = (id: string, created: number) =>
 const assistant = (
   id: string,
   content: unknown[],
-  completed?: number,
   extra: Record<string, unknown> = {},
 ) =>
   ({
     id,
     type: "assistant",
     content,
-    time: { created: 0, ...(completed ? { completed } : {}) },
+    time: { created: 0 },
     ...extra,
   }) as unknown as SessionMessageInfo;
 
-const tool = (id: string) => ({
+const tool = (id: string, name = "read", status = "completed") => ({
   type: "tool",
   id,
-  name: "read",
-  state: { status: "completed", input: { path: "/a" }, content: [] },
+  name,
+  state: { status, input: { path: "/a" }, content: [] },
 });
 const text = (t: string) => ({ type: "text", text: t });
+const thought = (t: string) => ({ type: "reasoning", text: t });
 
 const idle = (id: string, outcome: string, created: number) =>
   ({ id, type: "idle", outcome, time: { created } }) as SessionMessageInfo;
 
-const kinds = (rows: ReturnType<typeof rowsOf>) =>
-  rows.map((r) => (r.kind === "process" ? `process(${r.label})` : r.kind));
+const shape = (rows: ReturnType<typeof rowsOf>) =>
+  rows.map((r) =>
+    r.kind === "group"
+      ? `group(${r.items.map((i) => i.key).join(",")})`
+      : r.kind,
+  );
 
 describe("rowsOf", () => {
-  it("folds a finished turn's work and leaves the final answer open", () => {
-    const rows = rowsOf(
-      [
-        user("u1", 1_000),
-        assistant("a1", [tool("t1")]),
-        assistant("a2", [text("interim"), tool("t2")]),
-        assistant("a3", [text("final")], 60_000),
-        idle("i1", "succeeded", 64_000),
-      ],
-      false,
-    );
-    expect(kinds(rows)).toEqual([
-      "user",
-      "process(Completed in 1m 3s)",
-      "text",
+  it("stacks a run of tools and thinking into one group, across steps", () => {
+    const rows = rowsOf([
+      user("u1", 1),
+      assistant("a1", [thought("hm"), tool("t1"), tool("t2", "grep")]),
+      assistant("a2", [tool("t3", "glob")]),
+      assistant("a3", [text("done")]),
     ]);
-    const process = rows[1];
-    expect(
-      process?.kind === "process" ? process.rows.map((r) => r.key) : [],
-    ).toEqual(["tool:t1", "a2:0", "tool:t2"]);
-  });
-
-  it("keeps the running turn flat", () => {
-    const rows = rowsOf(
-      [user("u1", 1_000), assistant("a1", [tool("t1"), text("so far")])],
-      true,
-    );
-    expect(kinds(rows)).toEqual(["user", "tool", "text"]);
-  });
-
-  it("ends a turn without an idle row at the next prompt, or when idle", () => {
-    const rows = rowsOf(
-      [
-        user("u1", 1_000),
-        assistant("a1", [tool("t1"), text("one")], 11_000),
-        user("u2", 20_000),
-        assistant("a2", [tool("t2"), text("two")], 25_000),
-      ],
-      false,
-    );
-    expect(kinds(rows)).toEqual([
+    expect(shape(rows)).toEqual([
       "user",
-      "process(Completed in 10s)",
-      "text",
-      "user",
-      "process(Completed in 5s)",
+      "group(a1:0,tool:t1,tool:t2,tool:t3)",
       "text",
     ]);
   });
 
-  it("labels stops, and keeps a failure readable below the fold", () => {
-    const stopped = rowsOf(
-      [
-        user("u1", 0),
-        assistant("a1", [tool("t1")]),
-        idle("i1", "interrupted", 5),
-      ],
-      false,
-    );
-    expect(kinds(stopped)).toEqual(["user", "process(Stopped)"]);
+  it("breaks a run at text, and at the next prompt", () => {
+    const rows = rowsOf([
+      user("u1", 1),
+      assistant("a1", [tool("t1"), text("one"), tool("t2", "edit")]),
+      user("u2", 2),
+      assistant("a2", [tool("t3", "shell")]),
+    ]);
+    expect(shape(rows)).toEqual([
+      "user",
+      "group(tool:t1)",
+      "text",
+      "group(tool:t2)",
+      "user",
+      "group(tool:t3)",
+    ]);
+  });
 
-    const failed = rowsOf(
-      [
-        user("u1", 0),
-        assistant("a1", [tool("t1")], undefined, {
-          error: { message: "boom" },
-        }),
-        idle("i1", "failed", 5),
-      ],
-      false,
-    );
-    expect(kinds(failed)).toEqual(["user", "process(Failed)"]);
-    const process = failed[1];
-    expect(
-      process?.kind === "process" ? process.rows.at(-1) : null,
-    ).toMatchObject({
+  it("keeps a group's key while the run grows", () => {
+    const before = rowsOf([user("u1", 1), assistant("a1", [tool("t1")])]);
+    const after = rowsOf([
+      user("u1", 1),
+      assistant("a1", [tool("t1"), tool("t2")]),
+    ]);
+    expect(before[1]?.key).toBe(after[1]?.key);
+  });
+
+  it("shows a finished question alone, hides a waiting one and the todo list", () => {
+    const rows = rowsOf([
+      user("u1", 1),
+      assistant("a1", [
+        tool("t1"),
+        tool("q1", "question"),
+        tool("todo", "todowrite"),
+        tool("q2", "question", "running"),
+        tool("t2"),
+      ]),
+    ]);
+    expect(shape(rows)).toEqual([
+      "user",
+      "group(tool:t1)",
+      "tool",
+      "group(tool:t2)",
+    ]);
+  });
+
+  it("drops blank text and thinking", () => {
+    const rows = rowsOf([
+      user("u1", 1),
+      assistant("a1", [text("  "), thought(""), tool("t1")]),
+    ]);
+    expect(shape(rows)).toEqual(["user", "group(tool:t1)"]);
+  });
+
+  it("ends a run at a note, and reports stops and failures", () => {
+    const stopped = rowsOf([
+      user("u1", 0),
+      assistant("a1", [tool("t1")]),
+      idle("i1", "interrupted", 5),
+    ]);
+    expect(shape(stopped)).toEqual(["user", "group(tool:t1)", "note"]);
+    expect(stopped.at(-1)).toMatchObject({ text: "Interrupted" });
+
+    const failed = rowsOf([
+      user("u1", 0),
+      assistant("a1", [tool("t1")], { error: { message: "boom" } }),
+      idle("i1", "failed", 5),
+    ]);
+    expect(failed.at(-1)).toMatchObject({
       kind: "note",
       text: "boom",
       tone: "danger",
     });
+    expect(failed.filter((r) => r.kind === "note")).toHaveLength(1);
   });
 
   it("gives every row a distinct key", () => {
-    const rows = rowsOf(
-      [
-        assistant("a0", [tool("t0"), text("tail of an older turn")]),
-        user("u1", 1),
-        assistant("a1", [tool("t1"), text("x")], 2),
-        user("u2", 3),
-        assistant("a2", [tool("t2")]),
-      ],
-      false,
-    );
+    const rows = rowsOf([
+      assistant("a0", [tool("t0"), text("tail of an older turn")]),
+      user("u1", 1),
+      assistant("a1", [tool("t1"), text("x")]),
+      user("u2", 3),
+      assistant("a2", [tool("t2")]),
+    ]);
     const keys = rows.map((r) => r.key);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("groupLabel", () => {
+  it("counts tool calls and lists their titles once", () => {
+    const rows = rowsOf([
+      user("u1", 1),
+      assistant("a1", [
+        thought("x"),
+        tool("t1"),
+        tool("t2", "grep"),
+        tool("t3", "read"),
+        tool("t4", "bash"),
+      ]),
+    ]);
+    const group = rows[1];
+    expect(group?.kind === "group" ? groupLabel(group.items) : "").toBe(
+      "Used 4 Read, Grep, Shell",
+    );
+  });
+
+  it("counts thoughts when nothing else ran", () => {
+    const rows = rowsOf([
+      user("u1", 1),
+      assistant("a1", [thought("a"), thought("b")]),
+    ]);
+    const group = rows[1];
+    expect(group?.kind === "group" ? groupLabel(group.items) : "").toBe(
+      "Used 2 Thoughts",
+    );
   });
 });
 

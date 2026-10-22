@@ -3,32 +3,36 @@ import {
   ChatMessage,
   ChatMessageBubble,
   ChatSystemMessage,
-  ChatToolCalls,
 } from "@astryxdesign/core/Chat";
 import { CodeBlock } from "@astryxdesign/core/CodeBlock";
-import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
+import { ChevronDownIcon } from "@heroicons/react/16/solid";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { toolDiffs, toolOutput, toolSummary } from "@thinkite/oc-client";
 import { useMessages, usePaging } from "@thinkite/oc-client/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { ocStore } from "../lib/oc";
 import {
   duration,
+  type GroupItem,
+  groupLabel,
   type ReasoningPart,
   rowsOf,
   type ToolPart,
   type TranscriptRow,
+  toolTitle,
 } from "./transcript-rows";
 
-// Live transcript for ONE opencode session, laid out like wisp's: user
-// bubbles, the agent's text as markdown, a foldable "Thought for Ns" per
-// reasoning part, one row per tool call that expands to its diff or
-// output, and one-line notes for compaction, shell runs, retries and turns
-// that did not succeed. Rows are opencode's own `SessionMessageInfo`
-// projection from the store; older pages are prepended on demand —
+// Live transcript for ONE opencode session, laid out like opencode
+// desktop's compact timeline: user bubbles, the agent's text as markdown,
+// and between two pieces of text one collapsed "Used 3 Read, Grep, Glob"
+// row that opens into a line per tool call or thought, each of which opens
+// to its diff or output; one-line notes for compaction, shell runs,
+// retries and turns that did not succeed. Rows are opencode's own
+// `SessionMessageInfo` projection from the store; older pages are
+// prepended on demand —
 // LegendList's `onStartReached` is the trigger (opencode's GUI: scrollTop <
 // 200) and `maintainVisibleContentPosition` keeps the viewport still while
 // they land.
@@ -41,13 +45,6 @@ import {
 // mounted rows, and a tool row's open state is lost once it unmounts far
 // off-screen; recycleItems stays OFF so row-internal state never leaks
 // between rows.
-
-const TOOL_STATUS = {
-  streaming: "running",
-  running: "running",
-  completed: "complete",
-  error: "error",
-} as const;
 
 /** File extension → highlighter language for a diff; plain text otherwise. */
 function languageOf(file: string): string | undefined {
@@ -70,32 +67,71 @@ function languageOf(file: string): string | undefined {
   return known[ext];
 }
 
-function Reasoning({ part }: { part: ReasoningPart }) {
+/**
+ * opencode's disclosure: the label with a small ▾ right after it (not at
+ * the far edge), and the content indented below. Without content it is a
+ * plain line.
+ */
+function Disclosure({
+  label,
+  children,
+}: {
+  label: ReactNode;
+  children?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  if (children === undefined || children === null)
+    return (
+      <div className="flex min-w-0 items-center gap-1.5 py-1">{label}</div>
+    );
+  return (
+    <div className="flex min-w-0 flex-col">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className="group flex min-w-0 cursor-pointer items-center gap-1.5 self-start rounded py-1 text-left"
+      >
+        {label}
+        <ChevronDownIcon
+          aria-hidden
+          className={`size-3.5 shrink-0 text-[var(--color-text-secondary)] transition ${open ? "" : "-rotate-90 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"}`}
+        />
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-1 pt-1 pl-3">{children}</div>
+      ) : null}
+    </div>
+  );
+}
+
+const PULSE = "motion-safe:animate-pulse";
+
+function ThoughtLine({ part }: { part: ReasoningPart }) {
   const thinking = part.time?.completed === undefined;
-  const seconds =
+  const took =
     part.time?.completed !== undefined && part.time.created !== undefined
-      ? Math.max(
-          1,
-          Math.round((part.time.completed - part.time.created) / 1000),
-        )
+      ? duration(part.time.completed - part.time.created)
       : null;
   return (
-    <Collapsible
-      defaultIsOpen={false}
-      trigger={
-        <Text size="sm" color="secondary">
-          {thinking
-            ? "Thinking…"
-            : seconds
-              ? `Thought for ${seconds}s`
-              : "Thought"}
-        </Text>
+    <Disclosure
+      label={
+        <>
+          <Text size="sm" weight="medium" className={thinking ? PULSE : ""}>
+            {thinking ? "Thinking" : "Thought"}
+          </Text>
+          {took !== null ? (
+            <Text size="sm" color="secondary">
+              {took}
+            </Text>
+          ) : null}
+        </>
       }
     >
       <Text size="sm" color="secondary" className="whitespace-pre-wrap">
         {part.text}
       </Text>
-    </Collapsible>
+    </Disclosure>
   );
 }
 
@@ -112,54 +148,118 @@ function hunksOf(patch: string): string {
   return first <= 0 ? patch : lines.slice(first).join("\n");
 }
 
-function ToolDetail({ tool }: { tool: ToolPart }) {
+/** What a tool line opens to: its diffs, its error, or its output. */
+function toolDetail(tool: ToolPart): ReactNode {
   const diffs = toolDiffs(tool);
   if (diffs.length > 0) {
+    return diffs.map((d) => (
+      <CodeBlock
+        key={d.file}
+        code={hunksOf(d.patch)}
+        isDiff
+        title={shortPath(d.file)}
+        width="100%"
+        size="sm"
+        maxHeight={480}
+        {...(languageOf(d.file) ? { language: languageOf(d.file) } : {})}
+      />
+    ));
+  }
+  if (tool.state.status === "error") {
     return (
-      <div className="flex flex-col gap-2">
-        {diffs.map((d) => (
-          <CodeBlock
-            key={d.file}
-            code={hunksOf(d.patch)}
-            isDiff
-            title={shortPath(d.file)}
-            maxHeight={480}
-            {...(languageOf(d.file) ? { language: languageOf(d.file) } : {})}
-          />
-        ))}
-      </div>
+      <Text
+        size="sm"
+        className="whitespace-pre-wrap"
+        style={{ color: "var(--color-text-red)" }}
+      >
+        {tool.state.error.message}
+      </Text>
     );
   }
-  if (tool.state.status === "error") return null;
   const output = toolOutput(tool);
   if (output === "") return null;
-  return <CodeBlock code={output} maxHeight={480} />;
+  // A command's card is titled with the command, as opencode's shell card.
+  const command =
+    tool.name === "shell" || tool.name === "bash" ? toolSummary(tool) : "";
+  return (
+    <CodeBlock
+      code={output}
+      width="100%"
+      size="sm"
+      maxHeight={480}
+      {...(command !== "" ? { title: `$ ${command}` } : {})}
+    />
+  );
 }
 
-function ToolRow({ tool }: { tool: ToolPart }) {
-  const diffs = toolDiffs(tool);
+/** One tool call: "Read  …/src/app.ts  +3 −1", opening to its detail. */
+function ToolLine({ tool }: { tool: ToolPart }) {
+  const status = tool.state.status;
+  const pending = status === "streaming" || status === "running";
+  const failed = status === "error";
   const summary = toolSummary(tool);
+  const diffs = toolDiffs(tool);
+  const added = diffs.reduce((n, d) => n + d.additions, 0);
+  const removed = diffs.reduce((n, d) => n + d.deletions, 0);
   return (
-    <ChatToolCalls
-      calls={[
-        {
-          key: tool.id,
-          name: tool.name,
-          status: TOOL_STATUS[tool.state.status],
-          ...(summary !== "" ? { target: summary } : {}),
-          ...(diffs.length > 0
-            ? {
-                additions: diffs.reduce((n, d) => n + d.additions, 0),
-                deletions: diffs.reduce((n, d) => n + d.deletions, 0),
-              }
-            : {}),
-          ...(tool.state.status === "error"
-            ? { errorMessage: tool.state.error.message }
-            : {}),
-          resultDetail: <ToolDetail tool={tool} />,
-        },
-      ]}
-    />
+    <Disclosure
+      label={
+        <>
+          <Text
+            size="sm"
+            weight="medium"
+            className={`shrink-0 ${pending ? PULSE : ""}`}
+            {...(failed ? { style: { color: "var(--color-text-red)" } } : {})}
+          >
+            {toolTitle(tool.name)}
+          </Text>
+          {summary !== "" ? (
+            <Text size="sm" color="secondary" className="truncate font-mono">
+              {summary}
+            </Text>
+          ) : null}
+          {diffs.length > 0 ? (
+            <Text size="sm" className="shrink-0 font-mono tabular-nums">
+              <span style={{ color: "var(--color-text-green)" }}>+{added}</span>{" "}
+              <span style={{ color: "var(--color-text-red)" }}>−{removed}</span>
+            </Text>
+          ) : null}
+        </>
+      }
+    >
+      {toolDetail(tool)}
+    </Disclosure>
+  );
+}
+
+/** opencode's "Used 3 Read, Grep, Glob ▾": a run of tool calls and thinking. */
+function GroupRow({ items, live }: { items: GroupItem[]; live: boolean }) {
+  const pending =
+    live ||
+    items.some((i) =>
+      i.kind === "tool"
+        ? i.tool.state.status === "running" ||
+          i.tool.state.status === "streaming"
+        : i.part.time?.completed === undefined,
+    );
+  const label = groupLabel(items);
+  return (
+    <Disclosure
+      label={
+        <Text size="sm" className={pending ? PULSE : ""}>
+          <span style={{ color: "var(--color-text-secondary)" }}>Used </span>
+          <span className="font-medium">{label.slice("Used ".length)}</span>
+        </Text>
+      }
+    >
+      {items.map((i) =>
+        i.kind === "tool" ? (
+          <ToolLine key={i.key} tool={i.tool} />
+        ) : (
+          <ThoughtLine key={i.key} part={i.part} />
+        ),
+      )}
+    </Disclosure>
   );
 }
 
@@ -208,7 +308,7 @@ function OlderHeader({ loading }: { loading: boolean }) {
   );
 }
 
-function renderRow(row: TranscriptRow) {
+function renderRow(row: TranscriptRow, live: boolean) {
   switch (row.kind) {
     case "user":
       return (
@@ -224,27 +324,10 @@ function renderRow(row: TranscriptRow) {
           <Markdown>{row.text}</Markdown>
         </ChatMessage>
       );
-    case "reasoning":
-      return <Reasoning part={row.part} />;
-    case "process":
-      return (
-        <Collapsible
-          defaultIsOpen={false}
-          trigger={
-            <Text size="sm" color="secondary">
-              {row.label}
-            </Text>
-          }
-        >
-          <div className="flex flex-col gap-3">
-            {row.rows.map((r) => (
-              <div key={r.key}>{renderRow(r)}</div>
-            ))}
-          </div>
-        </Collapsible>
-      );
+    case "group":
+      return <GroupRow items={row.items} live={live} />;
     case "tool":
-      return <ToolRow tool={row.tool} />;
+      return <ToolLine tool={row.tool} />;
     case "note":
       return (
         <ChatSystemMessage variant="divider">
@@ -284,12 +367,14 @@ export function TranscriptPanel({
   const paging = usePaging(ocStore, sessionId);
   const hasOlder = paging.cursor !== undefined;
 
-  const rows = useMemo(
-    () => rowsOf(messages, isRunning === true),
-    [messages, isRunning],
-  );
+  const rows = useMemo(() => rowsOf(messages), [messages]);
+  // The group the running turn is still adding to.
+  const liveKey =
+    isRunning === true && rows.at(-1)?.kind === "group"
+      ? rows.at(-1)?.key
+      : null;
 
-  // Folded turns are short, so a page of history can fit on screen and
+  // Collapsed groups are short, so a page of history can fit on screen and
   // leave nothing to scroll up from. Keep reading older pages until at
   // least two turns show (or the session's start is in).
   const turnsShown = useMemo(
@@ -379,7 +464,9 @@ export function TranscriptPanel({
         // scrollbar at the pane edge. overflow-x-clip stops a wide code block
         // from blowing the column open.
         renderItem={({ item }) => (
-          <div className="chat-col overflow-x-clip pb-3">{renderRow(item)}</div>
+          <div className="chat-col overflow-x-clip pb-3">
+            {renderRow(item, item.key === liveKey)}
+          </div>
         )}
         getItemType={(g) => g.kind}
         estimatedItemSize={120}
