@@ -31,7 +31,7 @@ import {
 } from "../../components/ModelPicker";
 import { usePendingPrompt } from "../../components/Prompts";
 import { SessionTitle } from "../../components/SessionTitle";
-import { TerminalPane } from "../../components/TerminalPane";
+import { TerminalPanel } from "../../components/TerminalPanel";
 import {
   type MessageActions,
   TranscriptPanel,
@@ -486,10 +486,10 @@ function Session({ sessionId }: { sessionId: string }) {
                 {terminalVisited ? (
                   <div
                     className={
-                      surface === "terminal" ? "h-full min-h-0 p-2" : "hidden"
+                      surface === "terminal" ? "h-full min-h-0" : "hidden"
                     }
                   >
-                    <TerminalPane
+                    <TerminalPanel
                       sessionId={sessionId}
                       cwd={session.location.directory}
                     />

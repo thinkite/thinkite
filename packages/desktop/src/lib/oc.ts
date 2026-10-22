@@ -5,6 +5,7 @@ import {
   subscribeEvents,
 } from "@thinkite/oc-client";
 import { invalidateCatalog } from "./query";
+import { forgetTerminals } from "./terminals";
 
 // Renderer-wide opencode 2 access. Same-origin `/oc` (the Electron main
 // reverse proxy injects Basic auth — credentials never reach this process),
@@ -33,12 +34,20 @@ const CATALOG_EVENTS = new Set([
   "credential.updated",
   "credential.switched",
 ]);
-// A second subscriber on the client's one shared event stream.
+// A second subscriber on the client's one shared event stream: the catalog,
+// and the shells of a session that was deleted or archived (lib/terminals).
 const catalogBus = new AbortController();
 void subscribeEvents(
   ocClient,
   (event) => {
     if (CATALOG_EVENTS.has(event.type)) void invalidateCatalog();
+    if (event.type === "session.deleted" || event.type === "session.archived") {
+      const id = event.data.sessionID;
+      void fetch(`/api/pty/kill?session=${id}`, { method: "POST" }).catch(
+        () => {},
+      );
+      forgetTerminals(id);
+    }
   },
   { signal: catalogBus.signal, onError: () => {} },
 );

@@ -35,7 +35,7 @@ import {
 } from "electron";
 import { WebSocketServer } from "ws";
 import { handleOcProxy } from "./oc-proxy";
-import { attachPty, ptyParams } from "./pty";
+import { attachPty, killPty, killPtys, ptyParams } from "./pty";
 import {
   checkForUpdates,
   getUpdateState,
@@ -162,6 +162,18 @@ const server = createServer(async (req, res) => {
       // The Dock badge: how many sessions wait on the user (sidebar).
       const count = Number(url.searchParams.get("count") ?? 0);
       app.setBadgeCount(Number.isInteger(count) && count > 0 ? count : 0);
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    if (url.pathname === "/api/pty/kill" && req.method === "POST") {
+      // One closed tab's shell (`name`), or all of a deleted or archived
+      // chat session's (`session`; lib/oc).
+      const name = /^[A-Za-z0-9_-]{1,64}$/;
+      const one = url.searchParams.get("name") ?? "";
+      const all = url.searchParams.get("session") ?? "";
+      if (name.test(one)) killPty(one);
+      if (name.test(all)) killPtys(all);
       res.writeHead(204);
       res.end();
       return;

@@ -25,7 +25,12 @@
 // Client protocol (JSON): {t:"in",d} keystrokes · {t:"size",cols,rows} resize
 // · {t:"ack",n} flow control (bytes consumed by xterm's write callback).
 // Server→client frames are raw PTY bytes; first frame after attach = the
-// serialized snapshot.
+// serialized snapshot. When the shell exits the socket closes with
+// EXITED, so the client closes the tab instead of re-attaching (which would
+// spawn a fresh shell).
+//
+// A chat session can have several terminals: names are the session id,
+// then `<session id>-<n>` for the rest (see killPtys).
 //
 // Runtime deltas vs the electrobun predecessor (git history of this file):
 //  - Bun.Terminal → @lydell/node-pty (prebuilt N-API — loads in Electron's
@@ -69,6 +74,25 @@ interface PtySession {
 }
 
 const sessions = new Map<string, PtySession>();
+
+/** Close code: the shell exited (not a dropped connection). */
+export const EXITED = 4000;
+
+/** End one terminal's shell (its tab was closed); the exit callback drops
+ *  the entry. */
+export function killPty(name: string): void {
+  try {
+    sessions.get(name)?.proc.kill();
+  } catch {
+    // already gone; the exit callback cleans up
+  }
+}
+
+/** End every terminal of a chat session (it was deleted or archived). */
+export function killPtys(sessionID: string): void {
+  for (const name of sessions.keys())
+    if (name === sessionID || name.startsWith(`${sessionID}-`)) killPty(name);
+}
 
 /** Validate /pty query params BEFORE the ws upgrade. Returns params, or an
  *  error string the caller turns into a 400. */
@@ -153,7 +177,7 @@ export function attachPty(
       // spawns a fresh shell instead of adopting a corpse.
       if (sessions.get(name) === session) {
         sessions.delete(name);
-        session.socket?.close();
+        session.socket?.close(EXITED, "shell exited");
         session.term.dispose();
       }
     });

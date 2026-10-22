@@ -43,14 +43,23 @@ const LIGHT_THEME: ITheme = {
   brightWhite: "#a5a5a5",
 };
 
+/** Close code from server/pty.ts: the shell exited. */
+const EXITED = 4000;
+
 export function TerminalPane({
-  sessionId,
+  name,
   cwd,
+  onExit,
 }: {
-  sessionId: string;
+  /** The pty's name on the server (lib/terminals). */
+  name: string;
   cwd: string;
+  /** The shell exited; the pane stops re-attaching. */
+  onExit: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const onExitRef = useRef(onExit);
+  onExitRef.current = onExit;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -113,7 +122,7 @@ export function TerminalPane({
       // re-attaching a live shell. connect() only runs after fit() (lazy
       // attach), so term.cols/rows are the real dimensions here.
       ws = new WebSocket(
-        `${proto}://${location.host}/pty?session=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}&cols=${term.cols}&rows=${term.rows}`,
+        `${proto}://${location.host}/pty?session=${encodeURIComponent(name)}&cwd=${encodeURIComponent(cwd)}&cols=${term.cols}&rows=${term.rows}`,
       );
       // Server sends raw PTY BYTES (binary frames); xterm's own streaming
       // UTF-8 decoder handles codepoints split across chunks. ACK counts true
@@ -144,9 +153,12 @@ export function TerminalPane({
           }
         });
       };
-      ws.onclose = () => {
-        // Server keeps the pty + scrollback; re-attach shortly.
-        if (!disposed) retry = setTimeout(connect, 800);
+      ws.onclose = (ev) => {
+        if (disposed) return;
+        // The shell is gone: re-attaching would spawn a fresh one.
+        if (ev.code === EXITED) return onExitRef.current();
+        // Otherwise the server keeps the pty + scrollback; re-attach shortly.
+        retry = setTimeout(connect, 800);
       };
     };
 
@@ -215,7 +227,7 @@ export function TerminalPane({
       ws?.close();
       term.dispose();
     };
-  }, [sessionId, cwd]);
+  }, [name, cwd]);
 
   return <div ref={hostRef} className="h-full w-full" />;
 }
