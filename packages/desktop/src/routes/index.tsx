@@ -1,7 +1,6 @@
 import { Icon } from "@astryxdesign/core/Icon";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Text } from "@astryxdesign/core/Text";
-import { FolderIcon, SparklesIcon } from "@heroicons/react/24/outline";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
 import {
@@ -10,6 +9,7 @@ import {
   type SessionInfo,
 } from "@thinkite/oc-client";
 import { useLastUsedModel, useSessions } from "@thinkite/oc-client/react";
+import { FolderIcon, SparklesIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Composer, PLACEHOLDER } from "../components/Composer";
 import {

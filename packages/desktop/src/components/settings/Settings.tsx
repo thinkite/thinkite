@@ -12,18 +12,18 @@ import { Selector } from "@astryxdesign/core/Selector";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Switch } from "@astryxdesign/core/Switch";
 import { Text } from "@astryxdesign/core/Text";
-import {
-  CommandLineIcon,
-  CubeIcon,
-  InformationCircleIcon,
-  PaintBrushIcon,
-  PuzzlePieceIcon,
-  ServerIcon,
-  XMarkIcon,
-} from "@heroicons/react/24/outline";
 import { useSelector } from "@tanstack/react-store";
 import { formatModelRef, type ModelInfo } from "@thinkite/oc-client";
 import { useConnectionStatus } from "@thinkite/oc-client/react";
+import {
+  BoxIcon,
+  InfoIcon,
+  PaintbrushIcon,
+  PuzzleIcon,
+  ServerIcon,
+  TerminalIcon,
+  XIcon,
+} from "lucide-react";
 import {
   type ComponentType,
   type ReactNode,
@@ -431,25 +431,25 @@ const PAGES: {
   {
     id: "appearance",
     label: "Appearance",
-    icon: PaintBrushIcon,
+    icon: PaintbrushIcon,
     Page: Appearance,
   },
   {
     id: "shortcuts",
     label: "Shortcuts",
-    icon: CommandLineIcon,
+    icon: TerminalIcon,
     Page: Shortcuts,
   },
   { id: "providers", label: "Providers", icon: ServerIcon, Page: Providers },
-  { id: "models", label: "Models", icon: CubeIcon, Page: Models },
+  { id: "models", label: "Models", icon: BoxIcon, Page: Models },
   {
     id: "extensions",
     label: "Extensions",
-    icon: PuzzlePieceIcon,
+    icon: PuzzleIcon,
     Page: Extensions,
   },
   { id: "server", label: "Server", icon: ServerIcon, Page: Server },
-  { id: "about", label: "About", icon: InformationCircleIcon, Page: About },
+  { id: "about", label: "About", icon: InfoIcon, Page: About },
 ];
 
 export function Settings() {
@@ -484,7 +484,7 @@ export function Settings() {
               label="Close"
               variant="ghost"
               isIconOnly
-              icon={<Icon icon={XMarkIcon} size="sm" />}
+              icon={<Icon icon={XIcon} size="sm" />}
               onClick={close}
             />
           </div>

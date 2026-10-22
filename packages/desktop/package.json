@@ -21,7 +21,6 @@
   "dependencies": {
     "@astryxdesign/core": "^0.7.2",
     "@astryxdesign/theme-neutral": "^0.7.2",
-    "@heroicons/react": "^2.2.0",
     "@legendapp/list": "catalog:",
     "@lydell/node-pty": "^1.2.0-beta.15",
     "@pierre/diffs": "catalog:",
@@ -38,6 +37,7 @@
     "@xterm/headless": "6.1.0-beta.290",
     "@xterm/xterm": "6.1.0-beta.290",
     "electron-updater": "^6.8.9",
+    "lucide-react": "^1.24.0",
     "qrcode": "^1.5.4",
     "react": "catalog:",
     "react-dom": "catalog:",

@@ -9,11 +9,6 @@ import {
 } from "@astryxdesign/core/SideNav";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
-import {
-  Cog6ToothIcon,
-  PencilSquareIcon,
-  TrashIcon,
-} from "@heroicons/react/24/outline";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import type { SessionInfo } from "@thinkite/oc-client";
 import {
@@ -21,6 +16,7 @@ import {
   useRunning,
   useSessions,
 } from "@thinkite/oc-client/react";
+import { SettingsIcon, SquarePenIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ocClient, ocStore } from "../lib/oc";
 import { settingsOpen } from "../lib/prefs";
@@ -137,7 +133,7 @@ export function SessionSidebar() {
         <Button
           label="New session"
           variant="secondary"
-          icon={<Icon icon={PencilSquareIcon} size="sm" />}
+          icon={<Icon icon={SquarePenIcon} size="sm" />}
           style={{ width: "100%", justifyContent: "flex-start" }}
           onClick={() => void navigate({ to: "/" })}
         />
@@ -149,7 +145,7 @@ export function SessionSidebar() {
             variant="ghost"
             size="sm"
             isIconOnly
-            icon={<Icon icon={Cog6ToothIcon} size="sm" />}
+            icon={<Icon icon={SettingsIcon} size="sm" />}
             onClick={() => settingsOpen.set(true)}
           />
           <div className="flex-1" />
@@ -175,7 +171,7 @@ export function SessionSidebar() {
                 items={[
                   {
                     label: "Delete session",
-                    icon: TrashIcon,
+                    icon: Trash2Icon,
                     variant: "destructive",
                     onClick: () => deleteSession(s.id),
                   },

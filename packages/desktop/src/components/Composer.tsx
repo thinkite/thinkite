@@ -11,19 +11,19 @@ import { Icon } from "@astryxdesign/core/Icon";
 import { Text } from "@astryxdesign/core/Text";
 import { Thumbnail } from "@astryxdesign/core/Thumbnail";
 import type { SearchableItem } from "@astryxdesign/core/Typeahead";
-import {
-  DocumentIcon,
-  FolderIcon,
-  PlusIcon,
-  SparklesIcon,
-  UserCircleIcon,
-} from "@heroicons/react/24/outline";
 import type {
   AgentInfo,
   CommandInfo,
   PromptParts,
   SkillInfo,
 } from "@thinkite/oc-client";
+import {
+  CircleUserIcon,
+  FileIcon,
+  FolderIcon,
+  PlusIcon,
+  SparklesIcon,
+} from "lucide-react";
 import {
   type CSSProperties,
   type ReactNode,
@@ -438,8 +438,8 @@ export function Composer({
 
 const ROW_ICON = {
   skill: SparklesIcon,
-  agent: UserCircleIcon,
-  file: DocumentIcon,
+  agent: CircleUserIcon,
+  file: FileIcon,
   folder: FolderIcon,
 };
 

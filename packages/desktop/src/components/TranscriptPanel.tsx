@@ -12,13 +12,6 @@ import { Markdown } from "@astryxdesign/core/Markdown";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { Thumbnail } from "@astryxdesign/core/Thumbnail";
-import { ChevronDownIcon } from "@heroicons/react/16/solid";
-import {
-  ArrowUturnLeftIcon,
-  ArrowUturnRightIcon,
-  CheckIcon,
-  Square2StackIcon,
-} from "@heroicons/react/24/outline";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import {
   toolDiffs,
@@ -27,6 +20,14 @@ import {
   visibleMessages,
 } from "@thinkite/oc-client";
 import { useMessages, usePaging, useSession } from "@thinkite/oc-client/react";
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  CopyIcon,
+  Redo2Icon,
+  SplitIcon,
+  Undo2Icon,
+} from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { highlightTokens } from "../lib/highlight";
 import { ocStore } from "../lib/oc";
@@ -342,6 +343,8 @@ function OlderHeader({ loading }: { loading: boolean }) {
 export interface MessageActions {
   /** Rewind to just before this prompt (its text goes back in the composer). */
   revert(messageId: string, text: string): Promise<void>;
+  /** Start a new session from the history before this prompt. */
+  fork(messageId: string, text: string): Promise<void>;
   /** Bring back what a revert hid. */
   redo(): Promise<void>;
 }
@@ -371,8 +374,8 @@ function ActionButton({
 }
 
 /**
- * The line under a prompt, always shown: its time, then revert and copy
- * (opencode shows them on hover).
+ * The line under a prompt, always shown: its time, then revert, fork and
+ * copy (opencode shows revert and copy on hover and forks from a dialog).
  */
 function UserMeta({
   row,
@@ -393,16 +396,23 @@ function UserMeta({
       footer={
         <span className="flex items-center">
           {actions !== undefined && (
-            <ActionButton
-              label="Revert message"
-              icon={ArrowUturnLeftIcon}
-              onClick={() => actions.revert(row.messageId, row.text)}
-            />
+            <>
+              <ActionButton
+                label="Revert message"
+                icon={Undo2Icon}
+                onClick={() => actions.revert(row.messageId, row.text)}
+              />
+              <ActionButton
+                label="Fork to new session"
+                icon={SplitIcon}
+                onClick={() => actions.fork(row.messageId, row.text)}
+              />
+            </>
           )}
           {row.text !== "" && (
             <ActionButton
               label={copied ? "Copied" : "Copy message"}
-              icon={copied ? CheckIcon : Square2StackIcon}
+              icon={copied ? CheckIcon : CopyIcon}
               onClick={() =>
                 navigator.clipboard.writeText(row.text).then(
                   () => setCopied(true),
@@ -483,7 +493,7 @@ function renderRow(
               label="Redo"
               variant="ghost"
               size="sm"
-              icon={<Icon icon={ArrowUturnRightIcon} size="sm" />}
+              icon={<Icon icon={Redo2Icon} size="sm" />}
               clickAction={() => actions.redo()}
             />
           )}
@@ -501,7 +511,7 @@ export function TranscriptPanel({
   actions,
 }: {
   sessionId: string;
-  /** Revert and redo; without them prompts offer only copy. */
+  /** Revert, fork and redo; without them prompts offer only copy. */
   actions?: MessageActions;
   /** Renders a working indicator under the last message. */
   isRunning?: boolean;

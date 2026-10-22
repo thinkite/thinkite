@@ -6,7 +6,6 @@ import {
   ToggleButton,
   ToggleButtonGroup,
 } from "@astryxdesign/core/ToggleButton";
-import { CommandLineIcon, DocumentPlusIcon } from "@heroicons/react/24/outline";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import {
   formatModelRef,
@@ -16,7 +15,8 @@ import {
   visibleMessages,
 } from "@thinkite/oc-client";
 import { useIsRunning, useSession } from "@thinkite/oc-client/react";
-import { useState } from "react";
+import { FileDiffIcon, TerminalIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 import { type Builtin, Composer, PLACEHOLDER } from "../../components/Composer";
 import { DiffPanel } from "../../components/DiffPanel";
 import {
@@ -66,6 +66,8 @@ type Surface = "terminal" | "diff";
 // maps carry the state across remounts within one app run.
 const surfaceBySession = new Map<string, Surface | null>();
 const panelSizeBySession = new Map<string, number>();
+// A fork opens with the forked-from prompt in its composer, as opencode's.
+const draftForSession = new Map<string, string>();
 
 function SessionRoute() {
   const { sessionId } = Route.useParams();
@@ -104,7 +106,13 @@ function Session({ sessionId }: { sessionId: string }) {
   // it in place. A rejected send takes the bubble back; here we restore the
   // draft and surface the error in the composer's status slot. Sending while
   // a turn runs queues the message, as in opencode's own clients.
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(
+    () => draftForSession.get(sessionId) ?? "",
+  );
+  // Taken once mounted (a StrictMode double render reads it twice).
+  useEffect(() => {
+    draftForSession.delete(sessionId);
+  }, [sessionId]);
   const [sendError, setSendError] = useState<string | null>(null);
   // The just-sent prompt's id — TranscriptPanel pins that row near the top
   // while the reply streams below it (anchoredEndSpace). iOS ChatPanel
@@ -158,6 +166,14 @@ function Session({ sessionId }: { sessionId: string }) {
       ocStore.revert(sessionId, messageId).then(() => {
         setDraft(text);
         setSendError(null);
+      }, fail),
+    fork: (messageId, text) =>
+      ocStore.fork(sessionId, messageId).then((forked) => {
+        draftForSession.set(forked.id, text);
+        void navigate({
+          to: "/session/$sessionId",
+          params: { sessionId: forked.id },
+        });
       }, fail),
     redo: () => ocStore.unrevert(sessionId).catch(fail),
   };
@@ -402,14 +418,14 @@ function Session({ sessionId }: { sessionId: string }) {
                 label="Terminal"
                 isIconOnly
                 tooltip="Terminal"
-                icon={<Icon icon={CommandLineIcon} size="md" />}
+                icon={<Icon icon={TerminalIcon} size="md" />}
               />
               <ToggleButton
                 value="diff"
                 label="Diff"
                 isIconOnly
                 tooltip="Diff"
-                icon={<Icon icon={DocumentPlusIcon} size="md" />}
+                icon={<Icon icon={FileDiffIcon} size="md" />}
               />
             </ToggleButtonGroup>
           </div>
