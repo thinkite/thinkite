@@ -290,7 +290,7 @@ function Session({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Title bar after DeepSeek Harness's, no rule under it: the
+      {/* Title bar after DeepSeek Harness's, with a rule under it: the
           title and its "…" menu of session actions, where opencode
           desktop puts them, and the panel buttons. It runs the full
           width over the panel too, as Claude Code's does, so the whole

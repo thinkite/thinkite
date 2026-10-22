@@ -98,7 +98,7 @@ export function SessionTitle({
       // bar is one of the window's drag regions (lib/desktop-shell).
       // With the sidebar hidden, --leading-inset clears the traffic lights
       // and the seat beside them (__root).
-      className="flex h-12 min-w-0 shrink-0 items-center gap-1 pr-5 pl-[var(--leading-inset,1.25rem)]"
+      className="flex h-12 min-w-0 shrink-0 items-center gap-1 border-b border-[var(--color-border)] pr-5 pl-[var(--leading-inset,1.25rem)]"
       title={session.location.directory}
       data-window-drag
     >
