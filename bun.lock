@@ -160,6 +160,9 @@
         "@opencode/client": "2.0.2",
         "@tanstack/db": "catalog:",
       },
+      "devDependencies": {
+        "@types/node": "catalog:",
+      },
     },
     "packages/protocol": {
       "name": "@thinkite/protocol",
