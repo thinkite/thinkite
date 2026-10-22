@@ -66,8 +66,9 @@ type Surface = "info" | "terminal" | "diff";
 // maps carry the state across remounts within one app run.
 const surfaceBySession = new Map<string, Surface | null>();
 const panelSizeBySession = new Map<string, number>();
-// The info cards keep one narrower width for every session.
-let infoPanelSize = 320;
+// Every view opens at this width. The info cards stay at it (summaries
+// gain nothing from more room); the terminal and diff can be widened.
+const PANEL_WIDTH = 320;
 // A fork opens with the forked-from prompt in its composer, as opencode's.
 const draftForSession = new Map<string, string>();
 
@@ -99,19 +100,10 @@ function Session({ sessionId }: { sessionId: string }) {
   );
 
   const toolPanel = useResizable({
-    defaultSize: panelSizeBySession.get(sessionId) ?? 560,
-    minSize: 320,
+    defaultSize: panelSizeBySession.get(sessionId) ?? PANEL_WIDTH,
+    minSize: PANEL_WIDTH,
     onSizeChange: (size) => panelSizeBySession.set(sessionId, size),
   });
-  const infoPanel = useResizable({
-    defaultSize: infoPanelSize,
-    minSize: 260,
-    maxSize: 480,
-    onSizeChange: (size) => {
-      infoPanelSize = size;
-    },
-  });
-  const rightPanel = surface === "info" ? infoPanel : toolPanel;
 
   // Composer → optimistic send: the user bubble paints at once under a
   // client-minted id, and the durable `session.inbox.enqueued` echo replaces
@@ -400,23 +392,30 @@ function Session({ sessionId }: { sessionId: string }) {
           }
           end={
             <>
-              {surface !== null && (
+              {surface === "info" ? (
+                <div className="w-px shrink-0 bg-[var(--color-border)]" />
+              ) : surface !== null ? (
                 <ResizeHandle
                   direction="horizontal"
                   hasDivider
                   isReversed
                   isAlwaysVisible={false}
-                  resizable={rightPanel.props}
+                  resizable={toolPanel.props}
                   label="Resize session panel"
                 />
-              )}
+              ) : null}
               {/* Panel body — width-zeroed when closed. The terminal and diff
               stay mounted once opened (terminal buffer) and hide while
               another view shows. Plain div rather than LayoutPanel so
               closing doesn't unmount children. */}
               <div
                 style={{
-                  width: surface === null ? 0 : rightPanel.size,
+                  width:
+                    surface === null
+                      ? 0
+                      : surface === "info"
+                        ? PANEL_WIDTH
+                        : toolPanel.size,
                   flexShrink: 0,
                   overflow: "hidden",
                   height: "100%",
