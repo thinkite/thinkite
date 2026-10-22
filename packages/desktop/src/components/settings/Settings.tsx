@@ -1,7 +1,6 @@
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog } from "@astryxdesign/core/Dialog";
-import { Heading } from "@astryxdesign/core/Heading";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Kbd } from "@astryxdesign/core/Kbd";
 import {
@@ -28,141 +27,47 @@ import {
   type ComponentType,
   type ReactNode,
   type SVGProps,
-  useEffect,
   useMemo,
   useState,
 } from "react";
 import { ocClient, ocStore } from "../../lib/oc";
 import { prefs, settingsOpen, updatePrefs } from "../../lib/prefs";
 import { isVisible, newestOfFamilies, useModels } from "../ModelPicker";
+import { Providers } from "./Providers";
+import { Note, PageTitle, Row, Section, useLoad } from "./parts";
 
 // Settings, as a modal (wisp's call: a full page is hard to leave) with
 // opencode desktop's pages. Only pages that do something are here: the
-// color mode, which models the picker lists (client-side, like opencode
-// desktop), the server's terminal shell, and read-only views of the
-// service's providers, MCP servers and skills.
+// color mode, connecting providers and managing their accounts, which
+// models the picker lists (client-side, like opencode desktop), the
+// server's terminal shell, and read-only views of the service's MCP
+// servers and skills.
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
-
-/** A read from the service, with its error and a reload. */
-function useLoad<T>(load: () => Promise<T>): {
-  data: T | null;
-  error: string | null;
-} {
-  const [state, setState] = useState<{ data: T | null; error: string | null }>({
-    data: null,
-    error: null,
-  });
-  useEffect(() => {
-    let cancelled = false;
-    load()
-      .then((data) => {
-        if (!cancelled) setState({ data, error: null });
-      })
-      .catch((err: unknown) => {
-        if (!cancelled)
-          setState({
-            data: null,
-            error: err instanceof Error ? err.message : String(err),
-          });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return state;
-}
-
-function PageTitle({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="mb-5 flex flex-col gap-1">
-      <Heading level={4}>{title}</Heading>
-      <Text size="sm" color="secondary">
-        {description}
-      </Text>
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="mb-6 flex flex-col gap-1">
-      <Text size="sm" weight="medium" color="secondary">
-        {title}
-      </Text>
-      <div className="flex flex-col divide-y divide-[var(--color-border)] rounded-lg border border-[var(--color-border)]">
-        {children}
-      </div>
-    </section>
-  );
-}
-
-function Row({
-  title,
-  description,
-  children,
-}: {
-  title: ReactNode;
-  description?: ReactNode;
-  children?: ReactNode;
-}) {
-  return (
-    <div className="flex min-h-12 items-center gap-4 px-4 py-2.5">
-      <div className="flex min-w-0 flex-1 flex-col">
-        <Text size="sm">{title}</Text>
-        {description ? (
-          <Text size="sm" color="secondary" maxLines={1}>
-            {description}
-          </Text>
-        ) : null}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Note({ text }: { text: string }) {
-  return (
-    <div className="px-4 py-3">
-      <Text size="sm" color="secondary">
-        {text}
-      </Text>
-    </div>
-  );
-}
 
 // ---- pages ----
 
 function Appearance() {
   const mode = useSelector(prefs, (p) => p.appearance.mode);
   return (
-    <>
-      <PageTitle title="Appearance" description="How Thinkite looks" />
-      <Section title="Theme">
-        <Row title="Color mode" description="System follows your Mac">
-          <SegmentedControl
-            label="Color mode"
-            value={mode}
-            onChange={(next) =>
-              updatePrefs((p) => ({
-                ...p,
-                appearance: { mode: next as typeof mode },
-              }))
-            }
-          >
-            <SegmentedControlItem value="system" label="System" />
-            <SegmentedControlItem value="light" label="Light" />
-            <SegmentedControlItem value="dark" label="Dark" />
-          </SegmentedControl>
-        </Row>
-      </Section>
-    </>
+    <Section title="Theme">
+      <Row title="Color mode" description="System follows your Mac">
+        <SegmentedControl
+          label="Color mode"
+          value={mode}
+          onChange={(next) =>
+            updatePrefs((p) => ({
+              ...p,
+              appearance: { mode: next as typeof mode },
+            }))
+          }
+        >
+          <SegmentedControlItem value="system" label="System" />
+          <SegmentedControlItem value="light" label="Light" />
+          <SegmentedControlItem value="dark" label="Dark" />
+        </SegmentedControl>
+      </Row>
+    </Section>
   );
 }
 
@@ -177,51 +82,13 @@ const SHORTCUTS: [string, string][] = [
 
 function Shortcuts() {
   return (
-    <>
-      <PageTitle title="Shortcuts" description="Keyboard shortcuts" />
-      <Section title="General">
-        {SHORTCUTS.map(([action, keys]) => (
-          <Row key={action} title={action}>
-            <Kbd keys={keys} />
-          </Row>
-        ))}
-      </Section>
-    </>
-  );
-}
-
-function Providers() {
-  const { data, error } = useLoad(() => ocClient.listProviders());
-  const models = useModels();
-  const counts = useMemo(() => {
-    const out = new Map<string, number>();
-    for (const m of models?.models ?? [])
-      out.set(m.providerID, (out.get(m.providerID) ?? 0) + 1);
-    return out;
-  }, [models]);
-  const connected = (data ?? []).filter((p) => counts.has(p.id));
-  return (
-    <>
-      <PageTitle
-        title="Providers"
-        description="Model providers connected on the opencode service"
-      />
-      <Section title="Connected providers">
-        {error ? (
-          <Note text={error} />
-        ) : data === null || models === null ? (
-          <Note text="Loading…" />
-        ) : connected.length === 0 ? (
-          <Note text="No connected providers. Connect one in opencode." />
-        ) : (
-          connected.map((p) => (
-            <Row key={p.id} title={p.name} description={p.id}>
-              <Badge label={`${counts.get(p.id)} models`} />
-            </Row>
-          ))
-        )}
-      </Section>
-    </>
+    <Section title="General">
+      {SHORTCUTS.map(([action, keys]) => (
+        <Row key={action} title={action}>
+          <Kbd keys={keys} />
+        </Row>
+      ))}
+    </Section>
   );
 }
 
@@ -255,10 +122,6 @@ function Models() {
   };
   return (
     <>
-      <PageTitle
-        title="Models"
-        description="Which models the picker lists. By default, the newest of each family."
-      />
       {list === null ? (
         <Section title="Models">
           <Note text="Loading…" />
@@ -293,10 +156,6 @@ function Extensions() {
   const skills = useLoad(() => ocClient.raw.skill.list().then((r) => r.data));
   return (
     <>
-      <PageTitle
-        title="Extensions"
-        description="MCP servers and skills on the opencode service"
-      />
       <Section title="MCP servers">
         {mcp.error ? (
           <Note text={mcp.error} />
@@ -355,10 +214,6 @@ function Server() {
   };
   return (
     <>
-      <PageTitle
-        title="Server"
-        description="The opencode service Thinkite uses"
-      />
       <Section title="Connection">
         <Row
           title="Local service"
@@ -411,45 +266,72 @@ function Server() {
 function About() {
   const info = useLoad(() => ocClient.info());
   return (
-    <>
-      <PageTitle title="About" description="Thinkite, a client for opencode" />
-      <Section title="Versions">
-        <Row title="opencode service">
-          <Text size="sm">{info.data?.version ?? "—"}</Text>
-        </Row>
-      </Section>
-    </>
+    <Section title="Versions">
+      <Row title="opencode service">
+        <Text size="sm">{info.data?.version ?? "—"}</Text>
+      </Row>
+    </Section>
   );
 }
 
 const PAGES: {
   id: string;
   label: string;
+  /** Shown under the title in the header. */
+  description: string;
   icon: IconType;
   Page: () => ReactNode;
 }[] = [
   {
     id: "appearance",
     label: "Appearance",
+    description: "How Thinkite looks",
     icon: PaintbrushIcon,
     Page: Appearance,
   },
   {
     id: "shortcuts",
     label: "Shortcuts",
+    description: "Keyboard shortcuts",
     icon: TerminalIcon,
     Page: Shortcuts,
   },
-  { id: "providers", label: "Providers", icon: ServerIcon, Page: Providers },
-  { id: "models", label: "Models", icon: BoxIcon, Page: Models },
+  {
+    id: "providers",
+    label: "Providers",
+    description: "Connect and manage model providers",
+    icon: ServerIcon,
+    Page: Providers,
+  },
+  {
+    id: "models",
+    label: "Models",
+    description:
+      "Which models the picker lists. By default, the newest of each family.",
+    icon: BoxIcon,
+    Page: Models,
+  },
   {
     id: "extensions",
     label: "Extensions",
+    description: "MCP servers and skills on the opencode service",
     icon: PuzzleIcon,
     Page: Extensions,
   },
-  { id: "server", label: "Server", icon: ServerIcon, Page: Server },
-  { id: "about", label: "About", icon: InfoIcon, Page: About },
+  {
+    id: "server",
+    label: "Server",
+    description: "The opencode service Thinkite uses",
+    icon: ServerIcon,
+    Page: Server,
+  },
+  {
+    id: "about",
+    label: "About",
+    description: "Thinkite, a client for opencode",
+    icon: InfoIcon,
+    Page: About,
+  },
 ];
 
 export function Settings() {
@@ -478,8 +360,18 @@ export function Settings() {
             />
           ))}
         </nav>
-        <div className="relative min-w-0 flex-1 overflow-y-auto px-8 py-6">
-          <div className="absolute top-3 right-3">
+        {/* The page's title and the close button stay put; only the
+            page below them scrolls. */}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex shrink-0 items-start gap-4 px-8 pt-6 pb-4">
+            <div className="min-w-0 flex-1">
+              {current ? (
+                <PageTitle
+                  title={current.label}
+                  description={current.description}
+                />
+              ) : null}
+            </div>
             <Button
               label="Close"
               variant="ghost"
@@ -488,7 +380,9 @@ export function Settings() {
               onClick={close}
             />
           </div>
-          {current ? <current.Page key={current.id} /> : null}
+          <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-6">
+            {current ? <current.Page key={current.id} /> : null}
+          </div>
         </div>
       </div>
     </Dialog>

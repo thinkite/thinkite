@@ -1,18 +1,7 @@
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
-import {
-  CheckboxList,
-  CheckboxListItem,
-} from "@astryxdesign/core/CheckboxList";
-import { Link } from "@astryxdesign/core/Link";
-import { RadioList, RadioListItem } from "@astryxdesign/core/RadioList";
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from "@astryxdesign/core/SegmentedControl";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
-import { TextInput } from "@astryxdesign/core/TextInput";
 import type { FormAnswer } from "@thinkite/oc-client";
 import {
   useForms,
@@ -21,6 +10,7 @@ import {
 } from "@thinkite/oc-client/react";
 import { type ReactNode, useEffect, useState } from "react";
 import { ocStore } from "../lib/oc";
+import { FormFields, initialAnswer } from "./FormFields";
 
 // Permission requests and questions (opencode "forms") for the open session.
 // Like DeepSeek Harness, a pending one takes the composer's place — the turn
@@ -31,8 +21,6 @@ import { ocStore } from "../lib/oc";
 
 type PermissionRequest = ReturnType<typeof usePermissions>[number];
 type FormInfo = ReturnType<typeof useForms>[number];
-type Field = FormInfo["fields"][number];
-type Value = FormAnswer[string];
 
 function report(err: unknown) {
   console.warn("[prompts] answer failed:", err);
@@ -140,118 +128,10 @@ function PermissionCard({ request }: { request: PermissionRequest }) {
   );
 }
 
-function FieldInput({
-  field,
-  value,
-  onChange,
-}: {
-  field: Field;
-  value: Value | undefined;
-  onChange: (next: Value) => void;
-}) {
-  const label = field.title ?? field.description ?? field.key;
-  if (field.type === "external") {
-    return <Link href={field.url}>{label}</Link>;
-  }
-  if (field.type === "boolean") {
-    return (
-      <SegmentedControl
-        label={label}
-        value={value === true ? "yes" : value === false ? "no" : ""}
-        onChange={(v) => onChange(v === "yes")}
-      >
-        <SegmentedControlItem value="yes" label="Yes" />
-        <SegmentedControlItem value="no" label="No" />
-      </SegmentedControl>
-    );
-  }
-  if (field.type === "multiselect") {
-    const chosen = Array.isArray(value) ? (value as readonly string[]) : [];
-    return (
-      <CheckboxList
-        label={label}
-        isLabelHidden
-        value={[...chosen]}
-        onChange={(next) => onChange(next)}
-      >
-        {field.options.map((option) => (
-          <CheckboxListItem
-            key={option.value}
-            value={option.value}
-            label={option.label}
-          />
-        ))}
-      </CheckboxList>
-    );
-  }
-  if (field.type === "string" && field.options && field.options.length > 0) {
-    const options = field.options;
-    const custom =
-      typeof value === "string" && !options.some((o) => o.value === value)
-        ? value
-        : "";
-    return (
-      <div className="flex flex-col gap-2">
-        <RadioList
-          label={label}
-          isLabelHidden
-          value={typeof value === "string" ? value : ""}
-          onChange={onChange}
-        >
-          {options.map((option) => (
-            <RadioListItem
-              key={option.value}
-              value={option.value}
-              label={option.label}
-            />
-          ))}
-        </RadioList>
-        {field.custom ? (
-          <TextInput
-            label="Your answer"
-            isLabelHidden
-            placeholder="Or type your answer"
-            value={custom}
-            onChange={onChange}
-          />
-        ) : null}
-      </div>
-    );
-  }
-  return (
-    <TextInput
-      label={label}
-      isLabelHidden
-      placeholder={
-        field.type === "string" ? (field.placeholder ?? "Type your answer") : ""
-      }
-      value={value === undefined ? "" : String(value)}
-      onChange={(text) =>
-        onChange(
-          field.type === "number" || field.type === "integer"
-            ? Number(text)
-            : text,
-        )
-      }
-    />
-  );
-}
-
-function initialAnswer(form: FormInfo): FormAnswer {
-  const answer: FormAnswer = {};
-  for (const field of form.fields) {
-    if (field.type === "external") continue;
-    if ("default" in field && field.default !== undefined)
-      answer[field.key] = field.default;
-  }
-  return answer;
-}
-
 function FormCard({ form }: { form: FormInfo }) {
   const busy = useReplying(ocStore, form.id);
-  const [answer, setAnswer] = useState<FormAnswer>(() => initialAnswer(form));
-  const fields = form.fields.filter(
-    (field) => !("hidden" in field && field.hidden),
+  const [answer, setAnswer] = useState<FormAnswer>(() =>
+    initialAnswer(form.fields),
   );
   return (
     <Shell
@@ -274,22 +154,7 @@ function FormCard({ form }: { form: FormInfo }) {
         </>
       }
     >
-      {fields.map((field) => (
-        <div key={field.key} className="flex flex-col gap-1.5">
-          {field.type !== "external" && (field.title || field.description) ? (
-            <Text size="sm" color="secondary">
-              {field.title ?? field.description}
-            </Text>
-          ) : null}
-          <FieldInput
-            field={field}
-            value={answer[field.key]}
-            onChange={(next) =>
-              setAnswer((current) => ({ ...current, [field.key]: next }))
-            }
-          />
-        </div>
-      ))}
+      <FormFields fields={form.fields} answer={answer} onChange={setAnswer} />
     </Shell>
   );
 }

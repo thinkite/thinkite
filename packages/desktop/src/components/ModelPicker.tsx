@@ -11,7 +11,7 @@ import {
   type ModelRef,
 } from "@thinkite/oc-client";
 import { useEffect, useRef, useState } from "react";
-import { ocClient } from "../lib/oc";
+import { catalogVersion, ocClient } from "../lib/oc";
 import { type Prefs, prefs } from "../lib/prefs";
 
 // The composer's model picker, after opencode desktop's
@@ -42,29 +42,33 @@ export interface ModelList {
   providers: Map<string, string>;
 }
 
-// One read per app run: the service's models change rarely, and every
-// composer shares the list.
-let pending: Promise<ModelList> | null = null;
+// One read per catalog version: every composer shares the list, and a
+// connected or removed provider moves the version (lib/oc).
+let pending: { version: number; list: Promise<ModelList> } | null = null;
 
-function loadModels(): Promise<ModelList> {
-  pending ??= Promise.all([ocClient.listProviders(), ocClient.listModels()])
+function loadModels(version: number): Promise<ModelList> {
+  if (pending?.version === version) return pending.list;
+  const list = Promise.all([ocClient.listProviders(), ocClient.listModels()])
     .then(([providers, models]) => ({
       providers: new Map(providers.map((p) => [p.id, p.name])),
       models: models.filter((m) => m.enabled && m.status !== "deprecated"),
     }))
     .catch((err: unknown) => {
-      pending = null;
+      if (pending?.list === list) pending = null;
       throw err;
     });
-  return pending;
+  pending = { version, list };
+  return list;
 }
 
-/** The models the user's connected providers offer; null while loading. */
+/** The models the user's connected providers offer; null while loading.
+ *  A re-read keeps the last list on screen until the new one is in. */
 export function useModels(): ModelList | null {
+  const version = useSelector(catalogVersion);
   const [list, setList] = useState<ModelList | null>(null);
   useEffect(() => {
     let cancelled = false;
-    loadModels()
+    loadModels(version)
       .then((l) => {
         if (!cancelled) setList(l);
       })
@@ -72,24 +76,29 @@ export function useModels(): ModelList | null {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [version]);
   return list;
 }
 
-// Directory → its default model ref (a project can configure its own).
+// Catalog version and directory → its default model ref (a project can
+// configure its own; a new provider can change the user's default).
 const defaults = new Map<string, Promise<string | null>>();
 
-function loadDefault(directory: string): Promise<string | null> {
-  let pending = defaults.get(directory);
+function loadDefault(
+  directory: string,
+  version: number,
+): Promise<string | null> {
+  const key = `${version}:${directory}`;
+  let pending = defaults.get(key);
   if (pending === undefined) {
     pending = ocClient
       .defaultModel(directory)
       .then((m) => (m ? formatModelRef(m.providerID, m.id) : null))
       .catch((err: unknown) => {
-        defaults.delete(directory);
+        defaults.delete(key);
         throw err;
       });
-    defaults.set(directory, pending);
+    defaults.set(key, pending);
   }
   return pending;
 }
@@ -99,11 +108,12 @@ function loadDefault(directory: string): Promise<string | null> {
  * `providerID/modelID` ref; null while loading or with no directory.
  */
 export function useDefaultModel(directory: string | null): string | null {
+  const version = useSelector(catalogVersion);
   const [found, setFound] = useState<{ dir: string; ref: string | null }>();
   useEffect(() => {
     if (directory === null) return;
     let cancelled = false;
-    loadDefault(directory)
+    loadDefault(directory, version)
       .then((ref) => {
         if (!cancelled) setFound({ dir: directory, ref });
       })
@@ -111,7 +121,7 @@ export function useDefaultModel(directory: string | null): string | null {
     return () => {
       cancelled = true;
     };
-  }, [directory]);
+  }, [directory, version]);
   return found !== undefined && found.dir === directory ? found.ref : null;
 }
 

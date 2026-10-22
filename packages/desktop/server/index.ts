@@ -292,6 +292,12 @@ function openMain(): void {
     trafficLightPosition: { x: 16, y: 18 },
   });
   void mainWin.loadURL(`${pageBase}/`);
+  // Pages the app opens (a provider's sign-in, a link in a reply) open in
+  // the user's browser, never in an app window.
+  mainWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) void shell.openExternal(url);
+    return { action: "deny" };
+  });
   mainWin.on("closed", () => {
     // Real close; the app lives on in the tray/dock. PTY sessions live
     // server-side and survive this.

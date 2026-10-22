@@ -5,6 +5,11 @@
  * No React, no DOM, no Node-only APIs in this entry.
  */
 
+export type {
+  IntegrationAttempt,
+  IntegrationAttemptStatus,
+  IntegrationInfo,
+} from "./client.ts";
 export {
   type AgentInfo,
   type CommandInfo,

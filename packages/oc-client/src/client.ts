@@ -16,6 +16,10 @@
 import {
   type AgentInfo,
   type CommandInfo,
+  type FormAnswer,
+  type IntegrationAttempt,
+  type IntegrationAttemptStatus,
+  type IntegrationInfo,
   isSessionNotFoundError,
   type ModelInfo,
   type ModelRef,
@@ -35,6 +39,10 @@ import {
 export type {
   AgentInfo,
   CommandInfo,
+  FormAnswer,
+  IntegrationAttempt,
+  IntegrationAttemptStatus,
+  IntegrationInfo,
   ModelInfo,
   ModelRef,
   OpenCodeClient,
@@ -47,6 +55,17 @@ export type {
   SessionRevert,
   SkillInfo,
 };
+
+/** A form's answers as the UI holds them (lists may be readonly). */
+export type FormInput = Readonly<
+  Record<string, string | number | boolean | readonly string[]>
+>;
+
+/** The service's own shape for the same answers. */
+const formAnswer = (answer: FormInput): FormAnswer =>
+  Object.fromEntries(
+    Object.entries(answer).map(([k, v]) => [k, Array.isArray(v) ? [...v] : v]),
+  ) as FormAnswer;
 
 export interface OcClientOptions {
   /** Origin (or direct opencode URL). The generated client resolves every
@@ -197,6 +216,42 @@ export interface OcClient {
     query: string,
     limit?: number,
   ): Promise<FoundPath[]>;
+  /** Every provider the service can connect: how (methods) and what is
+   *  connected now (connections; the active credential first). */
+  listIntegrations(): Promise<IntegrationInfo[]>;
+  /** Store an API key; `answer` fills the method's form, if it has one. */
+  connectKey(
+    integrationID: string,
+    key: string,
+    answer?: FormInput,
+  ): Promise<void>;
+  /** Use credentials found outside opencode (an AWS profile, gcloud). */
+  connectExternal(
+    integrationID: string,
+    methodID: string,
+    answer?: FormInput,
+  ): Promise<void>;
+  /** Start a sign-in: open `url`; mode "auto" finishes on its own (poll
+   *  `oauthStatus`), mode "code" needs the code the page shows. */
+  startOAuth(
+    integrationID: string,
+    methodID: string,
+    answer?: FormInput,
+  ): Promise<IntegrationAttempt>;
+  oauthStatus(
+    integrationID: string,
+    attemptID: string,
+  ): Promise<IntegrationAttemptStatus>;
+  completeOAuth(
+    integrationID: string,
+    attemptID: string,
+    code?: string,
+  ): Promise<void>;
+  cancelOAuth(integrationID: string, attemptID: string): Promise<void>;
+  renameCredential(credentialID: string, label: string): Promise<void>;
+  /** Make this account the one its provider uses. */
+  activateCredential(credentialID: string): Promise<void>;
+  removeCredential(credentialID: string): Promise<void>;
   replyPermission(
     sessionID: string,
     requestID: string,
@@ -282,6 +337,65 @@ export function createOcClient(options: OcClientOptions): OcClient {
         ...(opts.model !== undefined ? { model: opts.model } : {}),
         ...(opts.agent !== undefined ? { agent: opts.agent } : {}),
       });
+    },
+
+    async listIntegrations() {
+      return (await raw.integration.list()).data;
+    },
+
+    async connectKey(integrationID, key, answer) {
+      await raw.integration.connect.key({
+        integrationID,
+        key,
+        ...(answer !== undefined ? { answer: formAnswer(answer) } : {}),
+      });
+    },
+
+    async connectExternal(integrationID, methodID, answer) {
+      await raw.integration.connect.external({
+        integrationID,
+        methodID,
+        ...(answer !== undefined ? { answer: formAnswer(answer) } : {}),
+      });
+    },
+
+    async startOAuth(integrationID, methodID, answer) {
+      return (
+        await raw.integration.oauth.connect({
+          integrationID,
+          methodID,
+          ...(answer !== undefined ? { answer: formAnswer(answer) } : {}),
+        })
+      ).data;
+    },
+
+    async oauthStatus(integrationID, attemptID) {
+      return (await raw.integration.oauth.status({ integrationID, attemptID }))
+        .data;
+    },
+
+    async completeOAuth(integrationID, attemptID, code) {
+      await raw.integration.oauth.complete({
+        integrationID,
+        attemptID,
+        ...(code !== undefined ? { code } : {}),
+      });
+    },
+
+    async cancelOAuth(integrationID, attemptID) {
+      await raw.integration.oauth.cancel({ integrationID, attemptID });
+    },
+
+    async renameCredential(credentialID, label) {
+      await raw.credential.update({ credentialID, label });
+    },
+
+    async activateCredential(credentialID) {
+      await raw.credential.activate({ credentialID });
+    },
+
+    async removeCredential(credentialID) {
+      await raw.credential.remove({ credentialID });
     },
 
     async renameSession(sessionID, title) {

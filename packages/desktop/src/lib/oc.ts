@@ -1,7 +1,9 @@
+import { createAtom } from "@tanstack/store";
 import {
   createOcClient,
   createOcStore,
   type OcClient,
+  subscribeEvents,
 } from "@thinkite/oc-client";
 
 // Renderer-wide opencode 2 access. Same-origin `/oc` (the Electron main
@@ -21,7 +23,34 @@ export const ocReady = ocStore.start();
 // A failed first read shows up in `ocStore.status`; loaders see it too.
 ocReady.catch(() => {});
 
+/**
+ * Bumped whenever the service's providers, accounts or models change, on
+ * the events opencode's own client re-reads them on. Views that list them
+ * (the model picker, Settings › Providers) read again when it moves.
+ */
+export const catalogVersion = createAtom(0);
+
+const CATALOG_EVENTS = new Set([
+  "integration.updated",
+  "provider.updated",
+  "model.updated",
+  "credential.updated",
+  "credential.switched",
+]);
+// A second subscriber on the client's one shared event stream.
+const catalogBus = new AbortController();
+void subscribeEvents(
+  ocClient,
+  (event) => {
+    if (CATALOG_EVENTS.has(event.type)) catalogVersion.set((v) => v + 1);
+  },
+  { signal: catalogBus.signal, onError: () => {} },
+);
+
 if (import.meta.hot) {
   // HMR hygiene: a hot-swapped module instance must not leave a zombie bus.
-  import.meta.hot.dispose(() => ocStore.stop());
+  import.meta.hot.dispose(() => {
+    ocStore.stop();
+    catalogBus.abort();
+  });
 }
