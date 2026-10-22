@@ -30,8 +30,10 @@ module.exports = {
   // app source (dist = renderer, dist-electron = main bundle, assets = tray
   // icon; the main resolves all three via app.getAppPath(), and Electron's
   // asar-patched fs makes the http server's readFile work from inside the
-  // archive).
-  files: ["dist/**/*", "dist-electron/**/*", "assets/**/*", "package.json"],
+  // archive). v27 (alpha.11) nests the copy lists under `fileOptions`.
+  fileOptions: {
+    files: ["dist/**/*", "dist-electron/**/*", "assets/**/*", "package.json"],
+  },
   // Native code can't load from inside the asar archive (v27: `asarUnpack`
   // moved into `asar.unpack`): @lydell/node-pty ships a prebuilt .node that
   // must be dlopen-able.
@@ -69,7 +71,7 @@ module.exports = {
   },
   // DESKTOP addition #4: lzma DMG (our upstream PR electron-builder#10018,
   // landed in 27.0.0-alpha.6) — smallest hdiutil format, macOS 10.15+ only
-  // (Electron 43 needs macOS 11+ anyway). Prior ladder: UDZO 124MB/5.3s →
+  // (Electron 44+ needs macOS 13+ anyway). Prior ladder: UDZO 124MB/5.3s →
   // ULFO 113MB/4.3s. v27 also flips the volume filesystem default HFS+ →
   // APFS (mount on 10.13+, again subsumed by Electron's floor).
   dmg: {
@@ -84,6 +86,13 @@ module.exports = {
   //    build at a static server (e.g. `npx serve release/`).
   // `releaseType: "draft"` means CI's `--publish always` creates a DRAFT release;
   // installed apps only see it once it's manually published.
+  //
+  // v27 (alpha.10) fails a publishing build unless latest-mac.yml is signed
+  // (Ed25519, key from ELECTRON_BUILDER_UPDATE_SIGN_KEY). The app's
+  // electron-updater 6 doesn't check that signature, and once a release
+  // embeds the public key its installs refuse unsigned manifests for good,
+  // so adopting it is a release-line decision: unsigned until then.
+  updateManifest: false,
   publish: process.env.SIDECODE_UPDATE_URL
     ? {
         provider: "generic",
