@@ -698,6 +698,9 @@ describe("agent state", () => {
     expect(s.pending.get()[SES]?.permissions.map((p) => p.id)).toEqual([
       "per_1",
     ]);
+    // Also on the subagent's own page; only the root counts as waiting.
+    expect(s.pending.get().ses_child?.permissions).toHaveLength(1);
+    expect([...s.waiting.get()]).toEqual([SES]);
     // The child row is read for its parent, but stays out of the list.
     expect(s.rootSessions.get().map((x) => x.id)).toEqual([SES]);
 

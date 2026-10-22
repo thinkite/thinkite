@@ -92,16 +92,24 @@ export interface Pending {
   readonly forms: readonly FormInfo[];
 }
 
-/** The session at the top of `sessionID`'s subagent chain, as far as the
- *  rows read so far reach. */
-export function rootOf(sessionID: string, info: Records<SessionInfo>): string {
-  let id = sessionID;
+/** `sessionID` and the sessions above it up its subagent chain, as far as
+ *  the rows read so far reach; the root comes last. */
+export function lineageOf(
+  sessionID: string,
+  info: Records<SessionInfo>,
+): string[] {
+  const out = [sessionID];
   for (let depth = 0; depth < 32; depth++) {
-    const parent = info[id]?.parentID;
-    if (parent === undefined) return id;
-    id = parent;
+    const parent = info[out[out.length - 1] as string]?.parentID;
+    if (parent === undefined) break;
+    out.push(parent);
   }
-  return id;
+  return out;
+}
+
+/** The session at the top of `sessionID`'s subagent chain. */
+export function rootOf(sessionID: string, info: Records<SessionInfo>): string {
+  return lineageOf(sessionID, info).at(-1) as string;
 }
 
 /** Whether a session finished a turn after it was last viewed (and after
@@ -135,10 +143,13 @@ export interface OcStore {
   readonly lastUsedModel: ReadonlyAtom<ModelRef | undefined>;
   /** Sessions with a turn in flight. */
   readonly running: ReadonlyAtom<ReadonlySet<string>>;
-  /** Permission requests and questions waiting on the user, by ROOT
-   *  session: a subagent's land on the session that started it, where they
-   *  are answered (opencode's request tree). */
+  /** Permission requests and questions waiting on the user, by session,
+   *  each with its subagents' too (opencode's request tree): a subagent's
+   *  request shows on its own page and on every session above it. */
   readonly pending: ReadonlyAtom<Records<Pending>>;
+  /** Root sessions with a request or question waiting, theirs or a
+   *  subagent's. */
+  readonly waiting: ReadonlyAtom<ReadonlySet<string>>;
 
   /** Read the session list and follow the bus. Resolves once the list is in. */
   start(): Promise<void>;
@@ -148,6 +159,9 @@ export interface OcStore {
   /** Mark the session's latest finished turn as seen, for every client
    *  (opencode's `session.view`); a no-op when it already is. */
   markViewed(sessionID: string): void;
+  /** A session's row, read from the service when the list doesn't hold it
+   *  (a subagent's), along with the rows above it. */
+  loadSession(sessionID: string): Promise<SessionInfo | undefined>;
   /** Keep a session's transcript live and read its newest page and pending cards. */
   open(sessionID: string): Promise<void>;
   loadOlder(sessionID: string): Promise<void>;
@@ -250,14 +264,30 @@ export function createOcStore({
       string,
       { permissions: PermissionRequest[]; forms: FormInfo[] }
     > = {};
-    const at = (sessionID: string) =>
-      (out[rootOf(sessionID, info)] ??= { permissions: [], forms: [] });
+    const above = (sessionID: string) =>
+      lineageOf(sessionID, info).map(
+        (id) => (out[id] ??= { permissions: [], forms: [] }),
+      );
     for (const [id, list] of Object.entries(session.permission.get()))
-      if (list.length > 0) at(id).permissions.push(...list);
+      if (list.length > 0)
+        for (const at of above(id)) at.permissions.push(...list);
     for (const [id, list] of Object.entries(session.form.get()))
-      if (list.length > 0) at(id).forms.push(...list);
+      if (list.length > 0) for (const at of above(id)) at.forms.push(...list);
     return out;
   });
+  const waiting = createAtom<ReadonlySet<string>>(
+    () => {
+      const info = session.info.get();
+      return new Set(
+        Object.keys(pending.get()).filter(
+          (id) => info[id] !== undefined && info[id].parentID === undefined,
+        ),
+      );
+    },
+    {
+      compare: (a, b) => a.size === b.size && [...a].every((id) => b.has(id)),
+    },
+  );
 
   // ---- staged writes ----
 
@@ -848,6 +878,11 @@ export function createOcStore({
     lastUsedModel,
     running,
     pending,
+    waiting,
+    async loadSession(sessionID) {
+      await ensureAncestry(sessionID);
+      return session.info.get()[sessionID];
+    },
     markViewed(sessionID) {
       const info = session.info.get()[sessionID];
       const idle = info?.time.idle;

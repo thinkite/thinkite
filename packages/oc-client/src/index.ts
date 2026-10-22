@@ -60,6 +60,7 @@ export {
   createOcStore,
   type FormAnswer,
   isUnread,
+  lineageOf,
   type OcStore,
   type OcStoreOptions,
   type Paging,

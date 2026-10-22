@@ -90,9 +90,7 @@ export function useForms(
 
 /** Root sessions with a permission request or question waiting. */
 export function useWaiting(store: OcStore): ReadonlySet<string> {
-  return useSelector(store.pending, (all) => new Set(Object.keys(all)), {
-    compare: (a, b) => a.size === b.size && [...a].every((id) => b.has(id)),
-  });
+  return useSelector(store.waiting);
 }
 
 /** Sessions whose last turn failed. */
