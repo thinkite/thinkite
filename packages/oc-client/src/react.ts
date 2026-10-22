@@ -3,7 +3,7 @@
 import type { FormInfo, PermissionRequest } from "@opencode/client";
 import { useSelector } from "@tanstack/react-store";
 import type { SessionInfo, SessionMessageInfo } from "./client.ts";
-import type { OcStore, Paging } from "./store/store.ts";
+import type { ConnectionStatus, OcStore, Paging } from "./store/store.ts";
 
 const EMPTY: readonly never[] = [];
 const COLD: Paging = {
@@ -81,4 +81,9 @@ export function useForms(
 /** Whether an answer to this permission request or form is on its way. */
 export function useReplying(store: OcStore, id: string): boolean {
   return useSelector(store.replying, (all) => all[id] === true);
+}
+
+/** Whether the store has read the session list and follows the bus. */
+export function useConnectionStatus(store: OcStore): ConnectionStatus {
+  return useSelector(store.status, (s) => s.status);
 }

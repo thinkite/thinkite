@@ -1,68 +1,87 @@
 import { Button } from "@astryxdesign/core/Button";
+import { ContextMenu } from "@astryxdesign/core/ContextMenu";
+import { Icon } from "@astryxdesign/core/Icon";
 import {
   SideNav,
-  SideNavHeading,
+  SideNavCollapseButton,
   SideNavItem,
   SideNavSection,
 } from "@astryxdesign/core/SideNav";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
-import { TextInput } from "@astryxdesign/core/TextInput";
-import {
-  MagnifyingGlassIcon,
-  PlusIcon,
-  TrashIcon,
-} from "@heroicons/react/24/outline";
+import { PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import type { SessionInfo } from "@thinkite/oc-client";
-import { useRunning, useSessions } from "@thinkite/oc-client/react";
-import { useMemo, useState } from "react";
+import {
+  useConnectionStatus,
+  useRunning,
+  useSessions,
+} from "@thinkite/oc-client/react";
+import { useEffect, useMemo, useState } from "react";
 import { ocClient, ocStore } from "../lib/oc";
 
-// Global session sidebar (t3code-style, grouped by day instead of project).
-// Rows come from the opencode session list + `/api/event` bus via the
-// store — new sessions and busy/idle flips appear live,
-// no polling. The dot marks sessions opencode is actively working in.
+// Global session sidebar. Content after wisp's — a "New session" action,
+// root sessions grouped by how long ago they were last active, one line
+// each, the service's status at the bottom — laid out after DeepSeek
+// Harness's: 280px wide (264–420), a full-width bordered New session
+// button, and a status slot at the start of every row so titles line up.
+// Rows come from the store, so new sessions, titles and busy flags appear
+// live.
 
-function dayLabel(ts: number, now: Date): string {
-  const d = new Date(ts);
-  const startOfDay = (x: Date) =>
-    new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const days = Math.round((startOfDay(now) - startOfDay(d)) / 86_400_000);
-  if (days <= 0) return "Today";
-  if (days === 1) return "Yesterday";
-  return d.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
-  });
+const DAY = 24 * 60 * 60 * 1000;
+
+/** Shown until opencode titles a session (after its first reply). */
+export const UNTITLED = "New session";
+
+function groupName(updatedAt: number, now: number): string {
+  const startOfToday = new Date(now).setHours(0, 0, 0, 0);
+  if (updatedAt >= startOfToday) return "Today";
+  if (updatedAt >= startOfToday - DAY) return "Yesterday";
+  if (updatedAt >= startOfToday - 7 * DAY) return "This week";
+  return "Older";
 }
 
-function timeLabel(ts: number): string {
-  return new Date(ts).toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+/** "opencode 2.1.2" once connected; what is wrong otherwise. */
+function useServiceStatus(): { ok: boolean; label: string } {
+  const status = useConnectionStatus(ocStore);
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    if (status !== "ready") return;
+    let cancelled = false;
+    ocClient
+      .info()
+      .then((info) => {
+        if (!cancelled) setVersion(info.version);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [status]);
+  if (status === "ready")
+    return { ok: true, label: version ? `opencode ${version}` : "opencode" };
+  if (status === "error") return { ok: false, label: "No opencode service" };
+  return { ok: false, label: "Connecting…" };
 }
 
-function basename(dir: string): string {
-  const trimmed = dir.replace(/\/+$/, "");
-  const slash = trimmed.lastIndexOf("/");
-  return slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
+/** A fixed slot at the row's start: a dot while the session works. */
+function RowStatus({ running }: { running: boolean }) {
+  return (
+    <span className="inline-flex size-4 items-center justify-center">
+      {running ? <StatusDot variant="success" label="Working" /> : null}
+    </span>
+  );
 }
-
-const titleOf = (s: SessionInfo) => s.title ?? "";
 
 export function SessionSidebar() {
   const navigate = useNavigate();
-  const [query, setQuery] = useState("");
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-
   const sessions = useSessions(ocStore);
   const running = useRunning(ocStore);
+  const service = useServiceStatus();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // Current session id, straight off the location — the sidebar sits outside
-  // the route tree, so route params aren't available via useParams here.
+  // The sidebar sits outside the route tree, so the open session comes off
+  // the location rather than route params.
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const selectedId = pathname.match(/^\/session\/([^/]+)$/)?.[1];
 
@@ -81,128 +100,90 @@ export function SessionSidebar() {
       });
   };
 
-  // Day groups, newest first (rows arrive most recently updated first).
+  // Rows arrive most recently updated first, so groups come out in order.
+  // A coarse clock is enough for day boundaries.
+  const now = Math.floor(Date.now() / 60_000) * 60_000;
   const groups = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const filtered = q
-      ? sessions.filter(
-          (s) =>
-            titleOf(s).toLowerCase().includes(q) ||
-            s.location.directory.toLowerCase().includes(q),
-        )
-      : sessions;
-    const now = new Date();
-    const out: { label: string; rows: SessionInfo[] }[] = [];
-    for (const s of filtered) {
-      const label = dayLabel(s.time.updated, now);
+    const out: { name: string; rows: SessionInfo[] }[] = [];
+    for (const s of sessions) {
+      const name = groupName(s.time.updated, now);
       const last = out.at(-1);
-      if (last?.label === label) last.rows.push(s);
-      else out.push({ label, rows: [s] });
+      if (last?.name === name) last.rows.push(s);
+      else out.push({ name, rows: [s] });
     }
     return out;
-  }, [sessions, query]);
+  }, [sessions, now]);
 
   return (
     <SideNav
-      resizable={{ autoSaveId: "sidecode:sidebar-width" }}
-      header={<SideNavHeading heading="thinkite" />}
+      resizable={{
+        autoSaveId: "thinkite:sidebar-width",
+        defaultWidth: 280,
+        minWidth: 264,
+        maxWidth: 420,
+      }}
+      collapsible={{ hasButton: false }}
+      header={
+        <div className="flex justify-end">
+          <SideNavCollapseButton />
+        </div>
+      }
       topContent={
-        <div className="flex flex-col gap-2">
-          <Button
-            label="New session"
-            variant="secondary"
-            size="sm"
-            icon={<PlusIcon />}
-            style={{ width: "100%" }}
-            onClick={() => void navigate({ to: "/" })}
+        <Button
+          label="New session"
+          variant="secondary"
+          icon={<Icon icon={PencilSquareIcon} size="sm" />}
+          style={{ width: "100%", justifyContent: "flex-start" }}
+          onClick={() => void navigate({ to: "/" })}
+        />
+      }
+      footerIcons={
+        <div className="flex min-w-0 items-center gap-2 px-1">
+          <StatusDot
+            variant={service.ok ? "success" : "neutral"}
+            label={service.label}
           />
-          <TextInput
-            label="Search sessions"
-            isLabelHidden
-            placeholder="Search"
-            size="sm"
-            startIcon={MagnifyingGlassIcon}
-            value={query}
-            onChange={setQuery}
-          />
+          <Text size="sm" color="secondary" maxLines={1}>
+            {service.label}
+          </Text>
         </div>
       }
     >
-      {groups.length === 0 ? (
-        <div className="px-3 py-2">
-          <Text size="sm" color="secondary">
-            {query ? "No matches." : "No sessions yet."}
-          </Text>
-        </div>
-      ) : (
-        groups.map((g) => (
-          <SideNavSection key={g.label} title={g.label}>
-            {g.rows.map((s) => (
-              <SideNavItem
+      {groups.map((g) => (
+        <SideNavSection key={g.name} title={g.name}>
+          {g.rows.map((s) => {
+            const title = s.title || UNTITLED;
+            // Delete lives on the row's context menu, so rows stay one quiet line.
+            return (
+              <ContextMenu
                 key={s.id}
-                label={titleOf(s) || "Untitled session"}
-                isSelected={s.id === selectedId}
-                onClick={() =>
-                  void navigate({
-                    to: "/session/$sessionId",
-                    params: { sessionId: s.id },
-                  })
-                }
-                endContent={
-                  // SideNavItem has no secondary line or row actions, so
-                  // the directory basename + updated time stack in the
-                  // trailing slot; delete reveals on hover/focus of this
-                  // cluster (always visible while deleting).
-                  <span className="group/meta flex items-center gap-1">
-                    <span className="flex flex-col items-end">
-                      <Text size="xsm" color="secondary" maxLines={1}>
-                        {basename(s.location.directory)}
-                      </Text>
-                      {running.has(s.id) ? (
-                        <StatusDot variant="success" label="opencode running" />
-                      ) : deletingId === s.id ? (
-                        <Text size="xsm" color="secondary">
-                          Deleting…
-                        </Text>
-                      ) : (
-                        <Text size="xsm" color="secondary">
-                          {timeLabel(s.time.updated)}
-                        </Text>
-                      )}
-                    </span>
-                    {deletingId === s.id ? null : (
-                      // SideNavItem already renders a <button>; a nested
-                      // <button> is invalid HTML (React warns, hydration
-                      // breaks), so the delete affordance is a keyboard-
-                      // reachable span.
-                      // biome-ignore lint/a11y/useSemanticElements: a <button> here would nest inside SideNavItem's <button> (invalid HTML, React hydration error)
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        aria-label={`Delete ${titleOf(s) || "untitled session"}`}
-                        title="Delete session"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteSession(s.id);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key !== "Enter" && e.key !== " ") return;
-                          e.preventDefault();
-                          e.stopPropagation();
-                          deleteSession(s.id);
-                        }}
-                        className="inline-flex cursor-pointer rounded p-0.5 opacity-0 transition-opacity group-hover/meta:opacity-100 focus-visible:opacity-100"
-                      >
-                        <TrashIcon className="h-3.5 w-3.5 opacity-60" />
-                      </span>
-                    )}
-                  </span>
-                }
-              />
-            ))}
-          </SideNavSection>
-        ))
-      )}
+                label={`Actions for ${title}`}
+                items={[
+                  {
+                    label: "Delete session",
+                    icon: TrashIcon,
+                    variant: "destructive",
+                    onClick: () => deleteSession(s.id),
+                  },
+                ]}
+              >
+                <SideNavItem
+                  label={title}
+                  isSelected={s.id === selectedId}
+                  isDisabled={deletingId === s.id}
+                  onClick={() =>
+                    void navigate({
+                      to: "/session/$sessionId",
+                      params: { sessionId: s.id },
+                    })
+                  }
+                  icon={<RowStatus running={running.has(s.id)} />}
+                />
+              </ContextMenu>
+            );
+          })}
+        </SideNavSection>
+      ))}
     </SideNav>
   );
 }

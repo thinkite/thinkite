@@ -1,0 +1,213 @@
+import { Badge } from "@astryxdesign/core/Badge";
+import {
+  Selector,
+  type SelectorOptionData,
+  type SelectorSection,
+} from "@astryxdesign/core/Selector";
+import { useSelector } from "@tanstack/react-store";
+import { formatModelRef, type ModelInfo } from "@thinkite/oc-client";
+import { useEffect, useState } from "react";
+import { ocClient } from "../lib/oc";
+import { type Prefs, prefs } from "../lib/prefs";
+
+// The composer's model picker, after opencode desktop's
+// (`packages/app/src/providers/models/` at v2.1.2, MIT): a searchable list
+// of the models the user's providers offer, grouped by provider with the
+// popular providers first, a Free tag on opencode's free models and a
+// Latest tag where the catalog marks one, and a check on the current model.
+// Like opencode, it shows the newest model of each family released in the
+// last six months unless the user showed or hid models in settings.
+
+/** opencode desktop's provider order; the rest follow by name. */
+const POPULAR_PROVIDERS = [
+  "opencode-go",
+  "opencode",
+  "anthropic",
+  "github-copilot",
+  "openai",
+  "google",
+  "openrouter",
+  "vercel",
+];
+
+const SIX_MONTHS = 1000 * 60 * 60 * 24 * 30 * 6;
+
+export interface ModelList {
+  models: ModelInfo[];
+  /** Provider id → display name. */
+  providers: Map<string, string>;
+  /** The service's default model, as a `providerID/modelID` ref. */
+  defaultRef: string | null;
+}
+
+// One read per app run: the service's models change rarely, and every
+// composer shares the list.
+let pending: Promise<ModelList> | null = null;
+
+function loadModels(): Promise<ModelList> {
+  pending ??= Promise.all([
+    ocClient.listProviders(),
+    ocClient.listModels(),
+    ocClient.raw.model.default({}).catch(() => undefined),
+  ])
+    .then(([providers, models, fallback]) => ({
+      providers: new Map(providers.map((p) => [p.id, p.name])),
+      models: models.filter((m) => m.enabled && m.status !== "deprecated"),
+      defaultRef: fallback?.data
+        ? formatModelRef(fallback.data.providerID, fallback.data.id)
+        : null,
+    }))
+    .catch((err: unknown) => {
+      pending = null;
+      throw err;
+    });
+  return pending;
+}
+
+/** The models the user's connected providers offer; null while loading. */
+export function useModels(): ModelList | null {
+  const [list, setList] = useState<ModelList | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadModels()
+      .then((l) => {
+        if (!cancelled) setList(l);
+      })
+      .catch((err: unknown) => console.warn("[models] list failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return list;
+}
+
+const refOf = (m: ModelInfo) => formatModelRef(m.providerID, m.id);
+
+export const isFreeModel = (m: ModelInfo) =>
+  m.providerID === "opencode" && (m.cost[0]?.input ?? 0) === 0;
+
+/** opencode marks a model the latest of its line with "(latest)" in its name. */
+const isLatestTagged = (m: ModelInfo) => m.name.includes("(latest)");
+const displayName = (m: ModelInfo) => m.name.replace("(latest)", "").trim();
+
+/**
+ * Refs shown by default: per provider, the newest model of each family
+ * (free and paid twins apart) released in the last six months.
+ */
+export function newestOfFamilies(models: readonly ModelInfo[]): Set<string> {
+  const newest = new Map<string, ModelInfo>();
+  const now = Date.now();
+  for (const m of models) {
+    if (Math.abs(now - m.time.released) >= SIX_MONTHS) continue;
+    const key = `${m.providerID}:${m.family ?? m.id}:${isFreeModel(m)}`;
+    const current = newest.get(key);
+    if (current === undefined || m.time.released > current.time.released)
+      newest.set(key, m);
+  }
+  return new Set([...newest.values()].map(refOf));
+}
+
+export function isVisible(
+  m: ModelInfo,
+  latest: ReadonlySet<string>,
+  visibility: { hidden: readonly string[]; shown: readonly string[] },
+): boolean {
+  const ref = refOf(m);
+  if (visibility.hidden.includes(ref)) return false;
+  if (visibility.shown.includes(ref)) return true;
+  if (latest.has(ref)) return true;
+  // Models without a release date stay visible.
+  return !Number.isFinite(m.time.released) || m.time.released === 0;
+}
+
+function providerRank(id: string): number {
+  const index = POPULAR_PROVIDERS.indexOf(id);
+  return index < 0 ? POPULAR_PROVIDERS.length : index;
+}
+
+function sections(
+  list: ModelList,
+  current: string | null,
+  visibility: Prefs["models"],
+): SelectorSection[] {
+  const latest = newestOfFamilies(list.models);
+  const byProvider = new Map<string, ModelInfo[]>();
+  for (const m of list.models) {
+    // The current model always shows, hidden or not.
+    if (refOf(m) !== current && !isVisible(m, latest, visibility)) continue;
+    const group = byProvider.get(m.providerID) ?? [];
+    group.push(m);
+    byProvider.set(m.providerID, group);
+  }
+  return [...byProvider]
+    .sort(
+      ([a], [b]) =>
+        providerRank(a) - providerRank(b) ||
+        (list.providers.get(a) ?? a).localeCompare(list.providers.get(b) ?? b),
+    )
+    .map(([id, models]) => ({
+      type: "section" as const,
+      title: list.providers.get(id) ?? id,
+      options: models
+        .sort((a, b) => displayName(a).localeCompare(displayName(b)))
+        .map((m) => ({
+          value: refOf(m),
+          label: displayName(m),
+          // Carried for renderOption: which tags the row shows.
+          description: [
+            isFreeModel(m) ? "Free" : "",
+            isLatestTagged(m) ? "Latest" : "",
+          ]
+            .filter(Boolean)
+            .join(" "),
+        })),
+    }));
+}
+
+function ModelOption({ option }: { option: SelectorOptionData }) {
+  const tags =
+    typeof option.description === "string" && option.description !== ""
+      ? option.description.split(" ")
+      : [];
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <span className="min-w-0 truncate">{option.label}</span>
+      {tags.map((tag) => (
+        <Badge key={tag} label={tag} />
+      ))}
+    </span>
+  );
+}
+
+/**
+ * `value` is a `providerID/modelID` ref, or null for "whatever the session
+ * uses" (the trigger then reads "Model").
+ */
+export function ModelPicker({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (ref: string) => void;
+}) {
+  const list = useModels();
+  const visibility = useSelector(prefs, (p) => p.models);
+  return (
+    <Selector
+      label="Model"
+      isLabelHidden
+      variant="ghost"
+      size="sm"
+      hasSearch
+      searchPlaceholder="Search models"
+      emptySearchText="No models found"
+      placeholder="Model"
+      isLoading={list === null}
+      options={list === null ? [] : sections(list, value, visibility)}
+      renderOption={(option) => <ModelOption option={option} />}
+      renderValue={(option) => option.label}
+      {...(value !== null ? { value } : {})}
+      onChange={onChange}
+    />
+  );
+}

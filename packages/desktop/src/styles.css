@@ -28,13 +28,25 @@ body {
   overscroll-behavior: none;
 }
 
-/* The chat reading column: transcript rows, the thinking footer, the
-   bottom scrim, and the composer all share it (the t3code layout — the
-   width must live inside virtualized rows, so it repeats per surface;
-   this utility keeps the value in one place). */
+/* The chat reading column, sized like DeepSeek Harness's: 64% of the pane,
+   kept between 680px and 920px, with 32px of side padding. Transcript rows,
+   the thinking footer and the bottom scrim all share it (the width must live
+   inside virtualized rows, so it repeats per surface; this utility keeps the
+   value in one place). */
 @utility chat-col {
   margin-inline: auto;
   width: 100%;
   min-width: 0;
-  max-width: 48rem;
+  max-width: clamp(680px, 64%, 920px);
+  padding-inline: 2rem;
+}
+
+/* The composer card: the same column with half the padding, so the card is
+   32px wider than the text above it. */
+@utility composer-col {
+  margin-inline: auto;
+  width: 100%;
+  min-width: 0;
+  max-width: clamp(680px, 64%, 920px);
+  padding-inline: 1rem;
 }

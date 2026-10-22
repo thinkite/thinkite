@@ -1,6 +1,4 @@
 import { ChatComposer, ChatComposerInput } from "@astryxdesign/core/Chat";
-import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
-import { Heading } from "@astryxdesign/core/Heading";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { ResizeHandle, useResizable } from "@astryxdesign/core/Resizable";
@@ -9,11 +7,7 @@ import {
   ToggleButton,
   ToggleButtonGroup,
 } from "@astryxdesign/core/ToggleButton";
-import {
-  CheckIcon,
-  CommandLineIcon,
-  DocumentPlusIcon,
-} from "@heroicons/react/24/outline";
+import { CommandLineIcon, DocumentPlusIcon } from "@heroicons/react/24/outline";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import {
   formatModelRef,
@@ -23,6 +17,7 @@ import {
 import { useIsRunning, useSession } from "@thinkite/oc-client/react";
 import { useEffect, useState } from "react";
 import { DiffPanel } from "../../components/DiffPanel";
+import { ModelPicker } from "../../components/ModelPicker";
 import { TerminalPane } from "../../components/TerminalPane";
 import { TranscriptPanel } from "../../components/TranscriptPanel";
 import { ocClient, ocReady, ocStore } from "../../lib/oc";
@@ -58,46 +53,6 @@ type Surface = "terminal" | "diff";
 // maps carry the state across remounts within one app run.
 const surfaceBySession = new Map<string, Surface | null>();
 const panelSizeBySession = new Map<string, number>();
-
-interface ModelOption {
-  value: string;
-  label: string;
-  description: string;
-}
-
-function useModelOptions(): ModelOption[] | null {
-  const [options, setOptions] = useState<ModelOption[] | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const [providers, models] = await Promise.all([
-          ocClient.listProviders(),
-          ocClient.listModels(),
-        ]);
-        if (cancelled) return;
-        const names = new Map(providers.map((p) => [p.id, p.name]));
-        setOptions(
-          models
-            .filter((m) => m.enabled && m.status !== "deprecated")
-            .map((m) => ({
-              value: formatModelRef(m.providerID, m.id),
-              label: m.name,
-              description: `${names.get(m.providerID) ?? m.providerID} · ${m.providerID}/${m.id}`,
-            }))
-            .sort((a, b) => (a.label < b.label ? -1 : 1)),
-        );
-      } catch (err) {
-        console.warn("[session] model list failed:", err);
-        if (!cancelled) setOptions([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return options;
-}
 
 function SessionRoute() {
   const { sessionId } = Route.useParams();
@@ -167,15 +122,10 @@ function Session({ sessionId }: { sessionId: string }) {
     });
   };
 
-  // Model picker (official astryx pattern: DropdownMenu in footerActions,
-  // like the ai-chat template's mode picker). Options are the models the
-  // user's connected providers expose (`/api/provider` + `/api/model`);
-  // current is the session's live model. Selection commits at PICK time
-  // via the v2 model route — sendPrompt carries no model (source wins over
-  // the brief's sketch). The optimistic value wins over the live row until
-  // the bus push catches up (they converge to equal); a rejected commit
-  // rolls back to the previous pick.
-  const modelOptions = useModelOptions();
+  // Model picker: the models the user's connected providers expose, by
+  // provider. A pick commits at once through the session's model route;
+  // the picked value wins over the live row until the bus push catches up
+  // (they converge to equal), and a rejected commit rolls back.
   const [pickedModel, setPickedModel] = useState<string | null>(null);
   const currentModel =
     pickedModel ??
@@ -213,20 +163,15 @@ function Session({ sessionId }: { sessionId: string }) {
       content={
         <LayoutContent padding={0}>
           <div className="flex h-full min-h-0 flex-col">
-            {/* Tailwind borders default to currentColor (near-black); pin
-                them to the astryx token so they match component dividers. */}
+            {/* Title bar after DeepSeek Harness's: the title alone, no
+                rule under it; the folder lives in the sidebar's context. */}
             <div
-              className="flex items-center gap-3 border-b px-4 py-2"
-              style={{ borderColor: "var(--color-border)" }}
+              className="flex h-10 shrink-0 items-center px-5"
+              title={session.location.directory}
             >
-              <div className="flex min-w-0 items-baseline gap-3">
-                <Heading level={5} maxLines={1}>
-                  {session.title || "Untitled session"}
-                </Heading>
-                <Text size="sm" color="secondary" maxLines={1}>
-                  {session.location.directory}
-                </Text>
-              </div>
+              <Text size="sm" weight="medium" maxLines={1}>
+                {session.title || "New session"}
+              </Text>
             </div>
             {/* Self-owned transcript shell: the LegendList inside
                 TranscriptPanel is the single scroll writer (landing, follow,
@@ -255,9 +200,9 @@ function Session({ sessionId }: { sessionId: string }) {
                     scroll-transparent. */}
                 <div className="chat-col pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-linear-to-b from-transparent to-surface" />
               </div>
-              {/* chat-col = the shared reading column (styles.css), so the
-                  composer aligns with the transcript rows. */}
-              <div className="chat-col shrink-0 pb-3">
+              {/* composer-col = the reading column with half its padding
+                  (styles.css): the card sits 32px wider than the text. */}
+              <div className="composer-col shrink-0 pb-4">
                 <ChatComposer
                   onSubmit={submit}
                   onStop={stop}
@@ -273,27 +218,7 @@ function Session({ sessionId }: { sessionId: string }) {
                       : undefined
                   }
                   footerActions={
-                    <DropdownMenu
-                      button={{
-                        label:
-                          currentModel !== null
-                            ? (modelOptions?.find(
-                                (o) => o.value === currentModel,
-                              )?.label ?? currentModel)
-                            : "Model",
-                        variant: "ghost",
-                        size: "sm",
-                      }}
-                      items={(modelOptions ?? []).map((m) => ({
-                        label: m.label,
-                        description: m.description,
-                        icon:
-                          currentModel !== null && m.value === currentModel
-                            ? CheckIcon
-                            : undefined,
-                        onClick: () => pickModel(m.value),
-                      }))}
-                    />
+                    <ModelPicker value={currentModel} onChange={pickModel} />
                   }
                   input={<ChatComposerInput />}
                 />
