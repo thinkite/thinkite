@@ -16,6 +16,7 @@
 import {
   type AgentInfo,
   type CommandInfo,
+  type FileDiffInfo,
   type FormAnswer,
   type IntegrationAttempt,
   type IntegrationAttemptStatus,
@@ -34,11 +35,14 @@ import {
   type SessionMessageInfo,
   type SessionRevert,
   type SkillInfo,
+  type VcsFileStatus,
+  type VcsInfo,
 } from "@opencode/client";
 
 export type {
   AgentInfo,
   CommandInfo,
+  FileDiffInfo,
   FormAnswer,
   IntegrationAttempt,
   IntegrationAttemptStatus,
@@ -54,7 +58,13 @@ export type {
   SessionMessageInfo,
   SessionRevert,
   SkillInfo,
+  VcsFileStatus,
+  VcsInfo,
 };
+
+/** Which changes a diff covers: uncommitted (working tree against HEAD) or
+ *  everything the branch changed since it left the default branch. */
+export type DiffMode = "working" | "branch";
 
 /** A form's answers as the UI holds them (lists may be readonly). */
 export type FormInput = Readonly<
@@ -210,6 +220,14 @@ export interface OcClient {
   listAgents(directory?: string): Promise<AgentInfo[]>;
   listCommands(directory?: string): Promise<CommandInfo[]>;
   listSkills(directory?: string): Promise<SkillInfo[]>;
+  /** The version control `directory` is under: its provider ("git") and
+   *  current and default branch; neither is set outside a repository. */
+  vcs(directory: string): Promise<VcsInfo>;
+  /** Changed files in the working tree with their line counts (binary
+   *  files count 0); empty outside a repository. */
+  vcsStatus(directory: string): Promise<VcsFileStatus[]>;
+  /** One patch per changed file. */
+  vcsDiff(directory: string, mode: DiffMode): Promise<FileDiffInfo[]>;
   /** Fuzzy path search under `directory`, files and directories alike. */
   findFiles(
     directory: string,
@@ -511,6 +529,18 @@ export function createOcClient(options: OcClientOptions): OcClient {
 
     async listSkills(directory) {
       return (await raw.skill.list(location(directory))).data;
+    },
+
+    async vcs(directory) {
+      return (await raw.vcs.get({ location: { directory } })).data;
+    },
+
+    async vcsStatus(directory) {
+      return (await raw.vcs.status({ location: { directory } })).data;
+    },
+
+    async vcsDiff(directory, mode) {
+      return (await raw.vcs.diff({ location: { directory }, mode })).data;
     },
 
     async findFiles(directory, query, limit) {

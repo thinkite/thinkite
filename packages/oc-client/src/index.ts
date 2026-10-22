@@ -14,6 +14,8 @@ export {
   type AgentInfo,
   type CommandInfo,
   createOcClient,
+  type DiffMode,
+  type FileDiffInfo,
   type FoundPath,
   type ModelInfo,
   type ModelRef,
@@ -34,6 +36,8 @@ export {
   type SessionMessageInfo,
   type SessionRevert,
   type SkillInfo,
+  type VcsFileStatus,
+  type VcsInfo,
 } from "./client.ts";
 export {
   durableSeq,
@@ -74,3 +78,8 @@ export {
   TURN_END_EVENT_TYPES,
   visibleMessages,
 } from "./transcript-reducer.ts";
+export {
+  contextTokens,
+  lastAssistantWithUsage,
+  type TokenUsage,
+} from "./usage.ts";
