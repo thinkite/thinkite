@@ -126,6 +126,25 @@ describe("rowsOf", () => {
     ]);
   });
 
+  it("gives each subagent its own line", () => {
+    const rows = rowsOf([
+      user("u1", 1),
+      assistant("a1", [
+        tool("t1"),
+        tool("s1", "subagent"),
+        tool("s2", "task", "running"),
+        tool("t2"),
+      ]),
+    ]);
+    expect(shape(rows)).toEqual([
+      "user",
+      "group(tool:t1)",
+      "agent",
+      "agent",
+      "group(tool:t2)",
+    ]);
+  });
+
   it("drops blank text and thinking", () => {
     const rows = rowsOf([
       user("u1", 1),

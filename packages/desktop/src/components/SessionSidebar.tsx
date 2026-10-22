@@ -9,7 +9,8 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { isUnread, type SessionInfo } from "@thinkite/oc-client";
+import { useSelector } from "@tanstack/react-store";
+import { isUnread, rootOf, type SessionInfo } from "@thinkite/oc-client";
 import {
   useConnectionStatus,
   useFailed,
@@ -114,7 +115,11 @@ export function SessionSidebar() {
   // The sidebar sits outside the route tree, so the open session comes off
   // the location rather than route params.
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const selectedId = pathname.match(/^\/session\/([^/]+)$/)?.[1];
+  const openId = pathname.match(/^\/session\/([^/]+)$/)?.[1];
+  // A subagent's session isn't listed: its root's row stays selected.
+  const selectedId = useSelector(ocStore.session.info, (all) =>
+    openId === undefined ? undefined : rootOf(openId, all),
+  );
 
   // Rows arrive most recently updated first, so groups come out in order.
   // A coarse clock is enough for day boundaries.

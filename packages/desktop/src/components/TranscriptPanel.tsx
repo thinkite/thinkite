@@ -21,8 +21,10 @@ import {
 } from "@thinkite/oc-client";
 import { useMessages, usePaging, useSession } from "@thinkite/oc-client/react";
 import {
+  BotIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   CopyIcon,
   Redo2Icon,
   SplitIcon,
@@ -33,6 +35,7 @@ import { highlightTokens } from "../lib/highlight";
 import { ocStore } from "../lib/oc";
 import { modelName, useModels, variantLabel } from "./ModelPicker";
 import {
+  agentSessionOf,
   duration,
   type GroupItem,
   groupLabel,
@@ -265,6 +268,63 @@ function ToolLine({ tool }: { tool: ToolPart }) {
   );
 }
 
+/**
+ * A subagent's run on its own line, as opencode places it: "Agent", what it
+ * was asked to do, and how it is going; a click opens its session (once the
+ * service has made it).
+ */
+function AgentRow({
+  tool,
+  onOpenSession,
+}: {
+  tool: ToolPart;
+  onOpenSession: ((sessionID: string) => void) | undefined;
+}) {
+  const status = tool.state.status;
+  const pending = status === "streaming" || status === "running";
+  const failed = status === "error";
+  const sessionID = agentSessionOf(tool);
+  const summary = toolSummary(tool);
+  const canOpen = sessionID !== undefined && onOpenSession !== undefined;
+  return (
+    <button
+      type="button"
+      disabled={!canOpen}
+      onClick={() => {
+        if (sessionID !== undefined) onOpenSession?.(sessionID);
+      }}
+      className="group -mx-2 flex w-[calc(100%+1rem)] min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left enabled:cursor-pointer enabled:hover:bg-[var(--color-background-secondary)]"
+    >
+      <Icon icon={BotIcon} size="sm" color="secondary" />
+      <Text
+        size="sm"
+        weight="medium"
+        className="shrink-0"
+        {...(failed ? { style: { color: "var(--color-text-red)" } } : {})}
+      >
+        Agent
+      </Text>
+      {summary !== "" ? (
+        <Text size="sm" color="secondary" className="truncate">
+          {summary}
+        </Text>
+      ) : null}
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {pending ? (
+          <Spinner size="sm" shade="subtle" />
+        ) : failed ? (
+          <Text size="sm" style={{ color: "var(--color-text-red)" }}>
+            Failed
+          </Text>
+        ) : null}
+        {canOpen ? (
+          <Icon icon={ChevronRightIcon} size="sm" color="secondary" />
+        ) : null}
+      </span>
+    </button>
+  );
+}
+
 /** opencode's "Used 3 Read, Grep, Glob ▾": a run of tool calls and thinking. */
 function GroupRow({ items, live }: { items: GroupItem[]; live: boolean }) {
   const pending =
@@ -466,6 +526,7 @@ function renderRow(
   row: TranscriptRow,
   live: boolean,
   actions: MessageActions | undefined,
+  onOpenSession: ((sessionID: string) => void) | undefined,
 ) {
   switch (row.kind) {
     case "user":
@@ -510,6 +571,8 @@ function renderRow(
       return <GroupRow items={row.items} live={live} />;
     case "tool":
       return <ToolLine tool={row.tool} />;
+    case "agent":
+      return <AgentRow tool={row.tool} onOpenSession={onOpenSession} />;
     case "note":
       return (
         <ChatSystemMessage variant="divider">
@@ -549,10 +612,13 @@ export function TranscriptPanel({
   isRunning,
   anchorUuid = null,
   actions,
+  onOpenSession,
 }: {
   sessionId: string;
   /** Revert, fork and redo; without them prompts offer only copy. */
   actions?: MessageActions;
+  /** Open a subagent's session from its line. */
+  onOpenSession?: (sessionID: string) => void;
   /** Renders a working indicator under the last message. */
   isRunning?: boolean;
   /** Id of the most recently sent user message — pinned near the viewport
@@ -682,7 +748,7 @@ export function TranscriptPanel({
         // from blowing the column open.
         renderItem={({ item }) => (
           <div className="chat-col overflow-x-clip pb-3">
-            {renderRow(item, item.key === liveKey, actions)}
+            {renderRow(item, item.key === liveKey, actions, onOpenSession)}
           </div>
         )}
         getItemType={(g) => g.kind}

@@ -45,6 +45,8 @@ export type TranscriptRow =
   | { key: string; kind: "text"; text: string; meta?: ReplyMeta }
   | { key: string; kind: "group"; items: GroupItem[] }
   | { key: string; kind: "tool"; tool: ToolPart }
+  /** A subagent's run: its own line, opening the subagent's session. */
+  | { key: string; kind: "agent"; tool: ToolPart }
   | { key: string; kind: "note"; text: string; tone: "quiet" | "danger" }
   /** Below the last row while a revert hides `count` prompts. */
   | { key: string; kind: "reverted"; count: number };
@@ -56,6 +58,14 @@ export function duration(ms: number): string {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ${s % 60}s`;
   return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/** The session a subagent call runs in, once the service has made it. */
+export function agentSessionOf(tool: ToolPart): string | undefined {
+  if (tool.state.status !== "running" && tool.state.status !== "completed")
+    return undefined;
+  const id = tool.state.metadata?.sessionID;
+  return typeof id === "string" ? id : undefined;
 }
 
 /** A tool's name as opencode's GUI titles it (`toolTitle` in session-ui). */
@@ -102,9 +112,10 @@ export function groupLabel(items: readonly GroupItem[]): string {
  * out: the agent's text stays in the open, and every run of tool calls and
  * thinking between two pieces of text stacks into one collapsed "Used N …"
  * row — across the turn's steps too, since a step boundary is not text.
- * Text, notes and the next prompt end a run. A finished question stands on
- * its own (while it waits, its card replaces the composer), and the todo
- * list is not shown, as in opencode.
+ * Text, notes and the next prompt end a run. A subagent stands on its own
+ * (opencode's "separate" placement), as does a finished question (while it
+ * waits, its card replaces the composer); the todo list is not shown, as
+ * in opencode.
  *
  * Like opencode, a turn's last text gets a line with its model and how
  * long the turn took, once the turn is over: every turn but the last, and
@@ -189,6 +200,8 @@ export function rowsOf(
           } else if (part.type === "reasoning") {
             if (part.text.trim() !== "")
               group.push({ key, kind: "reasoning", part });
+          } else if (part.name === "subagent" || part.name === "task") {
+            push({ key: `tool:${part.id}`, kind: "agent", tool: part });
           } else if (part.name === "todowrite") {
             // opencode keeps the todo list out of the timeline.
           } else if (

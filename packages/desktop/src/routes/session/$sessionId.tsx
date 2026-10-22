@@ -1,6 +1,8 @@
+import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { ResizeHandle, useResizable } from "@astryxdesign/core/Resizable";
+import { Text } from "@astryxdesign/core/Text";
 import {
   ToggleButton,
   ToggleButtonGroup,
@@ -45,13 +47,21 @@ import { ocClient, ocReady, ocStore } from "../../lib/oc";
 //
 // `$sessionId` IS the opencode `ses_*` id, aligned with the iOS routes.
 // The loader waits for the first session list (a session created from the
-// landing page is already in it); a stale link bounces to the landing page.
+// landing page is already in it). A subagent's session isn't listed, so its
+// row (and those above it, for the breadcrumb) is read from the service; a
+// stale link bounces to the landing page. A subagent's session reads like
+// any other, but takes no prompts (opencode's rule) and has no revert or
+// fork: its "prompt" is the task its parent wrote.
 // The component then reads the LIVE row so title and busy state keep
 // updating while the screen is open.
 export const Route = createFileRoute("/session/$sessionId")({
   loader: async ({ params }) => {
     await ocReady.catch(() => {});
-    if (ocStore.session.info.get()[params.sessionId] === undefined) {
+    if (
+      ocStore.session.info.get()[params.sessionId] === undefined &&
+      (await ocStore.loadSession(params.sessionId).catch(() => undefined)) ===
+        undefined
+    ) {
       throw redirect({ to: "/" });
     }
   },
@@ -71,6 +81,29 @@ const panelSizeBySession = new Map<string, number>();
 const PANEL_WIDTH = 320;
 // A fork opens with the forked-from prompt in its composer, as opencode's.
 const draftForSession = new Map<string, string>();
+
+/** Where a subagent's session has its composer: it takes no prompts. */
+function SubagentNotice({ parentID }: { parentID: string }) {
+  const navigate = useNavigate();
+  return (
+    <div className="flex items-center gap-1 rounded-xl border border-[var(--color-border)] px-4 py-3">
+      <Text size="sm" color="secondary">
+        Subagent sessions can't be prompted.
+      </Text>
+      <Button
+        label="Back to the main session"
+        variant="ghost"
+        size="sm"
+        onClick={() =>
+          void navigate({
+            to: "/session/$sessionId",
+            params: { sessionId: parentID },
+          })
+        }
+      />
+    </div>
+  );
+}
 
 function SessionRoute() {
   const { sessionId } = Route.useParams();
@@ -230,6 +263,10 @@ function Session({ sessionId }: { sessionId: string }) {
     },
   ];
 
+  const isChild = session?.parentID !== undefined;
+  const openSession = (id: string) =>
+    void navigate({ to: "/session/$sessionId", params: { sessionId: id } });
+
   const stop = () => {
     void ocClient.interrupt(sessionId).catch(fail);
   };
@@ -354,7 +391,8 @@ function Session({ sessionId }: { sessionId: string }) {
                       sessionId={sessionId}
                       isRunning={running}
                       anchorUuid={anchorUuid}
-                      actions={actions}
+                      {...(isChild ? {} : { actions })}
+                      onOpenSession={openSession}
                     />
                     {/* Fade the scrolled content into the actual backdrop just
                     above the composer. `to-surface` (astryx tailwind bridge)
@@ -369,34 +407,39 @@ function Session({ sessionId }: { sessionId: string }) {
                   {/* composer-col = the reading column with half its padding
                   (styles.css): the card sits 32px wider than the text. */}
                   <div className="composer-col shrink-0 pb-4">
-                    {prompt ?? (
-                      <Composer
-                        directory={session?.location.directory ?? null}
-                        value={draft}
-                        onChange={setDraft}
-                        onSend={send}
-                        onCommand={runCommand}
-                        builtins={builtins}
-                        accepts={inputsOf(modelInfo)}
-                        onStop={stop}
-                        isStopShown={running}
-                        placeholder={running ? "Queue a message…" : PLACEHOLDER}
-                        error={sendError}
-                        footerActions={
-                          <>
-                            <ModelPicker
-                              value={currentModel}
-                              onChange={pickModel}
-                            />
-                            <VariantPicker
-                              model={modelInfo}
-                              value={currentVariant}
-                              onChange={pickVariant}
-                            />
-                          </>
-                        }
-                      />
-                    )}
+                    {prompt ??
+                      (session.parentID !== undefined ? (
+                        <SubagentNotice parentID={session.parentID} />
+                      ) : (
+                        <Composer
+                          directory={session?.location.directory ?? null}
+                          value={draft}
+                          onChange={setDraft}
+                          onSend={send}
+                          onCommand={runCommand}
+                          builtins={builtins}
+                          accepts={inputsOf(modelInfo)}
+                          onStop={stop}
+                          isStopShown={running}
+                          placeholder={
+                            running ? "Queue a message…" : PLACEHOLDER
+                          }
+                          error={sendError}
+                          footerActions={
+                            <>
+                              <ModelPicker
+                                value={currentModel}
+                                onChange={pickModel}
+                              />
+                              <VariantPicker
+                                model={modelInfo}
+                                value={currentVariant}
+                                onChange={pickVariant}
+                              />
+                            </>
+                          }
+                        />
+                      ))}
                   </div>
                 </div>
               </div>

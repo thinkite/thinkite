@@ -1,4 +1,5 @@
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
+import { BreadcrumbItem, Breadcrumbs } from "@astryxdesign/core/Breadcrumbs";
 import {
   DropdownMenu,
   type DropdownMenuOption,
@@ -7,11 +8,59 @@ import { Icon } from "@astryxdesign/core/Icon";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { useNavigate } from "@tanstack/react-router";
-import type { SessionInfo } from "@thinkite/oc-client";
+import { useSelector } from "@tanstack/react-store";
+import { lineageOf, type SessionInfo } from "@thinkite/oc-client";
 import { ArchiveIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
-import { ocClient } from "../lib/oc";
+import { ocClient, ocStore } from "../lib/oc";
 import { UNTITLED } from "./SessionSidebar";
+
+/** A subagent session's title without the " (@general subagent)" opencode
+ *  appends, as opencode desktop shows it. */
+function bare(title: string | undefined): string {
+  return title?.replace(/\s+\(@[^)]+ subagent\)$/, "") || UNTITLED;
+}
+
+/**
+ * A subagent session's place: the sessions above it, each a link back,
+ * then its own title.
+ */
+function Lineage({ session }: { session: SessionInfo }) {
+  const navigate = useNavigate();
+  const above = useSelector(
+    ocStore.session.info,
+    (all) =>
+      lineageOf(session.id, all)
+        .slice(1)
+        .reverse()
+        .map((id) => ({ id, title: all[id]?.title ?? "" })),
+    { compare: (a, b) => JSON.stringify(a) === JSON.stringify(b) },
+  );
+  return (
+    <Breadcrumbs label="Session path">
+      {above.map((s) => (
+        <BreadcrumbItem
+          key={s.id}
+          onClick={() =>
+            void navigate({
+              to: "/session/$sessionId",
+              params: { sessionId: s.id },
+            })
+          }
+        >
+          <span className="inline-block max-w-60 truncate align-bottom">
+            {bare(s.title)}
+          </span>
+        </BreadcrumbItem>
+      ))}
+      <BreadcrumbItem isCurrent>
+        <span className="inline-block max-w-80 truncate align-bottom">
+          {bare(session.title)}
+        </span>
+      </BreadcrumbItem>
+    </Breadcrumbs>
+  );
+}
 
 /**
  * The session screen's title bar: the title, then a "…" menu with the
@@ -19,7 +68,9 @@ import { UNTITLED } from "./SessionSidebar";
  * title in place: it starts selected, Enter or leaving the field saves,
  * Escape cancels. Archive and Delete (which asks first) leave the session
  * for the landing page; the bus takes the row out of the sidebar. The
- * panel buttons sit at the far end, where Claude Code puts them.
+ * panel buttons sit at the far end, where Claude Code puts them. A
+ * subagent's session shows its lineage instead, and no actions: it is
+ * renamed, archived and deleted with its parent.
  */
 export function SessionTitle({
   session,
@@ -102,7 +153,9 @@ export function SessionTitle({
       title={session.location.directory}
       data-window-drag
     >
-      {draft !== null ? (
+      {session.parentID !== undefined ? (
+        <Lineage session={session} />
+      ) : draft !== null ? (
         <TextInput
           label="Session title"
           isLabelHidden
