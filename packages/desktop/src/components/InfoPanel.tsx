@@ -5,6 +5,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSelector } from "@tanstack/react-store";
 import {
   contextTokens,
+  costWithin,
+  descendantsOf,
   type FileDiffInfo,
   formatModelRef,
   lastAssistantWithUsage,
@@ -40,6 +42,33 @@ const usd = new Intl.NumberFormat("en", {
   style: "currency",
   currency: "USD",
 });
+/** Dollars, with an amount under a cent shown as such rather than $0.00. */
+const dollars = (n: number) => (n < 0.01 ? "<$0.01" : usd.format(n));
+
+/**
+ * What the session cost, its subagents' sessions included, and whether it
+ * has any. opencode keeps each session's cost on its own row, so the rows
+ * below this one are read once (lib/query); the bus adds new subagents and
+ * keeps every row's cost current from then on.
+ */
+function useCost(sessionID: string) {
+  useQuery({
+    queryKey: ["session", sessionID, "descendants"],
+    queryFn: () => ocStore.loadDescendants(sessionID),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  return useSelector(
+    ocStore.session.info,
+    (all) => ({
+      total: costWithin(sessionID, all),
+      hasSubagents: descendantsOf(sessionID, all).length > 0,
+    }),
+    {
+      compare: (a, b) =>
+        a.total === b.total && a.hasSubagents === b.hasSubagents,
+    },
+  );
+}
 
 function InfoCard({
   id,
@@ -134,6 +163,7 @@ function Environment({
 function Context({ session }: { session: SessionInfo }) {
   const rows = useMessages(ocStore, session.id);
   const models = useModels();
+  const cost = useCost(session.id);
   const last = lastAssistantWithUsage(rows, session.revert);
   const model = last
     ? findModel(models, formatModelRef(last.model.providerID, last.model.id))
@@ -204,12 +234,14 @@ function Context({ session }: { session: SessionInfo }) {
                 <Text size="sm">{compact.format(value)}</Text>
               </div>
             ))}
-            {session.cost > 0 ? (
+            {cost.total > 0 ? (
               <div className="flex justify-between gap-2 border-t border-[var(--color-border)] pt-1">
                 <Text size="sm" color="secondary">
-                  Session cost
+                  {cost.hasSubagents
+                    ? "Session cost, incl. subagents"
+                    : "Session cost"}
                 </Text>
-                <Text size="sm">{usd.format(session.cost)}</Text>
+                <Text size="sm">{dollars(cost.total)}</Text>
               </div>
             ) : null}
           </div>

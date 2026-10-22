@@ -165,6 +165,9 @@ export interface OcClient {
     agent?: string;
   }): Promise<SessionInfo>;
   getSession(sessionID: string): Promise<SessionInfo>;
+  /** The sessions a session's subagents ran in, archived ones included,
+   *  every page of them. */
+  listChildren(parentID: string): Promise<SessionInfo[]>;
   /** Idempotent: an already-deleted session resolves. */
   deleteSession(sessionID: string): Promise<void>;
   renameSession(sessionID: string, title: string): Promise<void>;
@@ -435,6 +438,21 @@ export function createOcClient(options: OcClientOptions): OcClient {
 
     getSession(sessionID) {
       return raw.session.get({ sessionID });
+    },
+
+    async listChildren(parentID) {
+      const out: SessionInfo[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await raw.session.list({
+          parentID,
+          limit: 100,
+          ...(cursor !== undefined ? { cursor } : {}),
+        });
+        out.push(...page.data);
+        cursor = page.cursor.next ?? undefined;
+      } while (cursor !== undefined);
+      return out;
     },
 
     async deleteSession(sessionID) {

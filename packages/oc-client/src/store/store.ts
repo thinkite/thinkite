@@ -112,6 +112,39 @@ export function rootOf(sessionID: string, info: Records<SessionInfo>): string {
   return lineageOf(sessionID, info).at(-1) as string;
 }
 
+/** The sessions below `sessionID` in its subagent tree, as far as the rows
+ *  read so far reach (see `loadDescendants`). */
+export function descendantsOf(
+  sessionID: string,
+  info: Records<SessionInfo>,
+): string[] {
+  const children = new Map<string, string[]>();
+  for (const row of Object.values(info)) {
+    if (row.parentID === undefined) continue;
+    const siblings = children.get(row.parentID);
+    if (siblings === undefined) children.set(row.parentID, [row.id]);
+    else siblings.push(row.id);
+  }
+  const out: string[] = [];
+  const queue = [...(children.get(sessionID) ?? [])];
+  for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+    out.push(id);
+    queue.push(...(children.get(id) ?? []));
+  }
+  return out;
+}
+
+/** What a session cost, its subagents' sessions included. */
+export function costWithin(
+  sessionID: string,
+  info: Records<SessionInfo>,
+): number {
+  return descendantsOf(sessionID, info).reduce(
+    (sum, id) => sum + (info[id]?.cost ?? 0),
+    info[sessionID]?.cost ?? 0,
+  );
+}
+
 /** Whether a session finished a turn after it was last viewed (and after
  *  `since`, so turns from before a client tracked this don't count). */
 export function isUnread(info: SessionInfo, since = 0): boolean {
@@ -162,6 +195,9 @@ export interface OcStore {
   /** A session's row, read from the service when the list doesn't hold it
    *  (a subagent's), along with the rows above it. */
   loadSession(sessionID: string): Promise<SessionInfo | undefined>;
+  /** Read the rows of every session below a session in its subagent tree;
+   *  the bus keeps them current from then on. Resolves to their ids. */
+  loadDescendants(sessionID: string): Promise<string[]>;
   /** Keep a session's transcript live and read its newest page and pending cards. */
   open(sessionID: string): Promise<void>;
   loadOlder(sessionID: string): Promise<void>;
@@ -465,9 +501,16 @@ export function createOcStore({
       client.activeSessionIDs(),
     ]);
     stage(() => {
-      session.info.set(() =>
-        Object.fromEntries(page.sessions.map((s) => [s.id, s])),
-      );
+      // The list holds root sessions only; keep the subagent rows read on
+      // demand (lineages, descendants), which the bus keeps current.
+      session.info.set((all) => ({
+        ...Object.fromEntries(
+          Object.values(all)
+            .filter((s) => s.parentID !== undefined)
+            .map((s) => [s.id, s]),
+        ),
+        ...Object.fromEntries(page.sessions.map((s) => [s.id, s])),
+      }));
       session.active.set(() =>
         Object.fromEntries([...active].map((id) => [id, "running" as const])),
       );
@@ -882,6 +925,21 @@ export function createOcStore({
     async loadSession(sessionID) {
       await ensureAncestry(sessionID);
       return session.info.get()[sessionID];
+    },
+    async loadDescendants(sessionID) {
+      const ids: string[] = [];
+      let level = [sessionID];
+      for (let depth = 0; level.length > 0 && depth < 32; depth++) {
+        const rows = (
+          await Promise.all(level.map((id) => client.listChildren(id)))
+        ).flat();
+        session.info.set((all) =>
+          rows.reduce((acc, row) => put(acc, row.id, row), all),
+        );
+        level = rows.map((row) => row.id);
+        ids.push(...level);
+      }
+      return ids;
     },
     markViewed(sessionID) {
       const info = session.info.get()[sessionID];

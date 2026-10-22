@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { OcClient, SessionInfo, SessionMessageInfo } from "../client.ts";
 import type { OcEvent } from "../events.ts";
 import { visibleMessages } from "../transcript-reducer.ts";
-import { createOcStore, isUnread, type OcStore } from "./store.ts";
+import { costWithin, createOcStore, isUnread, type OcStore } from "./store.ts";
 
 const SES = "ses_a";
 
@@ -108,6 +108,8 @@ function fakeClient(opts: {
   parents?: Record<string, string>;
   /** Rows `getSession` returns, by id (after a turn ends, say). */
   rows?: Record<string, SessionInfo>;
+  /** Subagent sessions by parent, for `listChildren`. */
+  children?: Record<string, SessionInfo[]>;
 }) {
   const messageCalls: Array<{ cursor?: string }> = [];
   const listCalls: number[] = [];
@@ -151,6 +153,9 @@ function fakeClient(opts: {
       const row = opts.rows?.[id] ?? info(id, "created", 50);
       const parentID = opts.parents?.[id];
       return parentID === undefined ? row : { ...row, parentID };
+    },
+    async listChildren(parentID: string) {
+      return opts.children?.[parentID] ?? [];
     },
     async createSession(o: { model?: { providerID: string; id: string } }) {
       created.push(o);
@@ -675,6 +680,58 @@ describe("reverts", () => {
 });
 
 describe("agent state", () => {
+  it("adds a session's cost up with its subagents', and keeps it current", {
+    timeout: 5000,
+  }, async () => {
+    const bus = new FakeBus();
+    const row = (id: string, cost: number, parentID?: string) => ({
+      ...info(id, id, 20),
+      cost,
+      ...(parentID !== undefined ? { parentID } : {}),
+    });
+    const { client } = fakeClient({
+      bus,
+      sessions: [{ sessions: [row(SES, 1)] }, { sessions: [row(SES, 1)] }],
+      children: {
+        [SES]: [row("ses_sub", 0.5, SES), row("ses_sub2", 0, SES)],
+        ses_sub: [row("ses_sub1", 0.25, "ses_sub")],
+      },
+    });
+    const s = store(client);
+    await s.start();
+    expect(costWithin(SES, s.session.info.get())).toBe(1);
+    expect(await s.loadDescendants(SES)).toEqual([
+      "ses_sub",
+      "ses_sub2",
+      "ses_sub1",
+    ]);
+    expect(costWithin(SES, s.session.info.get())).toBe(1.75);
+    expect(costWithin("ses_sub", s.session.info.get())).toBe(0.75);
+    // Subagent rows stay out of the list.
+    expect(s.rootSessions.get().map((x) => x.id)).toEqual([SES]);
+
+    bus.push(
+      ev("session.usage.updated", {
+        sessionID: "ses_sub1",
+        cost: 0.5,
+        tokens: {
+          input: 0,
+          output: 0,
+          reasoning: 0,
+          cache: { read: 0, write: 0 },
+        },
+      }),
+    );
+    await tick();
+    s.flush();
+    expect(costWithin(SES, s.session.info.get())).toBe(2);
+
+    // A relist (on reconnect) reads roots only; the subagent rows stay.
+    bus.close();
+    await tick(1200);
+    expect(costWithin(SES, s.session.info.get())).toBe(2);
+  });
+
   it("files a subagent's request under the session that started it", async () => {
     const bus = new FakeBus();
     const { client } = fakeClient({

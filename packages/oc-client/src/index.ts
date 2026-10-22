@@ -57,7 +57,9 @@ export {
 } from "./session-reducer.ts";
 export {
   type ConnectionStatus,
+  costWithin,
   createOcStore,
+  descendantsOf,
   type FormAnswer,
   isUnread,
   lineageOf,
