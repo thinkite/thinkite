@@ -475,7 +475,19 @@ export function createOcStore({
     }
   }
 
-  async function open(sessionID: string): Promise<void> {
+  /** Opens in flight, so a second open of the same session (a remount, a
+   *  StrictMode double effect) shares the first one's reads. */
+  const opening = new Map<string, Promise<void>>();
+
+  function open(sessionID: string): Promise<void> {
+    const pending = opening.get(sessionID);
+    if (pending !== undefined) return pending;
+    const run = openNow(sessionID).finally(() => opening.delete(sessionID));
+    opening.set(sessionID, run);
+    return run;
+  }
+
+  async function openNow(sessionID: string): Promise<void> {
     const warm = hasMessages(sessionID);
     // Hold it now so events fold into it while the first page loads.
     holdMessages(sessionID);

@@ -271,6 +271,15 @@ describe("transcripts", () => {
     });
   });
 
+  it("a second open while the first is reading shares its reads", async () => {
+    const bus = new FakeBus();
+    const { client, messageCalls } = fakeClient({ bus });
+    const s = store(client);
+    await s.start();
+    await Promise.all([s.open(SES), s.open(SES)]);
+    expect(messageCalls).toHaveLength(1);
+  });
+
   it("keeps a few transcripts and forgets the oldest", async () => {
     const bus = new FakeBus();
     const { client } = fakeClient({ bus });
