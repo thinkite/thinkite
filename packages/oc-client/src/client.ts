@@ -59,6 +59,16 @@ export interface OcClientOptions {
   headers?: Record<string, string>;
 }
 
+/**
+ * A file sent with a prompt. A `data:` URI is stored inline on the user
+ * message (how the phone sends photos); a path or `file:` URI is read by
+ * the service.
+ */
+export interface PromptFile {
+  uri: string;
+  name?: string;
+}
+
 export interface OcSessionPage {
   sessions: SessionInfo[];
   nextCursor?: string;
@@ -112,7 +122,7 @@ export interface OcClient {
   prompt(
     sessionID: string,
     text: string,
-    opts?: { id?: string },
+    opts?: { id?: string; files?: readonly PromptFile[] },
   ): Promise<SessionInboxUser>;
   interrupt(sessionID: string): Promise<void>;
   switchModel(sessionID: string, model: ModelRef): Promise<void>;
@@ -237,6 +247,9 @@ export function createOcClient(options: OcClientOptions): OcClient {
         sessionID,
         text,
         ...(opts.id !== undefined ? { id: opts.id } : {}),
+        ...(opts.files !== undefined && opts.files.length > 0
+          ? { files: opts.files }
+          : {}),
       });
     },
 

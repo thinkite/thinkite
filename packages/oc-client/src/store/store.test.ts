@@ -312,6 +312,26 @@ describe("optimistic prompts", () => {
     expect(s.session.message.get()[SES]?.[0]?.time.created).toBe(9);
   });
 
+  it("shows an inline image on the guess, as the service will store it", async () => {
+    const bus = new FakeBus();
+    const { client } = fakeClient({ bus });
+    const s = store(client);
+    await s.start();
+    await s.open(SES);
+    await s.prompt(SES, "look", {
+      files: [{ uri: "data:image/png;base64,AAAA", name: "a.png" }],
+    });
+    const row = s.session.message.get()[SES]?.[0];
+    expect(row?.type === "user" ? row.files : undefined).toEqual([
+      {
+        data: "AAAA",
+        mime: "image/png",
+        source: { type: "inline" },
+        name: "a.png",
+      },
+    ]);
+  });
+
   it("a failed send takes the row back, unless the echo arrived first", async () => {
     const bus = new FakeBus();
     let echoFirst = false;

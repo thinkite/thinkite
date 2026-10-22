@@ -38,6 +38,7 @@ import {
 import type {
   ModelRef,
   OcClient,
+  PromptFile,
   SessionInfo,
   SessionMessageInfo,
 } from "../client.ts";
@@ -120,6 +121,7 @@ export interface OcStore {
       model?: ModelRef;
       /** The row's `msg_*` id, when the caller needs it up front (scroll anchoring). */
       id?: string;
+      files?: readonly PromptFile[];
     },
   ): Promise<void>;
   /** Create a session and add it to the list right away. */
@@ -526,13 +528,16 @@ export function createOcStore({
   async function prompt(
     sessionID: string,
     text: string,
-    options?: { model?: ModelRef; id?: string },
+    options?: { model?: ModelRef; id?: string; files?: readonly PromptFile[] },
   ) {
     const id = options?.id ?? mintMessageId();
+    const files = options?.files ?? [];
     const row = {
       id,
       type: "user",
       text,
+      // Inline images show at once, as the service will store them.
+      ...(files.length > 0 ? { files: files.flatMap(inlineFile) } : {}),
       time: { created: Date.now() },
     } as SessionMessageInfo;
     const fresh = admit(sessionID, row);
@@ -549,7 +554,7 @@ export function createOcStore({
         ) {
           await client.switchModel(sessionID, model);
         }
-        await client.prompt(sessionID, text, { id });
+        await client.prompt(sessionID, text, { id, files });
       });
     } catch (error) {
       if (fresh) rollback(sessionID, id);
@@ -643,4 +648,18 @@ export function createOcStore({
         () => session.form.set((all) => removeIn(all, form.id)),
       ),
   };
+}
+
+/** A `data:` URI file as the service stores it on the user message. */
+function inlineFile(file: PromptFile) {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(file.uri);
+  if (match === null) return [];
+  return [
+    {
+      data: match[2] as string,
+      mime: match[1] as string,
+      source: { type: "inline" as const },
+      ...(file.name !== undefined ? { name: file.name } : {}),
+    },
+  ];
 }

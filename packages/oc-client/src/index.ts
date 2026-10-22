@@ -17,6 +17,7 @@ export {
   type OcSessionPage,
   type OpenCodeClient,
   type OpenCodeEvent,
+  type PromptFile,
   type ProviderInfo,
   type ServerInfo,
   type SessionInboxUser,
@@ -47,6 +48,12 @@ export {
   type OcStoreOptions,
   type Paging,
 } from "./store/store.ts";
+export {
+  type FileDiff,
+  toolDiffs,
+  toolOutput,
+  toolSummary,
+} from "./tool-format.ts";
 export {
   applyTranscriptEvent,
   mergeProjection,
