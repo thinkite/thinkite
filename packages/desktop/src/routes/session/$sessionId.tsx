@@ -14,7 +14,7 @@ import {
   visibleMessages,
 } from "@thinkite/oc-client";
 import { useIsRunning, useSession } from "@thinkite/oc-client/react";
-import { DiffIcon, TerminalIcon } from "lucide-react";
+import { FileDiffIcon, PanelRightIcon, TerminalIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { type Builtin, Composer, PLACEHOLDER } from "../../components/Composer";
 import { DiffPanel } from "../../components/DiffPanel";
@@ -38,10 +38,10 @@ import { ocClient, ocReady, ocStore } from "../../lib/oc";
 
 // Session screen: transcript center column with a live composer (opencode
 // v2 `session.prompt` through the same-origin `/oc` proxy), and a right
-// column laid out after Claude Code's: it shows the session's info cards
-// until a button at the end of the title bar opens a panel in their place
-// — the terminal or the diff, one at a time — and clicking the open one
-// brings the cards back (ToggleButtonGroup single mode: deselect → null).
+// panel laid out after Claude Code's: buttons at the end of the title bar
+// each open one view in it — the session's info cards (shown at first),
+// the terminal or the diff — and clicking the open one closes the panel
+// (ToggleButtonGroup single mode: deselect → null → closed).
 //
 // `$sessionId` IS the opencode `ses_*` id, aligned with the iOS routes.
 // The loader waits for the first session list (a session created from the
@@ -58,7 +58,7 @@ export const Route = createFileRoute("/session/$sessionId")({
   component: SessionRoute,
 });
 
-type Surface = "terminal" | "diff";
+type Surface = "info" | "terminal" | "diff";
 
 // Tool-panel UI state is PER SESSION, in memory (the t3code drawer pattern:
 // per-thread height/open state, reset on app restart). Keying the Session
@@ -79,9 +79,13 @@ function SessionRoute() {
 function Session({ sessionId }: { sessionId: string }) {
   const session = useSession(ocStore, sessionId);
   const running = useIsRunning(ocStore, sessionId);
-  // null: the info cards. Default for an unvisited session.
-  const [surface, setSurface] = useState<Surface | null>(
-    () => surfaceBySession.get(sessionId) ?? null,
+  // `has` not `??`: null is a real remembered value ("closed"), which `??`
+  // would silently swallow. Default for an unvisited session: the info
+  // cards, as in Claude Code.
+  const [surface, setSurface] = useState<Surface | null>(() =>
+    surfaceBySession.has(sessionId)
+      ? (surfaceBySession.get(sessionId) as Surface | null)
+      : "info",
   );
   // Both surfaces mount on FIRST VISIT and stay mounted (t3code's drawer
   // pattern: `return null` until terminalOpen). For the terminal that
@@ -107,7 +111,7 @@ function Session({ sessionId }: { sessionId: string }) {
       infoPanelSize = size;
     },
   });
-  const rightPanel = surface === null ? infoPanel : toolPanel;
+  const rightPanel = surface === "info" ? infoPanel : toolPanel;
 
   // Composer → optimistic send: the user bubble paints at once under a
   // client-minted id, and the durable `session.inbox.enqueued` echo replaces
@@ -273,7 +277,7 @@ function Session({ sessionId }: { sessionId: string }) {
   };
 
   const pick = (v: string | null) => {
-    const s = v === "terminal" || v === "diff" ? v : null;
+    const s = v === "info" || v === "terminal" || v === "diff" ? v : null;
     setSurface(s);
     if (s === "diff") setDiffVisited(true);
     if (s === "terminal") setTerminalVisited(true);
@@ -303,6 +307,13 @@ function Session({ sessionId }: { sessionId: string }) {
                   onChange={pick}
                 >
                   <ToggleButton
+                    value="info"
+                    label="Session info"
+                    isIconOnly
+                    tooltip="Session info"
+                    icon={<Icon icon={PanelRightIcon} size="sm" />}
+                  />
+                  <ToggleButton
                     value="terminal"
                     label="Terminal"
                     isIconOnly
@@ -314,7 +325,7 @@ function Session({ sessionId }: { sessionId: string }) {
                     label="Diff"
                     isIconOnly
                     tooltip="Diff"
-                    icon={<Icon icon={DiffIcon} size="sm" />}
+                    icon={<Icon icon={FileDiffIcon} size="sm" />}
                   />
                 </ToggleButtonGroup>
               }
@@ -385,26 +396,29 @@ function Session({ sessionId }: { sessionId: string }) {
       }
       end={
         <>
-          <ResizeHandle
-            direction="horizontal"
-            hasDivider
-            isReversed
-            isAlwaysVisible={false}
-            resizable={rightPanel.props}
-            label="Resize session panel"
-          />
-          {/* Panel body. The terminal and diff stay mounted once opened
-              (terminal buffer) and hide while another view shows. Plain div
-              rather than LayoutPanel so switching doesn't unmount children. */}
+          {surface !== null && (
+            <ResizeHandle
+              direction="horizontal"
+              hasDivider
+              isReversed
+              isAlwaysVisible={false}
+              resizable={rightPanel.props}
+              label="Resize session panel"
+            />
+          )}
+          {/* Panel body — width-zeroed when closed. The terminal and diff
+              stay mounted once opened (terminal buffer) and hide while
+              another view shows. Plain div rather than LayoutPanel so
+              closing doesn't unmount children. */}
           <div
             style={{
-              width: rightPanel.size,
+              width: surface === null ? 0 : rightPanel.size,
               flexShrink: 0,
               overflow: "hidden",
               height: "100%",
             }}
           >
-            {surface === null ? (
+            {surface === "info" ? (
               <InfoPanel
                 session={session}
                 isRunning={running}
