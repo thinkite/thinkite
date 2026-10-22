@@ -70,13 +70,13 @@ export function PierrePool({ children }: { children: ReactNode }) {
     () => ({
       theme: { dark: "pierre-dark", light: "pierre-light" } as const,
       langs: LANGS,
-      // shiki-js (JS regex engine), NOT shiki-wasm: on V8 the JS engine is
-      // fast, and it avoids oniguruma's grow-only wasm linear memory
-      // (~40-150M per worker once hot, never returned — wasm memory can't
-      // shrink). The wasm engine was a WKWebView-era necessity: shiki-js
-      // ran ~5x slower on JSC, which is why iOS's PierreView still ships
-      // shiki-wasm. Electron renderer = Chromium/V8, so desktop flips.
-      preferredHighlighter: "shiki-js" as const,
+      // Pierre's own wasm lexers (@pierre/highlights) instead of shiki:
+      // ~2ms for 2,000 lines of TS where shiki-js takes ~130, a 183KB module
+      // instead of oniguruma's memory that grows and never shrinks, and the
+      // same engine as the transcript's code blocks (lib/highlight.ts).
+      // diffs allows one highlighter type at a time, so every Pierre surface
+      // (DiffPanel's per-component option too) must say the same.
+      preferredHighlighter: "highlights" as const,
       // Skip tokenizing pathological lines (lock files, minified bundles) —
       // they render plain instead of stalling the worker (t3code's guard).
       tokenizeMaxLineLength: 1_000,

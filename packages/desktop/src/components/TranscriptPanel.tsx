@@ -13,6 +13,7 @@ import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { toolDiffs, toolOutput, toolSummary } from "@thinkite/oc-client";
 import { useMessages, usePaging } from "@thinkite/oc-client/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { highlightTokens } from "../lib/highlight";
 import { ocStore } from "../lib/oc";
 import {
   duration,
@@ -46,26 +47,39 @@ import {
 // off-screen; recycleItems stays OFF so row-internal state never leaks
 // between rows.
 
-/** File extension → highlighter language for a diff; plain text otherwise. */
+/**
+ * File extension → highlighter language for a diff. Highlights takes most
+ * extensions as language aliases (ts, py, rs, kt, yml…); the rest render
+ * plain.
+ */
 function languageOf(file: string): string | undefined {
-  const ext = file.slice(file.lastIndexOf(".") + 1).toLowerCase();
-  const known: Record<string, string> = {
-    ts: "typescript",
-    tsx: "tsx",
-    js: "javascript",
-    jsx: "jsx",
-    json: "json",
-    md: "markdown",
-    css: "css",
-    html: "html",
-    py: "python",
-    rs: "rust",
-    go: "go",
-    swift: "swift",
-    sh: "bash",
-  };
-  return known[ext];
+  const dot = file.lastIndexOf(".");
+  return dot === -1 ? undefined : file.slice(dot + 1).toLowerCase();
 }
+
+/**
+ * A fenced code block in the agent's markdown, as Markdown draws it by
+ * default (wrapped, collapsible, `diff` fences as diffs) but tokenized by
+ * highlights. Markdown hands a custom renderer only the fence's first word,
+ * so `diff-tsx` arrives as `diff` and renders as a plain diff.
+ */
+function CodeFence({ code, language }: { code: string; language?: string }) {
+  const isDiff = language === "diff";
+  return (
+    <div className="my-3 first:mt-0 last:mb-0">
+      <CodeBlock
+        code={code}
+        isDiff={isDiff}
+        isCollapsible
+        isWrapped
+        tokenizer={highlightTokens}
+        {...(!isDiff && language !== undefined ? { language } : {})}
+      />
+    </div>
+  );
+}
+
+const MARKDOWN_COMPONENTS = { code: CodeFence };
 
 /**
  * opencode's disclosure: the label with a small ▾ right after it (not at
@@ -161,6 +175,7 @@ function toolDetail(tool: ToolPart): ReactNode {
         width="100%"
         size="sm"
         maxHeight={480}
+        tokenizer={highlightTokens}
         {...(languageOf(d.file) ? { language: languageOf(d.file) } : {})}
       />
     ));
@@ -314,14 +329,14 @@ function renderRow(row: TranscriptRow, live: boolean) {
       return (
         <ChatMessage sender="user">
           <ChatMessageBubble>
-            <Markdown>{row.text}</Markdown>
+            <Markdown components={MARKDOWN_COMPONENTS}>{row.text}</Markdown>
           </ChatMessageBubble>
         </ChatMessage>
       );
     case "text":
       return (
         <ChatMessage sender="assistant">
-          <Markdown>{row.text}</Markdown>
+          <Markdown components={MARKDOWN_COMPONENTS}>{row.text}</Markdown>
         </ChatMessage>
       );
     case "group":

@@ -260,6 +260,11 @@ export default function PierreView({
         "swift",
         "sql",
       ] as SupportedLanguages[],
+      // Pierre's wasm lexers (@pierre/highlights, inlined in the portable
+      // worker) instead of shiki: far faster on JSC, where shiki-js ran ~5x
+      // slower than on V8. diffs allows one highlighter type at a time, so
+      // the per-component options below say the same.
+      preferredHighlighter: "highlights" as const,
     }),
     [],
   );
@@ -302,7 +307,7 @@ export default function PierreView({
               diffStyle: "unified",
               // Full-line red/green tint + word-level intra-line emphasis.
               lineDiffType: "word",
-              preferredHighlighter: "shiki-js",
+              preferredHighlighter: "highlights",
               disableFileHeader,
               disableLineNumbers,
               onPostRender: handlePostRender,
@@ -328,7 +333,7 @@ export default function PierreView({
             diffStyle: "unified",
             lineDiffType: "word",
             stickyHeaders: true,
-            preferredHighlighter: "shiki-js",
+            preferredHighlighter: "highlights",
             // Extend the scroll content's bottom padding by the safe-area inset
             // so the last line clears the home indicator (single-file File/
             // PatchDiff get the same via a padded wrapper div). 8s are Pierre's
@@ -347,7 +352,7 @@ export default function PierreView({
             disableWorkerPool={!poolOptions}
             options={{
               theme,
-              preferredHighlighter: "shiki-js",
+              preferredHighlighter: "highlights",
               disableFileHeader,
               disableLineNumbers,
               onPostRender: handlePostRender,
