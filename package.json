@@ -21,7 +21,7 @@
       "@legendapp/list": "^3.3.10",
       "@tanstack/store": "0.11.2",
       "@tanstack/react-store": "0.11.2",
-      "@pierre/diffs": "^1.2.12",
+      "@pierre/diffs": "^1.6.1",
       "tailwindcss": "^4.3.2"
     }
   },
