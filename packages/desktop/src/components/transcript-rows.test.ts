@@ -1,6 +1,11 @@
 import type { SessionMessageInfo } from "@thinkite/oc-client";
 import { describe, expect, it } from "vitest";
-import { duration, groupLabel, rowsOf } from "./transcript-rows";
+import {
+  agentSessionOf,
+  duration,
+  groupLabel,
+  rowsOf,
+} from "./transcript-rows";
 
 const user = (id: string, created: number) =>
   ({ id, type: "user", text: id, time: { created } }) as SessionMessageInfo;
@@ -143,6 +148,18 @@ describe("rowsOf", () => {
       "agent",
       "group(tool:t2)",
     ]);
+  });
+
+  it("finds a subagent's session under either spelling of the key", () => {
+    const call = (metadata: Record<string, unknown>) =>
+      ({
+        type: "tool",
+        name: "task",
+        state: { status: "completed", metadata },
+      }) as unknown as Parameters<typeof agentSessionOf>[0];
+    expect(agentSessionOf(call({ sessionID: "ses_new" }))).toBe("ses_new");
+    expect(agentSessionOf(call({ sessionId: "ses_old" }))).toBe("ses_old");
+    expect(agentSessionOf(call({}))).toBeUndefined();
   });
 
   it("drops blank text and thinking", () => {

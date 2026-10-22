@@ -42,8 +42,9 @@ const usd = new Intl.NumberFormat("en", {
   style: "currency",
   currency: "USD",
 });
-/** Dollars, with an amount under a cent shown as such rather than $0.00. */
-const dollars = (n: number) => (n < 0.01 ? "<$0.01" : usd.format(n));
+/** Dollars, with an amount under a cent (but not none) shown as such
+ *  rather than $0.00. */
+const dollars = (n: number) => (n > 0 && n < 0.01 ? "<$0.01" : usd.format(n));
 
 /**
  * What the session cost, its subagents' sessions included, and whether it
@@ -234,16 +235,16 @@ function Context({ session }: { session: SessionInfo }) {
                 <Text size="sm">{compact.format(value)}</Text>
               </div>
             ))}
-            {cost.total > 0 ? (
-              <div className="flex justify-between gap-2 border-t border-[var(--color-border)] pt-1">
-                <Text size="sm" color="secondary">
-                  {cost.hasSubagents
-                    ? "Session cost, incl. subagents"
-                    : "Session cost"}
-                </Text>
-                <Text size="sm">{dollars(cost.total)}</Text>
-              </div>
-            ) : null}
+            {/* Shown at $0.00 too (a free model, a subscription): a missing
+                line reads as unknown, not as nothing spent. */}
+            <div className="flex justify-between gap-2 border-t border-[var(--color-border)] pt-1">
+              <Text size="sm" color="secondary">
+                {cost.hasSubagents
+                  ? "Session cost, incl. subagents"
+                  : "Session cost"}
+              </Text>
+              <Text size="sm">{dollars(cost.total)}</Text>
+            </div>
           </div>
         </div>
       ) : (

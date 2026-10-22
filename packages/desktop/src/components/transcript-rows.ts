@@ -60,11 +60,13 @@ export function duration(ms: number): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-/** The session a subagent call runs in, once the service has made it. */
+/** The session a subagent call runs in, once the service has made it.
+ *  Calls recorded by earlier opencode versions spell the key `sessionId`. */
 export function agentSessionOf(tool: ToolPart): string | undefined {
   if (tool.state.status !== "running" && tool.state.status !== "completed")
     return undefined;
-  const id = tool.state.metadata?.sessionID;
+  const meta = tool.state.metadata;
+  const id = meta?.sessionID ?? meta?.sessionId;
   return typeof id === "string" ? id : undefined;
 }
 
