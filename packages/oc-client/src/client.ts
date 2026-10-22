@@ -226,8 +226,13 @@ export interface OcClient {
   /** Changed files in the working tree with their line counts (binary
    *  files count 0); empty outside a repository. */
   vcsStatus(directory: string): Promise<VcsFileStatus[]>;
-  /** One patch per changed file. */
-  vcsDiff(directory: string, mode: DiffMode): Promise<FileDiffInfo[]>;
+  /** One patch per changed file, with `context` unchanged lines around
+   *  each change (git's default when unset). */
+  vcsDiff(
+    directory: string,
+    mode: DiffMode,
+    context?: number,
+  ): Promise<FileDiffInfo[]>;
   /** Fuzzy path search under `directory`, files and directories alike. */
   findFiles(
     directory: string,
@@ -539,8 +544,14 @@ export function createOcClient(options: OcClientOptions): OcClient {
       return (await raw.vcs.status({ location: { directory } })).data;
     },
 
-    async vcsDiff(directory, mode) {
-      return (await raw.vcs.diff({ location: { directory }, mode })).data;
+    async vcsDiff(directory, mode, context) {
+      return (
+        await raw.vcs.diff({
+          location: { directory },
+          mode,
+          ...(context !== undefined ? { context } : {}),
+        })
+      ).data;
     },
 
     async findFiles(directory, query, limit) {

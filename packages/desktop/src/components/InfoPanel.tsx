@@ -4,10 +4,10 @@ import { Text } from "@astryxdesign/core/Text";
 import { useSelector } from "@tanstack/react-store";
 import {
   contextTokens,
+  type FileDiffInfo,
   formatModelRef,
   lastAssistantWithUsage,
   type SessionInfo,
-  type VcsFileStatus,
   type VcsInfo,
 } from "@thinkite/oc-client";
 import { useMessages } from "@thinkite/oc-client/react";
@@ -227,7 +227,7 @@ function Changes({
   onOpenDiff,
 }: {
   vcs: VcsInfo | null;
-  status: VcsFileStatus[] | null;
+  status: FileDiffInfo[] | null;
   onOpenDiff: () => void;
 }) {
   const added = status?.reduce((n, f) => n + f.additions, 0) ?? 0;
@@ -245,7 +245,7 @@ function Changes({
         </Text>
       ) : files === 0 ? (
         <Text size="sm" color="secondary">
-          No uncommitted changes
+          No changes on this branch
         </Text>
       ) : (
         <button
@@ -286,7 +286,7 @@ function Changes({
  */
 function useVcs(directory: string, isRunning: boolean) {
   const [vcs, setVcs] = useState<VcsInfo | null>(null);
-  const [status, setStatus] = useState<VcsFileStatus[] | null>(null);
+  const [status, setStatus] = useState<FileDiffInfo[] | null>(null);
   const [focusCount, setFocusCount] = useState(0);
   useEffect(() => {
     const onFocus = () => setFocusCount((n) => n + 1);
@@ -297,7 +297,12 @@ function useVcs(directory: string, isRunning: boolean) {
   useEffect(() => {
     if (isRunning) return;
     let cancelled = false;
-    Promise.all([ocClient.vcs(directory), ocClient.vcsStatus(directory)])
+    Promise.all([
+      ocClient.vcs(directory),
+      // The diff panel's view, counted: the whole branch. No context
+      // lines, as only the counts are read.
+      ocClient.vcsDiff(directory, "branch", 0),
+    ])
       .then(([info, files]) => {
         if (cancelled) return;
         setVcs(info);
