@@ -102,6 +102,9 @@ export interface OcStore {
   readonly replying: Atom<Records<true>>;
   /** Root sessions, most recent first. */
   readonly rootSessions: ReadonlyAtom<readonly SessionInfo[]>;
+  /** The model of the most recently active session that names one. Read
+   *  from the service's own list, so every client agrees. */
+  readonly lastUsedModel: ReadonlyAtom<ModelRef | undefined>;
   /** Sessions with a turn in flight. */
   readonly running: ReadonlyAtom<ReadonlySet<string>>;
 
@@ -125,7 +128,7 @@ export interface OcStore {
     },
   ): Promise<void>;
   /** Create a session and add it to the list right away. Without a model
-   *  it gets the directory's default model, pinned. */
+   *  it gets the last used one, else the directory's default — pinned. */
   createSession(options: {
     directory: string;
     model?: ModelRef;
@@ -166,6 +169,16 @@ export function createOcStore({
     Object.values(session.info.get())
       .filter((s) => s.parentID === undefined)
       .sort((a, b) => b.time.updated - a.time.updated),
+  );
+  const lastUsedModel = createAtom<ModelRef | undefined>(
+    () => {
+      const m = rootSessions.get().find((s) => s.model !== undefined)?.model;
+      // Model only: the pickers don't show a variant, so none is carried.
+      return m && { providerID: m.providerID, id: m.id };
+    },
+    {
+      compare: (a, b) => a?.providerID === b?.providerID && a?.id === b?.id,
+    },
   );
   const running = createAtom<ReadonlySet<string>>(() => {
     const active = session.active.get();
@@ -580,10 +593,12 @@ export function createOcStore({
     model?: ModelRef;
   }) {
     // A session created without a model follows whatever the default is at
-    // each turn and has no `model` to show. Pin the default the picker
-    // showed instead; if it can't be read, the service picks as before.
+    // each turn and has no `model` to show. Pin what the picker showed
+    // instead: the last used model, else the directory's default; if that
+    // can't be read either, the service picks as before.
     const model =
       options.model ??
+      lastUsedModel.get() ??
       (await client.defaultModel(options.directory).catch(() => undefined));
     const info = await client.createSession({
       directory: options.directory,
@@ -631,6 +646,7 @@ export function createOcStore({
     session,
     replying,
     rootSessions,
+    lastUsedModel,
     running,
     start,
     stop,

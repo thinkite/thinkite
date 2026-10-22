@@ -3,6 +3,7 @@
 import type { FormInfo, PermissionRequest } from "@opencode/client";
 import { useSelector } from "@tanstack/react-store";
 import type { SessionInfo, SessionMessageInfo } from "./client.ts";
+import { formatModelRef } from "./model-ref.ts";
 import type { ConnectionStatus, OcStore, Paging } from "./store/store.ts";
 
 const EMPTY: readonly never[] = [];
@@ -15,6 +16,13 @@ const COLD: Paging = {
 /** Root sessions, most recent first. */
 export function useSessions(store: OcStore): readonly SessionInfo[] {
   return useSelector(store.rootSessions);
+}
+
+/** The last used model as a `providerID/modelID` ref, or null if none. */
+export function useLastUsedModel(store: OcStore): string | null {
+  return useSelector(store.lastUsedModel, (m) =>
+    m ? formatModelRef(m.providerID, m.id) : null,
+  );
 }
 
 export function useSession(

@@ -5,6 +5,7 @@ import {
 } from "@thinkite/oc-client";
 import {
   useIsRunning,
+  useLastUsedModel,
   useMessages,
   useSession,
 } from "@thinkite/oc-client/react";
@@ -195,11 +196,11 @@ export function InputBar({
 
   // ─── Session state from the store ───────────────────────────────────
   // Detail: the session's model, busy flag and last turn's context use.
-  // New-session: a local draft pick (null = the folder's default, which
-  // the store pins on create). A pick on an existing session switches it
-  // right away; the picked value wins until the session's model.selected
-  // event catches up. Without a pick or a session model (sessions made
-  // before new ones were pinned) the folder's default is what runs.
+  // New-session: a local draft pick (null = the last used model, else the
+  // folder's default; the store pins it on create). A pick on an existing
+  // session switches it right away; the picked value wins until the
+  // session's model.selected event catches up. A session without a model
+  // (made before new ones were pinned) runs on the folder's default.
   const models = useOcModels();
   const session = useSession(ocStore, sessionID);
   const messages = useMessages(ocStore, sessionID);
@@ -209,7 +210,8 @@ export function InputBar({
     session?.model !== undefined
       ? formatModelRef(session.model.providerID, session.model.id)
       : null;
-  const pinned = picked ?? sessionModel;
+  const lastUsed = useLastUsedModel(ocStore);
+  const pinned = picked ?? (sessionID === null ? lastUsed : sessionModel);
   const defaultModel = useOcDefaultModel(
     pinned === null ? (session?.location.directory ?? directory) : undefined,
   );

@@ -494,6 +494,39 @@ describe("createSession", () => {
     expect(fake.created[0]?.model).toEqual(model);
   });
 
+  it("prefers the model of the most recently active session", async () => {
+    const withModel = (id: string, updated: number, model?: string) =>
+      ({
+        ...info(id, id, updated),
+        ...(model && {
+          model: { providerID: "opencode-go", id: model, variant: "max" },
+        }),
+      }) as SessionInfo;
+    const fake = fakeClient({
+      bus: new FakeBus(),
+      sessions: [
+        {
+          sessions: [
+            withModel("ses_old", 1, "glm-5.3"),
+            withModel("ses_new", 3, "deepseek-v4.1-flash"),
+            withModel("ses_unpinned", 5),
+          ],
+        },
+      ],
+    });
+    const s = store(fake.client);
+    await s.start();
+    expect(s.lastUsedModel.get()).toEqual({
+      providerID: "opencode-go",
+      id: "deepseek-v4.1-flash",
+    });
+    await s.createSession({ directory: "/tmp/x" });
+    expect(fake.created[0]?.model).toEqual({
+      providerID: "opencode-go",
+      id: "deepseek-v4.1-flash",
+    });
+  });
+
   it("leaves the pick to the service when the default can't be read", async () => {
     const fake = fakeClient({ bus: new FakeBus(), defaultModel: null });
     await store(fake.client).createSession({ directory: "/tmp/x" });

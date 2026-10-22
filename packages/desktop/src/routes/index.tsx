@@ -5,7 +5,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { FolderIcon, SparklesIcon } from "@heroicons/react/24/outline";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { parseModelRef, type SessionInfo } from "@thinkite/oc-client";
-import { useSessions } from "@thinkite/oc-client/react";
+import { useLastUsedModel, useSessions } from "@thinkite/oc-client/react";
 import { useMemo, useState } from "react";
 import { ModelPicker, useDefaultModel } from "../components/ModelPicker";
 import { ocStore } from "../lib/oc";
@@ -79,7 +79,10 @@ function NewSession() {
     [sessions, directory],
   );
   const [model, setModel] = useState<string | null>(null);
-  const defaultModel = useDefaultModel(directory);
+  // No pick: the last used model, else the folder's default — what the
+  // store will pin on create.
+  const lastUsed = useLastUsedModel(ocStore);
+  const defaultModel = useDefaultModel(lastUsed === null ? directory : null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -111,7 +114,7 @@ function NewSession() {
       try {
         const session = await ocStore.createSession({
           directory,
-          // No pick = the store pins the folder's default model.
+          // No pick = the store pins the last used or default model.
           ...(model !== null ? { model: parseModelRef(model) } : {}),
         });
         // Not awaited: a failed first prompt still leaves a valid (empty)
@@ -139,7 +142,10 @@ function NewSession() {
       isDisabled={busy || directory === null}
       status={error ? { type: "error", message: error } : undefined}
       footerActions={
-        <ModelPicker value={model ?? defaultModel} onChange={setModel} />
+        <ModelPicker
+          value={model ?? lastUsed ?? defaultModel}
+          onChange={setModel}
+        />
       }
       input={<ChatComposerInput style={{ minHeight: 52 }} />}
     />
