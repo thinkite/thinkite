@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 /**
  * `$THINKITE_HOME/daemon.lock` records that a daemon owns this home, so
- * that one-shot CLI commands (notably `sidecode pair`) can detect it and
+ * that one-shot CLI commands (notably `thinkite pair`) can detect it and
  * refuse to spawn a competing one.
  *
  * The daemon doesn't bind a local port — remote transport is the iroh

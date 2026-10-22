@@ -31,29 +31,12 @@ module.exports = {
   // icon; the main resolves all three via app.getAppPath(), and Electron's
   // asar-patched fs makes the http server's readFile work from inside the
   // archive).
-  //
-  // DESKTOP inversion #1: the SDK's per-platform `claude` SEA binary (~212MB)
-  // is EXCLUDED — this app discovers the SYSTEM claude instead (version-gated
-  // in server/index.ts), the electrobun-era decision that kept the install
-  // small. Without the negation, the automatic node_modules collection would
-  // drag the binary in through daemon → SDK → optional platform package.
-  // (The SDK's JS itself stays — the daemon imports it.)
-  files: [
-    "dist/**/*",
-    "dist-electron/**/*",
-    "assets/**/*",
-    "package.json",
-    "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
-  ],
+  files: ["dist/**/*", "dist-electron/**/*", "assets/**/*", "package.json"],
   // Native code can't load from inside the asar archive (v27: `asarUnpack`
-  // moved into `asar.unpack`):
-  //  - node-datachannel ships a prebuilt .node (must be dlopen-able)
-  //  - @lydell/node-pty ditto (DESKTOP inversion #2 — menubar had no PTY)
+  // moved into `asar.unpack`): @lydell/node-pty ships a prebuilt .node that
+  // must be dlopen-able.
   asar: {
-    unpack: [
-      "**/node_modules/node-datachannel/**",
-      "**/node_modules/@lydell/node-pty/**",
-    ],
+    unpack: ["**/node_modules/@lydell/node-pty/**"],
   },
   // Prebuilt N-API modules; don't rebuild native modules against Electron
   // (v27: `npmRebuild` moved into `nativeModules`).

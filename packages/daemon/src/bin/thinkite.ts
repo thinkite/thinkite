@@ -106,7 +106,7 @@ async function main(): Promise<void> {
 }
 
 function printHelp(): void {
-  console.log(`thinkite — remote-control Claude Code from your phone
+  console.log(`thinkite — reach your opencode from your phone
 
 Usage:
   thinkite <command>

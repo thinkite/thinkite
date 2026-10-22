@@ -6,10 +6,10 @@ import { loadOrCreateIdentity } from "./identity.ts";
 import { createPairOffer } from "./pairing.ts";
 
 /**
- * Implementation of the `sidecode pair` subcommand.
+ * Implementation of the `thinkite pair` subcommand.
  *
  * Stateless print: reads identity from $THINKITE_HOME, confirms the
- * running `sidecode up` daemon via $THINKITE_HOME/daemon.lock, and prints
+ * running `thinkite up` daemon via $THINKITE_HOME/daemon.lock, and prints
  * a fresh pair.offer for it. Does NOT spawn a server of its own — safe
  * to run multiple times. The offer is just `daemonIdentityPublicKey +
  * serviceName`; iroh discovery (pkarr) resolves the pubkey to a dialable
@@ -23,12 +23,12 @@ export async function runPairCommand(_args: readonly string[]): Promise<void> {
 
   const lock = readActiveDaemonLock(home);
   if (!lock) {
-    console.error("✗ sidecode is not running.");
+    console.error("✗ thinkite is not running.");
     console.error("");
     console.error("Start it first:");
-    console.error("  sidecode up");
+    console.error("  thinkite up");
     console.error("");
-    console.error("Then re-run `sidecode pair` (in another terminal).");
+    console.error("Then re-run `thinkite pair` (in another terminal).");
     process.exit(1);
   }
 
@@ -45,7 +45,7 @@ export async function runPairCommand(_args: readonly string[]): Promise<void> {
     errorCorrectionLevel: "M",
   });
 
-  console.log("Scan with sidecode iOS:");
+  console.log("Scan with the Thinkite iOS app:");
   console.log("");
   console.log(qr);
   console.log("Or paste this payload into the app:");

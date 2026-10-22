@@ -1,7 +1,7 @@
 // Electron main (node process; bundled to dist-electron/index.js by
 // vite-plugin-electron — externals resolve from node_modules at runtime).
 // Serves the Vite-built SPA from dist/ and mounts our own routes (PTY
-// WebSocket, daemon RPC, diff, pairing) on one fixed-port node http server —
+// WebSocket, opencode proxy, diff, pairing) on one fixed-port node http server —
 // same port and routes as the electrobun and deno predecessors, so the
 // renderer never noticed a runtime change.
 //
@@ -12,16 +12,13 @@
 //        bun run dev:static (vite build + electron; no dev server —
 //        exercises the built dist)
 // Pack:  S3 (electron-builder) — not wired yet.
-import { execFile } from "node:child_process";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { hostname } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type Daemon,
-  type PlanUsageResult,
-  type PlanUsageWindow,
   readActiveDaemonLock,
   resolveThinkiteHome,
   start as startDaemon,
@@ -40,7 +37,6 @@ import { WebSocketServer } from "ws";
 import { handleDiff } from "./diff";
 import { handleOcProxy } from "./oc-proxy";
 import { attachPty, ptyParams } from "./pty";
-import { attachRpc } from "./rpc";
 import {
   checkForUpdates,
   getUpdateState,
@@ -74,7 +70,6 @@ const HERE = dirname(fileURLToPath(import.meta.url)); // <root>/dist-electron
 // the archive, so dist/ and assets/ ship INSIDE it, no extraResources).
 const ROOT = app.isPackaged ? app.getAppPath() : dirname(HERE);
 const PKG = app.isPackaged ? null : ROOT;
-const REPO = PKG ? dirname(dirname(PKG)) : null;
 const DIST = join(ROOT, "dist");
 const TRAY_ICON = join(ROOT, "assets/iconTemplate.png");
 console.log(
@@ -87,105 +82,12 @@ const BASE = `http://127.0.0.1:${PORT}`;
 // absence (dev:static, packaged) means serve the built dist ourselves.
 const pageBase = process.env.VITE_DEV_SERVER_URL ?? BASE;
 
-// Dev: spawn the SDK's platform-package claude binary from the REPO (same
-// seam run-query.ts forwards) — top-level under bun's hoisted linker, .bun
-// store under the isolated one.
-//
-// Packaged: no repo, and the SDK's 230MB platform binary is deliberately
-// not shipped — discover the SYSTEM claude instead, gated by version.
-// Spawning a mismatched CLI must not happen: an old CLI can mismatch the
-// SDK's control protocol and hang the first turn (spawns, writes JSONL
-// meta records, never processes the prompt), which is WORSE than failing
-// loudly here. (Handshake watchdog = follow-up hardening.)
-const MIN_CLAUDE = [2, 1, 0] as const;
-
-async function resolveClaude(): Promise<string | undefined> {
-  if (REPO !== null) {
-    const repoModules = join(REPO, "node_modules");
-    const candidates = [
-      join(repoModules, "@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"),
-    ];
-    try {
-      for (const entry of await readdir(join(repoModules, ".bun"))) {
-        if (entry.startsWith("@anthropic-ai+claude-agent-sdk-darwin-")) {
-          candidates.push(
-            join(
-              repoModules,
-              ".bun",
-              entry,
-              "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
-            ),
-          );
-        }
-      }
-    } catch {
-      // no .bun store (hoisted layout) — top-level candidate only
-    }
-    for (const c of candidates) {
-      if (await stat(c).catch(() => null)) return c;
-    }
-    return undefined;
-  }
-  // System discovery order: user PATH (meaningful when launched from a
-  // terminal; Finder gives a bare one), then the native installer's
-  // default, then Homebrew/npm-global prefixes.
-  const home = process.env.HOME ?? "";
-  const which = (await run("/usr/bin/which", ["claude"]))?.trim();
-  const candidates = [
-    which,
-    join(home, ".local/bin/claude"),
-    "/opt/homebrew/bin/claude",
-    "/usr/local/bin/claude",
-  ].filter((c): c is string => !!c);
-  for (const c of candidates) {
-    if (!(await stat(c).catch(() => null))) continue;
-    const version = await claudeVersion(c);
-    if (version === null) {
-      console.warn(
-        `[desktop] ${c}: --version failed or unparseable — skipping`,
-      );
-      continue;
-    }
-    const ok =
-      version[0] > MIN_CLAUDE[0] ||
-      (version[0] === MIN_CLAUDE[0] &&
-        (version[1] > MIN_CLAUDE[1] ||
-          (version[1] === MIN_CLAUDE[1] && version[2] >= MIN_CLAUDE[2])));
-    if (!ok) {
-      console.warn(
-        `[desktop] ${c}: version ${version.join(".")} < ${MIN_CLAUDE.join(".")} — skipping (control-protocol mismatch risk)`,
-      );
-      continue;
-    }
-    console.log(`[desktop] system claude ${version.join(".")} at ${c}`);
-    return c;
-  }
-  return undefined;
-}
-
-function run(cmd: string, args: string[]): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 5000 }, (err, stdout) =>
-      resolve(err ? null : stdout),
-    );
-  });
-}
-
-async function claudeVersion(
-  bin: string,
-): Promise<[number, number, number] | null> {
-  const out = await run(bin, ["--version"]);
-  const m = out?.match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!m) return null;
-  return [Number(m[1]), Number(m[2]), Number(m[3])];
-}
-
-// ─── In-process daemon (D2): this process IS the sidecode daemon ───────────
-// Same identity, same ~/.sidecode home, same iroh endpoint the iOS app
+// ─── In-process daemon: this process IS the Thinkite daemon ────────────────
+// Same identity, same ~/.thinkite home, same iroh endpoint the iOS app
 // pairs against. `start()` only writes the liveness lock, so check it first:
-// if another daemon owns the home (e.g. the menubar app), the GUI keeps
-// working in local-only mode (PTY/diff don't need the daemon; sessions +
-// transcripts do) rather than publishing a twin identity to discovery.
+// if another daemon owns the home (`thinkite up`), the GUI keeps working
+// without one (PTY and diff don't need it; the `/oc` proxy does) rather
+// than publishing a twin identity to discovery.
 //
 // The daemon is external in the main bundle, resolved from node_modules at
 // runtime — a daemon rebuild needs no desktop re-bundle. Packaged builds
@@ -200,14 +102,7 @@ let daemon: Daemon | null = null;
       `[desktop] another daemon owns ${home} (pid ${lock.pid}) — starting GUI without in-process daemon`,
     );
   } else {
-    const claudeExecutablePath = await resolveClaude();
-    if (claudeExecutablePath === undefined) {
-      console.warn(
-        "[desktop] no usable claude binary found — falling back to SDK resolution (may pick a mismatched CLI)",
-      );
-    }
-    console.log(`[desktop] starting daemon — claude ${claudeExecutablePath}`);
-    daemon = await startDaemon({ claudeExecutablePath });
+    daemon = await startDaemon();
     console.log(
       `[desktop] daemon up — fingerprint ${daemon.fingerprint}, pairedClients ${daemon.pairedClientCount()}`,
     );
@@ -362,17 +257,6 @@ server.on("upgrade", (req, socket, head) => {
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => attachPty(ws, params));
-  } else if (url.pathname === "/rpc") {
-    if (daemon === null) {
-      // The GUI shows its daemon-offline state off this instead of a dead
-      // socket.
-      socket.end(
-        "HTTP/1.1 503 Service Unavailable\r\n\r\ndaemon not running in this process",
-      );
-      return;
-    }
-    const d = daemon;
-    wss.handleUpgrade(req, socket, head, (ws) => attachRpc(ws, d));
   } else {
     socket.destroy();
   }
@@ -385,7 +269,7 @@ await new Promise<void>((resolve, reject) => {
   console.error(`[desktop] port ${PORT} unavailable:`, e);
   app.exit(1);
 });
-console.log(`[desktop] serving ${DIST} + /pty /rpc /api /oc on ${BASE}`);
+console.log(`[desktop] serving ${DIST} + /pty /api /oc on ${BASE}`);
 
 // ─── Windows ────────────────────────────────────────────────────────────────
 let mainWin: BrowserWindow | null = null;
@@ -451,51 +335,9 @@ function openPairWindow(): void {
   pairWin = win;
 }
 
-// ─── Tray: Plan Usage + actions (harvested from the retired menubar app) ───
-// Last fetch result, rendered by buildMenu. macOS doesn't repaint an open
-// NSMenu, so the open itself can only ever paint an ALREADY-cached
-// snapshot — a tray click can't show its own in-flight fetch. A background
-// poll keeps the cache warm so each open shows near-current data. The
-// per-open refreshPlanUsage() stays (the daemon's 30s cache + single-flight
-// make the extra fetches free), but the poll is what makes the number
-// fresh. Token Stats stays CUT from V0 (stats-cache.json is lazily
-// written; honest numbers need Desktop-style JSONL aggregation).
-let planUsage: PlanUsageResult | null = null;
-// 2 min: the daemon's 30s TTL coalesces anything faster, and plan usage
-// drifts slowly — tighter would burn requests for no visible gain.
-const PLAN_USAGE_POLL_MS = 2 * 60_000;
-let planUsageTimer: ReturnType<typeof setInterval> | null = null;
+// ─── Tray: actions (harvested from the retired menubar app) ────────────────
 let tray: Tray | null = null;
 let keepAwakeId: number | null = null;
-
-function refreshPlanUsage(): void {
-  if (!daemon) return;
-  void daemon.fetchPlanUsage().then((result) => {
-    // Keep showing the last good snapshot through transient failures —
-    // a flaky network shouldn't blank the section.
-    if (result.status === "error" && planUsage?.status === "ok") return;
-    planUsage = result;
-    refreshMenu();
-  });
-}
-
-// The usage endpoint returns utilization as 0..100 already (live-verified:
-// `71` = 71%), NOT a 0..1 fraction — do not multiply.
-function formatPercent(util: number): string {
-  return `${Math.round(util)}%`;
-}
-
-// Coarse single-unit countdown: "resets 42m" / "resets 7h" / "resets 3d".
-// Ceil everywhere so the label never understates the wait.
-function formatResets(resetsAt: string): string {
-  const ms = new Date(resetsAt).getTime() - Date.now();
-  if (ms <= 0) return "resets now";
-  const min = Math.ceil(ms / 60_000);
-  if (min < 60) return `resets ${min}m`;
-  const hours = Math.ceil(min / 60);
-  if (hours < 24) return `resets ${hours}h`;
-  return `resets ${Math.ceil(hours / 24)}d`;
-}
 
 // SF Symbol → 16x16 template image (auto-tints to follow menu fg color,
 // turns white when highlighted). macOS HIG size for menu item icons.
@@ -506,46 +348,6 @@ function symbolIcon(name: string): Electron.NativeImage {
     .resize({ width: MENU_ICON_SIZE, height: MENU_ICON_SIZE });
   img.setTemplateImage(true);
   return img;
-}
-
-// One disabled info row per available rate window. Windows the endpoint
-// didn't return (enterprise/org accounts) are skipped, never shown as 0%.
-function planUsageItems(): Electron.MenuItemConstructorOptions[] {
-  if (planUsage === null) {
-    return [{ label: "Loading…", enabled: false }];
-  }
-  switch (planUsage.status) {
-    case "signed_out":
-      return [{ label: "Not signed in — run `claude /login`", enabled: false }];
-    case "error":
-      // Only reached when there's no last-good snapshot to keep showing.
-      return [{ label: "Usage unavailable", enabled: false }];
-    case "ok": {
-      const u = planUsage.usage;
-      const row = (
-        name: string,
-        w: PlanUsageWindow | undefined,
-        showReset = false,
-      ): Electron.MenuItemConstructorOptions | null =>
-        w
-          ? {
-              label: `${name} - ${formatPercent(w.utilization)}${
-                showReset && w.resetsAt ? ` · ${formatResets(w.resetsAt)}` : ""
-              }`,
-              enabled: false,
-            }
-          : null;
-      const rows = [
-        row("5h", u.fiveHour, true),
-        row("Weekly", u.sevenDay, true),
-        row("Opus", u.sevenDayOpus),
-        row("Sonnet", u.sevenDaySonnet),
-      ].filter((r) => r !== null);
-      return rows.length > 0
-        ? rows
-        : [{ label: "No usage data for this plan", enabled: false }];
-    }
-  }
 }
 
 // State-adaptive update row driven by electron-updater (server/updater.ts).
@@ -571,9 +373,6 @@ function updateMenuItem(): Electron.MenuItemConstructorOptions | null {
 
 function buildMenu(): Electron.Menu {
   const items: Electron.MenuItemConstructorOptions[] = [
-    { label: "Claude Plan Usage", type: "header" },
-    ...planUsageItems(),
-    { type: "separator" },
     {
       label: "Open Thinkite",
       icon: symbolIcon("macwindow"),
@@ -668,17 +467,9 @@ function setupTray(): void {
   const icon = nativeImage.createFromPath(TRAY_ICON);
   icon.setTemplateImage(true);
   tray = new Tray(icon);
-  // Order matters: kick the async usage refresh FIRST (lands by the next
-  // open), then rebuild synchronously so this open gets the cached snapshot.
-  const onTrayOpen = () => {
-    refreshPlanUsage();
-    refreshMenu();
-  };
-  tray.on("click", onTrayOpen);
-  tray.on("right-click", onTrayOpen);
-  refreshPlanUsage();
+  tray.on("click", refreshMenu);
+  tray.on("right-click", refreshMenu);
   refreshMenu();
-  planUsageTimer = setInterval(refreshPlanUsage, PLAN_USAGE_POLL_MS);
 }
 
 // ─── Lifecycle: tray-resident ───────────────────────────────────────────────
@@ -692,8 +483,8 @@ app.on("window-all-closed", () => {});
 app.on("activate", openMain);
 
 // One shutdown path for every exit trigger (tray Quit, Cmd+Q, SIGINT/
-// SIGTERM): intercept quit once, drain the daemon (WebRTC peers, claude
-// subprocesses, JSONL writes), then exit HARD.
+// SIGTERM): intercept quit once, drain the daemon (iroh peers, git
+// watchers), then exit HARD.
 //
 // app.exit(0), NOT a second app.quit(): the polite second pass (close
 // windows → will-quit) was observed to wedge INDEFINITELY after ^C under
@@ -707,7 +498,6 @@ app.on("before-quit", (event) => {
   if (isQuitting) return;
   event.preventDefault();
   isQuitting = true;
-  if (planUsageTimer) clearInterval(planUsageTimer);
   const stop = daemon ? daemon.stop() : Promise.resolve();
   void Promise.race([
     stop.catch((e) => console.error("[desktop] daemon stop failed:", e)),
