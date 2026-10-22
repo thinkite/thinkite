@@ -11,12 +11,7 @@ import { Markdown } from "@astryxdesign/core/Markdown";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import {
-  type SessionMessageInfo,
-  toolDiffs,
-  toolOutput,
-  toolSummary,
-} from "@thinkite/oc-client";
+import { toolDiffs, toolOutput, toolSummary } from "@thinkite/oc-client";
 import { useMessages, usePaging } from "@thinkite/oc-client/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ocStore } from "../lib/oc";
