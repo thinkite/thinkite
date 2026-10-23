@@ -175,10 +175,19 @@ function FormCard({ form }: { form: FormInfo }) {
   const [answer, setAnswer] = useState<FormAnswer>(() =>
     initialAnswer(form.fields),
   );
+  // "Answer in your own words" text per field, kept apart from the answer
+  // so picking an option afterwards unpicks it without erasing it (as in
+  // opencode's app); its circle picks it again.
+  const [typed, setTyped] = useState<Record<string, string>>({});
   const scheme = useColorScheme();
   const fields = form.fields.filter(
     (field) => !("hidden" in field && field.hidden),
   );
+  // opencode's question tool titles the form "Questions" and each field
+  // with a short title over the question itself. One field: its title
+  // heads the card, as in opencode's app.
+  const only = fields.length === 1 ? fields[0] : undefined;
+  const heading = only?.title ?? form.title;
   const last = fields.at(-1);
   // The last field's own answer sits in the footer beside the submit
   // arrow, as opencode's app does with "Answer in your own words".
@@ -194,6 +203,8 @@ function FormCard({ form }: { form: FormInfo }) {
   );
   const set = (key: string, value: Value) =>
     setAnswer((prev) => ({ ...prev, [key]: value }));
+  const type = (key: string, text: string) =>
+    setTyped((prev) => ({ ...prev, [key]: text }));
   const submit = () => {
     if (canSubmit) ocStore.replyForm(form, answer).catch(report);
   };
@@ -205,7 +216,7 @@ function FormCard({ form }: { form: FormInfo }) {
           numberOfLines={1}
           className="flex-1 text-sm text-zinc-500 dark:text-zinc-400"
         >
-          {form.title}
+          {heading}
         </Text>
         <Pressable
           onPress={() => ocStore.cancelForm(form).catch(report)}
@@ -236,7 +247,10 @@ function FormCard({ form }: { form: FormInfo }) {
               field={field}
               value={answer[field.key]}
               onChange={(v) => set(field.key, v)}
+              text={typed[field.key] ?? ""}
+              onText={(t) => type(field.key, t)}
               withCustom={field !== footerField}
+              withTitle={only === undefined}
               disabled={busy}
             />
           ))}
@@ -248,6 +262,8 @@ function FormCard({ form }: { form: FormInfo }) {
             field={footerField}
             value={answer[footerField.key]}
             onChange={(v) => set(footerField.key, v)}
+            text={typed[footerField.key] ?? ""}
+            onText={(t) => type(footerField.key, t)}
             disabled={busy}
           />
         ) : (
@@ -305,17 +321,28 @@ function FieldInput({
   field,
   value,
   onChange,
+  text,
+  onText,
   withCustom,
+  withTitle,
   disabled,
 }: {
   field: Field;
   value: Value | undefined;
   onChange: (next: Value) => void;
+  text: string;
+  onText: (next: string) => void;
   withCustom: boolean;
+  /** Show the field's title over its question; off when it heads the card. */
+  withTitle: boolean;
   disabled: boolean;
 }) {
   const scheme = useColorScheme();
-  const question = field.title ?? field.description;
+  // The question is the description; a field without one is asked by its
+  // title, unless that already heads the card.
+  const question = field.description ?? (withTitle ? field.title : undefined);
+  const caption =
+    withTitle && field.description !== undefined ? field.title : undefined;
   let body: ReactNode;
   if (field.type === "external") {
     body = (
@@ -324,7 +351,7 @@ function FieldInput({
         accessibilityRole="link"
       >
         <Text className="text-base" style={{ color: ACCENT }}>
-          {question ?? field.url}
+          {field.title ?? field.description ?? field.url}
         </Text>
       </Pressable>
     );
@@ -365,6 +392,8 @@ function FieldInput({
               field={field}
               value={value}
               onChange={onChange}
+              text={text}
+              onText={onText}
               disabled={disabled}
             />
           </View>
@@ -400,6 +429,11 @@ function FieldInput({
   }
   return (
     <View className="gap-1">
+      {caption ? (
+        <Text className="text-sm text-zinc-500 dark:text-zinc-400">
+          {caption}
+        </Text>
+      ) : null}
       {question ? (
         <Text className="text-base font-medium text-black dark:text-white">
           {question}
@@ -463,51 +497,78 @@ function OptionRow({
 }
 
 /** "Answer in your own words": a typed answer that no option has. For a
- *  single choice it replaces the pick; for a multiselect it is one more
- *  entry beside the picked options. */
+ *  single choice it is the pick while picked; for a multiselect it is one
+ *  more entry beside the picked options. Typing picks it; picking an option
+ *  of a single choice unpicks it but keeps the text, which the circle picks
+ *  again. */
 function CustomRow({
   field,
   value,
   onChange,
+  text,
+  onText,
   disabled,
 }: {
   field: Field;
   value: Value | undefined;
   onChange: (next: Value) => void;
+  text: string;
+  onText: (next: string) => void;
   disabled: boolean;
 }) {
   const scheme = useColorScheme();
+  const multi = field.type === "multiselect";
   const known = new Set(choices(field).map((o) => o.value));
   const chosen = picked(field, value);
-  const custom = chosen.find((v) => !known.has(v)) ?? "";
-  const write = (text: string) => {
-    if (field.type === "multiselect") {
-      const rest = chosen.filter((v) => known.has(v));
-      onChange(text === "" ? rest : [...rest, text]);
-    } else onChange(text);
+  const options = chosen.filter((v) => known.has(v));
+  const selected = text !== "" && chosen.includes(text) && !known.has(text);
+  const pick = (next: string) => {
+    if (multi) onChange(next === "" ? options : [...options, next]);
+    else onChange(next);
+  };
+  const write = (next: string) => {
+    onText(next);
+    pick(next);
+  };
+  const toggle = () => {
+    if (selected) onChange(multi ? options : "");
+    else if (text !== "") pick(text);
   };
   return (
     <View className="flex-1 flex-row items-center gap-3">
-      <SymbolView
-        name={
-          field.type === "multiselect"
-            ? custom
-              ? "checkmark.square.fill"
-              : "square"
-            : custom
-              ? "checkmark.circle.fill"
-              : "circle"
-        }
-        size={20}
-        tintColor={custom ? ACCENT : scheme === "dark" ? "#52525b" : "#a1a1aa"}
-      />
+      <Pressable
+        onPress={toggle}
+        disabled={disabled}
+        hitSlop={8}
+        accessibilityRole={multi ? "checkbox" : "radio"}
+        accessibilityState={{ checked: selected }}
+      >
+        <SymbolView
+          name={
+            multi
+              ? selected
+                ? "checkmark.square.fill"
+                : "square"
+              : selected
+                ? "checkmark.circle.fill"
+                : "circle"
+          }
+          size={20}
+          tintColor={
+            selected ? ACCENT : scheme === "dark" ? "#52525b" : "#a1a1aa"
+          }
+        />
+      </Pressable>
       <TextInput
-        value={custom}
+        value={text}
         onChangeText={write}
         editable={!disabled}
         placeholder="Answer in your own words"
         placeholderTextColor={scheme === "dark" ? "#71717a" : "#a1a1aa"}
-        className="flex-1 py-1 text-base text-black dark:text-white"
+        // A font size without the class's line height: iOS sets a single
+        // line TextInput's text low when given one.
+        style={{ fontSize: 16 }}
+        className="flex-1 py-1 text-black dark:text-white"
       />
     </View>
   );
