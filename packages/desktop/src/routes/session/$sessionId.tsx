@@ -10,12 +10,17 @@ import {
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import {
   formatModelRef,
+  isSessionNotFoundError,
   mintMessageId,
   type PromptParts,
   parseModelRef,
   visibleMessages,
 } from "@thinkite/oc-client";
-import { useIsRunning, useSession } from "@thinkite/oc-client/react";
+import {
+  useConnectionStatus,
+  useIsRunning,
+  useSession,
+} from "@thinkite/oc-client/react";
 import {
   FileDiffIcon,
   GlobeIcon,
@@ -106,6 +111,33 @@ function SubagentNotice({ parentID }: { parentID: string }) {
             params: { sessionId: parentID },
           })
         }
+      />
+    </div>
+  );
+}
+
+/** An open session deleted from elsewhere (opencode desktop, the CLI, the
+ *  phone), after opencode desktop's page for it: what happened, which
+ *  session, and the way home. */
+function SessionNotFound({ sessionId }: { sessionId: string }) {
+  const navigate = useNavigate();
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
+      <div className="flex flex-col items-center gap-2">
+        <Text size="base" weight="medium">
+          This session cannot be found
+        </Text>
+        <Text size="sm" color="secondary">
+          It was deleted, perhaps from another app.
+        </Text>
+      </div>
+      <code className="max-w-full break-all rounded bg-[var(--color-background-secondary)] px-1.5 py-0.5 font-mono text-xs">
+        {sessionId}
+      </code>
+      <Button
+        label="Back to home"
+        variant="secondary"
+        onClick={() => void navigate({ to: "/", replace: true })}
       />
     </div>
   );
@@ -219,19 +251,31 @@ function Session({ sessionId }: { sessionId: string }) {
   // elsewhere (opencode desktop, the CLI, the phone — Thinkite's own delete
   // navigates away itself), or dropped by a resync, whose list holds only
   // the latest root sessions. Ask the service which: a session still there
-  // comes back into the store and the screen stays; a deleted one sends
-  // the screen home.
+  // comes back into the store and the screen stays; only "not found" turns
+  // the screen into SessionNotFound, which says so and offers the way home
+  // (opencode desktop's session-not-found page). A service that can't be
+  // reached (offline, restarting) leaves it as it is, to ask again once the
+  // connection is back.
   const gone = session === undefined;
+  const connected = useConnectionStatus(ocStore) === "ready";
+  const [missing, setMissing] = useState(false);
   useEffect(() => {
-    if (!gone) return;
+    if (!gone || !connected) return;
     let live = true;
-    void ocStore.loadSession(sessionId).then((row) => {
-      if (live && row === undefined) void navigate({ to: "/", replace: true });
-    });
+    ocClient.getSession(sessionId).then(
+      () => {
+        if (live) void ocStore.loadSession(sessionId);
+      },
+      (err: unknown) => {
+        if (!live) return;
+        if (isSessionNotFoundError(err)) setMissing(true);
+        else console.warn("[session] reload failed:", err);
+      },
+    );
     return () => {
       live = false;
     };
-  }, [gone, sessionId, navigate]);
+  }, [gone, connected, sessionId]);
 
   // opencode's revert puts the prompt back in the composer for an edit and
   // resend, replacing the draft; redo leaves the composer alone.
@@ -354,8 +398,9 @@ function Session({ sessionId }: { sessionId: string }) {
     surfaceBySession.set(sessionId, s);
   };
 
-  // The row is gone; the effect above brings it back or leaves.
-  if (session === undefined) return null;
+  // The row is gone: deleted, or blank until the effect above brings it back.
+  if (session === undefined)
+    return missing ? <SessionNotFound sessionId={sessionId} /> : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">

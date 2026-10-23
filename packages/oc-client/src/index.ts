@@ -5,6 +5,9 @@
  * No React, no DOM, no Node-only APIs in this entry.
  */
 
+/** Whether a failed read means the session no longer exists, rather than
+ *  that the service couldn't be reached. */
+export { isSessionNotFoundError } from "@opencode/client";
 export type {
   IntegrationAttempt,
   IntegrationAttemptStatus,
