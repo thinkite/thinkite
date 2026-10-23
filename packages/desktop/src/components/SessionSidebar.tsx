@@ -24,7 +24,6 @@ import {
   DownloadIcon,
   type LucideIcon,
   PanelLeftCloseIcon,
-  RotateCwIcon,
   SettingsIcon,
   SquarePenIcon,
 } from "lucide-react";
@@ -33,12 +32,7 @@ import { ocClient, ocStore } from "../lib/oc";
 import { openSettings, updatePrefs } from "../lib/prefs";
 import { serviceInfoKey } from "../lib/query";
 import { UNREAD_SINCE } from "../lib/unread";
-import {
-  checkForUpdate,
-  installUpdate,
-  readyVersion,
-  useUpdate,
-} from "../lib/update";
+import { installUpdate, readyVersion, useUpdate } from "../lib/update";
 
 // Global session sidebar. Content after wisp's — a "New session" action,
 // root sessions grouped by how long ago they were last active, one line
@@ -98,8 +92,10 @@ function ServiceNotice() {
 }
 
 /** The app's update beside the gear, after DeepSeek Harness's, as an icon
- *  with a tooltip: shown only while one downloads, waits for the restart,
- *  or failed. The download starts on its own; the restart is the user's. */
+ *  with a tooltip: shown only while one downloads or waits for the restart
+ *  (a failed install keeps waiting). The download starts on its own; the
+ *  restart is the user's. A failed check (offline, say) stays out of the
+ *  sidebar: the hourly check retries, and Settings → About says why. */
 function UpdateButton() {
   const update = useUpdate();
   if (update === null) return null;
@@ -145,10 +141,6 @@ function UpdateButton() {
       ArrowUpCircleIcon,
       { variant: "primary", onClick: () => void installUpdate() },
     );
-  if (state.status === "error")
-    return button(`Retry update: ${state.message}`, RotateCwIcon, {
-      onClick: () => void checkForUpdate(),
-    });
   return null;
 }
 
