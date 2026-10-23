@@ -504,25 +504,27 @@ export function ChatPanel({ sessionID, cwd, blocks }: ChatPanelProps) {
               : "linear-gradient(to top, rgba(255,255,255,0.8), rgba(255,255,255,0))",
           }}
         >
+          {pendingPrompt}
           {/* A prompt card stands alone: the branch and diff stats above
-              it are noise while the turn waits on an answer. */}
-          {pendingPrompt ?? (
-            <>
-              <GitStatusBar
-                cwd={cwd}
-                onPress={cwd ? () => openGitDiff(cwd) : undefined}
-                onStatusChange={
-                  cwd
-                    ? () =>
-                        queryClient.invalidateQueries({
-                          queryKey: ["workingTreeDiff", cwd],
-                        })
-                    : undefined
-                }
-              />
-              <InputBar sessionID={sessionID} onSend={rawSend} />
-            </>
-          )}
+              it are noise while the turn waits on an answer. Hidden, not
+              unmounted, so the InputBar keeps a draft typed before the
+              card came (its text and images are its own state);
+              `display: none` also drops them from the measured inset. */}
+          <View style={pendingPrompt ? { display: "none" } : undefined}>
+            <GitStatusBar
+              cwd={cwd}
+              onPress={cwd ? () => openGitDiff(cwd) : undefined}
+              onStatusChange={
+                cwd
+                  ? () =>
+                      queryClient.invalidateQueries({
+                        queryKey: ["workingTreeDiff", cwd],
+                      })
+                  : undefined
+              }
+            />
+            <InputBar sessionID={sessionID} onSend={rawSend} />
+          </View>
         </View>
       </KeyboardStickyView>
     </>
