@@ -22,7 +22,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@opencode/client": "2.1.3",
+    "@opencode/client": "2.1.4",
     "@tanstack/store": "catalog:",
     "@tanstack/react-store": "catalog:"
   },
