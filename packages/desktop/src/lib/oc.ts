@@ -4,6 +4,7 @@ import {
   type OcClient,
   subscribeEvents,
 } from "@thinkite/oc-client";
+import { forgetBrowserTabs } from "./browser";
 import { invalidateCatalog } from "./query";
 import { forgetTerminals } from "./terminals";
 
@@ -35,7 +36,8 @@ const CATALOG_EVENTS = new Set([
   "credential.switched",
 ]);
 // A second subscriber on the client's one shared event stream: the catalog,
-// and the shells of a session that was deleted or archived (lib/terminals).
+// and the shells and browser tabs of a session that was deleted or archived
+// (lib/terminals, lib/browser).
 const catalogBus = new AbortController();
 void subscribeEvents(
   ocClient,
@@ -47,6 +49,7 @@ void subscribeEvents(
         () => {},
       );
       forgetTerminals(id);
+      forgetBrowserTabs(id);
     }
   },
   { signal: catalogBus.signal, onError: () => {} },

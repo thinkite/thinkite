@@ -16,8 +16,14 @@ import {
   visibleMessages,
 } from "@thinkite/oc-client";
 import { useIsRunning, useSession } from "@thinkite/oc-client/react";
-import { FileDiffIcon, LayoutListIcon, TerminalIcon } from "lucide-react";
+import {
+  FileDiffIcon,
+  GlobeIcon,
+  LayoutListIcon,
+  TerminalIcon,
+} from "lucide-react";
 import { useEffect, useState } from "react";
+import { BrowserPanel } from "../../components/BrowserPanel";
 import { type Builtin, Composer, PLACEHOLDER } from "../../components/Composer";
 import { DiffPanel } from "../../components/DiffPanel";
 import { InfoPanel } from "../../components/InfoPanel";
@@ -68,7 +74,7 @@ export const Route = createFileRoute("/session/$sessionId")({
   component: SessionRoute,
 });
 
-type Surface = "info" | "terminal" | "diff";
+type Surface = "info" | "terminal" | "browser" | "diff";
 
 // Tool-panel UI state is PER SESSION, in memory (the t3code drawer pattern:
 // per-thread height/open state, reset on app restart). Keying the Session
@@ -131,6 +137,7 @@ function Session({ sessionId }: { sessionId: string }) {
   const [terminalVisited, setTerminalVisited] = useState(
     surface === "terminal",
   );
+  const [browserVisited, setBrowserVisited] = useState(surface === "browser");
 
   const toolPanel = useResizable({
     defaultSize: panelSizeBySession.get(sessionId) ?? PANEL_WIDTH,
@@ -318,10 +325,14 @@ function Session({ sessionId }: { sessionId: string }) {
   };
 
   const pick = (v: string | null) => {
-    const s = v === "info" || v === "terminal" || v === "diff" ? v : null;
+    const s =
+      v === "info" || v === "terminal" || v === "browser" || v === "diff"
+        ? v
+        : null;
     setSurface(s);
     if (s === "diff") setDiffVisited(true);
     if (s === "terminal") setTerminalVisited(true);
+    if (s === "browser") setBrowserVisited(true);
     surfaceBySession.set(sessionId, s);
   };
 
@@ -358,6 +369,13 @@ function Session({ sessionId }: { sessionId: string }) {
               isIconOnly
               tooltip="Terminal"
               icon={<Icon icon={TerminalIcon} size="sm" />}
+            />
+            <ToggleButton
+              value="browser"
+              label="Browser"
+              isIconOnly
+              tooltip="Browser"
+              icon={<Icon icon={GlobeIcon} size="sm" />}
             />
             <ToggleButton
               value="diff"
@@ -493,6 +511,15 @@ function Session({ sessionId }: { sessionId: string }) {
                       sessionId={sessionId}
                       cwd={session.location.directory}
                     />
+                  </div>
+                ) : null}
+                {browserVisited ? (
+                  <div
+                    className={
+                      surface === "browser" ? "h-full min-h-0" : "hidden"
+                    }
+                  >
+                    <BrowserPanel sessionId={sessionId} />
                   </div>
                 ) : null}
                 {diffVisited ? (

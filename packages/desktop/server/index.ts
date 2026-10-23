@@ -34,6 +34,7 @@ import {
   Tray,
 } from "electron";
 import { WebSocketServer } from "ws";
+import { guardWebviews, setupBrowserGuests } from "./browser-guests";
 import { handleOcProxy } from "./oc-proxy";
 import { attachPty, killPty, killPtys, ptyParams } from "./pty";
 import {
@@ -311,7 +312,10 @@ function openMain(): void {
     // regions (lib/desktop-shell) — no preload needed.
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 18 },
+    // The session panel's browser (server/browser-guests).
+    webPreferences: { webviewTag: true },
   });
+  guardWebviews(mainWin);
   void mainWin.loadURL(`${pageBase}/`);
   // Pages the app opens (a provider's sign-in, a link in a reply) open in
   // the user's browser, never in an app window.
@@ -543,6 +547,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 // daemon and server booted, no window ever appeared). The .then() lets
 // evaluation complete; ready fires right after.
 void app.whenReady().then(() => {
+  setupBrowserGuests({ appOrigins: [BASE, pageBase] });
   setupTray();
   // Auto-download + drive the update menu row / tray-title percent.
   // Inert in dev (packaged-only inside).
