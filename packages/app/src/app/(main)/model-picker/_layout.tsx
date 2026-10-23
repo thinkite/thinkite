@@ -14,6 +14,8 @@ export default function ModelPickerLayout() {
         headerShown: true,
         headerTransparent: true,
         headerTitle: "Model",
+        // The model list's back button is a bare chevron.
+        headerBackButtonDisplayMode: "minimal",
       }}
     />
   );
