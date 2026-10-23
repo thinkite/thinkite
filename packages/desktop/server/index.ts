@@ -108,6 +108,11 @@ let daemon: Daemon | null = null;
     console.log(
       `[desktop] daemon up — fingerprint ${daemon.fingerprint}, pairedClients ${daemon.pairedClientCount()}`,
     );
+    // Opening the app starts opencode when it isn't running, as the
+    // OpenCode desktop app does; the window's first reads wait on it.
+    daemon.opencode({ start: true }).catch((e: unknown) => {
+      console.warn(`[desktop] opencode didn't start: ${e}`);
+    });
   }
 }
 
@@ -359,7 +364,10 @@ function openMain(): void {
     trafficLightPosition: { x: 16, y: 18 },
     // The session panel's browser (server/browser-guests).
     webPreferences: { webviewTag: true },
+    // Shown once the page has painted, so it never opens blank white.
+    show: false,
   });
+  mainWin.once("ready-to-show", () => mainWin?.show());
   guardWebviews(mainWin);
   void mainWin.loadURL(`${pageBase}/`);
   // Pages the app opens (a provider's sign-in, a link in a reply) open in

@@ -137,7 +137,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   });
   const resolveOpencode: ResolveOpencode = async ({ start = false } = {}) => {
     let discovered = await opencodeDiscovery.resolve();
-    if (discovered === null && start) {
+    if (discovered === null && (start || opencodeStarter.pending() !== null)) {
       await opencodeStarter.start();
       opencodeDiscovery.invalidate();
       discovered = await opencodeDiscovery.resolve();

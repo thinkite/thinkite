@@ -3,8 +3,10 @@
  * `@opencode/client`'s `Service.ensure` — what the OpenCode desktop app and
  * the TUI use — on Waku's terms (egoist/waku, `opencode_service.rs`):
  *
- *   - Only when a task starts (a session is created or a prompt sent, see
- *     `startsTask`). Reading the session list never starts it.
+ *   - When the desktop app opens (it asks right after the daemon is up, as
+ *     the OpenCode desktop app does), and again when a task starts (a
+ *     session is created or a prompt sent, see `startsTask`) with none
+ *     running. Requests that arrive while a start is under way wait for it.
  *   - Any running version is reused. The official clients pin their own
  *     version and replace a service that differs; we accept whatever is
  *     registered, so starting a task never swaps the user's service. (The
@@ -197,6 +199,10 @@ export function createOpencodeStarter(
   const path = options.path ?? registryPath();
   let inflight: Promise<void> | null = null;
   return {
+    /** The start under way, if any: other requests wait on it. */
+    pending(): Promise<void> | null {
+      return inflight;
+    },
     start(): Promise<void> {
       if (inflight === null) {
         options.log?.("starting the opencode background service");

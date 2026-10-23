@@ -73,8 +73,9 @@ function useServiceStatus(): { ok: boolean; label: string } {
 }
 
 /** The footer's notice while the service is down; nothing once it is up
- *  (Settings → Server shows it then). opencode is started with the first
- *  prompt, so an empty list says why. */
+ *  (Settings → Server shows it then). Opening the app and each prompt try
+ *  to start it, so this means that failed (opencode isn't installed, say)
+ *  or the service stopped. */
 function ServiceNotice() {
   const service = useServiceStatus();
   if (service.ok) return null;
@@ -83,7 +84,7 @@ function ServiceNotice() {
       label={service.label}
       variant="ghost"
       size="sm"
-      tooltip="opencode starts when you send a message. Open Settings → Server"
+      tooltip="Thinkite couldn't reach opencode. Open Settings → Server"
       icon={<StatusDot variant="warning" label={service.label} />}
       style={{ width: "100%", justifyContent: "flex-start" }}
       onClick={() => openSettings("server")}

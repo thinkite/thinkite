@@ -39,12 +39,15 @@ export interface SubscribeEventsOptions {
   /** Silence longer than this (ms) tears the stream down for a reconnect.
    *  Default 45 000 — three server keepalive intervals. */
   idleTimeoutMs?: number;
+  /** The longest wait between reconnects (ms), read before each wait.
+   *  Default 10 000. */
+  maxBackoffMs?: () => number;
   onError?: (error: unknown) => void;
 }
 
 /**
  * Consume the global bus until `signal` aborts, reconnecting with
- * exponential backoff (1 s → 10 s) whenever the stream ends or falls
+ * exponential backoff (1 s → 10 s, or `maxBackoffMs`) whenever the stream ends or falls
  * silent. The handler runs synchronously per event; a throwing handler
  * is reported through `onError` and does not stop the loop.
  */
@@ -85,6 +88,7 @@ export async function subscribeEvents(
       connection.abort();
     }
     if (options.signal.aborted) return;
+    backoff = Math.min(backoff, options.maxBackoffMs?.() ?? backoff);
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, backoff);
       options.signal.addEventListener(
@@ -96,6 +100,6 @@ export async function subscribeEvents(
         { once: true },
       );
     });
-    backoff = Math.min(backoff * 2, 10_000);
+    backoff = Math.min(backoff * 2, options.maxBackoffMs?.() ?? 10_000);
   }
 }

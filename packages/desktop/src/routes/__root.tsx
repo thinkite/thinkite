@@ -1,6 +1,7 @@
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
+import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import {
   createRootRoute,
@@ -9,9 +10,9 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
-import { useWaiting } from "@thinkite/oc-client/react";
+import { useConnectionStatus, useWaiting } from "@thinkite/oc-client/react";
 import { PanelLeftOpenIcon, SquarePenIcon } from "lucide-react";
-import { type CSSProperties, useEffect } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
 import { PierrePool } from "../components/PierrePool";
 import { SessionSidebar } from "../components/SessionSidebar";
 import { Settings } from "../components/settings/Settings";
@@ -47,13 +48,54 @@ function RootLayout() {
   const pathname = useRouterState({
     select: (s) => s.location.pathname,
   });
+  const connecting = useFirstConnect();
   if (BARE_ROUTES.has(pathname)) {
     return <Outlet />;
   }
+  if (connecting) return <LoadingScreen />;
   return (
     <PierrePool>
       <RootChrome />
     </PierrePool>
+  );
+}
+
+/** Longest the window waits on the first connection before it shows the
+ *  app anyway (with the service notice). */
+const FIRST_CONNECT_MAX_MS = 15_000;
+/** A spinner only if the wait is noticeable. */
+const SPINNER_DELAY_MS = 600;
+
+/** True until the store's first connection settles — ready, or failed
+ *  after the main process tried to start opencode — so the window opens on
+ *  a blank page rather than flashing an empty list, as OpenCode desktop
+ *  holds its splash. Never true again after that. */
+function useFirstConnect(): boolean {
+  const status = useConnectionStatus(ocStore);
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    if (status === "ready" || status === "error") setSettled(true);
+  }, [status]);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(true), FIRST_CONNECT_MAX_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  return !settled && status !== "ready" && status !== "error";
+}
+
+function LoadingScreen() {
+  const [spinner, setSpinner] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setSpinner(true), SPINNER_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  return (
+    <div
+      className="flex h-screen w-screen items-center justify-center"
+      data-window-drag
+    >
+      {spinner ? <Spinner size="sm" shade="subtle" /> : null}
+    </div>
   );
 }
 

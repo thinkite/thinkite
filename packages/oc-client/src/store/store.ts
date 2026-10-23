@@ -674,6 +674,9 @@ export function createOcStore({
     status.set({ status: "connecting", error: null });
     void subscribeEvents(client, onEvent, {
       signal: events.signal,
+      // While there is no service, look again every 2 s: one that was just
+      // started (by the first prompt, or another app) shows up promptly.
+      maxBackoffMs: () => (status.get().status === "ready" ? 10_000 : 2_000),
       onError: (error) => onError("bus", error),
     });
     try {
