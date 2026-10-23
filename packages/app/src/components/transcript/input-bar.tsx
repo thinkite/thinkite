@@ -1,24 +1,10 @@
-import { useSelector } from "@tanstack/react-store";
-import {
-  formatModelRef,
-  type ModelRef,
-  parseModelRef,
-  variantLabel,
-} from "@thinkite/oc-client";
-import {
-  useIsRunning,
-  useLastUsedModel,
-  useMessages,
-  useSession,
-} from "@thinkite/oc-client/react";
-import {
-  ContextMenu,
-  type MenuAction,
-  type MenuElement,
-} from "@yyq1025/react-native-nitro-menu";
+import { type ModelRef, variantLabel } from "@thinkite/oc-client";
+import { useIsRunning } from "@thinkite/oc-client/react";
+import { ContextMenu } from "@yyq1025/react-native-nitro-menu";
 import { GlassView } from "expo-glass-effect";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
+import { router } from "expo-router";
 import { SymbolView } from "expo-symbols";
 import { useRef, useState } from "react";
 import {
@@ -29,7 +15,11 @@ import {
   useColorScheme,
   View,
 } from "react-native";
-import { useOcDefaultModel, useOcModels } from "@/hooks/use-oc-models";
+import {
+  modelRef,
+  useContextUsage,
+  useModelChoice,
+} from "@/hooks/use-model-choice";
 import { statusColor, useDaemonClient } from "@/lib/daemon-client-context";
 import { getOcClient, ocStore } from "@/lib/oc";
 import { Image } from "@/lib/styled";
@@ -72,34 +62,6 @@ function meterFillColor(percentage: number, isDark: boolean): string {
   return isDark ? "rgba(0, 122, 255, 0.30)" : "rgba(0, 122, 255, 0.18)";
 }
 
-/** Format a token count as a short string for the picker menu's
- *  `Context usage: 145k / 200k` header. Switches to `M` once values
- *  hit a million so the 1M-context variant reads as "1M" rather than
- *  "1000k". Round (not floor) so the displayed number tracks intuition
- *  near boundaries; the meter bar's fill width carries the fine-
- *  grained accuracy visually. Drops `.0` so `1_000_000` shows as `1M`
- *  not `1.0M`; keeps one decimal for non-integer M values
- *  (e.g. `1_500_000` → `1.5M`). */
-function formatTokensK(n: number): string {
-  if (n >= 1_000_000) {
-    return `${Number((n / 1_000_000).toFixed(1))}M`;
-  }
-  return `${Math.round(n / 1000)}k`;
-}
-
-/** Tokens the last assistant message put through the context window. */
-function lastContextTokens(
-  messages: ReturnType<typeof useMessages>,
-): number | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m?.type !== "assistant" || m.tokens === undefined) continue;
-    const t = m.tokens;
-    return t.input + t.output + t.reasoning + t.cache.read + t.cache.write;
-  }
-  return undefined;
-}
-
 /** Vision input cap of the large models: long edge 2576px, ≤3.75MP. We
  *  resize the long edge then let JPEG q0.85 do the bytes work; the image
  *  goes inline as a data URI, so nothing is written to disk. */
@@ -110,10 +72,6 @@ const JPEG_QUALITY = 0.85;
  *  PHPicker's single-pick max, so users hit the cap in one Photos tap.
  *  Tune in one spot. */
 const MAX_TOTAL_IMAGES = 8;
-
-/** Joins a model and a reasoning variant in the model menu's action keys:
- *  `providerID/modelID` + this + the variant ("default" for none). */
-const VARIANT_SEP = "\t";
 
 async function compressToAttachment(
   uri: string,
@@ -204,69 +162,26 @@ export function InputBar({
   const [text, setText] = useState("");
   const [images, setImages] = useState<DraftAttachment[]>([]);
 
-  // ─── Session state from the store ───────────────────────────────────
-  // Detail: the session's model, busy flag and last turn's context use.
-  // New-session: a local draft pick (null = the last used model, else the
-  // folder's default; the store pins it on create). A pick on an existing
-  // session switches it right away; the picked value wins until the
-  // session's model.selected event catches up. A session without a model
-  // (made before new ones were pinned) runs on the folder's default.
-  const models = useOcModels();
-  const session = useSession(ocStore, sessionID);
-  const messages = useMessages(ocStore, sessionID);
+  // ─── Model, effort and context use ──────────────────────────────────
+  // What the composer runs on (hooks/use-model-choice): a session's model,
+  // or the new session's draft. The chip opens the model-picker sheet,
+  // which picks through the same hook.
   const isRunning = useIsRunning(ocStore, sessionID);
-  const [picked, setPicked] = useState<string | null>(null);
-  const sessionModel =
-    session?.model !== undefined
-      ? formatModelRef(session.model.providerID, session.model.id)
-      : null;
-  const lastUsed = useLastUsedModel(ocStore);
-  const pinned = picked ?? (sessionID === null ? lastUsed : sessionModel);
-  const defaultModel = useOcDefaultModel(
-    pinned === null ? (session?.location.directory ?? directory) : undefined,
+  const { info, model, variant, isPicked } = useModelChoice(
+    sessionID,
+    directory,
   );
-  const model = pinned ?? defaultModel;
-  const currentModel = models.find(
-    (m) => formatModelRef(m.providerID, m.id) === model,
-  );
-  // Reasoning effort, as the desktop's: "default" (no variant) or one the
-  // model lists. A new session starts on the last used model's variant,
-  // like its model; picking a model goes back to "default".
-  const [pickedVariant, setPickedVariant] = useState<string | null>(null);
-  const lastVariant = useSelector(ocStore.lastUsedModel, (m) => m?.variant);
-  const pinnedVariant =
-    sessionID === null
-      ? lastUsed !== null
-        ? lastVariant
-        : undefined
-      : session?.model?.variant;
-  const variant = pickedVariant ?? pinnedVariant ?? "default";
-  const refOf = (ref: string, v: string): ModelRef => ({
-    ...parseModelRef(ref),
-    ...(v !== "default" ? { variant: v } : {}),
-  });
-  const used = sessionID ? lastContextTokens(messages) : undefined;
-  const max = currentModel?.limit.context;
-  const contextUsage =
-    used !== undefined && max !== undefined && max > 0
-      ? { used, max, percentage: Math.min(100, (used / max) * 100) }
-      : undefined;
-  const switchTo = (ref: string, v: string) => {
-    const previous = { picked, pickedVariant };
-    setPicked(ref);
-    setPickedVariant(v);
-    if (sessionID === null) return;
-    getOcClient()
-      .switchModel(sessionID, refOf(ref, v))
-      .catch((err: unknown) => {
-        console.error("model switch failed", err);
-        setPicked(previous.picked);
-        setPickedVariant(previous.pickedVariant);
-      });
-  };
-  const onPick = (ref: string, v: string) => {
-    if (ref !== model || v !== variant) switchTo(ref, v);
-  };
+  const contextUsage = useContextUsage(sessionID, info?.limit.context);
+  const openPicker = () =>
+    router.push({
+      pathname: "/model-picker",
+      params:
+        sessionID !== null
+          ? { session: sessionID }
+          : directory !== undefined
+            ? { directory }
+            : {},
+    });
 
   const draftIdRef = useRef(0);
   const colorScheme = useColorScheme() ?? "light";
@@ -359,9 +274,7 @@ export function InputBar({
     onSend?.(
       text,
       payload,
-      (picked !== null || pickedVariant !== null) && model !== null
-        ? refOf(model, variant)
-        : null,
+      isPicked && model !== null ? modelRef(model, variant) : null,
     );
     setText("");
     setImages([]);
@@ -482,52 +395,14 @@ export function InputBar({
                   />
                 </View>
               </ContextMenu>
-              {/* Model picker chip — nitro tap menu (UIMenu on iOS,
-                  PopupMenu on Android). One row per model the service offers;
-                  `state: "on"` on the active row gives the native ✓. A model
-                  with reasoning variants is a submenu of its efforts
-                  (Default first), so picking one picks the model too; the
-                  chip names the current effort. */}
-              <ContextMenu
-                trigger="tap"
-                menuConfig={{
-                  // Menu-level title — the root UIMenu's `title` renders as a
-                  // greyed header above the action rows. Surfaces the meter's
-                  // exact numbers (the chip fill alone reads as % only).
-                  // Omitted when contextUsage is undefined so the menu doesn't
-                  // show an empty header on new-session / pre-first-turn states.
-                  title: contextUsage
-                    ? `Context usage: ${formatTokensK(contextUsage.used)} / ${formatTokensK(contextUsage.max)}`
-                    : undefined,
-                  items: models.map<MenuElement>((m) => {
-                    const ref = formatModelRef(m.providerID, m.id);
-                    const isCurrent = ref === model;
-                    if (m.variants.length === 0)
-                      return {
-                        actionKey: `${ref}${VARIANT_SEP}default`,
-                        title: m.name,
-                        state: isCurrent ? "on" : "off",
-                      };
-                    return {
-                      title: m.name,
-                      ...(isCurrent
-                        ? { image: { systemName: "checkmark" } }
-                        : {}),
-                      items: [
-                        "default",
-                        ...m.variants.map((v) => v.id),
-                      ].map<MenuAction>((v) => ({
-                        actionKey: `${ref}${VARIANT_SEP}${v}`,
-                        title: variantLabel(v),
-                        state: isCurrent && v === variant ? "on" : "off",
-                      })),
-                    };
-                  }),
-                }}
-                onPressAction={(actionKey) => {
-                  const at = actionKey.lastIndexOf(VARIANT_SEP);
-                  onPick(actionKey.slice(0, at), actionKey.slice(at + 1));
-                }}
+              {/* Model chip — opens the model-picker sheet (search, the
+                  catalog by provider, the current model's effort and
+                  context use). Names the model, and its effort when not
+                  the default. */}
+              <Pressable
+                onPress={openPicker}
+                accessibilityRole="button"
+                accessibilityLabel="Choose model"
               >
                 {/* Context meter — fills the chip background left→right
                     proportional to context-window usage. `overflow-hidden`
@@ -550,11 +425,11 @@ export function InputBar({
                     />
                   )}
                   <Text className="text-sm text-zinc-700 dark:text-zinc-200">
-                    {currentModel?.name ?? "Model"}
+                    {info?.name ?? "Model"}
                     {variant !== "default" ? ` · ${variantLabel(variant)}` : ""}
                   </Text>
                 </View>
-              </ContextMenu>
+              </Pressable>
             </View>
             <View className="flex-row items-center gap-3">
               {/* Write-gate status dot — sits just left of send, shown only

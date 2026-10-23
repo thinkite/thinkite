@@ -10,6 +10,7 @@ import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
+import { clearNewSessionPick } from "@/hooks/use-model-choice";
 import { useDrawerUI } from "@/lib/drawer-ui";
 import { ocStore } from "@/lib/oc";
 import { type ImageAttachment, toPromptFiles } from "@/lib/transcript-blocks";
@@ -79,6 +80,8 @@ export default function NewSessionScreen() {
             // No pick = the store pins the folder's default model.
             ...(model !== null ? { model } : {}),
           });
+          // The draft is the new session's now; the next starts fresh.
+          clearNewSessionPick();
           ocStore
             .prompt(session.id, text, { files: toPromptFiles(images) })
             .catch((err: unknown) => {

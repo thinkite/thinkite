@@ -23,6 +23,23 @@ export function useOcModels(): ModelInfo[] {
   return data ?? [];
 }
 
+/** Provider id → display name, for the model picker's sections. Empty
+ *  while offline. */
+export function useOcProviders(): ReadonlyMap<string, string> {
+  const { connectionStatus } = useDaemonClient();
+  const { data } = useQuery({
+    queryKey: ["ocProviders"],
+    queryFn: async () => {
+      const providers = await getOcClient().listProviders();
+      return new Map(providers.map((p) => [p.id, p.name]));
+    },
+    enabled: connectionStatus === "online",
+    staleTime: 5 * 60_000,
+  });
+  return data ?? EMPTY;
+}
+const EMPTY: ReadonlyMap<string, string> = new Map();
+
 /**
  * The model a session in `directory` runs on when it names none (the
  * project's configured model, else the user's), as a `providerID/modelID`
