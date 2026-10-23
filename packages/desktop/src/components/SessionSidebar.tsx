@@ -1,5 +1,6 @@
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
+import { ResizeHandle, useResizable } from "@astryxdesign/core/Resizable";
 import {
   SideNav,
   SideNavItem,
@@ -106,6 +107,16 @@ export function SessionSidebar() {
   const waiting = useWaiting(ocStore);
   const failed = useFailed(ocStore);
   const service = useServiceStatus();
+  // Sized here rather than through SideNav's `resizable`: its handle sits
+  // inside the nav's right edge, on top of the list's scrollbar (and SideNav
+  // clips it there). This one hangs just past that edge, over the
+  // transcript side.
+  const width = useResizable({
+    autoSaveId: "thinkite:sidebar-width",
+    defaultSize: 280,
+    minSize: 264,
+    maxSize: 420,
+  });
 
   // The sidebar sits outside the route tree, so the open session comes off
   // the location rather than route params.
@@ -131,84 +142,96 @@ export function SessionSidebar() {
   }, [sessions, now]);
 
   return (
-    <SideNav
-      resizable={{
-        autoSaveId: "thinkite:sidebar-width",
-        defaultWidth: 280,
-        minWidth: 264,
-        maxWidth: 420,
-      }}
-      // The window's top row: the traffic lights at its start (Electron
-      // places them), the collapse button at its end, both centred on
-      // y 24. The negative margins take back the nav's 8px padding so the
-      // whole row drags.
-      header={
-        <div
-          className="-mx-2 -mt-2 flex h-12 items-center justify-end px-2"
-          data-window-drag
-        >
-          <Button
-            label="Collapse sidebar"
-            variant="ghost"
-            size="sm"
-            isIconOnly
-            icon={<Icon icon={PanelLeftCloseIcon} size="sm" />}
-            onClick={() =>
-              updatePrefs((p) => ({ ...p, sidebar: { collapsed: true } }))
-            }
-          />
-        </div>
-      }
-      topContent={
-        <Button
-          label="New session"
-          variant="secondary"
-          icon={<Icon icon={SquarePenIcon} size="sm" />}
-          style={{ width: "100%", justifyContent: "flex-start" }}
-          onClick={() => void navigate({ to: "/" })}
-        />
-      }
-      footerIcons={
-        <div className="flex w-full min-w-0 items-center gap-2 px-1">
-          <Button
-            label="Settings"
-            variant="ghost"
-            size="sm"
-            isIconOnly
-            icon={<Icon icon={SettingsIcon} size="sm" />}
-            onClick={() => settingsOpen.set(true)}
-          />
-          <div className="flex-1" />
-          <StatusDot
-            variant={service.ok ? "success" : "neutral"}
-            label={service.label}
-          />
-          <Text size="sm" color="secondary" maxLines={1}>
-            {service.label}
-          </Text>
-        </div>
-      }
-    >
-      {groups.map((g) => (
-        <SideNavSection key={g.name} title={g.name}>
-          {/* Session actions live in the session's title bar, so rows
-              stay one quiet line. */}
-          {g.rows.map((s) => (
-            <SideNavItem
-              key={s.id}
-              label={s.title || UNTITLED}
-              isSelected={s.id === selectedId}
+    <div className="flex h-full shrink-0">
+      <SideNav
+        style={{ width: width.size }}
+        // The window's top row: the traffic lights at its start (Electron
+        // places them), the collapse button at its end, both centred on
+        // y 24. The negative margins take back the nav's 8px padding so the
+        // whole row drags.
+        header={
+          <div
+            className="-mx-2 -mt-2 flex h-12 items-center justify-end px-2"
+            data-window-drag
+          >
+            <Button
+              label="Collapse sidebar"
+              variant="ghost"
+              size="sm"
+              isIconOnly
+              icon={<Icon icon={PanelLeftCloseIcon} size="sm" />}
               onClick={() =>
-                void navigate({
-                  to: "/session/$sessionId",
-                  params: { sessionId: s.id },
-                })
+                updatePrefs((p) => ({ ...p, sidebar: { collapsed: true } }))
               }
-              icon={<RowStatus state={rowState(s, waiting, running, failed)} />}
             />
-          ))}
-        </SideNavSection>
-      ))}
-    </SideNav>
+          </div>
+        }
+        topContent={
+          <Button
+            label="New session"
+            variant="secondary"
+            icon={<Icon icon={SquarePenIcon} size="sm" />}
+            style={{ width: "100%", justifyContent: "flex-start" }}
+            onClick={() => void navigate({ to: "/" })}
+          />
+        }
+        footerIcons={
+          <div className="flex w-full min-w-0 items-center gap-2 px-1">
+            <Button
+              label="Settings"
+              variant="ghost"
+              size="sm"
+              isIconOnly
+              icon={<Icon icon={SettingsIcon} size="sm" />}
+              onClick={() => settingsOpen.set(true)}
+            />
+            <div className="flex-1" />
+            <StatusDot
+              variant={service.ok ? "success" : "neutral"}
+              label={service.label}
+            />
+            <Text size="sm" color="secondary" maxLines={1}>
+              {service.label}
+            </Text>
+          </div>
+        }
+      >
+        {groups.map((g) => (
+          <SideNavSection key={g.name} title={g.name}>
+            {/* Session actions live in the session's title bar, so rows
+              stay one quiet line. */}
+            {g.rows.map((s) => (
+              <SideNavItem
+                key={s.id}
+                label={s.title || UNTITLED}
+                isSelected={s.id === selectedId}
+                onClick={() =>
+                  void navigate({
+                    to: "/session/$sessionId",
+                    params: { sessionId: s.id },
+                  })
+                }
+                icon={
+                  <RowStatus state={rowState(s, waiting, running, failed)} />
+                }
+              />
+            ))}
+          </SideNavSection>
+        ))}
+      </SideNav>
+      {/* A 16px strip (the handle's hit area) just past the nav's edge;
+          the overlay handle fills it. Fixed, not absolute: AppShell's
+          sidebar panel scrolls (overflow auto) and would clip it. */}
+      <div className="fixed inset-y-0 z-20 w-4" style={{ left: width.size }}>
+        <ResizeHandle
+          direction="horizontal"
+          position="overlay"
+          pillPlacement="end"
+          isAlwaysVisible={false}
+          resizable={width.props}
+          label="Resize sidebar"
+        />
+      </div>
+    </div>
   );
 }
