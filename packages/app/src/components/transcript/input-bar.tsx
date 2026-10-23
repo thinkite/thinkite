@@ -486,8 +486,8 @@ export function InputBar({
                   PopupMenu on Android). One row per model the service offers;
                   `state: "on"` on the active row gives the native ✓. A model
                   with reasoning variants is a submenu of its efforts
-                  (Default first), so picking one picks the model too; its
-                  row names the current effort. */}
+                  (Default first), so picking one picks the model too; the
+                  chip names the current effort. */}
               <ContextMenu
                 trigger="tap"
                 menuConfig={{
@@ -511,10 +511,7 @@ export function InputBar({
                     return {
                       title: m.name,
                       ...(isCurrent
-                        ? {
-                            subtitle: variantLabel(variant),
-                            image: { systemName: "checkmark" },
-                          }
+                        ? { image: { systemName: "checkmark" } }
                         : {}),
                       items: [
                         "default",
