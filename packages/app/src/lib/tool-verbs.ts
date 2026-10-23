@@ -42,6 +42,10 @@ export function toolVerb(detail: ToolDetail): string {
         ? "Questions"
         : `Answered ${detail.questions.length} questions`;
     }
+    case "skill":
+      return "Loaded skill";
+    case "code":
+      return "Ran code";
     case "unknown":
       return `Used ${detail.toolName}`;
   }

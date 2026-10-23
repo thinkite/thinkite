@@ -497,6 +497,29 @@ function describeDetail(block: ToolRenderBlock): Descriptor {
     case "question":
       if (isError) return errorNative(error ?? "Question failed.");
       return { mode: "native", node: <QuestionDetail detail={detail} /> };
+    case "skill":
+      if (isError) return errorNative(error ?? "Skill failed to load.");
+      return detail.content.length === 0
+        ? NATIVE_EMPTY
+        : { mode: "native", node: <ChatMarkdown markdown={detail.content} /> };
+    case "code": {
+      // The script with what it returned under it, highlighted as one file
+      // the way a command's card shows the command over its output.
+      if (isError) return errorNative(error ?? "Code failed.");
+      const body =
+        detail.output.length > 0
+          ? `${detail.code}\n\n// Result\n${detail.output}`
+          : detail.code;
+      return body.length === 0
+        ? NATIVE_EMPTY
+        : {
+            mode: "webview",
+            kind: "code",
+            content: body,
+            name: "code.js",
+            noHeader: true,
+          };
+    }
     case "unknown":
       return {
         mode: "native",

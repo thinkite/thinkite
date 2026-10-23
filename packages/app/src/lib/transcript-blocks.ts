@@ -100,6 +100,21 @@ export type ToolDetail =
       /** The user dismissed it (the card's ×) rather than answering. */
       dismissed: boolean;
     }
+  | {
+      type: "skill";
+      /** The skill's display name (its id until loaded). */
+      name: string;
+      /** The instructions it loaded, as markdown. */
+      content: string;
+    }
+  | {
+      /** opencode's Code Mode `execute`: JS that calls tools. */
+      type: "code";
+      code: string;
+      /** The tools the code called, in order (`search`, `browser.screenshot`). */
+      calls: string[];
+      output: string;
+    }
   | { type: "unknown"; toolName: string; input: unknown; output: string };
 
 type AssistantMessage = Extract<SessionMessageInfo, { type: "assistant" }>;
@@ -124,6 +139,9 @@ function toolDetail(tool: ToolItem): ToolDetail {
   const output = toolOutput(tool);
   const filePath = text(input.filePath) || text(input.path);
   switch (tool.name) {
+    // opencode 2 renamed bash to shell and task to subagent; sessions
+    // imported from 1.x keep the old names.
+    case "shell":
     case "bash":
       return {
         type: "bash",
@@ -154,12 +172,26 @@ function toolDetail(tool: ToolItem): ToolDetail {
         ...(text(input.path) ? { path: text(input.path) } : {}),
         output,
       };
+    case "subagent":
     case "task":
       return {
         type: "agent",
-        subagentType: text(input.subagent_type),
+        subagentType: text(input.agent) || text(input.subagent_type),
         description: text(input.description),
         prompt: text(input.prompt),
+        output: unwrap(output, "subagent"),
+      };
+    case "skill":
+      return {
+        type: "skill",
+        name: text(metadataOf(tool).name) || text(input.id),
+        content: unwrap(output, "skill_content"),
+      };
+    case "execute":
+      return {
+        type: "code",
+        code: text(input.code),
+        calls: toolCallsOf(tool),
         output,
       };
     case "webfetch":
@@ -170,6 +202,48 @@ function toolDetail(tool: ToolItem): ToolDetail {
       return questionDetail(tool, input);
     default:
       return { type: "unknown", toolName: tool.name, input: raw, output };
+  }
+}
+
+function metadataOf(tool: ToolItem): Record<string, unknown> {
+  const state = tool.state as { metadata?: unknown };
+  return state.metadata !== null && typeof state.metadata === "object"
+    ? (state.metadata as Record<string, unknown>)
+    : {};
+}
+
+/** The text inside the `<tag …>…</tag>` opencode wraps some outputs in
+ *  (a subagent's reply, a loaded skill). */
+function unwrap(output: string, tag: string): string {
+  const match = new RegExp(`^<${tag}[^>]*>\\n?([\\s\\S]*?)\\n?</${tag}>$`).exec(
+    output.trim(),
+  );
+  return match ? (match[1] as string) : output;
+}
+
+/** The tools a Code Mode run called, from its metadata. */
+function toolCallsOf(tool: ToolItem): string[] {
+  const calls = metadataOf(tool).toolCalls;
+  if (!Array.isArray(calls)) return [];
+  return calls.flatMap((call) =>
+    call !== null && typeof call === "object" && "tool" in call
+      ? [text((call as { tool: unknown }).tool)].filter(Boolean)
+      : [],
+  );
+}
+
+/** The row's object: a question's answer, a skill's name, the tools a
+ *  Code Mode run called; otherwise the path, command or pattern. */
+function summaryOf(detail: ToolDetail, tool: ToolItem): string {
+  switch (detail.type) {
+    case "question":
+      return questionSummary(detail);
+    case "skill":
+      return detail.name;
+    case "code":
+      return [...new Set(detail.calls)].join(", ");
+    default:
+      return toolSummary(tool);
   }
 }
 
@@ -241,8 +315,7 @@ function toolBlock(tool: ToolItem, id: string): ToolRenderBlock {
     id,
     callId: tool.id,
     name: tool.name,
-    summary:
-      detail.type === "question" ? questionSummary(detail) : toolSummary(tool),
+    summary: summaryOf(detail, tool),
     status: STATUS[tool.state.status],
     error: tool.state.status === "error" ? tool.state.error.message : null,
     detail,
