@@ -36,7 +36,10 @@ export type ResolveOpencode = (options?: {
   start?: boolean;
 }) => Promise<OpencodeConnection>;
 
-const SHELL_TIMEOUT_MS = { interactive: 5_000, login: 3_000 };
+// A heavy ~/.zshrc measured 2–4 s on an idle Mac, and more while the app
+// itself is starting; past the interactive budget the login-only fallback
+// misses whatever .zshrc adds to PATH.
+const SHELL_TIMEOUT_MS = { interactive: 10_000, login: 3_000 };
 const VERSION_TIMEOUT_MS = 5_000;
 const ENV_MARKER = "__THINKITE_ENV__";
 
@@ -64,7 +67,12 @@ function runInShell(
     });
     const chunks: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    // Give up at the deadline itself: something the rc started in the
+    // background can keep the pipe, and so "close", open long after.
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve(null);
+    }, timeoutMs);
     child.once("error", () => {
       clearTimeout(timer);
       resolve(null);
@@ -76,8 +84,17 @@ function runInShell(
   });
 }
 
-/** The user's shell environment; the process's own when it can't be read. */
+/** The user's shell environment, read once; the process's own when it
+ *  can't be read (and then read again next time). */
+let cachedShellEnv: Promise<NodeJS.ProcessEnv | null> | null = null;
 async function shellEnvironment(): Promise<NodeJS.ProcessEnv> {
+  cachedShellEnv ??= readShellEnvironment();
+  const env = await cachedShellEnv;
+  if (env === null) cachedShellEnv = null;
+  return { ...(env ?? process.env) };
+}
+
+async function readShellEnvironment(): Promise<NodeJS.ProcessEnv | null> {
   const shell = process.env.SHELL || "/bin/zsh";
   // The marker skips whatever an interactive rc prints first.
   const command = `printf '%s' '${ENV_MARKER}'; command env -0`;
@@ -95,7 +112,34 @@ async function shellEnvironment(): Promise<NodeJS.ProcessEnv> {
     }
     if (env.PATH) return env;
   }
-  return { ...process.env };
+  return null;
+}
+
+/** Where opencode installs itself when it isn't on the PATH read: its
+ *  install script, bun, Homebrew, npm prefixes, then the CLI the OpenCode
+ *  desktop app bundles. */
+const FALLBACK_LOCATIONS = [
+  join(homedir(), ".opencode", "bin", "opencode"),
+  join(homedir(), ".bun", "bin", "opencode"),
+  "/opt/homebrew/bin/opencode",
+  "/usr/local/bin/opencode",
+  join(homedir(), ".npm-global", "bin", "opencode"),
+  join(homedir(), ".local", "bin", "opencode"),
+  "/Applications/OpenCode.app/Contents/Resources/opencode-cli",
+];
+
+async function findOpencode(path: string | undefined): Promise<string | null> {
+  const onPath = await findExecutable("opencode", path);
+  if (onPath !== null) return onPath;
+  for (const candidate of FALLBACK_LOCATIONS) {
+    try {
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // not here
+    }
+  }
+  return null;
 }
 
 async function findExecutable(
@@ -166,7 +210,7 @@ async function startService(path: string): Promise<void> {
   }
   if (process.env.XDG_STATE_HOME === undefined) delete env.XDG_STATE_HOME;
 
-  const binary = await findExecutable("opencode", env.PATH);
+  const binary = await findOpencode(env.PATH);
   if (binary === null) {
     throw new Error(
       "opencode is not installed — install OpenCode 2 (`npm install -g @opencode/cli`) or open the OpenCode app",
