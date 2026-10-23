@@ -37,6 +37,8 @@ const RUNNING_SPEC = {
 // Secondary gray (iOS systemGray) — reads on both schemes; the shimmer MOTION
 // (not color) signals "running".
 const RUNNING_COLOR = "#8E8E93";
+// iOS systemOrange: a permission request or question waits on the user.
+const WAITING_COLOR = "#FF9500";
 // Selected-row highlight + press feedback. Press is intentionally a tone darker/
 // lighter than active so a tap reads distinctly.
 const ACTIVE_BG = { light: "#F3F4F6", dark: "#1F2937" } as const; // gray-100 / gray-800
@@ -78,7 +80,8 @@ const ROW_HEIGHT = 44;
  * JS, not className variants. iOS-only menu surface.
  *
  * Status indicator (fixed-width leading slot so the title's left edge stays
- * put across rows): running → animated `ellipsis`; idle/other → a gray dot.
+ * put across rows): waiting on the user → an orange dot; running → animated
+ * `ellipsis`; idle/other → a gray dot.
  */
 export function SessionRow({ session, onPress, isActive }: SessionRowProps) {
   const title = session.title || "Untitled session";
@@ -140,7 +143,13 @@ export function SessionRow({ session, onPress, isActive }: SessionRowProps) {
         {/* Fixed-width status slot: the wider running ellipsis and the small idle
             dot both center here so the title never shifts horizontally. */}
         <View className="w-4 items-center justify-center">
-          {isRunning ? (
+          {session.waiting ? (
+            // Waiting on the user outranks running: the turn is paused.
+            <View
+              className="h-2 w-2 rounded-full"
+              style={{ backgroundColor: WAITING_COLOR }}
+            />
+          ) : isRunning ? (
             <SymbolView
               name="ellipsis"
               size={ICON_SIZE}

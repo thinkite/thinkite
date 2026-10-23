@@ -1,7 +1,6 @@
 import { type ModelRef, variantLabel } from "@thinkite/oc-client";
 import { useIsRunning } from "@thinkite/oc-client/react";
 import { ContextMenu } from "@yyq1025/react-native-nitro-menu";
-import { GlassView } from "expo-glass-effect";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
@@ -24,6 +23,7 @@ import { statusColor, useDaemonClient } from "@/lib/daemon-client-context";
 import { getOcClient, ocStore } from "@/lib/oc";
 import { Image } from "@/lib/styled";
 import type { ImageAttachment } from "@/lib/transcript-blocks";
+import { ComposerGlass } from "./composer-glass";
 
 /**
  * Local-only id so the pill row can have stable React keys + a cheap
@@ -101,7 +101,7 @@ async function compressToAttachment(
 }
 
 /**
- * Chat input bar — pill-shaped GlassView with optional attachment
+ * Chat input bar — pill-shaped glass with optional attachment
  * pill row + text input + action row (plus + model chip | spacer | send).
  *
  * Self-sourcing: pass `sessionID` and InputBar derives the model picker,
@@ -128,9 +128,8 @@ async function compressToAttachment(
  * edge 2576 / JPEG q0.85) and shown as a horizontal pill row above the
  * TextInput until the user sends or removes them.
  *
- * Liquid Glass requires iOS 26+. On older iOS / Android the GlassView
- * silently falls back to a plain View; the inline `backgroundColor`
- * provides the fallback fill so the surface stays visible.
+ * The pill is ComposerGlass, shared with the prompt cards that replace the
+ * InputBar while a permission request or question waits.
  */
 export function InputBar({
   sessionID,
@@ -288,74 +287,57 @@ export function InputBar({
   const sendActive = online && (canSend || isRunning);
 
   return (
-    <View className="px-4">
-      <GlassView
-        isInteractive
-        glassEffectStyle="regular"
-        style={{
-          borderRadius: 24,
-          borderCurve: "continuous",
-          // Fallback for iOS<26 / Android — GlassView degrades to plain
-          // View, this color shows through. On iOS 26+ it sits behind the
-          // Liquid Glass material and is mostly invisible.
-          backgroundColor:
-            colorScheme === "dark"
-              ? "rgba(28,28,30,0.6)"
-              : "rgba(255,255,255,0.6)",
-        }}
-      >
-        <View className="py-3 gap-3 rounded-3xl border-continuous overflow-hidden">
-          {/* Attachment pill row — only when there are draft images.
+    <ComposerGlass>
+      <View className="py-3 gap-3 rounded-3xl border-continuous overflow-hidden">
+        {/* Attachment pill row — only when there are draft images.
               Horizontal scroll so 8 thumbs fit on narrow screens. The
               X badge sits INSIDE each thumbnail's bounds (not negative
               margin) so the ScrollView doesn't clip it. */}
-          {images.length > 0 && (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerClassName="gap-2 px-3 min-w-full"
-            >
-              {images.map((img) => (
-                <View key={img.id} className="relative">
-                  <Image
-                    source={{
-                      uri: `data:${img.mediaType};base64,${img.data}`,
-                    }}
-                    className="size-20 rounded-xl border-[0.5px] border-gray-300 dark:border-gray-700"
-                    contentFit="cover"
+        {images.length > 0 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerClassName="gap-2 px-3 min-w-full"
+          >
+            {images.map((img) => (
+              <View key={img.id} className="relative">
+                <Image
+                  source={{
+                    uri: `data:${img.mediaType};base64,${img.data}`,
+                  }}
+                  className="size-20 rounded-xl border-[0.5px] border-gray-300 dark:border-gray-700"
+                  contentFit="cover"
+                />
+                <Pressable
+                  onPress={() => removeAttachment(img.id)}
+                  hitSlop={8}
+                  className="absolute top-1 right-1 size-6 items-center justify-center rounded-full bg-black/75"
+                >
+                  <SymbolView
+                    name="xmark"
+                    size={12}
+                    weight="bold"
+                    tintColor="#ffffff"
                   />
-                  <Pressable
-                    onPress={() => removeAttachment(img.id)}
-                    hitSlop={8}
-                    className="absolute top-1 right-1 size-6 items-center justify-center rounded-full bg-black/75"
-                  >
-                    <SymbolView
-                      name="xmark"
-                      size={12}
-                      weight="bold"
-                      tintColor="#ffffff"
-                    />
-                  </Pressable>
-                </View>
-              ))}
-            </ScrollView>
-          )}
-          <TextInput
-            multiline
-            numberOfLines={5}
-            value={text}
-            onChangeText={setText}
-            placeholder="Message opencode"
-            // placeholderTextColor is a native prop with no className
-            // equivalent — keep the colorScheme ternary for this one.
-            placeholderTextColor={
-              colorScheme === "dark" ? "#71717a" : "#a1a1aa"
-            }
-            className="text-base px-3 py-[2.5px] text-zinc-950 dark:text-zinc-50"
-          />
-          <View className="px-3 flex-row items-center justify-between">
-            <View className="flex-row items-center gap-2">
-              {/* `+` button → native attachment menu via the nitro tap menu
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
+        )}
+        <TextInput
+          multiline
+          numberOfLines={5}
+          value={text}
+          onChangeText={setText}
+          placeholder="Message opencode"
+          // placeholderTextColor is a native prop with no className
+          // equivalent — keep the colorScheme ternary for this one.
+          placeholderTextColor={colorScheme === "dark" ? "#71717a" : "#a1a1aa"}
+          className="text-base px-3 py-[2.5px] text-zinc-950 dark:text-zinc-50"
+        />
+        <View className="px-3 flex-row items-center justify-between">
+          <View className="flex-row items-center gap-2">
+            {/* `+` button → native attachment menu via the nitro tap menu
                   (a transparent showsMenuAsPrimaryAction UIButton + UIMenu on
                   iOS, PopupMenu on Android — pure UIKit, no UIHostingController,
                   so it stays put on first keyboard show; that immunity is why
@@ -363,102 +345,101 @@ export function InputBar({
                   the overlay button (so a plain View, not a Pressable); tapping
                   fires `onPressAction` with the `actionKey`. No `imageColor`
                   needed — UIKit template-tints the SF Symbol. */}
-              <ContextMenu
-                trigger="tap"
-                menuConfig={{
-                  items: [
-                    {
-                      actionKey: "library",
-                      title: "Photos",
-                      image: { systemName: "photo.on.rectangle" },
-                      attributes: canAdd ? [] : ["disabled"],
-                    },
-                    {
-                      actionKey: "camera",
-                      title: "Camera",
-                      image: { systemName: "camera" },
-                      attributes: canAdd ? [] : ["disabled"],
-                    },
-                  ],
-                }}
-                onPressAction={(actionKey) => {
-                  if (actionKey === "camera") pickFromCamera();
-                  else if (actionKey === "library") pickFromLibrary();
-                }}
-              >
-                <View className="p-1.75 rounded-full bg-black/5 dark:bg-white/10">
-                  <SymbolView
-                    name="plus"
-                    size={22}
-                    weight="regular"
-                    tintColor={colorScheme === "dark" ? "#e4e4e7" : "#3f3f46"}
-                  />
-                </View>
-              </ContextMenu>
-              {/* Model chip — opens the model-picker sheet (search, the
+            <ContextMenu
+              trigger="tap"
+              menuConfig={{
+                items: [
+                  {
+                    actionKey: "library",
+                    title: "Photos",
+                    image: { systemName: "photo.on.rectangle" },
+                    attributes: canAdd ? [] : ["disabled"],
+                  },
+                  {
+                    actionKey: "camera",
+                    title: "Camera",
+                    image: { systemName: "camera" },
+                    attributes: canAdd ? [] : ["disabled"],
+                  },
+                ],
+              }}
+              onPressAction={(actionKey) => {
+                if (actionKey === "camera") pickFromCamera();
+                else if (actionKey === "library") pickFromLibrary();
+              }}
+            >
+              <View className="p-1.75 rounded-full bg-black/5 dark:bg-white/10">
+                <SymbolView
+                  name="plus"
+                  size={22}
+                  weight="regular"
+                  tintColor={colorScheme === "dark" ? "#e4e4e7" : "#3f3f46"}
+                />
+              </View>
+            </ContextMenu>
+            {/* Model chip — opens the model-picker sheet (search, the
                   catalog by provider, the current model's effort and
                   context use). Names the model, and its effort when not
                   the default. */}
-              <Pressable
-                onPress={openPicker}
-                accessibilityRole="button"
-                accessibilityLabel="Choose model"
-              >
-                {/* Context meter — fills the chip background left→right
+            <Pressable
+              onPress={openPicker}
+              accessibilityRole="button"
+              accessibilityLabel="Choose model"
+            >
+              {/* Context meter — fills the chip background left→right
                     proportional to context-window usage. `overflow-hidden`
                     clips the absolute fill to the rounded-full silhouette;
                     the fill is the FIRST child so the Text label naturally
                     layers on top (RN sibling order = z-order). No extra
                     layout cost when `contextUsage` is undefined — the
                     null branch skips the absolute View entirely. */}
-                <View className="relative flex-row items-center gap-1 px-3 py-2 rounded-full bg-black/5 dark:bg-white/10 overflow-hidden">
-                  {contextUsage && (
-                    <View
-                      className="absolute inset-y-0 left-0"
-                      style={{
-                        width: `${contextUsage.percentage}%`,
-                        backgroundColor: meterFillColor(
-                          contextUsage.percentage,
-                          colorScheme === "dark",
-                        ),
-                      }}
-                    />
-                  )}
-                  <Text className="text-sm text-zinc-700 dark:text-zinc-200">
-                    {info?.name ?? "Model"}
-                    {variant !== "default" ? ` · ${variantLabel(variant)}` : ""}
-                  </Text>
-                </View>
-              </Pressable>
-            </View>
-            <View className="flex-row items-center gap-3">
-              {/* Write-gate status dot — sits just left of send, shown only
+              <View className="relative flex-row items-center gap-1 px-3 py-2 rounded-full bg-black/5 dark:bg-white/10 overflow-hidden">
+                {contextUsage && (
+                  <View
+                    className="absolute inset-y-0 left-0"
+                    style={{
+                      width: `${contextUsage.percentage}%`,
+                      backgroundColor: meterFillColor(
+                        contextUsage.percentage,
+                        colorScheme === "dark",
+                      ),
+                    }}
+                  />
+                )}
+                <Text className="text-sm text-zinc-700 dark:text-zinc-200">
+                  {info?.name ?? "Model"}
+                  {variant !== "default" ? ` · ${variantLabel(variant)}` : ""}
+                </Text>
+              </View>
+            </Pressable>
+          </View>
+          <View className="flex-row items-center gap-3">
+            {/* Write-gate status dot — sits just left of send, shown only
                   when NOT online (connecting/offline = gray, error = red, per
                   statusColor). Signals "composer can't send right now"; the
                   send button beside it is disabled + dimmed. */}
-              {!online && (
-                <View
-                  className="size-2 rounded-full"
-                  style={{ backgroundColor: statusColor(connectionStatus) }}
-                />
-              )}
-              <Pressable
-                onPress={handlePress}
-                disabled={!sendActive}
-                style={{ opacity: sendActive ? 1 : 0.4 }}
-                className="p-1.75 items-center justify-center rounded-full bg-zinc-900 dark:bg-zinc-100"
-              >
-                <SymbolView
-                  name={sendIconName}
-                  size={22}
-                  weight="semibold"
-                  tintColor={colorScheme === "dark" ? "#0a0a0a" : "#fafafa"}
-                />
-              </Pressable>
-            </View>
+            {!online && (
+              <View
+                className="size-2 rounded-full"
+                style={{ backgroundColor: statusColor(connectionStatus) }}
+              />
+            )}
+            <Pressable
+              onPress={handlePress}
+              disabled={!sendActive}
+              style={{ opacity: sendActive ? 1 : 0.4 }}
+              className="p-1.75 items-center justify-center rounded-full bg-zinc-900 dark:bg-zinc-100"
+            >
+              <SymbolView
+                name={sendIconName}
+                size={22}
+                weight="semibold"
+                tintColor={colorScheme === "dark" ? "#0a0a0a" : "#fafafa"}
+              />
+            </Pressable>
           </View>
         </View>
-      </GlassView>
-    </View>
+      </View>
+    </ComposerGlass>
   );
 }

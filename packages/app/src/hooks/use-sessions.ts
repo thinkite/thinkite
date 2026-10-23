@@ -2,6 +2,7 @@ import { useSelector } from "@tanstack/react-store";
 import {
   useSessions as useOcSessions,
   useRunning,
+  useWaiting,
 } from "@thinkite/oc-client/react";
 import { useMemo } from "react";
 import { useDaemonClient } from "@/lib/daemon-client-context";
@@ -14,6 +15,8 @@ export interface OcSessionRow {
   directory: string;
   updatedAt: number;
   running: boolean;
+  /** A permission request or question waits on the user. */
+  waiting: boolean;
 }
 
 /**
@@ -34,6 +37,7 @@ export function useSessions(): {
   const online = connectionStatus === "online";
   const sessions = useOcSessions(ocStore);
   const running = useRunning(ocStore);
+  const waiting = useWaiting(ocStore);
   const status = useSelector(ocStore.status, (s) => s.status);
   const data = useMemo(
     () =>
@@ -43,8 +47,9 @@ export function useSessions(): {
         directory: s.location.directory,
         updatedAt: s.time.updated,
         running: running.has(s.id),
+        waiting: waiting.has(s.id),
       })),
-    [sessions, running],
+    [sessions, running, waiting],
   );
   return {
     data: online ? data : undefined,

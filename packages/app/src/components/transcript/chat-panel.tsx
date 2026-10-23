@@ -34,6 +34,7 @@ import Animated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GitStatusBar } from "@/components/transcript/git-status-bar";
 import { InputBar } from "@/components/transcript/input-bar";
+import { usePendingPrompt } from "@/components/transcript/prompt-card";
 import { TextBlock } from "@/components/transcript/text-block";
 import { ThinkingIndicator } from "@/components/transcript/thinking-indicator";
 import { ToolBlock } from "@/components/transcript/tool-block";
@@ -168,6 +169,8 @@ export function ChatPanel({ sessionID, cwd, blocks }: ChatPanelProps) {
   // isThinking: the turn is running but the last block isn't the agent's text
   // yet — the initial think window + tool gaps. Drives the resident footer.
   const isRunning = useIsRunning(ocStore, sessionID);
+  // A permission request or question takes the InputBar's place.
+  const pendingPrompt = usePendingPrompt(sessionID);
   const lastBlock = blocks[blocks.length - 1];
   const isThinking =
     isRunning &&
@@ -501,19 +504,25 @@ export function ChatPanel({ sessionID, cwd, blocks }: ChatPanelProps) {
               : "linear-gradient(to top, rgba(255,255,255,0.8), rgba(255,255,255,0))",
           }}
         >
-          <GitStatusBar
-            cwd={cwd}
-            onPress={cwd ? () => openGitDiff(cwd) : undefined}
-            onStatusChange={
-              cwd
-                ? () =>
-                    queryClient.invalidateQueries({
-                      queryKey: ["workingTreeDiff", cwd],
-                    })
-                : undefined
-            }
-          />
-          <InputBar sessionID={sessionID} onSend={rawSend} />
+          {/* A prompt card stands alone: the branch and diff stats above
+              it are noise while the turn waits on an answer. */}
+          {pendingPrompt ?? (
+            <>
+              <GitStatusBar
+                cwd={cwd}
+                onPress={cwd ? () => openGitDiff(cwd) : undefined}
+                onStatusChange={
+                  cwd
+                    ? () =>
+                        queryClient.invalidateQueries({
+                          queryKey: ["workingTreeDiff", cwd],
+                        })
+                    : undefined
+                }
+              />
+              <InputBar sessionID={sessionID} onSend={rawSend} />
+            </>
+          )}
         </View>
       </KeyboardStickyView>
     </>

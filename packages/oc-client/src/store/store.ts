@@ -236,9 +236,12 @@ export interface OcStore {
     directory: string;
     model?: ModelRef;
   }): Promise<SessionInfo>;
+  /** `message`, with "reject", tells the agent what to do instead: the
+   *  turn goes on with it rather than stopping. */
   replyPermission(
     request: PermissionRequest,
     decision: "once" | "always" | "reject",
+    message?: string,
   ): Promise<void>;
   replyForm(form: FormInfo, answer: FormAnswer): Promise<void>;
   cancelForm(form: FormInfo): Promise<void>;
@@ -964,10 +967,16 @@ export function createOcStore({
     unrevert,
     fork,
     createSession,
-    replyPermission: (request, decision) =>
+    replyPermission: (request, decision, message) =>
       answer(
         request.id,
-        () => client.replyPermission(request.sessionID, request.id, decision),
+        () =>
+          client.replyPermission(
+            request.sessionID,
+            request.id,
+            decision,
+            message,
+          ),
         isPermissionNotFoundError,
         () => session.permission.set((all) => removeIn(all, request.id)),
       ),
