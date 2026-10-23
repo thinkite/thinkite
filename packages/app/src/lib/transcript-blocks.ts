@@ -221,16 +221,14 @@ export function flattenToBlocks(
             : "Context compacted",
         );
         break;
-      case "model-switched":
-        note(message.id, `Model: ${message.model.id}`);
-        break;
       case "agent-switched":
         note(message.id, `Agent: ${message.agent}`);
         break;
       case "shell":
         note(message.id, `$ ${message.command}`);
         break;
-      // Turn boundaries and service-side notes the phone does not show.
+      // Turn boundaries, model switches (the composer shows the model) and
+      // other service-side notes the phone does not show.
       default:
         break;
     }
