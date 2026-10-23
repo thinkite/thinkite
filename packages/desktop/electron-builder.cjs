@@ -32,7 +32,15 @@ module.exports = {
   // asar-patched fs makes the http server's readFile work from inside the
   // archive). v27 (alpha.11) nests the copy lists under `fileOptions`.
   fileOptions: {
-    files: ["dist/**/*", "dist-electron/**/*", "assets/**/*", "package.json"],
+    files: [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "assets/**/*",
+      "package.json",
+      // TypeScript sources, declarations and source maps in dependencies
+      // never load at runtime (effect alone ships 20 MB of src/*.ts).
+      "!**/node_modules/**/*.{ts,mts,cts,map}",
+    ],
   },
   // Native code can't load from inside the asar archive (v27: `asarUnpack`
   // moved into `asar.unpack`): @lydell/node-pty ships a prebuilt .node that
