@@ -172,8 +172,11 @@ export function ChatPanel({ sessionID, cwd, blocks }: ChatPanelProps) {
   // A permission request or question takes the InputBar's place.
   const pendingPrompt = usePendingPrompt(sessionID);
   const lastBlock = blocks[blocks.length - 1];
+  // Not while a card waits on the user: the turn is paused on them, and the
+  // row above already reads "Needs your input".
   const isThinking =
     isRunning &&
+    pendingPrompt === null &&
     !(lastBlock?.kind === "text" && lastBlock.role === "assistant");
 
   // Message haptics, driven from the on-screen ChatPanel so a session you're

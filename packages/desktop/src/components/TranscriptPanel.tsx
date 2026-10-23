@@ -744,6 +744,7 @@ const FOLLOW_SLACK = 4;
 export function TranscriptPanel({
   sessionId,
   isRunning,
+  isWaiting = false,
   anchorUuid = null,
   actions,
   onOpenSession,
@@ -759,6 +760,9 @@ export function TranscriptPanel({
   onOpenSession?: (sessionID: string) => void;
   /** Renders a working indicator under the last message. */
   isRunning?: boolean;
+  /** A question or permission request is waiting on the user: the turn
+   *  is paused, so no working indicator. */
+  isWaiting?: boolean;
   /** Id of the most recently sent user message — pinned near the viewport
    *  top while the response streams into reserved space below it. The iOS
    *  ChatPanel lifecycle: kept ACROSS turns (clearing on idle collapses the
@@ -816,7 +820,8 @@ export function TranscriptPanel({
   // iOS's isThinking rule: the turn is running but the last row isn't the
   // assistant's text yet — the initial think window + tool gaps. Rendered
   // by the resident WorkingFooter (constant height, label fades).
-  const isThinking = isRunning === true && rows.at(-1)?.kind !== "text";
+  const isThinking =
+    isRunning === true && !isWaiting && rows.at(-1)?.kind !== "text";
   // When the running turn began: its user message.
   const turnStarted = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {

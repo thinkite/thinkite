@@ -467,6 +467,7 @@ function Session({ sessionId }: { sessionId: string }) {
               <TranscriptPanel
                 sessionId={sessionId}
                 isRunning={running}
+                isWaiting={prompt !== null}
                 anchorUuid={anchorUuid}
                 {...(isChild ? {} : { actions })}
                 onOpenSession={openSession}
