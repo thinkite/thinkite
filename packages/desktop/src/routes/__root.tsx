@@ -1,6 +1,7 @@
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
+import { StatusDot } from "@astryxdesign/core/StatusDot";
 import {
   createRootRoute,
   Outlet,
@@ -17,6 +18,7 @@ import { Settings } from "../components/settings/Settings";
 import { isDesktopShell } from "../lib/desktop-shell";
 import { ocStore } from "../lib/oc";
 import { prefs, settingsOpen, updatePrefs } from "../lib/prefs";
+import { readyVersion, useUpdate } from "../lib/update";
 
 // Routes that render in their OWN BrowserWindow (tray-opened dialogs) —
 // bare content, no app chrome. Everything else gets the AppShell + global
@@ -84,6 +86,10 @@ const SEAT_LEFT = isDesktopShell ? 84 : 8;
  */
 function LeadingSeat() {
   const navigate = useNavigate();
+  // The sidebar's update button is hidden with it; a dot on the expand
+  // button says one is ready (after DeepSeek Harness's badge).
+  const update = useUpdate();
+  const ready = update !== null && readyVersion(update.state) !== undefined;
   return (
     <div
       // top 10 centres the 28px buttons on y 24, with the lights.
@@ -92,16 +98,23 @@ function LeadingSeat() {
       // Floats over the title bar's drag row; its buttons must click.
       data-window-no-drag
     >
-      <Button
-        label="Expand sidebar"
-        variant="ghost"
-        size="sm"
-        isIconOnly
-        icon={<Icon icon={PanelLeftOpenIcon} size="sm" />}
-        onClick={() =>
-          updatePrefs((p) => ({ ...p, sidebar: { collapsed: false } }))
-        }
-      />
+      <span className="relative inline-flex">
+        <Button
+          label="Expand sidebar"
+          variant="ghost"
+          size="sm"
+          isIconOnly
+          icon={<Icon icon={PanelLeftOpenIcon} size="sm" />}
+          onClick={() =>
+            updatePrefs((p) => ({ ...p, sidebar: { collapsed: false } }))
+          }
+        />
+        {ready ? (
+          <span className="pointer-events-none absolute top-0.5 right-0.5 inline-flex">
+            <StatusDot variant="accent" label="Update ready" />
+          </span>
+        ) : null}
+      </span>
       <Button
         label="New session"
         variant="ghost"

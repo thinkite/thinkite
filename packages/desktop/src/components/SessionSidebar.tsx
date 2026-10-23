@@ -8,7 +8,6 @@ import {
 } from "@astryxdesign/core/SideNav";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
-import { Text } from "@astryxdesign/core/Text";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useSelector } from "@tanstack/react-store";
@@ -20,18 +19,33 @@ import {
   useSessions,
   useWaiting,
 } from "@thinkite/oc-client/react";
-import { PanelLeftCloseIcon, SettingsIcon, SquarePenIcon } from "lucide-react";
+import {
+  ArrowUpCircleIcon,
+  DownloadIcon,
+  type LucideIcon,
+  PanelLeftCloseIcon,
+  RotateCwIcon,
+  SettingsIcon,
+  SquarePenIcon,
+} from "lucide-react";
 import { useMemo } from "react";
 import { ocClient, ocStore } from "../lib/oc";
-import { settingsOpen, updatePrefs } from "../lib/prefs";
+import { openSettings, updatePrefs } from "../lib/prefs";
 import { serviceInfoKey } from "../lib/query";
 import { UNREAD_SINCE } from "../lib/unread";
+import {
+  checkForUpdate,
+  installUpdate,
+  readyVersion,
+  useUpdate,
+} from "../lib/update";
 
 // Global session sidebar. Content after wisp's — a "New session" action,
 // root sessions grouped by how long ago they were last active, one line
-// each, the service's status at the bottom — laid out after DeepSeek
-// Harness's: 280px wide (264–420), a full-width bordered New session
-// button, and a status slot at the start of every row so titles line up.
+// each — laid out after DeepSeek Harness's: 280px wide (264–420), a
+// full-width bordered New session button, a status slot at the start of
+// every row so titles line up, and at the bottom only what needs the user:
+// the service when it is down, the app's update when one is under way.
 // Rows come from the store, so new sessions, titles and each row's status
 // (waiting for you, working, failed, new reply) appear live.
 
@@ -62,6 +76,80 @@ function useServiceStatus(): { ok: boolean; label: string } {
     return { ok: true, label: version ? `opencode ${version}` : "opencode" };
   if (status === "error") return { ok: false, label: "No opencode service" };
   return { ok: false, label: "Connecting…" };
+}
+
+/** The footer's notice while the service is down; nothing once it is up
+ *  (Settings → Server shows it then). opencode is started with the first
+ *  prompt, so an empty list says why. */
+function ServiceNotice() {
+  const service = useServiceStatus();
+  if (service.ok) return null;
+  return (
+    <Button
+      label={service.label}
+      variant="ghost"
+      size="sm"
+      tooltip="opencode starts when you send a message. Open Settings → Server"
+      icon={<StatusDot variant="warning" label={service.label} />}
+      style={{ width: "100%", justifyContent: "flex-start" }}
+      onClick={() => openSettings("server")}
+    />
+  );
+}
+
+/** The app's update beside the gear, after DeepSeek Harness's, as an icon
+ *  with a tooltip: shown only while one downloads, waits for the restart,
+ *  or failed. The download starts on its own; the restart is the user's. */
+function UpdateButton() {
+  const update = useUpdate();
+  if (update === null) return null;
+  const { state } = update;
+  const ready = readyVersion(state);
+  const button = (
+    label: string,
+    icon: LucideIcon,
+    props: {
+      variant?: "primary" | "ghost";
+      isLoading?: boolean;
+      onClick?: () => void;
+    },
+  ) => (
+    <Button
+      label={label}
+      tooltip={label}
+      variant={props.variant ?? "ghost"}
+      size="sm"
+      isIconOnly
+      isLoading={props.isLoading}
+      icon={<Icon icon={icon} size="sm" />}
+      onClick={props.onClick}
+    />
+  );
+  if (state.status === "downloading")
+    return button(
+      `Downloading Thinkite ${state.version}… ${state.percent}%`,
+      DownloadIcon,
+      { onClick: () => openSettings("about") },
+    );
+  if (state.status === "installing")
+    return button("Restarting to update…", ArrowUpCircleIcon, {
+      isLoading: true,
+    });
+  if (ready !== undefined)
+    return button(
+      update.notApplied === ready
+        ? `Thinkite ${ready} didn't install last time. Restart to try again`
+        : state.status === "error"
+          ? `${state.message} Restart to try again`
+          : `Restart to update to Thinkite ${ready}`,
+      ArrowUpCircleIcon,
+      { variant: "primary", onClick: () => void installUpdate() },
+    );
+  if (state.status === "error")
+    return button(`Retry update: ${state.message}`, RotateCwIcon, {
+      onClick: () => void checkForUpdate(),
+    });
+  return null;
 }
 
 type RowState = "waiting" | "running" | "failed" | "unread";
@@ -106,7 +194,6 @@ export function SessionSidebar() {
   const running = useRunning(ocStore);
   const waiting = useWaiting(ocStore);
   const failed = useFailed(ocStore);
-  const service = useServiceStatus();
   // Sized here rather than through SideNav's `resizable`: its handle sits
   // inside the nav's right edge, on top of the list's scrollbar (and SideNav
   // clips it there). This one hangs just past that edge, over the
@@ -175,6 +262,7 @@ export function SessionSidebar() {
             onClick={() => void navigate({ to: "/" })}
           />
         }
+        footer={<ServiceNotice />}
         footerIcons={
           <div className="flex w-full min-w-0 items-center gap-2 px-1">
             <Button
@@ -183,16 +271,10 @@ export function SessionSidebar() {
               size="sm"
               isIconOnly
               icon={<Icon icon={SettingsIcon} size="sm" />}
-              onClick={() => settingsOpen.set(true)}
+              onClick={() => openSettings()}
             />
             <div className="flex-1" />
-            <StatusDot
-              variant={service.ok ? "success" : "neutral"}
-              label={service.label}
-            />
-            <Text size="sm" color="secondary" maxLines={1}>
-              {service.label}
-            </Text>
+            <UpdateButton />
           </div>
         }
       >

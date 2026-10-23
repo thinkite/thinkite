@@ -3,24 +3,39 @@
 // focus notes adjusted: this app has a Dock presence, but the focus steal
 // stays (a background-parked tray app can still be behind everything when
 // an interactive check answers).
-import { app, dialog } from "electron";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { app, dialog, autoUpdater as nativeUpdater } from "electron";
 // electron-updater is CJS; default-import + destructure is the safe ESM interop.
 import electronUpdater from "electron-updater";
 
 const { autoUpdater } = electronUpdater;
 
 /**
- * Update lifecycle as the menu renders it. autoDownload is on, so an available
- * update goes straight to "downloading"; "downloaded" is the only actionable
- * state (click → quitAndInstall). idle/error show no prominent item — the
- * manual "Check for updates" in the About submenu covers re-checking.
+ * Update lifecycle as the menu and the window render it. autoDownload is on,
+ * so an available update goes straight to "downloading"; "downloaded" is the
+ * actionable state (click → quitAndInstall, which shows "installing" until
+ * the app quits). "up-to-date" answers a check that found nothing; the menu
+ * treats it like idle.
  */
 export type UpdateState =
   | { status: "idle" }
   | { status: "checking" }
+  | { status: "up-to-date" }
   | { status: "downloading"; version: string; percent: number }
   | { status: "downloaded"; version: string }
-  | { status: "error"; message: string };
+  | { status: "installing"; version: string }
+  // `version`: a downloaded update is still there, so retrying installs it.
+  | { status: "error"; message: string; version?: string };
+
+/** What the window shows: the state, plus a version an earlier restart was
+ *  meant to install but didn't (after t3code). */
+export interface UpdateInfo {
+  version: string;
+  packaged: boolean;
+  state: UpdateState;
+  notApplied?: string;
+}
 
 let state: UpdateState = { status: "idle" };
 // download-progress events carry no version; remember it from update-available.
@@ -34,12 +49,46 @@ let onChange: (() => void) | null = null;
 // consumes it.
 let interactiveCheck = false;
 
-// 6h: frequent enough to keep the protocol-mismatch window to hours, rare
-// enough to be invisible in network logs.
-const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// 1h: a phone app that updated itself can be on a newer protocol, so the
+// Mac side should not lag it for long; still rare enough to be invisible in
+// network logs.
+const RECHECK_INTERVAL_MS = 60 * 60 * 1000;
+// quitAndInstall has started once the app begins quitting for the update;
+// past this, say so instead of spinning (after OpenCode desktop).
+const RESTART_TIMEOUT_MS = 10_000;
+
+// The version a restart is about to install, kept across the restart: if the
+// app comes back on another version, the update did not apply.
+const pendingFile = () => join(app.getPath("userData"), "update-pending.json");
+let notApplied: string | undefined;
 
 export function getUpdateState(): UpdateState {
   return state;
+}
+
+export function getUpdateInfo(): UpdateInfo {
+  return {
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    state,
+    ...(notApplied !== undefined ? { notApplied } : {}),
+  };
+}
+
+function readPending(): void {
+  let target: unknown;
+  try {
+    target = (
+      JSON.parse(readFileSync(pendingFile(), "utf8")) as { version?: unknown }
+    ).version;
+  } catch {
+    return;
+  }
+  if (typeof target === "string" && target !== app.getVersion()) {
+    notApplied = target;
+    return;
+  }
+  rmSync(pendingFile(), { force: true });
 }
 
 export function initUpdater(opts: { onStateChange: () => void }): void {
@@ -48,8 +97,12 @@ export function initUpdater(opts: { onStateChange: () => void }): void {
   // `publish`: GitHub Releases by default, latest PUBLISHED release only). In dev
   // it's inert; test via a packaged build pointed at a static feed with
   // SIDECODE_UPDATE_URL.
-  if (!app.isPackaged) return;
+  if (!app.isPackaged) {
+    devState();
+    return;
+  }
   onChange = opts.onStateChange;
+  readPending();
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true; // silently apply on next quit (default)
 
@@ -62,7 +115,7 @@ export function initUpdater(opts: { onStateChange: () => void }): void {
     set({ status: "downloading", version: info.version, percent: 0 });
   });
   autoUpdater.on("update-not-available", () => {
-    set({ status: "idle" });
+    set({ status: "up-to-date" });
     if (consumeInteractive()) {
       showDialog({
         message: "You're up to date",
@@ -101,9 +154,15 @@ export function initUpdater(opts: { onStateChange: () => void }): void {
   });
   autoUpdater.on("error", (err) => {
     const message = err?.message ?? String(err);
-    set({ status: "error", message });
+    // An install that fails keeps its download, so the retry installs it.
+    const version =
+      state.status === "installing" || state.status === "downloaded"
+        ? state.version
+        : undefined;
+    if (state.status === "installing") rmSync(pendingFile(), { force: true });
+    set({ status: "error", message, ...(version ? { version } : {}) });
     // Background-check failures (laptop offline, feed hiccup) stay silent —
-    // the 6h cadence retries on its own.
+    // the hourly cadence retries on its own.
     if (consumeInteractive()) {
       showDialog({
         type: "warning",
@@ -133,7 +192,45 @@ export function checkForUpdates(opts: { interactive?: boolean } = {}): void {
 }
 
 export function quitAndInstall(): void {
+  const version =
+    state.status === "downloaded" || state.status === "error"
+      ? state.version
+      : undefined;
+  if (version === undefined) return;
+  if (!app.isPackaged) {
+    console.log(`[updater] dev: would restart into ${version}`);
+    return;
+  }
+  set({ status: "installing", version });
+  try {
+    writeFileSync(pendingFile(), JSON.stringify({ version }));
+  } catch {
+    // Without the record a failed install just goes unnoticed, as before.
+  }
+  const timer = setTimeout(() => {
+    nativeUpdater.removeListener("before-quit-for-update", started);
+    set({
+      status: "error",
+      message: "The restart to install the update didn't start.",
+      version,
+    });
+    rmSync(pendingFile(), { force: true });
+  }, RESTART_TIMEOUT_MS);
+  const started = () => clearTimeout(timer);
+  nativeUpdater.once("before-quit-for-update", started);
   autoUpdater.quitAndInstall();
+}
+
+/** Dev builds have no feed; THINKITE_DEV_UPDATE (a JSON UpdateState) stands
+ *  one in so the window's update UI can be seen. */
+function devState(): void {
+  const raw = process.env.THINKITE_DEV_UPDATE;
+  if (!raw) return;
+  try {
+    state = JSON.parse(raw) as UpdateState;
+  } catch {
+    console.warn("[updater] THINKITE_DEV_UPDATE is not JSON");
+  }
 }
 
 function consumeInteractive(): boolean {

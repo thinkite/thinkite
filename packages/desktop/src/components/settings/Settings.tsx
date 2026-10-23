@@ -32,8 +32,20 @@ import {
   useState,
 } from "react";
 import { ocClient, ocStore } from "../../lib/oc";
-import { prefs, settingsOpen, updatePrefs } from "../../lib/prefs";
+import {
+  prefs,
+  settingsOpen,
+  settingsPage,
+  updatePrefs,
+} from "../../lib/prefs";
 import { serviceInfoKey } from "../../lib/query";
+import {
+  checkForUpdate,
+  installUpdate,
+  readyVersion,
+  type UpdateInfo,
+  useUpdate,
+} from "../../lib/update";
 import { isVisible, newestOfFamilies, useModels } from "../ModelPicker";
 import { Pairing } from "./Pairing";
 import { Providers } from "./Providers";
@@ -270,14 +282,75 @@ function Server() {
   );
 }
 
+/** One line on where the app's update stands. */
+function updateNote(update: UpdateInfo): string {
+  const { state } = update;
+  const ready = readyVersion(state);
+  if (ready !== undefined)
+    return update.notApplied === ready
+      ? `${ready} didn't install last time; restart to try again`
+      : `${ready} is ready; restart to install it`;
+  if (!update.packaged && state.status === "idle")
+    return "Updates work in the installed app only";
+  switch (state.status) {
+    case "checking":
+      return "Checking for updates…";
+    case "downloading":
+      return `Downloading ${state.version}… ${state.percent}%`;
+    case "installing":
+      return `Restarting into ${state.version}…`;
+    case "up-to-date":
+      return "Up to date";
+    case "error":
+      return state.message;
+    default:
+      return "Checked every hour; updates download on their own";
+  }
+}
+
 function About() {
   const info = useLoad(serviceInfoKey, () => ocClient.info());
+  const update = useUpdate();
+  const ready = update ? readyVersion(update.state) : undefined;
+  const busy =
+    update?.state.status === "checking" ||
+    update?.state.status === "downloading" ||
+    update?.state.status === "installing";
   return (
-    <Section title="Versions">
-      <Row title="opencode service">
-        <Text size="sm">{info.data?.version ?? "—"}</Text>
-      </Row>
-    </Section>
+    <>
+      <Section title="Versions">
+        <Row title="Thinkite">
+          <Text size="sm">{update?.version ?? "—"}</Text>
+        </Row>
+        <Row title="opencode service">
+          <Text size="sm">{info.data?.version ?? "—"}</Text>
+        </Row>
+      </Section>
+      <Section title="Updates">
+        <Row
+          title="Thinkite updates"
+          description={update ? updateNote(update) : "…"}
+        >
+          {ready !== undefined ? (
+            <Button
+              label="Restart to update"
+              variant="primary"
+              size="sm"
+              onClick={() => void installUpdate()}
+            />
+          ) : (
+            <Button
+              label="Check now"
+              variant="secondary"
+              size="sm"
+              isDisabled={!update?.packaged || busy}
+              isLoading={update?.state.status === "checking"}
+              onClick={() => void checkForUpdate()}
+            />
+          )}
+        </Row>
+      </Section>
+    </>
   );
 }
 
@@ -350,7 +423,8 @@ const PAGES: {
 
 export function Settings() {
   const open = useSelector(settingsOpen);
-  const [page, setPage] = useState(PAGES[0]?.id ?? "appearance");
+  const page = useSelector(settingsPage);
+  const setPage = (id: string) => settingsPage.set(id);
   const current = PAGES.find((p) => p.id === page) ?? PAGES[0];
   return (
     <Dialog
@@ -378,7 +452,7 @@ export function Settings() {
                 <Button
                   key={p.id}
                   label={p.label}
-                  variant={p.id === page ? "secondary" : "ghost"}
+                  variant={p.id === current?.id ? "secondary" : "ghost"}
                   icon={<Icon icon={p.icon} size="sm" />}
                   style={{ width: "100%", justifyContent: "flex-start" }}
                   onClick={() => setPage(p.id)}

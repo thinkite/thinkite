@@ -40,6 +40,7 @@ import { handleOcProxy, stripOcPrefix } from "./oc-proxy";
 import { attachPty, killPty, killPtys, ptyParams } from "./pty";
 import {
   checkForUpdates,
+  getUpdateInfo,
   getUpdateState,
   initUpdater,
   quitAndInstall,
@@ -215,6 +216,25 @@ const server = createServer(async (req, res) => {
             : { canceled: false, path: picked.filePaths[0] },
         ),
       );
+      return;
+    }
+    // The window's update button and About page (src/lib/update.ts) read
+    // the same state as the tray menu, and act through the same calls.
+    if (url.pathname === "/api/update") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(getUpdateInfo()));
+      return;
+    }
+    if (url.pathname === "/api/update/check" && req.method === "POST") {
+      checkForUpdates();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(getUpdateInfo()));
+      return;
+    }
+    if (url.pathname === "/api/update/install" && req.method === "POST") {
+      quitAndInstall();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(getUpdateInfo()));
       return;
     }
     if (url.pathname === "/oc" || url.pathname.startsWith("/oc/")) {
@@ -403,6 +423,8 @@ function updateMenuItem(): Electron.MenuItemConstructorOptions | null {
         icon: symbolIcon("arrow.up.circle"),
         click: () => quitAndInstall(),
       };
+    case "installing":
+      return { label: "Restarting to update…", enabled: false };
     default:
       return null; // idle | error
   }

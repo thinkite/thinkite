@@ -64,3 +64,13 @@ export function updatePrefs(update: (current: Prefs) => Prefs): void {
 
 /** Whether the settings dialog is open (⌘, or the sidebar's gear). */
 export const settingsOpen = createAtom(false);
+
+/** The settings page shown; null for the first. */
+export const settingsPage = createAtom<string | null>(null);
+
+/** Open settings, on `page` when given (the sidebar's service notice opens
+ *  Server). */
+export function openSettings(page?: string): void {
+  if (page !== undefined) settingsPage.set(page);
+  settingsOpen.set(true);
+}
