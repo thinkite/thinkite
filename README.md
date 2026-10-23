@@ -1,8 +1,8 @@
 # Thinkite
 
-> Spin up and drive Claude Code sessions on your Mac — from your phone, peer-to-peer.
+> A desktop and mobile client for opencode — drive the agents on your Mac from your phone, peer-to-peer.
 
-https://github.com/user-attachments/assets/2c0ddbf5-c364-4b09-a652-70e64ad2fbcf
+https://github.com/user-attachments/assets/e5cea7d4-0bc9-4265-8a14-d03146bf4194
 
 <p align="center">
   <a href="https://thinkite.dev/mac"><img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS-000000?style=for-the-badge&logo=apple&logoColor=white" /></a>
@@ -12,85 +12,61 @@ https://github.com/user-attachments/assets/2c0ddbf5-c364-4b09-a652-70e64ad2fbcf
 <p align="center">
   <img alt="platform: macOS + iOS" src="https://img.shields.io/badge/platform-macOS%20%2B%20iOS-black" />
   <img alt="license: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue" />
-  <img alt="status: early / V0" src="https://img.shields.io/badge/status-V0-orange" />
+  <img alt="status: early" src="https://img.shields.io/badge/status-early-orange" />
 </p>
 
-**Thinkite lets you start, stream, and steer Claude Code sessions on your Mac from your phone.**
-A lightweight daemon on your Mac orchestrates the sessions; the iOS app connects to it **directly,
-peer-to-peer** over an iroh QUIC link, so your prompts, responses, and diffs stream straight between
-your own devices — no third-party server can read your session data.
+**Thinkite is a Mac app and an iPhone app for [opencode](https://opencode.ai) sessions.** Work at your desk in the desktop app, then pick the same session up on your phone: start tasks, answer the agent's questions, approve permissions, and steer a running turn. The phone connects to your Mac **directly, peer-to-peer** over an encrypted [iroh](https://www.iroh.computer/) QUIC link, so your prompts, code, and diffs travel only between your own devices.
 
 ---
 
 ## Features
 
-- **Start sessions from your phone** — pick any folder on your Mac and kick off a fresh
-  Claude Code session remotely. You don't have to be at your desk to begin.
-- **Peer-to-peer & private** — session traffic flows device-to-device over an end-to-end
-  encrypted QUIC connection ([iroh](https://www.iroh.computer/)), roaming seamlessly between
-  Wi-Fi and cellular. A public relay is used only as a NAT fallback, and even then it only
-  ever forwards already-encrypted bytes.
-- **Bridge to the cloud, on demand** — keep a session private P2P, or flip a single session to
-  also mirror onto **claude.ai and Claude Desktop** for cross-client control — then flip it back.
-  Your choice, per session.
-- **Resilient streaming** — drop your connection mid-response and reconnect; the daemon replays
-  exactly the events you missed.
-- **Real mobile rendering** — Claude's markdown stays both **text-selectable and syntax-highlighted**;
-  tool diffs open in a fast, syntax-highlighted diff view.
-- **Every session at a glance** — a live drawer shows the status of all your sessions.
+- **One session, every client** — Thinkite talks to the same local opencode service as OpenCode Desktop and the TUI, so a turn started in any of them streams live in all the others.
+- **Start and steer from your phone** — pick any folder on your Mac, start a session, and send follow-ups while the agent is still working.
+- **Answer the agent from anywhere** — questions and permission requests appear as cards on the phone and the desktop; answer from whichever is closer.
+- **Peer-to-peer & private** — the phone dials your Mac by its public key over end-to-end encrypted QUIC, roaming between Wi-Fi and cellular. A public relay is used only when NAT blocks a direct path, and it only ever forwards encrypted bytes.
+- **Any model** — use any provider opencode supports; add one with an API key in Settings, and pick the model and reasoning effort per session on either device.
+- **A full desktop workspace** — transcript, multiple terminals per session, the branch diff, a built-in browser, session info cards (environment, context, changes, cost including subagents), subagents that open as sessions of their own, and revert / redo / fork for prompts.
+- **Real mobile rendering** — markdown that is both selectable and syntax-highlighted, fast syntax-highlighted diffs, and the images tools return.
+- **Catches up after a drop** — lose the connection mid-reply and the transcript returns to the current state as soon as you reconnect.
 
 ---
 
 ## How it works
 
 ```
-                  QR pair (Ed25519 pubkey, out-of-band trust root)
-   ┌──────────────┐ ──────────────────────────────────────────► ┌─────────────────────┐
-   │   iOS app    │                                              │     macOS daemon     │
-   │  (Expo / RN) │ ◄═════════ iroh QUIC (P2P, e2e) ═══════════► │   (Node + TS)        │
-   └──────────────┘   dial by pubkey; direct paths preferred,    │   orchestrates       │
-                      public relays only when NAT wins           │   Claude Code via    │
-                                                                 │   the Agent SDK      │
-                                                                 └─────────────────────┘
+                QR pair (Ed25519 public key = the Mac's QUIC endpoint id)
+   ┌──────────────┐ ───────────────────────────────────────────────► ┌──────────────────────────┐
+   │   iOS app    │                                                   │  Thinkite for Mac        │
+   │  (Expo / RN) │ ◄════════ iroh QUIC (P2P, end-to-end) ══════════► │  daemon ──► opencode     │
+   └──────────────┘   HTTP/SSE to opencode + a small RPC for git      │  desktop app (Electron)  │
+                      direct paths preferred, relays as fallback      └──────────────────────────┘
+                                                                         ▲
+                                                 OpenCode Desktop / TUI ─┘  (same opencode service)
 ```
 
-The Mac **daemon** is the orchestration layer: it spawns and supervises Claude Code via the
-Claude Agent SDK, manages session lifecycle, and exposes sessions to paired clients over a
-typed wire protocol. The **iOS app** is a thin, real-time client. The transport is
-[iroh](https://www.iroh.computer/): the daemon's Ed25519 pairing pubkey doubles as its QUIC
-endpoint ID, so the phone dials it directly — hole-punching upgrades to a direct path
-(seamless Wi-Fi ↔ cellular roaming via QUIC path migration), with public relays as an
-encrypted fallback.
+opencode runs the agents. On your Mac it runs as a shared local service (`opencode serve --service`) that every opencode client attaches to, and Thinkite starts it when a task needs it if nothing is running yet.
+
+The **daemon** inside the Mac app is the phone's way in. It holds the pairing identity, accepts the phone's iroh connection, carries its HTTP and event-stream requests to the opencode service, and answers a small RPC for git status, diffs, and the folder picker. Sessions, prompts, and transcripts are opencode's own.
+
+The **desktop app** and the **iOS app** share one client data layer, `@thinkite/oc-client`, built on opencode's official client.
 
 ### Under the hood
 
-- **Private by default, mirror on demand** — sessions run over a direct P2P QUIC link; a bridged
-  session tees the same event stream to Anthropic's cloud (claude.ai / Claude Desktop) without
-  dropping it.
-- **Authenticated pairing** — pairing exchanges an Ed25519 public key via QR; that key IS the
-  daemon's QUIC endpoint identity, so the TLS handshake itself proves you reached the machine
-  you paired with — there is no broker to MITM.
-- **Resumable protocol** — a cursor + epoch-fenced event stream lets reconnecting clients replay
-  only missed events, with a full-snapshot fallback when the daemon restarts.
-- **Optimistic local state** — sessions and transcripts live in TanStack DB collections; writes
-  apply optimistically and roll back on rejection, while the daemon's push stream reconciles them
-  and re-snapshots on reconnect.
-- **Hybrid markdown renderer** — native attributed-string prose (selectable) + custom components
-  for syntax-highlighted code, bridging a tradeoff pure-native and WebView renderers can't.
-- **Pre-warmed diff view** — a resident, pre-warmed WebView hosting the Shiki-based
-  [`@pierre/diffs`](https://diffs.com) renderer keeps tool-diff opens fast.
+- **Authenticated pairing** — the QR code carries the Mac's Ed25519 public key, and that key *is* its QUIC endpoint identity, so the TLS handshake itself proves the phone reached the Mac it paired with. There is no broker in the middle.
+- **opencode over iroh** — the daemon carries opencode's HTTP API on its own ALPN (`thinkite/http/1`), and the phone reaches it through [`react-native-iroh-ffi`](https://www.npmjs.com/package/react-native-iroh-ffi), our React Native binding for iroh, using opencode's API as if it were local.
+- **One store for two apps** — `@thinkite/oc-client` mirrors opencode's own client data layer in TanStack Store atoms: streaming deltas are folded into the transcript and committed once per frame, prompts show instantly and roll back if the send fails, and every reconnect re-reads the sessions and their newest messages.
+- **Native transcript on the phone** — prose renders as native, selectable attributed text with native syntax highlighting ([`react-native-enriched-markdown`](https://github.com/software-mansion/enriched-markdown)), virtualized with [Legend List](https://legendapp.com/open-source/list/).
+- **Pre-warmed diff view** — a resident WebView hosting [`@pierre/diffs`](https://diffs.com) stays warm behind a native bottom sheet, so tool diffs open in well under a second.
 
 ---
 
 ## Security & privacy
 
-- **End-to-end encryption.** Session traffic rides an iroh QUIC connection (TLS 1.3),
-  encrypted between your two devices; each side's Ed25519 key is verified in the handshake.
-- **The relay can't read your data.** When NAT blocks a direct path, iroh's public relays
-  forward already-encrypted QUIC packets; they are never able to decrypt them, and the
-  connection upgrades to a direct path when one appears.
-- **Your credentials stay on your Mac.** The daemon uses your existing Claude login from the
-  system keychain. Thinkite never reads, stores, or transmits your tokens.
+- **End-to-end encryption.** Phone traffic rides an iroh QUIC connection (TLS 1.3) between your two devices; each side's Ed25519 key is verified in the handshake.
+- **The relay can't read your data.** When NAT blocks a direct path, iroh's public relays forward already-encrypted QUIC packets, and the connection moves to a direct path as soon as one appears.
+- **Only paired phones get in.** The Mac admits a new device only while its pairing window shows the QR code.
+- **Your keys stay on your Mac.** opencode stores provider API keys on your Mac; the phone never needs them.
 
 ---
 
@@ -98,17 +74,18 @@ encrypted fallback.
 
 **Prerequisites**
 
-- macOS (Apple Silicon)
-- A logged-in Claude account — sign in once with the Claude Code CLI (`claude /login`) or Claude Desktop
+- macOS on Apple Silicon
+- [opencode](https://opencode.ai) 2.1 or later, installed where your login shell can find it (or OpenCode Desktop running)
 - An iPhone
 
 **Install**
 
 1. **[Download Thinkite for macOS](https://thinkite.dev/mac)** and drag it to Applications.
-2. Launch Thinkite — the daemon starts automatically, and the app stays resident in your tray.
-3. **[Get the iOS app](https://thinkite.dev/ios)** (TestFlight).
-4. From the tray menu, choose **Pair new device** and scan the QR with the app.
-5. Create a session (pick a project folder) and start prompting.
+2. Launch Thinkite. It stays in your menu bar and opens its main window.
+3. If opencode has no provider set up yet, add one in **Settings › Providers** with an API key.
+4. **[Get the iOS app](https://thinkite.dev/ios)** (TestFlight).
+5. Choose **Pair new device** from the menu bar (or **Settings › Pairing**) and scan the QR code with the app.
+6. Pick a project folder on either device and start prompting.
 
 ---
 
@@ -118,28 +95,28 @@ This is a bun monorepo:
 
 | Package | What it is |
 |---|---|
-| `packages/app` | iOS client — Expo / React Native |
-| `packages/daemon` | macOS daemon — wraps the Claude Agent SDK, iroh peer server, session orchestration, cloud bridge |
-| `packages/desktop` | macOS desktop GUI — Electron + Vite + React, tray, terminal, pairing |
-| `packages/protocol` | Shared wire protocol — zod schemas, version negotiation, wire framing |
+| `packages/app` | iOS app — Expo / React Native |
+| `packages/desktop` | Mac app — Electron + Vite + React; window, menu bar, terminals, pairing, updates |
+| `packages/daemon` | Runs inside the Mac app — pairing identity, iroh peer server, HTTP tunnel to opencode, git and folder RPC |
+| `packages/oc-client` | opencode 2 client, transcript reducers, and the TanStack Store data layer shared by both apps |
+| `packages/protocol` | Wire protocol between the daemon and its clients — zod schemas, version negotiation, framing |
 | `packages/website` | Landing page (Astro) |
-
 
 ---
 
 ## Development
 
 ```bash
-# prerequisites: bun >= 1.3, Node >= 24 (vitest/tsc/eas run on node)
+# prerequisites: bun >= 1.3, Node >= 24 (vitest/tsc/eas run on node), opencode >= 2.1
 bun install
 
 bun run typecheck
 bun run test         # vitest (on node)
 
-# run the desktop GUI in dev (vite HMR auto-spawned)
+# run the desktop app in dev (Vite HMR)
 bun run --cwd packages/desktop dev
 
-# run the daemon standalone
+# run the daemon on its own
 bun run --cwd packages/daemon dev
 
 # run the iOS app
@@ -150,30 +127,26 @@ cd packages/app && bun run ios
 
 ## Tech stack
 
-TypeScript · Node.js · React Native (Expo) · TanStack DB · iroh (QUIC P2P) ·
-Claude Agent SDK · Electron · zod
+TypeScript · opencode 2 (`@opencode/client`) · iroh (QUIC P2P) · Electron · React · React Native (Expo) · TanStack Store / Query / Router · Legend List · `@pierre/diffs` · xterm.js · zod
 
 ---
 
 ## Status
 
-Thinkite is an early (V0) project under active development. Core flows — pairing, starting and
-streaming P2P sessions, optional cloud bridging, tool diffs, and mid-response reconnect — work
-today on macOS (Apple Silicon) and iOS. Expect rough edges; interfaces may change.
+Thinkite is early and under active development (desktop 0.3.0). Pairing, starting and steering sessions from the phone, question and permission cards, diffs, terminals, and live sync with opencode's own clients work today on macOS (Apple Silicon) and iOS. Expect rough edges; interfaces may change.
 
 ---
 
 ## FAQ
 
-**Does this use my Claude plan?**
-Yes. Thinkite runs Claude Code locally with your existing Claude login; usage counts against
-your Claude plan exactly as if you ran Claude Code yourself.
+**Which models can I use?**
+Any provider opencode supports. Usage is billed by that provider, the same as using opencode directly.
 
-**Do I need Claude Desktop?**
-No — you just need a Claude login, which you can create with the Claude Code CLI or Claude Desktop.
+**Do I need OpenCode Desktop?**
+No. Thinkite only needs the opencode CLI (2.1 or later). If OpenCode Desktop or the TUI is already running a service, Thinkite uses that one, and all of them see the same sessions.
 
 **Is it macOS-only?**
-The daemon currently targets macOS (Apple Silicon). The mobile client is iOS.
+The Mac app currently targets macOS on Apple Silicon. The mobile app is iOS.
 
 ---
 
@@ -185,7 +158,6 @@ The daemon currently targets macOS (Apple Silicon). The mobile client is iOS.
 
 ## Acknowledgments
 
-Diff and code rendering is powered by [`@pierre/diffs`](https://diffs.com) and [Shiki](https://shiki.style).
+Built on [opencode](https://opencode.ai). Diff and code rendering is powered by [`@pierre/diffs`](https://diffs.com).
 
-> **Disclaimer:** Thinkite is an independent, open-source project. It is not affiliated with,
-> endorsed by, or sponsored by Anthropic. "Claude" and "Claude Code" are trademarks of Anthropic.
+> **Disclaimer:** Thinkite is an independent, open-source project. It is not affiliated with, endorsed by, or sponsored by the opencode project or any model provider.
