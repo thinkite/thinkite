@@ -74,11 +74,12 @@ import {
 // Virtualized through LegendList (same library as the iOS ChatPanel): the
 // list owns the scroll container, the initial landing (initialScrollAtEnd),
 // streaming follow (maintainScrollAtEnd) and scroll-up anchoring
-// (maintainVisibleContentPosition). Single scroll writer — nothing else may
-// touch scrollTop. Find-in-page and cross-message selection only cover
-// mounted rows, and a tool row's open state is lost once it unmounts far
-// off-screen; recycleItems stays OFF so row-internal state never leaks
-// between rows.
+// (maintainVisibleContentPosition, data mode only away from the end, as on
+// iOS). Single scroll writer, with one exception: the follow safety net
+// below, for a follow request LegendList 3.6 leaves stranded. Find-in-page
+// and cross-message selection only cover mounted rows, and a tool row's
+// open state is lost once it unmounts far off-screen; recycleItems stays
+// OFF so row-internal state never leaks between rows.
 
 /**
  * File extension → highlighter language for a diff. Highlights takes most
@@ -737,6 +738,9 @@ function ComposerSeat({
   );
 }
 
+/** How far short of the end (px) still counts as at the end. */
+const FOLLOW_SLACK = 4;
+
 export function TranscriptPanel({
   sessionId,
   isRunning,
@@ -881,6 +885,31 @@ export function TranscriptPanel({
       void ocStore.loadOlder(sessionId);
   }, [hasOlder, nearStart, atEnd, rowCount, sessionId]);
 
+  // Follow safety net. LegendList 3.6's maintainScrollAtEnd can strand a
+  // follow request: one that fires while another scroll is in flight is
+  // parked as "pending" and never replayed, so a turn sent from another
+  // client grows past the viewport while the list still reports isAtEnd.
+  // When it says it is at the end but the content has run past the
+  // viewport, scroll there ourselves. A reader scrolling up flips isAtEnd
+  // first, so this never pulls them back down.
+  useEffect(() => {
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => {
+        const list = listRef.current;
+        const node = list?.getScrollableNode();
+        if (!list || !node) return;
+        if (!list.getState().isAtEnd) return;
+        const gap = node.scrollHeight - node.clientHeight - node.scrollTop;
+        if (gap > FOLLOW_SLACK) void list.scrollToEnd({ animated: false });
+      });
+    });
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+    };
+  }, [rows]);
+
   // On send, position the anchored prompt. scrollToEnd is "committed" since
   // @legendapp/list 3.0.4: it queues until the data commit lands and the
   // anchored tail has measured (the iOS send path relies on the same).
@@ -953,7 +982,7 @@ export function TranscriptPanel({
         initialScrollAtEnd
         {...(anchoredEndSpace !== undefined ? { anchoredEndSpace } : {})}
         maintainScrollAtEnd
-        maintainVisibleContentPosition
+        maintainVisibleContentPosition={{ data: !atEnd }}
         onReady={() => setPlaced(true)}
         // The composer floats over the list (LegendList's floating-composer
         // pattern): the list ends this far above the pane's bottom edge, and
