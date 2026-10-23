@@ -1,5 +1,4 @@
 import { Button } from "@astryxdesign/core/Button";
-import { Divider } from "@astryxdesign/core/Divider";
 import { Icon } from "@astryxdesign/core/Icon";
 import {
   SideNav,
@@ -169,8 +168,6 @@ export function SessionSidebar() {
           onClick={() => void navigate({ to: "/" })}
         />
       }
-      // Sets the settings and status row off from the session list.
-      footer={<Divider />}
       footerIcons={
         <div className="flex w-full min-w-0 items-center gap-2 px-1">
           <Button
