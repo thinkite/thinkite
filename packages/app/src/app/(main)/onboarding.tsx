@@ -140,7 +140,7 @@ export default function OnboardingRoute() {
             thinkite
           </Text>
           <Text className="mt-2 text-base text-gray-500 dark:text-gray-400">
-            Control Claude Code on Mac from your phone.
+            Control OpenCode on your Mac from your phone.
           </Text>
           <Text className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             Peer-to-peer — your code never leaves your devices.
