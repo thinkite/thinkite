@@ -221,8 +221,12 @@ export function SessionSidebar() {
       </SideNav>
       {/* A 16px strip (the handle's hit area) just past the nav's edge;
           the overlay handle fills it. Fixed, not absolute: AppShell's
-          sidebar panel scrolls (overflow auto) and would clip it. */}
-      <div className="fixed inset-y-0 z-20 w-4" style={{ left: width.size }}>
+          sidebar panel scrolls (overflow auto) and would clip it. It
+          starts below the window's 48px top row, which drags the window. */}
+      <div
+        className="fixed top-12 bottom-0 z-20 w-4"
+        style={{ left: width.size }}
+      >
         <ResizeHandle
           direction="horizontal"
           position="overlay"
