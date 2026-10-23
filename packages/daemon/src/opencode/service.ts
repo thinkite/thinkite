@@ -1,17 +1,18 @@
 /**
- * Start the user's opencode 2 service when none is running, the way Waku
- * does it (egoist/waku, `crates/waku-core/src/opencode_service.rs`):
+ * Start the user's opencode 2 service when none is running, through
+ * `@opencode/client`'s `Service.ensure` — what the OpenCode desktop app and
+ * the TUI use — on Waku's terms (egoist/waku, `opencode_service.rs`):
  *
  *   - Only when a task starts (a session is created or a prompt sent, see
  *     `startsTask`). Reading the session list never starts it.
- *   - `opencode serve --service`, detached. It short-circuits on a healthy
- *     incumbent, so racing the desktop app or the TUI is safe. Wait for it
- *     to register and answer, at most 20 s.
- *   - Never stop it. A service we started looks exactly like one we found,
- *     and either may be serving the user's terminal. Quitting Thinkite
- *     leaves it running.
- *   - Never write the registry. The service re-reads it every 5 s and
- *     exits when it changes.
+ *   - Any running version is reused. The official clients pin their own
+ *     version and replace a service that differs; we accept whatever is
+ *     registered, so starting a task never swaps the user's service. (The
+ *     one stop left is ensure's own recovery: a registered service that
+ *     misses three probes in a row is restarted, as the official clients
+ *     do too.)
+ *   - Quitting Thinkite leaves the service running, and the registry is
+ *     only ever written by opencode itself.
  *   - Refuse an opencode 1 binary: its `serve` ignores `--service`, starts
  *     a foreground server that never registers, and would be left orphaned.
  *
@@ -25,20 +26,14 @@ import { spawn } from "node:child_process";
 import { access, constants } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
-import {
-  type DiscoveredOpencode,
-  discoverOpencode,
-  type OpencodeConnection,
-  registryPath,
-} from "./registry.ts";
+import { Service } from "@opencode/client/service";
+import { type OpencodeConnection, registryPath } from "./registry.ts";
 
 /** Resolve the service for a request; `start` lets a missing one be started. */
 export type ResolveOpencode = (options?: {
   start?: boolean;
 }) => Promise<OpencodeConnection>;
 
-const START_BUDGET_MS = 20_000;
-const START_POLL_MS = 100;
 const SHELL_TIMEOUT_MS = { interactive: 5_000, login: 3_000 };
 const VERSION_TIMEOUT_MS = 5_000;
 const ENV_MARKER = "__THINKITE_ENV__";
@@ -154,20 +149,20 @@ export function opencodeOneVersion(output: string): string | null {
   return version?.[1] === "1" ? version[0] : null;
 }
 
-async function startService(path: string): Promise<DiscoveredOpencode> {
+async function startService(path: string): Promise<void> {
   const env = await shellEnvironment();
   // This process's own XDG dirs win (an isolated test run sets them); the
-  // registry has to be where this daemon reads it either way.
+  // registry has to be where this daemon reads it either way. `env` is laid
+  // over this process's environment, so a key left out is inherited.
   for (const key of [
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
     "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
   ] as const) {
-    const own = process.env[key];
-    if (own !== undefined) env[key] = own;
+    if (process.env[key] !== undefined) env[key] = process.env[key];
   }
   if (process.env.XDG_STATE_HOME === undefined) delete env.XDG_STATE_HOME;
-  else env.XDG_STATE_HOME = process.env.XDG_STATE_HOME;
 
   const binary = await findExecutable("opencode", env.PATH);
   if (binary === null) {
@@ -183,40 +178,16 @@ async function startService(path: string): Promise<DiscoveredOpencode> {
     );
   }
 
-  const child = spawn(binary, ["serve", "--service"], {
-    detached: true,
-    stdio: "ignore",
-    env,
-    cwd: homedir(),
-  });
-  let exit: number | string | null | undefined;
-  let spawnError: Error | undefined;
-  child.once("error", (err) => {
-    spawnError = err;
-  });
-  child.once("exit", (code, signal) => {
-    exit = code ?? signal;
-  });
-  child.unref();
-
-  const deadline = Date.now() + START_BUDGET_MS;
-  while (true) {
-    const found = await discoverOpencode(path);
-    if (found !== null) return found;
-    if (spawnError !== undefined) {
-      throw new Error(`failed to start opencode: ${spawnError.message}`);
-    }
-    // An exit is not fatal by itself: losing the race to another starter
-    // looks the same, and the winner may be seconds from healthy.
-    if (Date.now() >= deadline) {
-      throw new Error(
-        exit === undefined
-          ? "timed out starting the opencode background service"
-          : `\`opencode serve --service\` exited (${exit}) without registering a healthy service`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, START_POLL_MS));
+  const overlay: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) overlay[key] = value;
   }
+  await Service.ensure({
+    file: path,
+    version: () => true,
+    command: [binary, "serve", "--service"],
+    env: overlay,
+  });
 }
 
 /** One start at a time: concurrent task requests share it. */
@@ -224,9 +195,9 @@ export function createOpencodeStarter(
   options: { path?: string; log?: (message: string) => void } = {},
 ) {
   const path = options.path ?? registryPath();
-  let inflight: Promise<DiscoveredOpencode> | null = null;
+  let inflight: Promise<void> | null = null;
   return {
-    start(): Promise<DiscoveredOpencode> {
+    start(): Promise<void> {
       if (inflight === null) {
         options.log?.("starting the opencode background service");
         inflight = startService(path).finally(() => {
