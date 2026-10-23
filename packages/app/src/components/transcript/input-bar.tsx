@@ -1,7 +1,9 @@
+import { useSelector } from "@tanstack/react-store";
 import {
   formatModelRef,
   type ModelRef,
   parseModelRef,
+  variantLabel,
 } from "@thinkite/oc-client";
 import {
   useIsRunning,
@@ -9,7 +11,11 @@ import {
   useMessages,
   useSession,
 } from "@thinkite/oc-client/react";
-import { ContextMenu, type MenuAction } from "@yyq1025/react-native-nitro-menu";
+import {
+  ContextMenu,
+  type MenuAction,
+  type MenuElement,
+} from "@yyq1025/react-native-nitro-menu";
 import { GlassView } from "expo-glass-effect";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
@@ -104,6 +110,10 @@ const JPEG_QUALITY = 0.85;
  *  PHPicker's single-pick max, so users hit the cap in one Photos tap.
  *  Tune in one spot. */
 const MAX_TOTAL_IMAGES = 8;
+
+/** Prefix of the effort rows' action keys in the model menu; model rows
+ *  are keyed `providerID/modelID`. */
+const EFFORT_KEY = "effort:";
 
 async function compressToAttachment(
   uri: string,
@@ -219,23 +229,47 @@ export function InputBar({
   const currentModel = models.find(
     (m) => formatModelRef(m.providerID, m.id) === model,
   );
+  // Reasoning effort, as the desktop's: "default" (no variant) or one the
+  // model lists. A new session starts on the last used model's variant,
+  // like its model; picking a model goes back to "default".
+  const [pickedVariant, setPickedVariant] = useState<string | null>(null);
+  const lastVariant = useSelector(ocStore.lastUsedModel, (m) => m?.variant);
+  const pinnedVariant =
+    sessionID === null
+      ? lastUsed !== null
+        ? lastVariant
+        : undefined
+      : session?.model?.variant;
+  const variants = currentModel?.variants.map((v) => v.id) ?? [];
+  const variant = pickedVariant ?? pinnedVariant ?? "default";
+  const refOf = (ref: string, v: string): ModelRef => ({
+    ...parseModelRef(ref),
+    ...(v !== "default" ? { variant: v } : {}),
+  });
   const used = sessionID ? lastContextTokens(messages) : undefined;
   const max = currentModel?.limit.context;
   const contextUsage =
     used !== undefined && max !== undefined && max > 0
       ? { used, max, percentage: Math.min(100, (used / max) * 100) }
       : undefined;
-  const onPickModel = (ref: string) => {
-    if (ref === pinned) return;
-    const previous = picked;
+  const switchTo = (ref: string, v: string) => {
+    const previous = { picked, pickedVariant };
     setPicked(ref);
+    setPickedVariant(v);
     if (sessionID === null) return;
     getOcClient()
-      .switchModel(sessionID, parseModelRef(ref))
+      .switchModel(sessionID, refOf(ref, v))
       .catch((err: unknown) => {
         console.error("model switch failed", err);
-        setPicked(previous);
+        setPicked(previous.picked);
+        setPickedVariant(previous.pickedVariant);
       });
+  };
+  const onPickModel = (ref: string) => {
+    if (ref !== model) switchTo(ref, "default");
+  };
+  const onPickVariant = (v: string) => {
+    if (model !== null && v !== variant) switchTo(model, v);
   };
 
   const draftIdRef = useRef(0);
@@ -326,7 +360,13 @@ export function InputBar({
       images.length > 0
         ? images.map(({ data, mediaType }) => ({ data, mediaType }))
         : undefined;
-    onSend?.(text, payload, picked !== null ? parseModelRef(picked) : null);
+    onSend?.(
+      text,
+      payload,
+      (picked !== null || pickedVariant !== null) && model !== null
+        ? refOf(model, variant)
+        : null,
+    );
     setText("");
     setImages([]);
   };
@@ -460,17 +500,42 @@ export function InputBar({
                   title: contextUsage
                     ? `Context usage: ${formatTokensK(contextUsage.used)} / ${formatTokensK(contextUsage.max)}`
                     : undefined,
-                  items: models.map<MenuAction>((m) => {
-                    const ref = formatModelRef(m.providerID, m.id);
-                    return {
-                      actionKey: ref,
-                      title: m.name,
-                      state: ref === model ? "on" : "off",
-                    };
-                  }),
+                  items: [
+                    // The model's reasoning effort, a submenu above the
+                    // models; left out for models without variants.
+                    ...(variants.length > 0
+                      ? [
+                          {
+                            title: "Effort",
+                            subtitle: variantLabel(variant),
+                            image: { systemName: "brain" },
+                            items: ["default", ...variants].map<MenuAction>(
+                              (v) => ({
+                                actionKey: `${EFFORT_KEY}${v}`,
+                                title: variantLabel(v),
+                                state: v === variant ? "on" : "off",
+                              }),
+                            ),
+                          },
+                        ]
+                      : []),
+                    {
+                      options: ["displayInline"],
+                      items: models.map<MenuAction>((m) => {
+                        const ref = formatModelRef(m.providerID, m.id);
+                        return {
+                          actionKey: ref,
+                          title: m.name,
+                          state: ref === model ? "on" : "off",
+                        };
+                      }),
+                    },
+                  ] satisfies MenuElement[],
                 }}
                 onPressAction={(actionKey) => {
-                  onPickModel(actionKey);
+                  if (actionKey.startsWith(EFFORT_KEY))
+                    onPickVariant(actionKey.slice(EFFORT_KEY.length));
+                  else onPickModel(actionKey);
                 }}
               >
                 {/* Context meter — fills the chip background left→right
@@ -495,6 +560,7 @@ export function InputBar({
                   )}
                   <Text className="text-sm text-zinc-700 dark:text-zinc-200">
                     {currentModel?.name ?? "Model"}
+                    {variant !== "default" ? ` · ${variantLabel(variant)}` : ""}
                   </Text>
                 </View>
               </ContextMenu>

@@ -13,3 +13,12 @@ export function parseModelRef(value: string): {
 export function formatModelRef(providerID: string, id: string): string {
   return `${providerID}/${id}`;
 }
+
+/** A reasoning variant as the effort pickers name it: "default" (no
+ *  variant, the model's own setting), "xhigh", or the variant's id. */
+export const variantLabel = (id: string) =>
+  id === "default"
+    ? "Default"
+    : id === "xhigh"
+      ? "Extra high"
+      : id.charAt(0).toUpperCase() + id.slice(1);

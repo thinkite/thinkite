@@ -49,7 +49,7 @@ export {
   subscribeEvents,
 } from "./events.ts";
 export { mintMessageId } from "./identifier.ts";
-export { formatModelRef, parseModelRef } from "./model-ref.ts";
+export { formatModelRef, parseModelRef, variantLabel } from "./model-ref.ts";
 export {
   applySessionEvent,
   type SessionStatus,

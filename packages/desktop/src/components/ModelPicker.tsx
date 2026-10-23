@@ -10,6 +10,7 @@ import {
   formatModelRef,
   type ModelInfo,
   type ModelRef,
+  variantLabel,
 } from "@thinkite/oc-client";
 import { useEffect, useRef } from "react";
 import { ocClient } from "../lib/oc";
@@ -236,14 +237,6 @@ export function modelName(list: ModelList | null, ref: ModelRef): string {
   );
   return model ? displayName(model) : ref.id;
 }
-
-/** A reasoning variant as the effort picker names it. */
-export const variantLabel = (id: string) =>
-  id === "default"
-    ? "Default"
-    : id === "xhigh"
-      ? "Extra high"
-      : id.charAt(0).toUpperCase() + id.slice(1);
 
 /**
  * The reasoning effort picker, as opencode's: "Default" (no variant, the

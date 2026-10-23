@@ -17,6 +17,7 @@ import {
   toolDiffs,
   toolOutput,
   toolSummary,
+  variantLabel,
   visibleMessages,
 } from "@thinkite/oc-client";
 import { useMessages, usePaging, useSession } from "@thinkite/oc-client/react";
@@ -40,7 +41,7 @@ import {
 } from "react";
 import { highlightTokens } from "../lib/highlight";
 import { ocStore } from "../lib/oc";
-import { modelName, useModels, variantLabel } from "./ModelPicker";
+import { modelName, useModels } from "./ModelPicker";
 import {
   agentSessionOf,
   duration,
