@@ -364,6 +364,8 @@ export function Composer({
   return (
     <>
       <ChatComposer
+        // Flat: a border, no shadow.
+        elevation="none"
         onSubmit={submit}
         value={value}
         onChange={onChange}

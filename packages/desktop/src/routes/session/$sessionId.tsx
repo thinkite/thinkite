@@ -392,75 +392,56 @@ function Session({ sessionId }: { sessionId: string }) {
           height="fill"
           content={
             <LayoutContent padding={0}>
-              <div className="flex h-full min-h-0 flex-col">
-                {/* Self-owned transcript shell: the LegendList inside
-                TranscriptPanel is the single scroll writer (landing, follow,
-                scroll button); the composer is a plain flex sibling — no
-                ChatLayout, so nothing else ever touches scrollTop. The whole
-                Session subtree remounts per session (SessionRoute key), so
-                scroll position, the follow lock, and the draft never
-                survive a switch (t3code resets on thread open too).
-                Composer slots stay reserved for their rightful owners
-                (headerContext = context usage, drawer = attachments); the
-                git status bar will wrap this composer in a stack. */}
-                <div className="flex min-h-0 flex-1 flex-col">
-                  <div className="relative min-h-0 flex-1">
-                    <TranscriptPanel
-                      sessionId={sessionId}
-                      isRunning={running}
-                      anchorUuid={anchorUuid}
-                      {...(isChild ? {} : { actions })}
-                      onOpenSession={openSession}
+              {/* Self-owned transcript shell: the LegendList inside
+              TranscriptPanel is the single scroll writer (landing, follow,
+              scroll button), and the composer floats over its bottom edge
+              (LegendList's floating composer, DeepSeek Harness's look): the
+              scrollbar runs the pane's full height, and the list keeps its
+              last rows clear of the card. No ChatLayout, so nothing else
+              ever touches scrollTop. The whole Session subtree remounts per
+              session (SessionRoute key), so scroll position, the follow
+              lock, and the draft never survive a switch (t3code resets on
+              thread open too). */}
+              <TranscriptPanel
+                sessionId={sessionId}
+                isRunning={running}
+                anchorUuid={anchorUuid}
+                {...(isChild ? {} : { actions })}
+                onOpenSession={openSession}
+                composer={
+                  prompt ??
+                  (session.parentID !== undefined ? (
+                    <SubagentNotice parentID={session.parentID} />
+                  ) : (
+                    <Composer
+                      directory={session?.location.directory ?? null}
+                      value={draft}
+                      onChange={setDraft}
+                      onSend={send}
+                      onCommand={runCommand}
+                      builtins={builtins}
+                      accepts={inputsOf(modelInfo)}
+                      onStop={stop}
+                      isStopShown={running}
+                      placeholder={running ? "Queue a message…" : PLACEHOLDER}
+                      error={sendError}
+                      footerActions={
+                        <>
+                          <ModelPicker
+                            value={currentModel}
+                            onChange={pickModel}
+                          />
+                          <VariantPicker
+                            model={modelInfo}
+                            value={currentVariant}
+                            onChange={pickVariant}
+                          />
+                        </>
+                      }
                     />
-                    {/* Fade the scrolled content into the actual backdrop just
-                    above the composer. `to-surface` (astryx tailwind bridge)
-                    = --color-background-surface — what AppShell's content
-                    section paints behind the transcript (measured): white in
-                    light, #262626 in dark. Theme defaults to mode="system",
-                    so a hardcoded white (or card's darker #1b1b1b) would
-                    streak in dark mode. Sits below the scroll button (z-10),
-                    scroll-transparent. */}
-                    <div className="chat-col pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-linear-to-b from-transparent to-surface" />
-                  </div>
-                  {/* composer-col = the reading column with half its padding
-                  (styles.css): the card sits 32px wider than the text. */}
-                  <div className="composer-col shrink-0 pb-4">
-                    {prompt ??
-                      (session.parentID !== undefined ? (
-                        <SubagentNotice parentID={session.parentID} />
-                      ) : (
-                        <Composer
-                          directory={session?.location.directory ?? null}
-                          value={draft}
-                          onChange={setDraft}
-                          onSend={send}
-                          onCommand={runCommand}
-                          builtins={builtins}
-                          accepts={inputsOf(modelInfo)}
-                          onStop={stop}
-                          isStopShown={running}
-                          placeholder={
-                            running ? "Queue a message…" : PLACEHOLDER
-                          }
-                          error={sendError}
-                          footerActions={
-                            <>
-                              <ModelPicker
-                                value={currentModel}
-                                onChange={pickModel}
-                              />
-                              <VariantPicker
-                                model={modelInfo}
-                                value={currentVariant}
-                                onChange={pickVariant}
-                              />
-                            </>
-                          }
-                        />
-                      ))}
-                  </div>
-                </div>
-              </div>
+                  ))
+                }
+              />
             </LayoutContent>
           }
           end={

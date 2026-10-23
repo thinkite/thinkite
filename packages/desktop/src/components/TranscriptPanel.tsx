@@ -30,7 +30,14 @@ import {
   SplitIcon,
   Undo2Icon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { highlightTokens } from "../lib/highlight";
 import { ocStore } from "../lib/oc";
 import { modelName, useModels, variantLabel } from "./ModelPicker";
@@ -607,14 +614,90 @@ function renderRow(
 
 const EMPTY_NOTICE = "Nothing here yet — send a prompt to start the session.";
 
+/** How long a transcript waits for the list's onReady before showing. */
+const READY_FALLBACK_MS = 800;
+
+/** The composer's height when it was last measured, for the next
+ *  transcript to start from (every session screen mounts its own). */
+let lastComposerHeight = 0;
+
+/** Space between the last row and the composer card. */
+const COMPOSER_GAP = 12;
+
+/** Whether `el` scrolls itself in the direction of `deltaY`. */
+function scrollsItself(el: HTMLElement, deltaY: number): boolean {
+  const { overflowY } = getComputedStyle(el);
+  if (overflowY !== "auto" && overflowY !== "scroll") return false;
+  return deltaY < 0
+    ? el.scrollTop > 0
+    : el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+}
+
+/**
+ * The band the composer floats in at the transcript's bottom (styles.css
+ * composer-seat): it stops short of the scrollbar, and lets the pointer
+ * through around the card. Reports the composer's height for the list to
+ * end above it, and sends the wheel over the card to the list, as DeepSeek
+ * Harness's in-flow composer gets for free — unless the draft (or a menu
+ * in the card) can scroll that way itself.
+ */
+function ComposerSeat({
+  onHeight,
+  onWheel,
+  children,
+}: {
+  onHeight: (height: number) => void;
+  onWheel: (deltaY: number) => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const handlers = useRef({ onHeight, onWheel });
+  handlers.current = { onHeight, onWheel };
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const measure = () => {
+      lastComposerHeight = el.getBoundingClientRect().height;
+      handlers.current.onHeight(lastComposerHeight);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div className="composer-seat pointer-events-none absolute bottom-0 left-0 right-[calc(var(--scrollbar-size)+2px)] z-10">
+      <div
+        ref={ref}
+        className="composer-col pointer-events-auto pb-4"
+        onWheel={(e) => {
+          for (
+            let el = e.target as HTMLElement | null;
+            el !== null && el !== e.currentTarget;
+            el = el.parentElement
+          )
+            if (scrollsItself(el, e.deltaY)) return;
+          handlers.current.onWheel(e.deltaY);
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function TranscriptPanel({
   sessionId,
   isRunning,
   anchorUuid = null,
   actions,
   onOpenSession,
+  composer,
 }: {
   sessionId: string;
+  /** Floats over the transcript's bottom edge (the composer, or what
+   *  stands in for it); the list keeps its last rows clear of it. */
+  composer?: ReactNode;
   /** Revert, fork and redo; without them prompts offer only copy. */
   actions?: MessageActions;
   /** Open a subagent's session from its line. */
@@ -704,7 +787,19 @@ export function TranscriptPanel({
   // same isAtEnd the maintainScrollAtEnd machinery uses, so button visibility
   // can never disagree with whether the list is actually following.
   const [atEnd, setAtEnd] = useState(true);
+  // Starts at the last composer's height: the list places its rows on
+  // mount, before the seat can measure, and a 0 there lands it short.
+  const [composerHeight, setComposerHeight] = useState(lastComposerHeight);
   const hasRows = rows.length > 0;
+  // Hidden until the list has placed its rows and landed at the end
+  // (onReady), so a session doesn't show its rows at a provisional spot and
+  // then jump. A list that never reports ready still shows after a moment.
+  const [isPlaced, setPlaced] = useState(false);
+  useEffect(() => {
+    if (!hasRows || isPlaced) return;
+    const timer = setTimeout(() => setPlaced(true), READY_FALLBACK_MS);
+    return () => clearTimeout(timer);
+  }, [hasRows, isPlaced]);
   useEffect(() => {
     if (!hasRows) return;
     const state = listRef.current?.getState();
@@ -721,22 +816,49 @@ export function TranscriptPanel({
     void listRef.current?.scrollToEnd({ animated: true });
   }, [anchorUuid]);
 
+  const seat = (
+    <ComposerSeat
+      onHeight={setComposerHeight}
+      onWheel={(deltaY) =>
+        listRef.current?.getScrollableNode()?.scrollBy({ top: deltaY })
+      }
+    >
+      {/* Above the seat's top edge, clear of the card. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-full z-10 [&_button]:pointer-events-auto">
+        <ChatLayoutScrollButton
+          isVisible={hasRows && !atEnd}
+          onClick={() => {
+            void listRef.current?.scrollToEnd({ animated: true });
+          }}
+        />
+      </div>
+      {composer}
+    </ComposerSeat>
+  );
+
   if (!hasRows) {
     return (
-      <div className="flex h-full items-center justify-center">
-        {!paging.hydrated || isRunning === true ? (
-          <Spinner size="sm" label="Loading transcript…" />
-        ) : (
-          <Text size="sm" color="secondary">
-            {EMPTY_NOTICE}
-          </Text>
-        )}
+      <div className="relative h-full w-full min-w-0">
+        <div className="flex h-full items-center justify-center">
+          {!paging.hydrated || isRunning === true ? (
+            <Spinner size="sm" label="Loading transcript…" />
+          ) : (
+            <Text size="sm" color="secondary">
+              {EMPTY_NOTICE}
+            </Text>
+          )}
+        </div>
+        {seat}
       </div>
     );
   }
 
   return (
-    <div role="log" aria-label="Transcript" className="relative h-full">
+    <div
+      role="log"
+      aria-label="Transcript"
+      className="relative h-full w-full min-w-0"
+    >
       <LegendList
         ref={listRef}
         data={rows}
@@ -759,31 +881,42 @@ export function TranscriptPanel({
         {...(anchoredEndSpace !== undefined ? { anchoredEndSpace } : {})}
         maintainScrollAtEnd
         maintainVisibleContentPosition
+        onReady={() => setPlaced(true)}
+        // The composer floats over the list (LegendList's floating-composer
+        // pattern): the list ends this far above the pane's bottom edge, and
+        // keeps following the end as the composer grows or shrinks.
+        contentInsetEndAdjustment={composerHeight + COMPOSER_GAP}
         // Older pages: half a viewport from the top asks for the next page;
         // the store ignores the call while one is in flight.
         onStartReached={
           hasOlder ? () => void ocStore.loadOlder(sessionId) : undefined
         }
         onStartReachedThreshold={0.5}
-        ListHeaderComponent={<OlderHeader loading={paging.loadingOlder} />}
+        // The 16px above the first row lives in the header, which the list
+        // measures: padding on the scroller or its content leaves the end
+        // that much short of the bottom.
+        ListHeaderComponent={
+          <div className="pt-4">
+            <OlderHeader loading={paging.loadingOlder} />
+          </div>
+        }
         ListFooterComponent={
           <WorkingFooter active={isThinking} since={turnStarted} />
         }
         // t3code container hygiene: horizontal padding lives on the scroll
         // container (rows stay full-width), overscroll stays contained, and
         // the gutter is reserved so the scrollbar never reflows content.
-        // overflow-anchor: none is already set by the list itself.
-        className="pt-4 overscroll-y-contain scrollbar-gutter-stable"
-        style={{ height: "100%" }}
+        // overflow-anchor: none is already set by the list itself. The bar
+        // sits 2px clear of the pane's edge (DeepSeek Harness's offset) and
+        // runs the full height, past the composer.
+        className="mr-0.5 overscroll-y-contain scrollbar-gutter-stable"
+        style={{
+          height: "100%",
+          opacity: isPlaced ? 1 : 0,
+          transition: "opacity 120ms",
+        }}
       />
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 [&_button]:pointer-events-auto">
-        <ChatLayoutScrollButton
-          isVisible={!atEnd}
-          onClick={() => {
-            void listRef.current?.scrollToEnd({ animated: true });
-          }}
-        />
-      </div>
+      {seat}
     </div>
   );
 }

@@ -51,6 +51,54 @@ body {
   padding-inline: 1rem;
 }
 
+/* Scrollbars, after DeepSeek Harness's (ui-theme scrollbar.css): a thin
+   pill on a transparent track, in every scrolling region. A non-auto
+   `scrollbar-width` or `scrollbar-color` would make Chromium drop these
+   rules, so only engines without them get the standard properties. */
+:root {
+  --scrollbar-size: 5px;
+  --scrollbar-thumb: light-dark(rgb(229 229 229), rgb(60 60 61));
+  --scrollbar-thumb-hover: light-dark(rgb(212 212 212), rgb(84 85 87));
+}
+@supports not selector(::-webkit-scrollbar) {
+  body,
+  body * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+}
+::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* The band the composer floats in over the transcript's bottom
+   (TranscriptPanel), after DeepSeek Harness's composer seat: the transcript
+   fades out under a fixed 36px band at its top, solid below, so a taller
+   draft only widens the solid part. It stops short of the scrollbar, which
+   runs to the bottom of the pane. */
+@utility composer-seat {
+  padding-top: 36px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0px,
+    var(--color-background-surface) 36px
+  );
+}
+
 /* Window dragging in the Electron shell (lib/desktop-shell), after
    DeepSeek Harness's base.css: a chrome row marks itself
    `data-window-drag`, and the controls inside it, and anything that floats
