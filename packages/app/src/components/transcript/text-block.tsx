@@ -1,8 +1,7 @@
 import { Text, View } from "react-native";
 import { ImageStack } from "@/components/image-stack";
-import { materializeImagesSync } from "@/lib/image-cache";
 import { ChatMarkdown } from "@/lib/markdown";
-import type { TextRenderBlock } from "@/lib/transcript-blocks";
+import { imageUri, type TextRenderBlock } from "@/lib/transcript-blocks";
 
 /**
  * Chat-mode rendering: user messages get a right-aligned blue bubble
@@ -40,19 +39,14 @@ export function TextBlock({
   streaming?: boolean;
 }) {
   if (block.role === "user") {
-    // Materialize base64 → file:// URIs inline. Sync (new
-    // expo-file-system API), cache-hit fast path on re-render so this
-    // is cheap even if TextBlock re-renders frequently. See
-    // image-cache.ts header for why file:// URIs are required (Galeria
-    // SDWebImage doesn't decode data: URIs).
-    const fileUris =
+    const uris =
       block.images && block.images.length > 0
-        ? materializeImagesSync(block.images)
+        ? block.images.map(imageUri)
         : undefined;
     const hasText = block.text.length > 0;
     return (
       <View className="px-4 py-2.5 items-end gap-2">
-        {fileUris && <ImageStack urls={fileUris} />}
+        {uris && <ImageStack urls={uris} />}
         {hasText && (
           <View className="max-w-[85%] rounded-xl bg-[#0A0A0A0F] dark:bg-[#FAFAFA14] px-3 py-2">
             <Text

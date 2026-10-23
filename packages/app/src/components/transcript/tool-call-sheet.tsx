@@ -1,3 +1,4 @@
+import { Galeria } from "@nandorojo/galeria";
 import { ModalBottomSheet } from "@swmansion/react-native-bottom-sheet";
 import { Asset } from "expo-asset";
 import {
@@ -23,8 +24,11 @@ import { KeyboardController } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkingTreeDiff } from "@/hooks/use-working-tree-diff";
 import { ChatMarkdown } from "@/lib/markdown";
+import { Image } from "@/lib/styled";
 import { toolVerb } from "@/lib/tool-verbs";
 import {
+  type ImageAttachment,
+  imageUri,
   isToolError,
   type ToolDetail,
   type ToolRenderBlock,
@@ -419,6 +423,16 @@ type Descriptor =
 function describeDetail(block: ToolRenderBlock): Descriptor {
   const isError = isToolError(block);
   const { detail, error } = block;
+  if (block.images !== undefined && !isError) {
+    // A read of a picture only says it read it; other tools (a screenshot)
+    // keep their text under the images.
+    const text =
+      detail.type !== "read" && "output" in detail ? detail.output : "";
+    return {
+      mode: "native",
+      node: <ToolImages images={block.images} text={text} />,
+    };
+  }
   switch (detail.type) {
     case "bash": {
       // Command (with `$ `/`> ` prefixes) + captured output, like Claude Desktop.
@@ -503,6 +517,47 @@ function basename(p: string): string {
 }
 
 // ─── Native bodies ─────────────────────────────────────────────────────────
+
+/**
+ * The images a tool returned: one fills the sheet's width, more sit two to
+ * a row as square tiles, as in opencode's app. A tap opens Galeria's
+ * full-screen viewer, which pages through all of them.
+ */
+function ToolImages({
+  images,
+  text,
+}: {
+  images: ImageAttachment[];
+  text: string;
+}) {
+  const { width } = useWindowDimensions();
+  const uris = images.map(imageUri);
+  const inner = width - NATIVE_CONTENT.padding * 2;
+  const tile =
+    uris.length === 1
+      ? { width: inner, height: Math.round(inner * 0.75) }
+      : { width: (inner - 8) / 2, height: (inner - 8) / 2 };
+  return (
+    <View className="gap-4">
+      <Galeria urls={uris}>
+        <View className="flex-row flex-wrap gap-2">
+          {uris.map((uri, i) => (
+            // A finished tool's images never change.
+            <Galeria.Image key={i} index={i}>
+              <Image
+                source={{ uri }}
+                style={tile}
+                className="rounded-xl bg-gray-100 dark:bg-gray-900"
+                contentFit="contain"
+              />
+            </Galeria.Image>
+          ))}
+        </View>
+      </Galeria>
+      {text.length > 0 ? <FieldText>{text}</FieldText> : null}
+    </View>
+  );
+}
 
 function EmptyOutput() {
   return (

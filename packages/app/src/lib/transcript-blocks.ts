@@ -2,6 +2,7 @@ import {
   type PromptFile,
   type SessionMessageInfo,
   toolDiffs,
+  toolImages,
   toolOutput,
   toolSummary,
 } from "@thinkite/oc-client";
@@ -19,12 +20,17 @@ export interface ImageAttachment {
   mediaType: string;
 }
 
+/** An image as a `data:` URI, which expo-image and Galeria both load. */
+export function imageUri(image: ImageAttachment): string {
+  return `data:${image.mediaType};base64,${image.data}`;
+}
+
 /** Picked images as prompt files: inline data URIs the service stores as-is. */
 export function toPromptFiles(
   images: readonly ImageAttachment[] | undefined,
 ): PromptFile[] {
   return (images ?? []).map((image, i) => ({
-    uri: `data:${image.mediaType};base64,${image.data}`,
+    uri: imageUri(image),
     name: `image-${i + 1}.${image.mediaType.split("/")[1] ?? "jpg"}`,
   }));
 }
@@ -37,9 +43,7 @@ export interface TextRenderBlock {
   id: string;
   role: "user" | "assistant";
   text: string;
-  /** Images on a user message, in the order they were picked. The render
-   *  layer materializes them to `file://` URIs via `image-cache.ts` —
-   *  Galeria's native iOS viewer can't decode `data:` URIs directly. */
+  /** Images on a user message, in the order they were picked. */
   images?: ImageAttachment[];
 }
 
@@ -57,6 +61,9 @@ export interface ToolRenderBlock {
   error: string | null;
   /** What the shared tool sheet shows; it dispatches on `detail.type`. */
   detail: ToolDetail;
+  /** Images the tool returned (a read of a picture, a screenshot), which
+   *  the sheet shows in place of `detail`'s text. */
+  images?: ImageAttachment[];
 }
 
 /** A one-line system notice: compaction, a model or agent switch, a failed turn. */
@@ -217,8 +224,18 @@ export function isToolError(block: ToolRenderBlock): boolean {
   );
 }
 
+/** A tool's image as an attachment; the service inlines them as base64
+ *  `data:` URIs. */
+function attachmentOf(uri: string): ImageAttachment[] {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(uri);
+  return match
+    ? [{ mediaType: match[1] as string, data: match[2] as string }]
+    : [];
+}
+
 function toolBlock(tool: ToolItem, id: string): ToolRenderBlock {
   const detail = toolDetail(tool);
+  const returned = toolImages(tool).flatMap((image) => attachmentOf(image.uri));
   return {
     kind: "tool",
     id,
@@ -229,6 +246,7 @@ function toolBlock(tool: ToolItem, id: string): ToolRenderBlock {
     status: STATUS[tool.state.status],
     error: tool.state.status === "error" ? tool.state.error.message : null,
     detail,
+    ...(returned.length > 0 ? { images: returned } : {}),
   };
 }
 
