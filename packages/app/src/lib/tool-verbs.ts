@@ -31,6 +31,17 @@ export function toolVerb(detail: ToolDetail): string {
       return "Fetched";
     case "web_search":
       return "Searched web";
+    // The question tool reads as opencode's app has it: the question's
+    // header before its answer (transcript-blocks' questionSummary).
+    case "question": {
+      if (detail.waiting) return "Needs your input";
+      const [only] = detail.questions;
+      if (detail.questions.length === 1 && only !== undefined)
+        return only.header || "Question";
+      return detail.dismissed
+        ? "Questions"
+        : `Answered ${detail.questions.length} questions`;
+    }
     case "unknown":
       return `Used ${detail.toolName}`;
   }

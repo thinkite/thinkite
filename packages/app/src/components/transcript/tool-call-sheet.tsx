@@ -24,7 +24,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkingTreeDiff } from "@/hooks/use-working-tree-diff";
 import { ChatMarkdown } from "@/lib/markdown";
 import { toolVerb } from "@/lib/tool-verbs";
-import type { ToolDetail, ToolRenderBlock } from "@/lib/transcript-blocks";
+import {
+  isToolError,
+  type ToolDetail,
+  type ToolRenderBlock,
+} from "@/lib/transcript-blocks";
 import workerPortableAsset from "../../../assets/pierre/worker-portable.pwt";
 import PierreView from "./pierre-view";
 
@@ -301,7 +305,7 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
             >
               <Text
                 className={
-                  showing.block.status === "failed"
+                  isToolError(showing.block)
                     ? "text-red-600 dark:text-red-400"
                     : "text-gray-500 dark:text-gray-400"
                 }
@@ -413,7 +417,7 @@ type Descriptor =
  * ScrollView.
  */
 function describeDetail(block: ToolRenderBlock): Descriptor {
-  const isError = block.status === "failed";
+  const isError = isToolError(block);
   const { detail, error } = block;
   switch (detail.type) {
     case "bash": {
@@ -476,6 +480,9 @@ function describeDetail(block: ToolRenderBlock): Descriptor {
     case "agent":
       if (isError) return errorNative(error ?? "Agent failed.");
       return { mode: "native", node: <AgentDetail detail={detail} /> };
+    case "question":
+      if (isError) return errorNative(error ?? "Question failed.");
+      return { mode: "native", node: <QuestionDetail detail={detail} /> };
     case "unknown":
       return {
         mode: "native",
@@ -610,6 +617,31 @@ function AgentDetail({
           <EmptyOutput />
         )}
       </View>
+    </View>
+  );
+}
+
+/** Each question the agent asked, under its header, with the answer. */
+function QuestionDetail({
+  detail,
+}: {
+  detail: Extract<ToolDetail, { type: "question" }>;
+}) {
+  return (
+    <View className="gap-3">
+      {detail.questions.map((q, i) => (
+        <View key={i}>
+          <SectionLabel>{q.header || `Question ${i + 1}`}</SectionLabel>
+          <FieldText>{q.question}</FieldText>
+          <Text className="mt-1 text-base font-medium text-gray-900 dark:text-gray-100">
+            {detail.waiting
+              ? "Waiting for your answer"
+              : detail.dismissed
+                ? "Dismissed"
+                : q.answer.join(", ") || "Unanswered"}
+          </Text>
+        </View>
+      ))}
     </View>
   );
 }

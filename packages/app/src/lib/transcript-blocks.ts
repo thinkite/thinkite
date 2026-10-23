@@ -83,6 +83,16 @@ export type ToolDetail =
     }
   | { type: "web_fetch"; url: string; output: string }
   | { type: "web_search"; query: string; output: string }
+  | {
+      type: "question";
+      /** Each question with its short header and the answer given (empty
+       *  until answered, or when left unanswered). */
+      questions: { header: string; question: string; answer: string[] }[];
+      /** Waiting on the user; the prompt card is up. */
+      waiting: boolean;
+      /** The user dismissed it (the card's ×) rather than answering. */
+      dismissed: boolean;
+    }
   | { type: "unknown"; toolName: string; input: unknown; output: string };
 
 type AssistantMessage = Extract<SessionMessageInfo, { type: "assistant" }>;
@@ -149,21 +159,76 @@ function toolDetail(tool: ToolItem): ToolDetail {
       return { type: "web_fetch", url: text(input.url), output };
     case "websearch":
       return { type: "web_search", query: text(input.query), output };
+    case "question":
+      return questionDetail(tool, input);
     default:
       return { type: "unknown", toolName: tool.name, input: raw, output };
   }
 }
 
+/** The question tool's questions and answers: its input lists the
+ *  questions, its metadata the answers in the same order. A dismissal ends
+ *  it as an "aborted" error. */
+function questionDetail(
+  tool: ToolItem,
+  input: Record<string, unknown>,
+): ToolDetail {
+  const state = tool.state as {
+    status: string;
+    metadata?: { answers?: unknown };
+    error?: { type?: string };
+  };
+  const answers = Array.isArray(state.metadata?.answers)
+    ? state.metadata.answers
+    : [];
+  const asked = Array.isArray(input.questions) ? input.questions : [];
+  return {
+    type: "question",
+    questions: asked.map((q: Record<string, unknown>, i) => {
+      const answer: unknown = answers[i];
+      return {
+        header: text(q?.header),
+        question: text(q?.question),
+        answer: Array.isArray(answer) ? answer.map(String) : [],
+      };
+    }),
+    waiting: state.status === "running" || state.status === "streaming",
+    dismissed: state.status === "error" && state.error?.type === "aborted",
+  };
+}
+
+/** A question's row after opencode's app: "Color · Red", "Pets ·
+ *  Dismissed", "Answered 2 questions"; the verb (toolVerb) is the muted
+ *  part and this the rest. */
+function questionSummary(detail: ToolDetail): string {
+  if (detail.type !== "question" || detail.waiting) return "";
+  if (detail.dismissed) return "· Dismissed";
+  const [only] = detail.questions;
+  if (detail.questions.length !== 1 || only === undefined) return "";
+  return `· ${only.answer.join(", ") || "Unanswered"}`;
+}
+
+/** A failed call, which its row shows in red. A dismissed question isn't
+ *  one: the user chose not to answer. */
+export function isToolError(block: ToolRenderBlock): boolean {
+  return (
+    block.status === "failed" &&
+    !(block.detail.type === "question" && block.detail.dismissed)
+  );
+}
+
 function toolBlock(tool: ToolItem, id: string): ToolRenderBlock {
+  const detail = toolDetail(tool);
   return {
     kind: "tool",
     id,
     callId: tool.id,
     name: tool.name,
-    summary: toolSummary(tool),
+    summary:
+      detail.type === "question" ? questionSummary(detail) : toolSummary(tool),
     status: STATUS[tool.state.status],
     error: tool.state.status === "error" ? tool.state.error.message : null,
-    detail: toolDetail(tool),
+    detail,
   };
 }
 

@@ -1,6 +1,6 @@
 import { Pressable, Text } from "react-native";
 import { toolVerb } from "@/lib/tool-verbs";
-import type { ToolRenderBlock } from "@/lib/transcript-blocks";
+import { isToolError, type ToolRenderBlock } from "@/lib/transcript-blocks";
 import { useToolCallSheet } from "./tool-call-sheet";
 
 /**
@@ -28,7 +28,7 @@ import { useToolCallSheet } from "./tool-call-sheet";
  */
 export function ToolBlock({ block }: { block: ToolRenderBlock }) {
   const { openToolCall } = useToolCallSheet();
-  const isError = block.status === "failed";
+  const isError = isToolError(block);
 
   return (
     <Pressable onPress={() => openToolCall(block)} className="px-4 py-1.5">
