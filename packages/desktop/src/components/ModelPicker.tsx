@@ -287,6 +287,9 @@ export function VariantPicker({
       isLabelHidden
       variant="ghost"
       size="sm"
+      // The composer sits at the bottom of the window: laid over the
+      // trigger, the list ran past it.
+      placement="above"
       options={ids.map((id) => ({ value: id, label: variantLabel(id) }))}
       value={current}
       onChange={onChange}
