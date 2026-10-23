@@ -66,15 +66,16 @@ export default function MainLayout() {
           name="cwd-picker"
           options={{ presentation: "formSheet", sheetGrabberVisible: true }}
         />
-        {/* Model picker — the composer chip's sheet: half height to
-            start, full when dragged or scrolled to its top edge; an inner
-            Stack carries its search bar. */}
+        {/* Model picker — the composer chip's sheet. Its first page is
+            two or three rows, so it opens low; the model list it pushes
+            grows it to full height when scrolled or searched (or
+            dragged). An inner Stack carries the header and search bar. */}
         <Stack.Screen
           name="model-picker"
           options={{
             presentation: "formSheet",
             sheetGrabberVisible: true,
-            sheetAllowedDetents: [0.6, 1],
+            sheetAllowedDetents: [0.4, 1],
           }}
         />
         {/* Dev probe pages — keep as standard pushes, no modal. */}

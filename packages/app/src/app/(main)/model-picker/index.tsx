@@ -16,79 +16,49 @@ import {
   pickerStyle,
   tag,
 } from "@expo/ui/swift-ui/modifiers";
-import { type ModelInfo, variantLabel } from "@thinkite/oc-client";
+import { variantLabel } from "@thinkite/oc-client";
 import { router, Stack, useLocalSearchParams } from "expo-router";
-import { useMemo, useState } from "react";
+import { PlatformColor } from "react-native";
 import {
   formatTokens,
   pickModel,
   useContextUsage,
   useModelChoice,
 } from "@/hooks/use-model-choice";
-import { useOcProviders } from "@/hooks/use-oc-models";
-import {
-  displayName,
-  isFreeModel,
-  modelSections,
-  refOf,
-} from "@/lib/model-catalog";
+import { displayName } from "@/lib/model-catalog";
 
 /**
- * The composer's model picker: a formSheet over the session (or the new
- * session), opened from the composer's model chip. The UIMenu it replaces
- * could not search a catalog of a hundred-odd models, and nested variant
- * submenus scrolled out of reach.
+ * The composer's model picker, first level: what the composer runs on, as
+ * Settings-style rows. A formSheet over the session (or the new session),
+ * opened from the composer's model chip.
  *
  *   [×]            Model
- *   [ Search models          ]
- *   ── DeepSeek V4.1 Flash ──
- *   Effort   [Default|Low|High|Max]
- *   Context            145k / 1M
- *   ── OpenCode Zen ──
- *   Big Pickle                  ✓
- *   …
+ *   Model     DeepSeek V4.1 Flash ›    → models.tsx (search, by provider)
+ *   Effort                  High ⌃⌄    a menu picker, applied at once
+ *   Context              461k / 1M
  *
- * The current model's section comes first: its effort is a segmented
- * picker (applied at once, the sheet stays) and its context use. Then the
- * catalog by provider, the newest of each family unless searching
- * (lib/model-catalog). Tapping a model picks it at its default effort and
- * closes the sheet. Picks go through `pickModel`: a session switches right
+ * Effort is the row people change most, so it sits here rather than behind
+ * the model list; it shows only for a model that lists variants. Picking
+ * a model on the next page comes back here with effort at Default. Picks
+ * go through `pickModel` (hooks/use-model-choice): a session switches right
  * away; the new session's draft waits for create.
  *
  * Params: `session` (a session id), or `directory` for the new session
- * (the folder whose default model it shows until a pick).
+ * (the folder whose default model it shows until a pick). The model list
+ * gets the same.
  */
 export default function ModelPickerScreen() {
-  const { session, directory } = useLocalSearchParams<{
+  const params = useLocalSearchParams<{
     session?: string;
     directory?: string;
   }>();
-  const sessionID = session ?? null;
-  const choice = useModelChoice(sessionID, directory);
-  const providers = useOcProviders();
+  const sessionID = params.session ?? null;
+  const choice = useModelChoice(sessionID, params.directory);
   const usage = useContextUsage(sessionID, choice.info?.limit.context);
-  const [query, setQuery] = useState("");
-  const sections = useMemo(
-    () => modelSections(choice.models, providers, choice.model, query),
-    [choice.models, providers, choice.model, query],
-  );
   const variants = choice.info?.variants.map((v) => v.id) ?? [];
-
-  const pick = (m: ModelInfo) => {
-    const ref = refOf(m);
-    if (ref !== choice.model) pickModel(sessionID, ref, "default");
-    router.back();
-  };
 
   return (
     <>
-      <Stack.SearchBar
-        placeholder="Search models"
-        hideWhenScrolling={false}
-        autoCapitalize="none"
-        onChangeText={(e) => setQuery(e.nativeEvent.text)}
-        onCancelButtonPress={() => setQuery("")}
-      />
       {/* Host scoped to the toolbar: the expo/expo#44493 workaround the
           cwd picker documents (a sheet's toolbar loses its handlers on a
           second presentation otherwise). */}
@@ -96,6 +66,8 @@ export default function ModelPickerScreen() {
         <Stack.Toolbar placement="left">
           <Stack.Toolbar.Button
             icon="xmark"
+            // The sheet's first page: back closes it. (Not dismissTo("/")
+            // as in the cwd picker — from a session, "/" is the new one.)
             onPress={() => router.back()}
             accessibilityLabel="Close"
           />
@@ -103,85 +75,61 @@ export default function ModelPickerScreen() {
       </Host>
       <Host style={{ flex: 1 }}>
         <Form>
-          {choice.info !== undefined &&
-          query === "" &&
-          (variants.length > 0 || usage !== undefined) ? (
-            <Section title={displayName(choice.info)}>
-              {variants.length > 0 ? (
-                <Picker
-                  label="Effort"
-                  selection={choice.variant}
-                  onSelectionChange={(v: string) => {
-                    if (choice.model !== null && v !== choice.variant)
-                      pickModel(sessionID, choice.model, v);
-                  }}
-                  modifiers={[pickerStyle("segmented")]}
-                >
-                  {["default", ...variants].map((v) => (
-                    <SwiftText key={v} modifiers={[tag(v)]}>
-                      {variantLabel(v)}
-                    </SwiftText>
-                  ))}
-                </Picker>
-              ) : null}
-              {usage !== undefined ? (
-                <LabeledContent label="Context">
-                  <SwiftText modifiers={[foregroundStyle("secondary")]}>
-                    {`${formatTokens(usage.used)} / ${formatTokens(usage.max)}`}
-                  </SwiftText>
-                </LabeledContent>
-              ) : null}
-            </Section>
-          ) : null}
-          {sections.map((s) => (
-            <Section key={s.providerID} title={s.title}>
-              {s.models.map((m) => (
-                <ModelRow
-                  key={refOf(m)}
-                  model={m}
-                  isCurrent={refOf(m) === choice.model}
-                  onPress={() => pick(m)}
+          <Section>
+            {/* A bare swift-ui Button so the Form styles it as a list row
+                (see folder-list.ios.tsx on why not the universal Button). */}
+            <Button
+              onPress={() =>
+                router.push({ pathname: "/model-picker/models", params })
+              }
+            >
+              <HStack alignment="center" spacing={8}>
+                <SwiftText modifiers={[foregroundStyle("primary")]}>
+                  Model
+                </SwiftText>
+                <Spacer />
+                <SwiftText modifiers={[foregroundStyle("secondary")]}>
+                  {choice.info !== undefined
+                    ? displayName(choice.info)
+                    : (choice.model ?? "")}
+                </SwiftText>
+                {/* A color of its own: a Button tints its image with the
+                    accent, and a navigation row's chevron is gray. */}
+                <Image
+                  systemName="chevron.right"
+                  size={13}
+                  color={PlatformColor("tertiaryLabel")}
+                  modifiers={[font({ weight: "semibold" })]}
                 />
-              ))}
-            </Section>
-          ))}
+              </HStack>
+            </Button>
+            {variants.length > 0 ? (
+              <Picker
+                label="Effort"
+                selection={choice.variant}
+                onSelectionChange={(v: string) => {
+                  if (choice.model !== null && v !== choice.variant)
+                    pickModel(sessionID, choice.model, v);
+                }}
+                modifiers={[pickerStyle("menu")]}
+              >
+                {["default", ...variants].map((v) => (
+                  <SwiftText key={v} modifiers={[tag(v)]}>
+                    {variantLabel(v)}
+                  </SwiftText>
+                ))}
+              </Picker>
+            ) : null}
+            {usage !== undefined ? (
+              <LabeledContent label="Context">
+                <SwiftText modifiers={[foregroundStyle("secondary")]}>
+                  {`${formatTokens(usage.used)} / ${formatTokens(usage.max)}`}
+                </SwiftText>
+              </LabeledContent>
+            ) : null}
+          </Section>
         </Form>
       </Host>
     </>
-  );
-}
-
-/** A model: its name, "Free" for opencode's free ones, a check on the
- *  current one. A bare swift-ui Button so the Form styles it as a list row
- *  (see folder-list.ios.tsx on why not the universal Button). */
-function ModelRow({
-  model,
-  isCurrent,
-  onPress,
-}: {
-  model: ModelInfo;
-  isCurrent: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Button onPress={onPress}>
-      <HStack alignment="center" spacing={8}>
-        <SwiftText modifiers={[foregroundStyle("primary")]}>
-          {displayName(model)}
-        </SwiftText>
-        <Spacer />
-        {isFreeModel(model) ? (
-          <SwiftText
-            modifiers={[
-              font({ textStyle: "footnote" }),
-              foregroundStyle("secondary"),
-            ]}
-          >
-            Free
-          </SwiftText>
-        ) : null}
-        {isCurrent ? <Image systemName="checkmark" size={15} /> : null}
-      </HStack>
-    </Button>
   );
 }
