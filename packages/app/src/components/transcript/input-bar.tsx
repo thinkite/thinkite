@@ -111,9 +111,9 @@ const JPEG_QUALITY = 0.85;
  *  Tune in one spot. */
 const MAX_TOTAL_IMAGES = 8;
 
-/** Prefix of the effort rows' action keys in the model menu; model rows
- *  are keyed `providerID/modelID`. */
-const EFFORT_KEY = "effort:";
+/** Joins a model and a reasoning variant in the model menu's action keys:
+ *  `providerID/modelID` + this + the variant ("default" for none). */
+const VARIANT_SEP = "\t";
 
 async function compressToAttachment(
   uri: string,
@@ -240,7 +240,6 @@ export function InputBar({
         ? lastVariant
         : undefined
       : session?.model?.variant;
-  const variants = currentModel?.variants.map((v) => v.id) ?? [];
   const variant = pickedVariant ?? pinnedVariant ?? "default";
   const refOf = (ref: string, v: string): ModelRef => ({
     ...parseModelRef(ref),
@@ -265,11 +264,8 @@ export function InputBar({
         setPickedVariant(previous.pickedVariant);
       });
   };
-  const onPickModel = (ref: string) => {
-    if (ref !== model) switchTo(ref, "default");
-  };
-  const onPickVariant = (v: string) => {
-    if (model !== null && v !== variant) switchTo(model, v);
+  const onPick = (ref: string, v: string) => {
+    if (ref !== model || v !== variant) switchTo(ref, v);
   };
 
   const draftIdRef = useRef(0);
@@ -486,9 +482,12 @@ export function InputBar({
                   />
                 </View>
               </ContextMenu>
-              {/* Model picker chip — flat nitro tap menu (UIMenu on iOS,
+              {/* Model picker chip — nitro tap menu (UIMenu on iOS,
                   PopupMenu on Android). One row per model the service offers;
-                  `state: "on"` on the active row gives the native ✓. */}
+                  `state: "on"` on the active row gives the native ✓. A model
+                  with reasoning variants is a submenu of its efforts
+                  (Default first), so picking one picks the model too; its
+                  row names the current effort. */}
               <ContextMenu
                 trigger="tap"
                 menuConfig={{
@@ -500,42 +499,37 @@ export function InputBar({
                   title: contextUsage
                     ? `Context usage: ${formatTokensK(contextUsage.used)} / ${formatTokensK(contextUsage.max)}`
                     : undefined,
-                  items: [
-                    // The model's reasoning effort, a submenu above the
-                    // models; left out for models without variants.
-                    ...(variants.length > 0
-                      ? [
-                          {
-                            title: "Effort",
+                  items: models.map<MenuElement>((m) => {
+                    const ref = formatModelRef(m.providerID, m.id);
+                    const isCurrent = ref === model;
+                    if (m.variants.length === 0)
+                      return {
+                        actionKey: `${ref}${VARIANT_SEP}default`,
+                        title: m.name,
+                        state: isCurrent ? "on" : "off",
+                      };
+                    return {
+                      title: m.name,
+                      ...(isCurrent
+                        ? {
                             subtitle: variantLabel(variant),
-                            image: { systemName: "brain" },
-                            items: ["default", ...variants].map<MenuAction>(
-                              (v) => ({
-                                actionKey: `${EFFORT_KEY}${v}`,
-                                title: variantLabel(v),
-                                state: v === variant ? "on" : "off",
-                              }),
-                            ),
-                          },
-                        ]
-                      : []),
-                    {
-                      options: ["displayInline"],
-                      items: models.map<MenuAction>((m) => {
-                        const ref = formatModelRef(m.providerID, m.id);
-                        return {
-                          actionKey: ref,
-                          title: m.name,
-                          state: ref === model ? "on" : "off",
-                        };
-                      }),
-                    },
-                  ] satisfies MenuElement[],
+                            image: { systemName: "checkmark" },
+                          }
+                        : {}),
+                      items: [
+                        "default",
+                        ...m.variants.map((v) => v.id),
+                      ].map<MenuAction>((v) => ({
+                        actionKey: `${ref}${VARIANT_SEP}${v}`,
+                        title: variantLabel(v),
+                        state: isCurrent && v === variant ? "on" : "off",
+                      })),
+                    };
+                  }),
                 }}
                 onPressAction={(actionKey) => {
-                  if (actionKey.startsWith(EFFORT_KEY))
-                    onPickVariant(actionKey.slice(EFFORT_KEY.length));
-                  else onPickModel(actionKey);
+                  const at = actionKey.lastIndexOf(VARIANT_SEP);
+                  onPick(actionKey.slice(0, at), actionKey.slice(at + 1));
                 }}
               >
                 {/* Context meter — fills the chip background left→right
