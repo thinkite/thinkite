@@ -1,11 +1,11 @@
 diff --git a/apple/scripts/build-xcframework.sh b/apple/scripts/build-xcframework.sh
-index fbb40943a219cc9b63190d55e981ee300feafbcc..64ef1ea508f06f3a9be8d61d79491a5aeab9eee5 100755
+index e38a4d221e4752585d9ecc90ad84aaf2ca68f0b2..aab465dc2f5de9464d975cb801f88fb4101e1f9b 100755
 --- a/apple/scripts/build-xcframework.sh
 +++ b/apple/scripts/build-xcframework.sh
-@@ -227,7 +227,16 @@ build_slice() {
-     SWIFT_COMPILATION_MODE=wholemodule \
-     CLANG_ENABLE_CODE_COVERAGE=NO \
-     CLANG_COVERAGE_MAPPING=NO \
+@@ -267,7 +267,16 @@ build_slice() {
+     SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO \
+     SWIFT_ENABLE_EXPLICIT_MODULES=NO \
+     "OTHER_LDFLAGS=\$(inherited) -Xlinker -unexported_symbols_list -Xlinker \"${UNEXPORTED_SYMBOLS_LIST}\"" \
 -  )
 +  ) 2>&1 | sed -l -e 's/^error: the following command failed with exit code 0 but produced no further output/note: (nested xcodebuild) the following command failed with exit code 0 but produced no further output/'
 +  # Xcode 27 quirk, two halves. (1) The nested `xcodebuild -quiet` above prints

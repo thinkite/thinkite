@@ -14,8 +14,8 @@
       "packages/website"
     ],
     "catalog": {
-      "react": "19.2.3",
-      "react-dom": "19.2.3",
+      "react": "19.3.0",
+      "react-dom": "19.3.0",
       "zod": "^4.4.3",
       "@types/node": "^24.12.2",
       "@legendapp/list": "^3.6.0",
@@ -40,8 +40,8 @@
     "node": ">=24"
   },
   "overrides": {
-    "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   },
   "trustedDependencies": [
     "electron",
@@ -54,13 +54,12 @@
   },
   "dependencies": {
     "@legendapp/list": "^3.6.0",
-    "expo": "58.0.0-preview.1",
-    "react": "19.2.3",
-    "react-native": "0.88.0-rc.0"
+    "expo": "~58.0.17",
+    "react": "19.3.0",
+    "react-native": "0.88.0"
   },
   "patchedDependencies": {
-    "expo@58.0.0-preview.1": "patches/expo@58.0.0-preview.1.patch",
-    "@swmansion/react-native-bottom-sheet@0.15.3": "patches/@swmansion%2Freact-native-bottom-sheet@0.15.3.patch",
-    "expo-modules-jsi@58.0.1": "patches/expo-modules-jsi@58.0.1.patch"
+    "expo-modules-jsi@58.0.17": "patches/expo-modules-jsi@58.0.17.patch",
+    "uniwind@1.10.0": "patches/uniwind@1.10.0.patch"
   }
 }

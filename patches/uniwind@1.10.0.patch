@@ -1,0 +1,72 @@
+diff --git a/src/components/index.ts b/src/components/index.ts
+index 6fcad21b91dae2d029671aca1a6588a031831236..390fca4dd9f4bc9b6555a95bc6378aeef68dc31b 100644
+--- a/src/components/index.ts
++++ b/src/components/index.ts
+@@ -307,4 +307,52 @@ module.exports = {
+     get XamlHost() {
+         return require('react-native').XamlHost
+     },
++    // React Native 0.88 exports this list does not forward (AssetRegistry is
++    // what expo-asset reads): without them, `import {X} from "react-native"`
++    // gives undefined once uniwind redirects the import here.
++    get AssetRegistry() {
++        return require('react-native').AssetRegistry
++    },
++    get EventEmitter() {
++        return require('react-native').EventEmitter
++    },
++    get PushNotificationIOS() {
++        return require('react-native').PushNotificationIOS
++    },
++    get unstable_DEFAULT_INITIAL_NUM_TO_RENDER() {
++        return require('react-native').unstable_DEFAULT_INITIAL_NUM_TO_RENDER
++    },
++    get unstable_NativeText() {
++        return require('react-native').unstable_NativeText
++    },
++    get unstable_NativeView() {
++        return require('react-native').unstable_NativeView
++    },
++    get unstable_VirtualArray() {
++        return require('react-native').unstable_VirtualArray
++    },
++    get unstable_VirtualColumn() {
++        return require('react-native').unstable_VirtualColumn
++    },
++    get unstable_VirtualColumnGenerator() {
++        return require('react-native').unstable_VirtualColumnGenerator
++    },
++    get unstable_VirtualRow() {
++        return require('react-native').unstable_VirtualRow
++    },
++    get unstable_createVirtualCollectionView() {
++        return require('react-native').unstable_createVirtualCollectionView
++    },
++    get unstable_getScrollParent() {
++        return require('react-native').unstable_getScrollParent
++    },
++    get useAnimatedColor() {
++        return require('react-native').useAnimatedColor
++    },
++    get useAnimatedValueXY() {
++        return require('react-native').useAnimatedValueXY
++    },
++    get usePressability() {
++        return require('react-native').usePressability
++    },
+ }
+diff --git a/uniwind.css b/uniwind.css
+index 13d20cb943641b51cb94ccb9764b53b11e49ae06..f941697fae03d41bdf3f1c14836cb2f35f7c5c28 100644
+--- a/uniwind.css
++++ b/uniwind.css
+@@ -592,9 +592,3 @@
+        }
+    }
+ }
+-
+-
+-@theme {
+-    --color-background: unset;
+-    --app-foreground: unset;
+-}
+\ No newline at end of file
