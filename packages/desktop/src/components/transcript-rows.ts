@@ -265,3 +265,32 @@ export function rowsOf(
   if (!running) endTurn();
   return out;
 }
+
+/**
+ * Keep each group's key from one build of the rows to the next. A group is
+ * keyed by its first item, which changes when an older page lands in front
+ * of it (a long run of tool calls spans pages): a new key is a new row to
+ * the list, which loses its place on the row it anchors to and lands
+ * elsewhere. `seen` (item key → group key) carries the keys between builds,
+ * so a group that gains items at either end keeps the key it first had.
+ */
+export function keepGroupKeys(
+  rows: TranscriptRow[],
+  seen: Map<string, string>,
+): TranscriptRow[] {
+  const used = new Set<string>();
+  const out = rows.map((row) => {
+    if (row.kind !== "group") return row;
+    const earlier = row.items
+      .map((item) => seen.get(item.key))
+      .find((key) => key !== undefined && !used.has(key));
+    const key = earlier ?? row.key;
+    used.add(key);
+    return key === row.key ? row : { ...row, key };
+  });
+  seen.clear();
+  for (const row of out)
+    if (row.kind === "group")
+      for (const item of row.items) seen.set(item.key, row.key);
+  return out;
+}

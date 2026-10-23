@@ -4,6 +4,7 @@ import {
   agentSessionOf,
   duration,
   groupLabel,
+  keepGroupKeys,
   rowsOf,
 } from "./transcript-rows";
 
@@ -110,6 +111,47 @@ describe("rowsOf", () => {
       assistant("a1", [tool("t1"), tool("t2")]),
     ]);
     expect(before[1]?.key).toBe(after[1]?.key);
+  });
+
+  it("keeps a group's key while older pages land in front of it", () => {
+    const seen = new Map<string, string>();
+    const page1 = keepGroupKeys(
+      rowsOf([assistant("a2", [tool("t3"), tool("t4"), text("done")])]),
+      seen,
+    );
+    const page2 = keepGroupKeys(
+      rowsOf([
+        assistant("a1", [tool("t1"), tool("t2")]),
+        assistant("a2", [tool("t3"), tool("t4"), text("done")]),
+      ]),
+      seen,
+    );
+    const page3 = keepGroupKeys(
+      rowsOf([
+        user("u1", 1),
+        assistant("a1", [tool("t1"), tool("t2")]),
+        assistant("a2", [tool("t3"), tool("t4"), text("done")]),
+      ]),
+      seen,
+    );
+    expect(shape(page3)).toEqual([
+      "user",
+      "group(tool:t1,tool:t2,tool:t3,tool:t4)",
+      "text",
+    ]);
+    expect(page2[0]?.key).toBe(page1[0]?.key);
+    expect(page3[1]?.key).toBe(page1[0]?.key);
+  });
+
+  it("gives each group its own key when a run splits", () => {
+    const seen = new Map<string, string>();
+    keepGroupKeys(rowsOf([assistant("a1", [tool("t1"), tool("t2")])]), seen);
+    const split = keepGroupKeys(
+      rowsOf([assistant("a1", [tool("t1"), text("x"), tool("t2")])]),
+      seen,
+    );
+    const keys = split.filter((r) => r.kind === "group").map((r) => r.key);
+    expect(new Set(keys).size).toBe(2);
   });
 
   it("shows a finished question alone, hides a waiting one and the todo list", () => {

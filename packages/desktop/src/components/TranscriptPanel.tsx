@@ -46,6 +46,7 @@ import {
   duration,
   type GroupItem,
   groupLabel,
+  keepGroupKeys,
   type ReasoningPart,
   type ReplyMeta,
   rowsOf,
@@ -724,8 +725,10 @@ export function TranscriptPanel({
   // A staged revert hides its prompt and what follows until the next
   // prompt drops them or redo brings them back.
   const messages = useMemo(() => visibleMessages(all, revert), [all, revert]);
+  // Group keys from the last build, so older pages don't rename a group.
+  const groupKeys = useMemo(() => new Map<string, string>(), [sessionId]);
   const rows = useMemo(() => {
-    const out = rowsOf(messages, isRunning === true);
+    const out = keepGroupKeys(rowsOf(messages, isRunning === true), groupKeys);
     const boundary = revert?.messageID;
     if (boundary === undefined) return out;
     const count = all.filter(
@@ -733,7 +736,7 @@ export function TranscriptPanel({
     ).length;
     if (count > 0) out.push({ key: "reverted", kind: "reverted", count });
     return out;
-  }, [all, messages, revert, isRunning]);
+  }, [all, messages, revert, isRunning, groupKeys]);
   // The group the running turn is still adding to.
   const liveKey =
     isRunning === true && rows.at(-1)?.kind === "group"
@@ -742,7 +745,10 @@ export function TranscriptPanel({
 
   // Collapsed groups are short, so a page of history can fit on screen and
   // leave nothing to scroll up from. Keep reading older pages until at
-  // least two turns show (or the session's start is in).
+  // least two turns show (or the session's start is in) — before the list
+  // mounts: a long run of tool calls can take several pages, and a row
+  // landing above a list that has already settled at its end throws it
+  // off the end (to the top, at times).
   const turnsShown = useMemo(
     () => rows.filter((r) => r.kind === "user").length,
     [rows],
@@ -751,6 +757,7 @@ export function TranscriptPanel({
     if (paging.hydrated && hasOlder && !paging.loadingOlder && turnsShown < 2)
       void ocStore.loadOlder(sessionId);
   }, [paging.hydrated, paging.loadingOlder, hasOlder, turnsShown, sessionId]);
+  const isFilling = hasOlder && turnsShown < 2;
 
   // iOS's isThinking rule: the turn is running but the last row isn't the
   // assistant's text yet — the initial think window + tool gaps. Rendered
@@ -790,7 +797,7 @@ export function TranscriptPanel({
   // Starts at the last composer's height: the list places its rows on
   // mount, before the seat can measure, and a 0 there lands it short.
   const [composerHeight, setComposerHeight] = useState(lastComposerHeight);
-  const hasRows = rows.length > 0;
+  const hasRows = rows.length > 0 && !isFilling;
   // Hidden until the list has placed its rows and landed at the end
   // (onReady), so a session doesn't show its rows at a provisional spot and
   // then jump. A list that never reports ready still shows after a moment.
@@ -807,6 +814,22 @@ export function TranscriptPanel({
     setAtEnd(state.isAtEnd);
     return state.listen("isAtEnd", setAtEnd);
   }, [hasRows]);
+  // onStartReached skips the list's end (below), and fires again only once
+  // the list has left the start region: a short transcript never leaves
+  // it, so leaving the end while near the start asks for the page instead.
+  const [nearStart, setNearStart] = useState(false);
+  useEffect(() => {
+    if (!hasRows) return;
+    const state = listRef.current?.getState();
+    if (state === undefined) return;
+    setNearStart(state.isNearStart);
+    return state.listen("isNearStart", setNearStart);
+  }, [hasRows]);
+  const rowCount = rows.length;
+  useEffect(() => {
+    if (hasOlder && nearStart && !atEnd && rowCount > 0)
+      void ocStore.loadOlder(sessionId);
+  }, [hasOlder, nearStart, atEnd, rowCount, sessionId]);
 
   // On send, position the anchored prompt. scrollToEnd is "committed" since
   // @legendapp/list 3.0.4: it queues until the data commit lands and the
@@ -840,7 +863,7 @@ export function TranscriptPanel({
     return (
       <div className="relative h-full w-full min-w-0">
         <div className="flex h-full items-center justify-center">
-          {!paging.hydrated || isRunning === true ? (
+          {!paging.hydrated || isFilling || isRunning === true ? (
             <Spinner size="sm" label="Loading transcript…" />
           ) : (
             <Text size="sm" color="secondary">
@@ -887,9 +910,17 @@ export function TranscriptPanel({
         // keeps following the end as the composer grows or shrinks.
         contentInsetEndAdjustment={composerHeight + COMPOSER_GAP}
         // Older pages: half a viewport from the top asks for the next page;
-        // the store ignores the call while one is in flight.
+        // the store ignores the call while one is in flight. Not while the
+        // list sits at its end — a short transcript is near both ends, and
+        // a page landing above it then would throw it off the end; the
+        // next page comes once the reader scrolls up.
         onStartReached={
-          hasOlder ? () => void ocStore.loadOlder(sessionId) : undefined
+          hasOlder
+            ? () => {
+                if (listRef.current?.getState().isAtEnd) return;
+                void ocStore.loadOlder(sessionId);
+              }
+            : undefined
         }
         onStartReachedThreshold={0.5}
         // The 16px above the first row lives in the header, which the list
