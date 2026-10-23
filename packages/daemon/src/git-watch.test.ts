@@ -2,18 +2,17 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type GitStatus, GitWatcher } from "./git-watch.ts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type GitStatus, GitWatcher, isNoise } from "./git-watch.ts";
 
 /**
  * Real-git integration tests. `simple-git` is itself just a `git` CLI
  * wrapper, so mocking it would test our mocks more than the contract.
  * tmpdir + a one-off init keeps each test isolated.
  *
- * fs.watch + debounce path is not exercised here — verifying real watch
- * events fire within a deterministic window is flaky, and the unit being
- * fragile is fs.watch itself, not our code. Self-heal + debounce timing
- * are covered by their direct callers.
+ * The watch path gets two end-to-end cases (an edit, then a reset outside
+ * the app) with a generous wait; debounce and self-heal timing are not
+ * pinned down beyond that.
  */
 describe("GitWatcher", () => {
   let dir: string;
@@ -191,6 +190,56 @@ describe("GitWatcher", () => {
     expect(got).toEqual([]);
     unsubscribe();
     w.dispose();
+  });
+
+  it("a snapshot read with nothing watching is never stale", async () => {
+    initRepo(dir);
+    writeFileSync(path.join(dir, "a.txt"), "x\n");
+    execFileSync("git", ["add", "a.txt"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "first"], { cwd: dir });
+    writeFileSync(path.join(dir, "a.txt"), "x\ny\n");
+
+    const w = new GitWatcher(dir);
+    expect((await w.refresh()).insertions).toBe(1);
+    // A reset outside the app, inside the cache's 15 s.
+    execFileSync("git", ["reset", "-q", "--hard"], { cwd: dir });
+    expect((await w.refresh()).insertions).toBe(0);
+    w.dispose();
+  });
+
+  it("pushes working-tree edits and an outside reset", async () => {
+    initRepo(dir);
+    writeFileSync(path.join(dir, "a.txt"), "x\n");
+    execFileSync("git", ["add", "a.txt"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "first"], { cwd: dir });
+
+    const w = new GitWatcher(dir);
+    const got: GitStatus[] = [];
+    const unsubscribe = w.subscribe((s) => got.push(s));
+    writeFileSync(path.join(dir, "a.txt"), "x\ny\nz\n");
+    await vi.waitFor(() => expect(got.at(-1)?.insertions).toBe(2), {
+      timeout: 8000,
+      interval: 100,
+    });
+    execFileSync("git", ["reset", "-q", "--hard"], { cwd: dir });
+    await vi.waitFor(() => expect(got.at(-1)?.insertions).toBe(0), {
+      timeout: 8000,
+      interval: 100,
+    });
+    unsubscribe();
+    w.dispose();
+  }, 20_000);
+
+  it("isNoise drops object, log and node_modules events only", () => {
+    expect(isNoise(".git/objects/ab/cdef")).toBe(true);
+    expect(isNoise(".git/logs/HEAD")).toBe(true);
+    expect(isNoise("node_modules/react/index.js")).toBe(true);
+    expect(isNoise("packages/app/node_modules/x.js")).toBe(true);
+    expect(isNoise(".git/HEAD")).toBe(false);
+    expect(isNoise(".git/index")).toBe(false);
+    expect(isNoise(".git/refs/heads/main")).toBe(false);
+    expect(isNoise("src/settings.ts")).toBe(false);
+    expect(isNoise(null)).toBe(false);
   });
 
   it("dispose() is idempotent", () => {

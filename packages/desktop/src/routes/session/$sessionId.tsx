@@ -47,6 +47,7 @@ import {
   type MessageActions,
   TranscriptPanel,
 } from "../../components/TranscriptPanel";
+import { useGitEvents } from "../../lib/git-events";
 import { ocClient, ocReady, ocStore } from "../../lib/oc";
 
 // Session screen: transcript center column with a live composer (opencode
@@ -150,6 +151,8 @@ function SessionRoute() {
 
 function Session({ sessionId }: { sessionId: string }) {
   const session = useSession(ocStore, sessionId);
+  // Keeps the side panel's change counts and diff current.
+  useGitEvents(session?.location.directory);
   const running = useIsRunning(ocStore, sessionId);
   // `has` not `??`: null is a real remembered value ("closed"), which `??`
   // would silently swallow. Default for an unvisited session: the info

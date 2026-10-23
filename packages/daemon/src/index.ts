@@ -72,6 +72,12 @@ export interface Daemon {
    * the proxies inject them, clients never see them.
    */
   opencode: ResolveOpencode;
+  /**
+   * Call `onChange` whenever the repository at `cwd` changes — the agent's
+   * edits, a reset or a branch switch outside the app — through the same
+   * watcher that pushes the phone's git status. Returns the unsubscribe.
+   */
+  watchGit(cwd: string, onChange: () => void): () => void;
 }
 
 /**
@@ -215,6 +221,8 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     pairedClientCount: () => knownClients.list().length,
     authenticatedPeerCount: () => iroh.authenticatedCount(),
     opencode: resolveOpencode,
+    watchGit: (cwd, onChange) =>
+      gitWatchers.getOrCreate(cwd).subscribe(() => onChange()),
     createPairOffer: (serviceName) => {
       const { encoded } = createPairOffer(identity, serviceName);
       return { encoded };

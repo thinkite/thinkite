@@ -15,7 +15,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { hostname } from "node:os";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type Daemon,
@@ -235,6 +235,27 @@ const server = createServer(async (req, res) => {
       quitAndInstall();
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(getUpdateInfo()));
+      return;
+    }
+    // Pushes "changed" for one folder's repository (the daemon's git
+    // watcher), so the renderer reads opencode's counts again mid-turn and
+    // after a reset or stash outside the app (lib/git-events).
+    if (url.pathname === "/api/git/events") {
+      const directory = url.searchParams.get("directory");
+      if (daemon === null || directory === null || !isAbsolute(directory)) {
+        res.writeHead(400, { "content-type": "text/plain" });
+        res.end("directory required");
+        return;
+      }
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+      });
+      res.write(": watching\n\n");
+      const stop = daemon.watchGit(directory, () => {
+        res.write("data: changed\n\n");
+      });
+      req.on("close", stop);
       return;
     }
     if (url.pathname === "/oc" || url.pathname.startsWith("/oc/")) {

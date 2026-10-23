@@ -1,4 +1,4 @@
-import { existsSync, type FSWatcher, watch as fsWatch } from "node:fs";
+import { type FSWatcher, watch as fsWatch } from "node:fs";
 import { open as openFile, readFile, stat as statFile } from "node:fs/promises";
 import path from "node:path";
 import pLimit from "p-limit";
@@ -9,11 +9,13 @@ import { type SimpleGit, simpleGit } from "simple-git";
  *
  * Architecture (mirrors Paseo's `WorkspaceGitService`):
  *
- *   - **fs.watch** on `.git/HEAD` + `.git/refs/heads` for cheap branch-
- *     change / commit-head-move detection. Working-tree changes are NOT
- *     watched (Paseo's recursive scheme is mostly there to cope with
- *     Linux watch limits; we're Mac-only and would only need it for
- *     the `+N -M` diff numbers — see self-heal below).
+ *   - **Recursive fs.watch** on the whole `cwd` (FSEvents on macOS, one
+ *     stream however big the tree), so `+N -M` follows the agent's edits
+ *     and whatever the user does outside the app — `git reset --hard`,
+ *     `stash`, a branch switch, a commit — within the debounce. Events
+ *     from `.git/objects`, `.git/logs` and `node_modules` are dropped:
+ *     they never change the numbers on their own, and they are most of
+ *     the noise during an install or a fetch.
  *   - **500ms debounce** on watch events absorbs the storm of writes
  *     that hit `.git/index` during a `git add` / staging operation.
  *     This is the only knob that throttles outgoing pushes; everything
@@ -23,14 +25,15 @@ import { type SimpleGit, simpleGit } from "simple-git";
  *     nothing has invalidated the cache, return the last snapshot
  *     instead of re-shelling out. Watch events + self-heal both
  *     **invalidate** the cache before re-running git, so this never
- *     delays a real change from being pushed.
+ *     delays a real change from being pushed. The cache is trusted only
+ *     while the tree is watched: with no subscriber nothing invalidates
+ *     it, so a snapshot read then always runs git.
  *   - **`inFlight` promise** dedups simultaneous refresh() calls —
  *     if two subscribers arrive in the same tick, only one git
  *     invocation runs and both await the same promise.
- *   - **60s self-heal poll** force-refreshes regardless of watch state
- *     so working-tree edits (which don't touch `.git/`) still surface
- *     within a minute. Also reconciles a watcher that died (rare on
- *     Mac but possible after `rm -rf .git && git init`).
+ *   - **60s self-heal poll** force-refreshes regardless of watch state,
+ *     for whatever the watch misses: a worktree whose `.git` lives
+ *     elsewhere, or a watcher that died.
  *   - **p-limit(8)** caps total concurrent git invocations across
  *     every watcher in this daemon — so 10 sessions on 10 different
  *     repos don't fork 10 `git status` processes simultaneously.
@@ -113,8 +116,7 @@ export class GitWatcher {
   private listeners = new Set<GitStatusListener>();
   private cachedStatus: GitStatus | null = null;
   private cacheAt = 0;
-  private headWatcher: FSWatcher | null = null;
-  private refsWatcher: FSWatcher | null = null;
+  private treeWatcher: FSWatcher | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private selfHealTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
@@ -153,7 +155,11 @@ export class GitWatcher {
    *  callers can prime the cache or force a re-read after a known
    *  mutation (e.g. a commit Claude just ran). */
   async refresh(): Promise<GitStatus> {
-    if (this.cachedStatus && Date.now() - this.cacheAt < STATUS_CACHE_TTL_MS) {
+    if (
+      this.cachedStatus &&
+      this.treeWatcher !== null &&
+      Date.now() - this.cacheAt < STATUS_CACHE_TTL_MS
+    ) {
       return this.cachedStatus;
     }
     if (this.inFlight) return this.inFlight;
@@ -188,29 +194,21 @@ export class GitWatcher {
 
   private startWatching(): void {
     if (this.disposed) return;
-    const gitDir = path.join(this.cwd, ".git");
-    if (existsSync(gitDir)) {
-      try {
-        this.headWatcher = fsWatch(path.join(gitDir, "HEAD"), () =>
-          this.onWatchEvent(),
-        );
-      } catch {
-        // .git/HEAD may not exist in a freshly-init'd bare-ish state;
-        // self-heal will pick it up.
-      }
-      const refsDir = path.join(gitDir, "refs", "heads");
-      if (existsSync(refsDir)) {
-        try {
-          this.refsWatcher = fsWatch(refsDir, { recursive: true }, () =>
-            this.onWatchEvent(),
-          );
-        } catch {
-          // ignore
-        }
-      }
+    try {
+      this.treeWatcher = fsWatch(
+        this.cwd,
+        { recursive: true },
+        (_event, filename) => {
+          if (!isNoise(filename)) this.onWatchEvent();
+        },
+      );
+      // The status cached before the watch began may already be stale.
+      this.cachedStatus = null;
+    } catch {
+      // The folder may be gone; self-heal keeps answering.
     }
     // Self-heal runs regardless — even non-repo dirs may get `git init`'d
-    // later, and the working-tree-change blind spot needs covering.
+    // later, and some changes escape the watch.
     this.startSelfHealTimer();
   }
 
@@ -225,10 +223,8 @@ export class GitWatcher {
   }
 
   private stopWatching(): void {
-    this.headWatcher?.close();
-    this.refsWatcher?.close();
-    this.headWatcher = null;
-    this.refsWatcher = null;
+    this.treeWatcher?.close();
+    this.treeWatcher = null;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     if (this.selfHealTimer) clearInterval(this.selfHealTimer);
     this.debounceTimer = null;
@@ -476,6 +472,20 @@ export class GitWatcher {
     );
     return { diff, truncated };
   }
+}
+
+/** Watch events that never move the numbers on their own. `filename` is
+ *  relative to the watched folder; null when the platform doesn't say. */
+export function isNoise(filename: string | Buffer | null): boolean {
+  if (filename === null) return false;
+  const rel = filename.toString().split(path.sep).join("/");
+  return (
+    rel.startsWith(".git/objects/") ||
+    rel.startsWith(".git/logs/") ||
+    rel === "node_modules" ||
+    rel.startsWith("node_modules/") ||
+    rel.includes("/node_modules/")
+  );
 }
 
 /** Build a git-style all-add unified patch for a new (untracked) file.

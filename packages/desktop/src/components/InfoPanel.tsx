@@ -316,10 +316,10 @@ function Changes({
 /**
  * The repository state of `directory`, cached per folder (lib/query), so
  * the panel of another session in it — a subagent's, say — opens with it.
- * Read again on mount, when the window comes back to the front (the user
- * may have changed things elsewhere) and when a turn ends (the agent may
- * have edited files or switched branch). opencode pushes no event for file
- * changes.
+ * Read again on mount, when the window comes back to the front, when a
+ * turn ends, and whenever the daemon's git watcher sees the folder change
+ * (lib/git-events, wired by the session screen): opencode pushes no event
+ * for file changes.
  */
 function useVcs(directory: string, isRunning: boolean) {
   const queryClient = useQueryClient();
