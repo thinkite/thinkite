@@ -215,6 +215,24 @@ function Session({ sessionId }: { sessionId: string }) {
 
   const navigate = useNavigate();
 
+  // The row can leave the store while the screen is open: deleted from
+  // elsewhere (opencode desktop, the CLI, the phone — Thinkite's own delete
+  // navigates away itself), or dropped by a resync, whose list holds only
+  // the latest root sessions. Ask the service which: a session still there
+  // comes back into the store and the screen stays; a deleted one sends
+  // the screen home.
+  const gone = session === undefined;
+  useEffect(() => {
+    if (!gone) return;
+    let live = true;
+    void ocStore.loadSession(sessionId).then((row) => {
+      if (live && row === undefined) void navigate({ to: "/", replace: true });
+    });
+    return () => {
+      live = false;
+    };
+  }, [gone, sessionId, navigate]);
+
   // opencode's revert puts the prompt back in the composer for an edit and
   // resend, replacing the draft; redo leaves the composer alone.
   const actions: MessageActions = {
@@ -336,8 +354,7 @@ function Session({ sessionId }: { sessionId: string }) {
     surfaceBySession.set(sessionId, s);
   };
 
-  // Row deleted while the screen is open (bus pushed `session.deleted`) —
-  // nothing to render; the sidebar link is gone.
+  // The row is gone; the effect above brings it back or leaves.
   if (session === undefined) return null;
 
   return (
