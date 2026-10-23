@@ -117,16 +117,55 @@ export function toolDiffs(tool: SessionMessageAssistantTool): FileDiff[] {
   return [];
 }
 
+type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "file"; uri: string; mime: string; name?: string };
+
+function content(tool: SessionMessageAssistantTool): readonly ContentPart[] {
+  const state = tool.state as { content?: readonly ContentPart[] };
+  return state.content ?? [];
+}
+
+const isImage = (part: ContentPart): boolean =>
+  part.type === "file" && part.mime.startsWith("image/");
+
+/** An image a tool returned: read on a picture, a browser screenshot. */
+export interface ToolImage {
+  /** Usually a `data:` URI; the service inlines the bytes. */
+  uri: string;
+  mime: string;
+  name?: string;
+}
+
+export function toolImages(tool: SessionMessageAssistantTool): ToolImage[] {
+  return content(tool).flatMap((part) =>
+    part.type === "file" && isImage(part)
+      ? [
+          {
+            uri: part.uri,
+            mime: part.mime,
+            ...(part.name !== undefined ? { name: part.name } : {}),
+          },
+        ]
+      : [],
+  );
+}
+
 const MAX_OUTPUT_LINES = 400;
 
+/** The tool's text output. Images are left to `toolImages`; another file
+ *  shows as its name. */
 export function toolOutput(tool: SessionMessageAssistantTool): string {
-  const state = tool.state as { content?: { type: string; text?: string }[] };
   const meta = metadata(tool);
   const text =
     str(meta.output) ??
-    (state.content ?? [])
-      .map((part) =>
-        part.type === "text" ? (part.text ?? "") : `[${part.type}]`,
+    content(tool)
+      .flatMap((part) =>
+        part.type === "text"
+          ? [part.text]
+          : isImage(part)
+            ? []
+            : [`[${part.name ?? part.mime}]`],
       )
       .join("\n");
   const lines = text.split("\n");

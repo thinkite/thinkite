@@ -74,7 +74,9 @@ export {
 } from "./store/store.ts";
 export {
   type FileDiff,
+  type ToolImage,
   toolDiffs,
+  toolImages,
   toolOutput,
   toolSummary,
 } from "./tool-format.ts";

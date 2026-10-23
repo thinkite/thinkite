@@ -8,13 +8,16 @@ import {
 } from "@astryxdesign/core/Chat";
 import { CodeBlock } from "@astryxdesign/core/CodeBlock";
 import { Icon } from "@astryxdesign/core/Icon";
+import { Lightbox } from "@astryxdesign/core/Lightbox";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { Thumbnail } from "@astryxdesign/core/Thumbnail";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import {
+  type ToolImage,
   toolDiffs,
+  toolImages,
   toolOutput,
   toolSummary,
   variantLabel,
@@ -221,19 +224,65 @@ function toolDetail(tool: ToolPart): ReactNode {
       </Text>
     );
   }
-  const output = toolOutput(tool);
-  if (output === "") return null;
+  const images = toolImages(tool);
+  // A read of a picture only says it read it; opencode's card shows just
+  // the picture.
+  const output =
+    images.length > 0 && tool.name === "read" ? "" : toolOutput(tool);
+  if (output === "" && images.length === 0) return null;
   // A command's card is titled with the command, as opencode's shell card.
   const command =
     tool.name === "shell" || tool.name === "bash" ? toolSummary(tool) : "";
   return (
-    <CodeBlock
-      code={output}
-      width="100%"
-      size="sm"
-      maxHeight={480}
-      {...(command !== "" ? { title: `$ ${command}` } : {})}
-    />
+    <>
+      {images.length > 0 && <ToolImages images={images} />}
+      {output !== "" && (
+        <CodeBlock
+          code={output}
+          width="100%"
+          size="sm"
+          maxHeight={480}
+          {...(command !== "" ? { title: `$ ${command}` } : {})}
+        />
+      )}
+    </>
+  );
+}
+
+/** Images a tool returned, at most 240px tall; a click opens them full
+ *  size. */
+function ToolImages({ images }: { images: readonly ToolImage[] }) {
+  const [open, setOpen] = useState<number | null>(null);
+  const alt = (image: ToolImage) =>
+    image.name?.split("/").pop() ?? "Tool image";
+  return (
+    <div className="flex flex-wrap gap-2">
+      {images.map((image, i) => (
+        <button
+          // A finished tool's content never changes.
+          key={i}
+          type="button"
+          onClick={() => setOpen(i)}
+          className="cursor-zoom-in overflow-hidden rounded-md border border-[var(--color-border)]"
+        >
+          <img
+            src={image.uri}
+            alt={alt(image)}
+            className="block max-h-60 max-w-full object-contain"
+          />
+        </button>
+      ))}
+      <Lightbox
+        isOpen={open !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setOpen(null);
+        }}
+        media={images.map((image) => ({ src: image.uri, alt: alt(image) }))}
+        index={open ?? 0}
+        onIndexChange={setOpen}
+        hasZoom
+      />
+    </div>
   );
 }
 
