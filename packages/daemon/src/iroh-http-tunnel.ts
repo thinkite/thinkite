@@ -9,12 +9,13 @@
 import type http from "node:http";
 import type { Connection } from "@number0/iroh";
 import { irohDuplex } from "./iroh-duplex.ts";
-import type { OpencodeConnection } from "./opencode/registry.ts";
+import { type ResolveOpencode, startsTask } from "./opencode/service.ts";
 import { createProxyServer } from "./opencode-proxy.ts";
 
 export interface IrohHttpTunnelOptions {
-  /** The registered opencode service (`Daemon.opencode()`), resolved per request. */
-  opencode: () => Promise<OpencodeConnection>;
+  /** The registered opencode service (`Daemon.opencode()`), resolved per
+   *  request; a request that starts a task may start a missing one. */
+  opencode: ResolveOpencode;
   log?: (event: string, data?: Record<string, unknown>) => void;
 }
 
@@ -27,7 +28,8 @@ export class IrohHttpTunnel {
   constructor(opts: IrohHttpTunnelOptions) {
     this.log = opts.log ?? (() => undefined);
     this.proxy = createProxyServer({
-      getUpstream: opts.opencode,
+      getUpstream: (req) =>
+        opts.opencode({ start: startsTask(req.method, req.url ?? "/") }),
       log: this.log,
     });
   }

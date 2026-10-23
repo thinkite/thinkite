@@ -18,7 +18,7 @@ import type { Identity } from "./identity.ts";
 import { fingerprintFromPubkeyB64, seedFromPrivateKey } from "./identity.ts";
 import { IrohHttpTunnel } from "./iroh-http-tunnel.ts";
 import type { KnownClients } from "./known-clients.ts";
-import type { OpencodeConnection } from "./opencode/registry.ts";
+import type { ResolveOpencode } from "./opencode/service.ts";
 
 /**
  * The daemon's remote transport: an iroh QUIC listener on the daemon
@@ -72,7 +72,7 @@ export interface IrohPeerServerOptions {
    * tunnels to. Called per tunneled request; omitting it leaves the
    * tunnel in place but answering 502 to every request.
    */
-  opencode?: () => Promise<OpencodeConnection>;
+  opencode?: ResolveOpencode;
   /**
    * Endpoint preset. "n0" (default) = production relays + pkarr
    * discovery. "minimal" = no external services — tests dial by direct

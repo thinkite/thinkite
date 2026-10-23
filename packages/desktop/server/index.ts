@@ -22,6 +22,7 @@ import {
   readActiveDaemonLock,
   resolveThinkiteHome,
   start as startDaemon,
+  startsTask,
 } from "@thinkite/daemon";
 import {
   app,
@@ -35,7 +36,7 @@ import {
 } from "electron";
 import { WebSocketServer } from "ws";
 import { guardWebviews, setupBrowserGuests } from "./browser-guests";
-import { handleOcProxy } from "./oc-proxy";
+import { handleOcProxy, stripOcPrefix } from "./oc-proxy";
 import { attachPty, killPty, killPtys, ptyParams } from "./pty";
 import {
   checkForUpdates,
@@ -219,7 +220,8 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/oc" || url.pathname.startsWith("/oc/")) {
       // Same-origin opencode endpoint (see server/oc-proxy.ts): strip +
       // forward with the daemon-owned Basic credentials of the user's
-      // registered opencode service; 502 while none is running.
+      // registered opencode service; 502 while none is running, except
+      // that a request starting a task starts one first.
       if (daemon === null) {
         res.writeHead(503, { "content-type": "text/plain" });
         res.end("daemon not running in this process — opencode unavailable");
@@ -227,7 +229,9 @@ const server = createServer(async (req, res) => {
       }
       let upstream: { baseUrl: string; username: string; password: string };
       try {
-        upstream = await daemon.opencode();
+        upstream = await daemon.opencode({
+          start: startsTask(req.method, stripOcPrefix(req.url ?? "/oc")),
+        });
       } catch (e) {
         res.writeHead(502, { "content-type": "text/plain" });
         res.end(`opencode unavailable: ${e}`);

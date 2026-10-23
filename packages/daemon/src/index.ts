@@ -10,8 +10,11 @@ import {
   createOpencodeDiscovery,
   isSupportedOpencodeVersion,
   OPENCODE_MIN_STABLE,
-  type OpencodeConnection,
 } from "./opencode/registry.ts";
+import {
+  createOpencodeStarter,
+  type ResolveOpencode,
+} from "./opencode/service.ts";
 import { createPairOffer } from "./pairing.ts";
 import { createCommandHandler } from "./router.ts";
 
@@ -28,6 +31,7 @@ export type { DaemonLock } from "./daemon-lock.ts";
 export { readActiveDaemonLock } from "./daemon-lock.ts";
 export { resolveThinkiteHome } from "./home.ts";
 export type { OpencodeConnection } from "./opencode/registry.ts";
+export { startsTask } from "./opencode/service.ts";
 
 export interface Daemon {
   stop(): Promise<void>;
@@ -61,11 +65,13 @@ export interface Daemon {
    * service (`~/.local/state/opencode/service.json`, probed via
    * `/api/info`, cached 5 s) for the Electron main `/oc` reverse proxy
    * and the phone's iroh HTTP tunnel. Rejects when no service is
-   * registered or its version is outside the supported range — the
-   * daemon never spawns opencode itself. Credentials stay in the main
-   * process — the proxies inject them, clients never see them.
+   * registered or its version is outside the supported range. With
+   * `start`, a missing service is started first (`opencode serve
+   * --service`, see opencode/service.ts) — the proxies pass it for
+   * requests that start a task. Credentials stay in the main process —
+   * the proxies inject them, clients never see them.
    */
-  opencode(): Promise<OpencodeConnection>;
+  opencode: ResolveOpencode;
 }
 
 /**
@@ -102,9 +108,10 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // opencode 2 endpoint for the desktop `/oc` proxy and the phone's iroh
   // HTTP tunnel: the user's registered background service
   // (`~/.local/state/opencode/service.json`, see opencode/registry.ts).
-  // The daemon never spawns opencode — the desktop app / TUI / `opencode
-  // serve --service` own that process; we attach with no version pin, so
-  // an upgrade that replaces the service is picked up on the next probe.
+  // Whoever needs it first starts that process — the desktop app, the TUI,
+  // or this daemon when a task starts with none running; we attach with no
+  // version pin, so an upgrade that replaces the service is picked up on
+  // the next probe.
   const opencodeDiscovery = createOpencodeDiscovery({
     onChange: (next) =>
       console.log(
@@ -119,8 +126,16 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
         }`,
       ),
   });
-  const resolveOpencode = async (): Promise<OpencodeConnection> => {
-    const discovered = await opencodeDiscovery.resolve();
+  const opencodeStarter = createOpencodeStarter({
+    log: (message) => console.log(`[thinkite] ${message}`),
+  });
+  const resolveOpencode: ResolveOpencode = async ({ start = false } = {}) => {
+    let discovered = await opencodeDiscovery.resolve();
+    if (discovered === null && start) {
+      await opencodeStarter.start();
+      opencodeDiscovery.invalidate();
+      discovered = await opencodeDiscovery.resolve();
+    }
     if (discovered === null) {
       throw new Error(
         "no opencode service is running — start the opencode desktop app or `opencode serve --service`",
@@ -154,7 +169,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     isPairing: () => pairingOpen,
     // HTTP tunnel target: the same registered opencode service the desktop
     // proxy uses, re-resolved per request (5 s discovery cache).
-    opencode: () => resolveOpencode(),
+    opencode: resolveOpencode,
     log: (event, data) =>
       console.log(
         `[thinkite] ${event}${data ? ` ${JSON.stringify(data)}` : ""}`,
@@ -199,7 +214,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     fingerprint: identity.fingerprint,
     pairedClientCount: () => knownClients.list().length,
     authenticatedPeerCount: () => iroh.authenticatedCount(),
-    opencode: () => resolveOpencode(),
+    opencode: resolveOpencode,
     createPairOffer: (serviceName) => {
       const { encoded } = createPairOffer(identity, serviceName);
       return { encoded };

@@ -11,7 +11,7 @@ export interface ProxyOptions {
    * replaced service (upgrade) is picked up without a restart; a rejection
    * (no registered service) becomes a 502 JSON response.
    */
-  getUpstream: () => Promise<OpencodeConnection>;
+  getUpstream: (req: http.IncomingMessage) => Promise<OpencodeConnection>;
   log?: (event: string, data?: Record<string, unknown>) => void;
 }
 
@@ -35,7 +35,7 @@ export function createProxyServer(opts: ProxyOptions): http.Server {
     const startedAt = Date.now();
     let upstream: OpencodeConnection;
     try {
-      upstream = await opts.getUpstream();
+      upstream = await opts.getUpstream(req);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       opts.log?.("iroh.http.request", {
