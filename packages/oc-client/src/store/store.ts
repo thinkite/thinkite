@@ -561,6 +561,9 @@ export function createOcStore({
   async function resync(): Promise<void> {
     try {
       await loadSessions();
+      // Also the way out of a failed start: the service came up later.
+      if (status.get().status !== "ready")
+        status.set({ status: "ready", error: null });
     } catch (error) {
       onError("resync", error);
     }
@@ -677,9 +680,10 @@ export function createOcStore({
       await loadSessions();
       status.set({ status: "ready", error: null });
     } catch (error) {
-      // Drop the bus too, so the next start() tries again from scratch.
-      events.abort();
-      events = null;
+      // No service yet (it may be started by the first prompt, or opened
+      // later). The bus keeps retrying; its first connection reads
+      // everything (resync) and makes the store ready.
+      skipConnected = false;
       status.set({ status: "error", error: String(error) });
       throw error;
     }

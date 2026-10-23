@@ -225,6 +225,28 @@ const ids = (s: OcStore) =>
   (s.session.message.get()[SES] ?? []).map((r) => r.id);
 
 describe("session list", () => {
+  it("recovers when the service comes up after a failed start", async () => {
+    const bus = new FakeBus();
+    const { client } = fakeClient({
+      bus,
+      sessions: [{ sessions: [info(SES, "a", 20)] }],
+    });
+    let down = true;
+    const list = client.listSessions.bind(client);
+    client.listSessions = (o) =>
+      down ? Promise.reject(new Error("502")) : list(o);
+    const s = store(client);
+    await expect(s.start()).rejects.toThrow("502");
+    expect(s.status.get().status).toBe("error");
+    // The service starts; the bus's next connection reads the list.
+    down = false;
+    bus.close();
+    await expect
+      .poll(() => s.status.get().status, { timeout: 3000 })
+      .toBe("ready");
+    expect(Object.keys(s.session.info.get())).toEqual([SES]);
+  });
+
   it("lists, seeds busy flags from the active snapshot, and patches from the bus", async () => {
     const bus = new FakeBus();
     const { client } = fakeClient({
