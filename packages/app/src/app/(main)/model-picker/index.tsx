@@ -15,6 +15,7 @@ import {
   foregroundStyle,
   pickerStyle,
   tag,
+  tint,
 } from "@expo/ui/swift-ui/modifiers";
 import { variantLabel } from "@thinkite/oc-client";
 import { router, Stack, useLocalSearchParams } from "expo-router";
@@ -111,7 +112,9 @@ export default function ModelPickerScreen() {
                   if (choice.model !== null && v !== choice.variant)
                     pickModel(sessionID, choice.model, v);
                 }}
-                modifiers={[pickerStyle("menu")]}
+                // Gray like Settings' menu rows; SwiftUI tints a menu
+                // picker's value and chevrons with the accent by default.
+                modifiers={[pickerStyle("menu"), tint("secondary")]}
               >
                 {["default", ...variants].map((v) => (
                   <SwiftText key={v} modifiers={[tag(v)]}>
