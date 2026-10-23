@@ -70,6 +70,12 @@ export function handleOcProxy(
         res.flushHeaders();
       }
       ures.pipe(res);
+      // The service went away mid-response (stopped, or replaced by a newer
+      // one): end ours too, or an event stream hangs until its idle timeout.
+      ures.on("close", () => {
+        if (!ures.complete) res.destroy();
+      });
+      ures.on("error", () => res.destroy());
     },
   );
   up.on("error", () => {
@@ -79,5 +85,6 @@ export function handleOcProxy(
   // Client went away (navigated, aborted) → drop the upstream request so
   // a tailed SSE stream doesn't linger on the opencode server.
   res.on("close", () => up.destroy());
+  req.on("error", () => up.destroy());
   req.pipe(up);
 }

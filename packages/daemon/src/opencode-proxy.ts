@@ -83,6 +83,13 @@ export function createProxyServer(opts: ProxyOptions): http.Server {
           res.flushHeaders();
         }
         ures.pipe(res);
+        // The service went away mid-response (stopped, or replaced by a
+        // newer one): end ours too, or an event stream hangs until its
+        // idle timeout.
+        ures.on("close", () => {
+          if (!ures.complete) res.destroy();
+        });
+        ures.on("error", () => res.destroy());
       },
     );
     up.on("error", (err) => {
@@ -97,6 +104,7 @@ export function createProxyServer(opts: ProxyOptions): http.Server {
       res.end();
     });
     res.on("close", () => up.destroy()); // client went away → drop upstream (SSE)
+    req.on("error", () => up.destroy());
     req.pipe(up);
   }
 

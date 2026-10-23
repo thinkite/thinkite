@@ -174,6 +174,33 @@ describe("createProxyServer", () => {
     expect(rest).toContain("data: two");
   });
 
+  it("ends the client's stream when the upstream goes away mid-response", async () => {
+    // A service that is stopped or replaced drops its event streams; the
+    // client must see that at once, not at its idle timeout.
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write("data: one\n\n");
+      setTimeout(() => res.socket?.destroy(), 50);
+    });
+    const port = await listen(upstream);
+    cleanups.push(() => upstream.close());
+    const proxy = createProxyServer({
+      getUpstream: upstreamConnection(`http://127.0.0.1:${port}`),
+    });
+    cleanups.push(() => proxy.close());
+
+    const res = await requestThroughProxy(proxy, "GET", "/event", {
+      accept: "text/event-stream",
+    });
+    res.resume();
+    res.on("error", () => {}); // "aborted": the cut is what we want
+    await withTimeout(
+      new Promise((resolve) => res.on("close", resolve)),
+      2000,
+      "the client stream to end",
+    );
+  });
+
   it("destroys the upstream request when the client socket closes", async () => {
     let upstreamClosed!: () => void;
     const closed = new Promise<void>((resolve) => {
