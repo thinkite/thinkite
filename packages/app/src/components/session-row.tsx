@@ -84,7 +84,7 @@ const ROW_HEIGHT = 44;
  * `ellipsis`; idle/other → a gray dot.
  */
 export function SessionRow({ session, onPress, isActive }: SessionRowProps) {
-  const title = session.title || "Untitled session";
+  const title = session.title || "New session";
   const isRunning = session.running;
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
 

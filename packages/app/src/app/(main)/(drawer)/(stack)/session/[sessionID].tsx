@@ -107,7 +107,7 @@ export default function SessionDetailScreen() {
           Stack.Header / Stack.Toolbar APIs — these render natively
           (UIKit UINavigationBar), so the system handles blur strength
           tracking with scroll, dynamic-type sizing, RTL, etc. */}
-      <Stack.Screen options={{ title: session?.title || "Session" }} />
+      <Stack.Screen options={{ title: session?.title || "New session" }} />
       <Stack.Header transparent />
       <Stack.Toolbar placement="left">
         <Stack.Toolbar.Button icon="line.3.horizontal" onPress={openDrawer} />
