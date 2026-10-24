@@ -1,4 +1,5 @@
 import { Button } from "@astryxdesign/core/Button";
+import { Divider } from "@astryxdesign/core/Divider";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { ResizeHandle, useResizable } from "@astryxdesign/core/Resizable";
@@ -418,6 +419,7 @@ function Session({ sessionId }: { sessionId: string }) {
         trailing={
           <div className="flex items-center gap-2">
             <OpenIn directory={session.location.directory} />
+            <Divider orientation="vertical" className="h-4" />
             <ToggleButtonGroup
               label="Session panel"
               size="sm"
