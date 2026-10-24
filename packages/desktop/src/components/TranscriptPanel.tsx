@@ -439,7 +439,9 @@ function WorkingFooter({
       className={`chat-col h-10 transition-opacity duration-200 ${active ? "opacity-100" : "opacity-0"}`}
       aria-hidden={!active}
     >
-      <Text size="sm" color="secondary" className="motion-safe:animate-pulse">
+      {/* Pulses only while shown: an infinite animation keeps repainting
+          even at opacity 0, which kept an idle window drawing. */}
+      <Text size="sm" color="secondary" className={active ? PULSE : ""}>
         {since !== undefined && now > since
           ? `Working for ${duration(now - since)}`
           : "Working…"}
