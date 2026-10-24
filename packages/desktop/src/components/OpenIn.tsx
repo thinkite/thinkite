@@ -3,11 +3,14 @@ import { ButtonGroup } from "@astryxdesign/core/ButtonGroup";
 import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
 import { Icon } from "@astryxdesign/core/Icon";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDownIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon } from "lucide-react";
+import { useState } from "react";
 
 // "Open in" for the session's folder, after DeepSeek Harness's split
-// button: Finder's icon opens the folder there, and the chevron lists the
-// other installed apps (server/open-in.ts).
+// button: the icon opens the folder in the app last picked from the
+// chevron's list of installed apps (server/open-in.ts), Finder until one
+// is. As in OpenCode desktop, a pick is kept whether or not the app
+// opened, and an app no longer installed falls back to Finder.
 
 /** Must match server/open-in's OpenInApp. */
 interface OpenInApp {
@@ -16,6 +19,23 @@ interface OpenInApp {
 }
 
 const FINDER: OpenInApp = { id: "finder", name: "Finder" };
+const KEY = "thinkite:open-in";
+
+function readChoice(): string | null {
+  try {
+    return localStorage.getItem(KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveChoice(id: string): void {
+  try {
+    localStorage.setItem(KEY, id);
+  } catch {
+    // Private mode: the choice still holds for this run.
+  }
+}
 
 function AppIcon({ app }: { app: OpenInApp }) {
   return (
@@ -48,17 +68,25 @@ export function OpenIn({ directory }: { directory: string }) {
       return (await res.json()) as OpenInApp[];
     },
   });
+  const [choice, setChoice] = useState(readChoice);
+  const current = apps.find((a) => a.id === choice) ?? FINDER;
+
+  const pick = (app: OpenInApp) => {
+    saveChoice(app.id);
+    setChoice(app.id);
+    open(app, directory);
+  };
 
   return (
     <ButtonGroup label="Open in" size="sm">
       <Button
-        label="Open in Finder"
-        tooltip="Open in Finder"
+        label={`Open in ${current.name}`}
+        tooltip={`Open in ${current.name}`}
         variant="secondary"
         size="sm"
         isIconOnly
-        icon={<AppIcon app={FINDER} />}
-        onClick={() => open(FINDER, directory)}
+        icon={<AppIcon app={current} />}
+        onClick={() => open(current, directory)}
       />
       <DropdownMenu
         button={{
@@ -74,7 +102,11 @@ export function OpenIn({ directory }: { directory: string }) {
           id: app.id,
           label: app.name,
           icon: <AppIcon app={app} />,
-          onClick: () => open(app, directory),
+          endContent:
+            app.id === current.id ? (
+              <Icon icon={CheckIcon} size="sm" />
+            ) : undefined,
+          onClick: () => pick(app),
         }))}
       />
     </ButtonGroup>
