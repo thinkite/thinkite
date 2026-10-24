@@ -1,0 +1,36 @@
+---
+// How to start, in three steps, ending at the footer's buttons.
+import { links } from "../config";
+
+const steps = [
+  {
+    title: "Install Thinkite on your Mac.",
+    body: "It starts opencode for you and keeps it running. Needs opencode 2.1 or later.",
+  },
+  {
+    title: "Scan the code with your iPhone.",
+    body: "The Mac shows a QR code; the iPhone app scans it once. From then on the link between them is end-to-end encrypted, with no account to make.",
+  },
+  {
+    title: "Pick a folder and go.",
+    body: "Sessions show on both. Thinkite works alongside OpenCode Desktop and the TUI, so nothing you already use changes.",
+  },
+];
+---
+
+<section class="wrap steps" id="start">
+  <h2 class="section-title">Three steps from Mac to pocket.</h2>
+  <ol>
+    {
+      steps.map((step) => (
+        <li>
+          <h3>{step.title}</h3>
+          <p>{step.body}</p>
+        </li>
+      ))
+    }
+  </ol>
+  <p class="steps-note">
+    No Thinkite server sees your sessions; see <a href="/privacy">Privacy</a>. Source on <a href={links.github} target="_blank" rel="noopener">GitHub</a>.
+  </p>
+</section>

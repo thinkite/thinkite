@@ -1,5 +1,5 @@
 ---
-import Kite from "./Kite.astro";
+import BrandMark from "./BrandMark.astro";
 import { links, site } from "../config";
 
 interface Props {
@@ -19,11 +19,20 @@ const currentYear = new Date().getFullYear();
         <span class="cloud c1" />
         <span class="cloud c2" />
         <div class="wrap">
-          <Kite class="foot-kite" string={150} />
-          <h2>Hold every string.</h2>
+          <BrandMark class="foot-icon" />
+          <h2>Take OpenCode with you.</h2>
           <div class="hero-actions">
-            <a class="btn btn-primary" href={links.download}>Download for Mac</a>
-            <a class="btn btn-ghost" href={links.appStore}>Join the iOS beta</a>
+            <div data-show-on="desktop">
+              <a class="btn btn-primary" href={links.download}>Download for Mac</a>
+              <a class="btn btn-ghost" href={links.appStore}>Join the iOS beta</a>
+            </div>
+            <div data-show-on="ios">
+              <a class="btn btn-primary" href={links.appStore}>Join the iOS beta</a>
+              <a class="btn btn-ghost" href={links.download}>Get the Mac app</a>
+            </div>
+            <div data-show-on="android">
+              <a class="btn btn-primary" href={links.github} target="_blank" rel="noopener">GitHub</a>
+            </div>
           </div>
         </div>
       </div>
