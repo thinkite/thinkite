@@ -509,24 +509,25 @@ export function mountSkyScene(
     uv.setXY(i, position.getX(i) + 0.5, position.getY(i) + 0.5);
   }
   // The sides a shade darker than the caps, baked into vertex colours, so a
-  // model tile is one material and one draw call rather than two.
+  // tile is one material and one draw call rather than two.
   const shade = new Float32Array(position.count * 3).fill(1);
   for (const { start, count, materialIndex } of geometry.groups) {
     if (materialIndex === 1) shade.fill(0.85, start * 3, (start + count) * 3);
   }
   geometry.setAttribute("color", new BufferAttribute(shade, 3));
+  // Tiles are glossier than the phone: wet-looking, with sharp highlights.
+  const tile = (props: ConstructorParameters<typeof MeshStandardMaterial>[0]) =>
+    glossy({ roughness: 0.15, vertexColors: true, ...props });
 
+  // The icon's edge, like a model tile's, carries on its face's colours.
   const icon = iconTexture();
   icon.anisotropy = anisotropy;
-  const centre = new Mesh(geometry, [
-    glossy({ map: icon }),
-    glossy({ color: "#b8d8ef" }),
-  ]);
+  const centre = new Mesh(geometry, tile({ map: icon }));
   centre.scale.setScalar(CENTRE.size);
   scene.add(centre);
 
   const orbiting = kites.map((kite) => {
-    const face = glossy({ vertexColors: true });
+    const face = tile({});
     const mesh = new Mesh(geometry, face);
     mesh.scale.setScalar(kite.size);
     scene.add(mesh);

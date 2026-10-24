@@ -101,14 +101,21 @@ const shade = "57.6,309.6 360,0 360,237.6";
       sky.style.setProperty("--scroll", offset.toFixed(3));
     };
 
-    // The animation draws at most 60 frames a second, not at the screen's
-    // full refresh rate (up to 120–144 Hz) when nothing moves that fast. A
-    // one-off redraw (on scroll or resize while still) always draws.
-    const step = 1000 / 60;
-    let drawn = 0;
+    // The animation draws about 60 frames a second, not at the screen's full
+    // refresh rate (up to 120–144 Hz) when nothing moves that fast. It skips
+    // whole screen frames so the ones it draws stay evenly spaced: every
+    // second one at 120 Hz (60 fps) and 144 Hz (72 fps). A one-off redraw
+    // (on scroll or resize while still) always draws.
+    let interval = 1000 / 60; // the screen's, learned as frames come
+    let last = 0;
+    let skipped = 0;
     const loop = (now = performance.now()) => {
-      if (frame === 0 || now - drawn >= step - 2) {
-        drawn = now;
+      const running = frame !== 0;
+      if (running && now - last < 50) interval += (now - last - interval) * 0.2;
+      last = now;
+      const every = Math.max(1, Math.floor(1000 / interval / 60 + 0.15));
+      if (!running || ++skipped >= every) {
+        skipped = 0;
         // Only the flat kites drift with the scroll; skip the layout read
         // once the 3D scene is up.
         if (!scene) parallax();
