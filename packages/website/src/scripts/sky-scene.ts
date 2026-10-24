@@ -55,10 +55,21 @@ const DEG = Math.PI / 180;
 // thin slit of light; PHONE_TILT would lift its far end toward the viewer.
 const ELEVATION = 5 * DEG;
 const PHONE_TILT = 0;
-const PHONE = { width: 0.58, height: 1.18, radius: 0.105, depth: 0.045 };
+// About a real phone's proportions: depth plus the rounded edge above and
+// below it is about a ninth of the width.
+const PHONE = {
+  width: 0.58,
+  height: 1.18,
+  radius: 0.105,
+  depth: 0.025,
+  edge: 0.02,
+};
+// The black around the screen: a strip of flat face, then the rounded edge
+// outside it, each this wide, so the screen nearly reaches the sides.
+const RIM = 0.012;
 const CENTRE = { size: 1.45, height: 2.6 };
 // The beam leaves the screen as wide as the screen and widens as it rises.
-const BEAM = { bottom: 0.55, top: 2.5, height: 3.3, base: 0.07 };
+const BEAM = { bottom: 0.55, top: 2.5, height: 3.3, base: 0.045 };
 const MOTES = 22;
 // Two rings around the beam, one above the icon and one below, turning
 // opposite ways. The camera looks on almost level, so each ring's plane
@@ -380,8 +391,8 @@ export function mountSkyScene(
     {
       depth: PHONE.depth,
       bevelEnabled: true,
-      bevelThickness: 0.03,
-      bevelSize: 0.03,
+      bevelThickness: PHONE.edge,
+      bevelSize: RIM,
       bevelSegments: 6,
       curveSegments: 16,
     },
@@ -394,28 +405,29 @@ export function mountSkyScene(
     ),
   );
   // The screen, inset from the edge: plain light in the colour the beam
-  // leaves it in, nothing to read at this size anyway.
-  const [sw, sh] = [PHONE.width - 0.05, PHONE.height - 0.05];
+  // leaves it in, nothing to read at this size anyway. Its corners follow
+  // the body's.
+  const [sw, sh] = [PHONE.width - 2 * RIM, PHONE.height - 2 * RIM];
   const screenMaterial = new MeshBasicMaterial({
     fog: false,
     toneMapped: false,
   });
   const screen = new Mesh(
-    new ShapeGeometry(roundedRect(sw, sh, PHONE.radius - 0.045), 12),
+    new ShapeGeometry(roundedRect(sw, sh, PHONE.radius - RIM), 12),
     screenMaterial,
   );
-  screen.position.z = PHONE.depth + 0.031;
+  screen.position.z = PHONE.depth + PHONE.edge + 0.001;
   phone.add(screen);
   // A pill-shaped cutout near the top, so it reads as a phone.
   const island = new Mesh(
-    new ShapeGeometry(roundedRect(0.17, 0.05, 0.025), 8),
+    new ShapeGeometry(roundedRect(0.12, 0.046, 0.023), 8),
     new MeshBasicMaterial({ color: "#0b0c0f", fog: false }),
   );
-  island.position.set(0, sh / 2 - 0.075, screen.position.z + 0.001);
+  island.position.set(0, sh / 2 - 0.07, screen.position.z + 0.001);
   phone.add(island);
   const margin = 0.2;
   const haloMaterial = new MeshBasicMaterial({
-    map: haloTexture(sw, sh, PHONE.radius - 0.045, margin),
+    map: haloTexture(sw, sh, PHONE.radius - RIM, margin),
     transparent: true,
     depthWrite: false,
     fog: false,

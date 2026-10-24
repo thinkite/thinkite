@@ -534,6 +534,11 @@ html:not([data-platform]) [data-show-on~="desktop"] {
   padding: 72px 0 120px;
   text-align: center;
 }
+/* Icon, heading and buttons all in front of the clouds. */
+.foot-sky .wrap {
+  position: relative;
+  z-index: 1;
+}
 .foot-icon {
   width: clamp(72px, 7vw, 96px);
   height: clamp(72px, 7vw, 96px);
@@ -550,15 +555,14 @@ html:not([data-platform]) [data-show-on~="desktop"] {
   animation-duration: 75s;
 }
 .foot-sky h2 {
-  position: relative;
   margin: 28px 0 0;
+  text-wrap: balance;
   font-size: clamp(36px, 5vw, 56px);
   font-weight: 700;
   letter-spacing: -0.035em;
   line-height: 1.05;
 }
 .foot-sky .hero-actions {
-  position: relative;
   margin-top: 32px;
 }
 .foot-grid {
