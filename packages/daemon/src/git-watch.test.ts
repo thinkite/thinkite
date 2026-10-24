@@ -207,6 +207,23 @@ describe("GitWatcher", () => {
     w.dispose();
   });
 
+  /** Make `edit` until the watcher pushes: on a loaded macOS runner the
+   *  first events of a just-started FSEvents stream can be lost, and the
+   *  60 s self-heal is too slow to wait for. Once a push has arrived the
+   *  stream is live, so later steps can make their change once. */
+  async function editUntilPushed(
+    got: GitStatus[],
+    edit: () => void,
+  ): Promise<void> {
+    await vi.waitFor(
+      () => {
+        if (got.length === 0) edit();
+        expect(got.length).toBeGreaterThan(0);
+      },
+      { timeout: 15_000, interval: 1000 },
+    );
+  }
+
   it("pushes working-tree edits and an outside reset", async () => {
     initRepo(dir);
     writeFileSync(path.join(dir, "a.txt"), "x\n");
@@ -216,7 +233,9 @@ describe("GitWatcher", () => {
     const w = new GitWatcher(dir);
     const got: GitStatus[] = [];
     const unsubscribe = w.subscribe((s) => got.push(s));
-    writeFileSync(path.join(dir, "a.txt"), "x\ny\nz\n");
+    await editUntilPushed(got, () =>
+      writeFileSync(path.join(dir, "a.txt"), "x\ny\nz\n"),
+    );
     await vi.waitFor(() => expect(got.at(-1)?.insertions).toBe(2), {
       timeout: 8000,
       interval: 100,
@@ -228,7 +247,7 @@ describe("GitWatcher", () => {
     });
     unsubscribe();
     w.dispose();
-  }, 20_000);
+  }, 30_000);
 
   it("settles after a push instead of refreshing itself forever", async () => {
     initRepo(dir);
@@ -239,20 +258,27 @@ describe("GitWatcher", () => {
     const w = new GitWatcher(dir);
     const got: GitStatus[] = [];
     const unsubscribe = w.subscribe((s) => got.push(s));
-    writeFileSync(path.join(dir, "a.txt"), "x\ny\n");
+    await editUntilPushed(got, () =>
+      writeFileSync(path.join(dir, "a.txt"), "x\ny\n"),
+    );
     await vi.waitFor(() => expect(got.at(-1)?.insertions).toBe(1), {
       timeout: 8000,
       interval: 100,
     });
+    // A retried edit may still be on its way; start counting once quiet.
+    let settled: number;
+    do {
+      settled = got.length;
+      await new Promise((r) => setTimeout(r, 1500));
+    } while (got.length !== settled);
     // Each refresh runs `git status`, which locks the index; another
     // client reading the repo does the same.
-    const settled = got.length;
     execFileSync("git", ["status"], { cwd: dir });
     await new Promise((r) => setTimeout(r, 2500));
     expect(got.length).toBe(settled);
     unsubscribe();
     w.dispose();
-  }, 20_000);
+  }, 30_000);
 
   it("isNoise drops object, log, index, lock and node_modules events", () => {
     expect(isNoise(".git/objects/ab/cdef")).toBe(true);
