@@ -5,8 +5,8 @@ import Footer from "../components/Footer.astro";
 ---
 
 <BaseLayout
-  title="Privacy — thinkite"
-  description="thinkite runs entirely on your local network. No telemetry, no analytics, no cookies."
+  title="Privacy — Thinkite"
+  description="Thinkite connects your iPhone to your Mac directly over an encrypted peer-to-peer link. No accounts, no telemetry, no analytics."
 >
   <Nav />
   <main class="wrap privacy-main">
@@ -14,31 +14,38 @@ import Footer from "../components/Footer.astro";
       <h1 class="privacy-h1">Privacy</h1>
 
       <div class="privacy-body">
-        <p>thinkite runs entirely on your local network.</p>
-
         <p>
-          No telemetry. No analytics. No cookies. No third-party services.
-          Pairing, sessions, prompts, and approvals never leave your devices.
+          Thinkite has no accounts, telemetry, analytics, or cookies, and it runs no server of its own that sees your sessions.
+        </p>
+
+        <h2>Between your phone and your Mac</h2>
+        <p>
+          The iOS app connects to the Thinkite app on your Mac over an end-to-end encrypted QUIC connection (<a href="https://www.iroh.computer/" target="_blank" rel="noopener">iroh</a>, TLS 1.3). Pairing gives the phone your Mac's public key, and each side's key is verified in the handshake. Prompts, code, diffs, and answers travel only over that connection.
+        </p>
+        <p>
+          To find each other, the apps use iroh's public infrastructure run by n0: your Mac publishes its public key and network addresses so the phone can reach it, and when a network blocks a direct path, an iroh relay forwards the connection's packets. Those packets stay encrypted end to end, and the relay can't read them.
+        </p>
+
+        <h2>On your Mac</h2>
+        <p>
+          Your sessions are run by opencode on your Mac. opencode sends prompts and code to the model providers you set up, under those providers' terms, and stores your provider API keys on your Mac. The phone never receives them.
+        </p>
+
+        <h2>Updates</h2>
+        <p>
+          The Mac app checks GitHub Releases for new versions. The iOS app checks Expo's update service for app updates. Neither check includes your sessions or code.
+        </p>
+
+        <h2>This website</h2>
+        <p>
+          This site sets no cookies and runs no analytics. It loads its font from Google Fonts. The Download link asks GitHub for the latest release.
         </p>
 
         <p>
-          The only outbound network call thinkite makes is to Apple's App Store
-          on first scan — and only if you don't already have the iOS app
-          installed.
+          Thinkite is open source under Apache 2.0, so every claim above can be checked in the source. Questions: <a href="mailto:contact@thinkite.dev">contact@thinkite.dev</a>.
         </p>
 
-        <p>
-          Plan utilization data is fetched directly from Anthropic's OAuth
-          endpoint using your existing Claude Code authentication. thinkite
-          does not store, log, or transmit your token.
-        </p>
-
-        <p>
-          Source code is published under Apache 2.0 — every claim above can be
-          verified by reading the source.
-        </p>
-
-        <p class="privacy-updated">Last updated: 2026-05-18.</p>
+        <p class="privacy-updated">Last updated: 2026-10-23.</p>
       </div>
     </article>
   </main>
@@ -51,8 +58,8 @@ import Footer from "../components/Footer.astro";
   .privacy-h1 {
     font-family: var(--font-display);
     font-size: clamp(36px, 4.6vw, 56px);
-    font-weight: 600;
-    letter-spacing: -0.03em;
+    font-weight: 700;
+    letter-spacing: -0.035em;
     line-height: 1;
     margin: 0 0 2rem;
   }
@@ -61,7 +68,19 @@ import Footer from "../components/Footer.astro";
     font-size: 16.5px;
     line-height: 1.65;
   }
+  .privacy-body h2 {
+    color: var(--ink);
+    font-size: 19px;
+    font-weight: 650;
+    letter-spacing: -0.015em;
+    margin: 2.25rem 0 0.75rem;
+  }
   .privacy-body p { margin: 0 0 1.25rem; }
+  .privacy-body a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
   .privacy-updated {
     color: var(--muted);
     font-size: 13px;

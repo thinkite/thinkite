@@ -1,12 +1,12 @@
-<svg viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-  <defs>
-    <clipPath id="brand-tile"><rect width="360" height="360" rx="80" /></clipPath>
-  </defs>
-  <g clip-path="url(#brand-tile)">
-    <rect width="360" height="360" fill="#CFE6F5" />
-    <polygon points="57.6,309.6 151.2,0 250.09,112.54" fill="#EE8A57" />
-    <polygon points="151.2,0 360,0 250.09,112.54" fill="#F6C67D" />
-    <polygon points="360,0 360,237.6 250.09,112.54" fill="#DB6480" />
-    <polygon points="57.6,309.6 250.09,112.54 360,237.6" fill="#7A63AC" />
-  </g>
-</svg>
+---
+// The app icon: the master kite tile (public/favicon.svg) clipped to the
+// macOS corner radius. Size it with width/height on .app-icon.
+interface Props {
+  class?: string;
+}
+const { class: className = "" } = Astro.props;
+---
+
+<span class={`app-icon ${className}`} aria-hidden="true">
+  <img src="/favicon.svg" alt="" width="128" height="128" />
+</span>

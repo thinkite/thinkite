@@ -1,10 +1,10 @@
 ---
+import KiteSky from "./KiteSky.astro";
 import { links, site } from "../config";
 
 interface Props {
-  /** When true, renders only the bottom meta row (copyright + links).
-      Use on content pages like /privacy that don't need the giant
-      "thinkite." sign-off and download CTAs. */
+  /** Only the bottom row (copyright and links), for content pages such as
+      /privacy that don't need the closing call to action. */
   minimal?: boolean;
 }
 
@@ -12,53 +12,31 @@ const { minimal = false } = Astro.props;
 const currentYear = new Date().getFullYear();
 ---
 
-<footer
-  class={`foot ${minimal ? "is-minimal" : ""}`}
-  id={minimal ? undefined : "download"}
->
-  <div class="wrap">
-    {
-      !minimal && (
-        <>
-          <h2 class="foot-huge">
-            thinkite<span class="ital">.</span>
-          </h2>
-
-          <div class="foot-actions">
-            <a class="btn btn-accent" href={links.download}>
-              Download for macOS
-            </a>
-            <a class="btn btn-ghost" href={links.appStore}>
-              iOS · TestFlight <span class="arr">↗</span>
-            </a>
-            <a
-              class="btn btn-ghost"
-              href={links.github}
-              target="_blank"
-              rel="noopener"
-            >
-              View on GitHub <span class="arr">↗</span>
-            </a>
+<footer class="foot" id={minimal ? undefined : "download"}>
+  {
+    !minimal && (
+      <div class="foot-sky">
+        <span class="cloud c1" />
+        <span class="cloud c2" />
+        <div class="wrap">
+          <KiteSky />
+          <h2>Hold every string.</h2>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href={links.download}>Download for Mac</a>
+            <a class="btn btn-ghost" href={links.appStore}>Join the iOS beta</a>
           </div>
-
-          <p class="foot-disclaimer">
-            Not affiliated with, or endorsed by, Anthropic. “Claude” and “Claude
-            Code” are trademarks of Anthropic, PBC. thinkite is early,
-            open-source software — expect rough edges.
-          </p>
-        </>
-      )
-    }
-
-    <div class="foot-grid">
-      <div class="meta">
-        © {currentYear} · {site.author} · {site.license} ·{" "}
-        <b>macOS (Apple Silicon) + iOS</b>
+        </div>
       </div>
-      <div class="links">
-        <a href="/privacy">Privacy</a>
-        <a href={`mailto:${links.contactEmail}`}>{links.contactEmail}</a>
-      </div>
+    )
+  }
+  <div class="wrap foot-grid">
+    <div>
+      © {currentYear} {site.author} · {site.license} · Product names belong to their owners; Thinkite isn't affiliated with them.
+    </div>
+    <div class="links">
+      <a href={links.github} target="_blank" rel="noopener">GitHub</a>
+      <a href="/privacy">Privacy</a>
+      <a href={`mailto:${links.contactEmail}`}>Contact</a>
     </div>
   </div>
 </footer>

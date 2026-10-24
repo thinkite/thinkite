@@ -9,8 +9,8 @@ interface Props {
 }
 
 const {
-  title = "thinkite — By your side. Run Claude Code from your phone.",
-  description = "Run Claude Code from your phone: a macOS menu-bar daemon + iOS app to start, stream, and steer sessions on your Mac. Peer-to-peer, private, open source.",
+  title = "Thinkite — OpenCode on your Mac. In your pocket.",
+  description = "A desktop and iPhone app for opencode: start sessions, answer the agent, and steer a running turn from your phone, connected straight to your Mac. Peer-to-peer, encrypted, open source.",
   noindex = false,
 } = Astro.props;
 ---
@@ -31,11 +31,15 @@ const {
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
     <meta property="og:url" content={site.url} />
+    <meta property="og:image" content={`${site.url}/media/og.jpg`} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#fdfcfa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#12101f" media="(prefers-color-scheme: dark)" />
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap"
       rel="stylesheet"
     />
 

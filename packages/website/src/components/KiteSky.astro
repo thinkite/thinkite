@@ -1,0 +1,145 @@
+---
+// A sky of kites, one per model family Thinkite users fly through opencode,
+// each hinted by its maker's colour only (no logos), above the Thinkite
+// icon. Names show on hover or tap.
+//
+// Flat fallback: positions are percentages of the sky; depth runs from 0
+// (far: small, faint, slow parallax) to 1 (near). flip -1 mirrors a kite so
+// its nose points up-left instead of up-right; rot turns it further.
+// Orbit (three.js): ring 0 (upper) or 1 (lower) around the phone's beam, phase is where on the ring
+// a tile starts (0..1 of a turn), size its width against the centre's 1.15.
+const kites = [
+  { key: "opencode", name: "opencode", x: 50, y: 8, s: 124, depth: 1, flip: 1, rot: -30, dur: 7.5, ring: 0, phase: 0, size: 0.6 },
+  { key: "deepseek", name: "DeepSeek", x: 21, y: 34, s: 92, depth: 0.75, flip: -1, rot: 6, dur: 8.6, ring: 0, phase: 0.25, size: 0.52 },
+  { key: "gemini", name: "Gemini", x: 82, y: 16, s: 98, depth: 0.8, flip: 1, rot: 12, dur: 9.4, ring: 1, phase: 0.12, size: 0.52 },
+  { key: "minimax", name: "MiniMax", x: 33, y: 0, s: 66, depth: 0.45, flip: -1, rot: -22, dur: 10.2, ring: 0, phase: 0.75, size: 0.46 },
+  { key: "mimo", name: "Xiaomi MiMo", x: 62, y: 44, s: 62, depth: 0.55, flip: 1, rot: 28, dur: 8.9, ring: 0, phase: 0.5, size: 0.44 },
+  { key: "muse", name: "Muse Spark", x: 6, y: 58, s: 54, depth: 0.28, flip: -1, rot: 30, dur: 11.3, ring: 1, phase: 0.45, size: 0.44 },
+  { key: "glm", name: "GLM", x: 94, y: 2, s: 50, depth: 0.22, flip: 1, rot: -8, dur: 10.7, ring: 1, phase: 0.78, size: 0.46 },
+] as const;
+
+// The app icon's kite (360 grid): tail V, top A, nose C, right B, with the
+// spars V–C and A–B crossing at X.
+const sail = "57.6,309.6 151.2,0 360,0 360,237.6";
+const shade = "57.6,309.6 360,0 360,237.6";
+---
+
+<div
+  class="kite-sky"
+  data-kite-sky
+  role="group"
+  aria-label="Kites in the colours of opencode, DeepSeek, Gemini, MiniMax, Xiaomi MiMo, Muse Spark and GLM, flying above the Thinkite icon"
+>
+  <canvas class="sky-scene" data-scene aria-hidden="true"></canvas>
+
+  {
+    kites.map((k, i) => (
+      <button
+        type="button"
+        class={`sky-kite k-${k.key}`}
+        data-kite={k.key}
+        data-ring={k.ring}
+        data-phase={k.phase}
+        data-size={k.size}
+        data-rot={k.rot}
+        aria-label={k.name}
+        style={`--x:${k.x}%;--y:${k.y}%;--s:${k.s};--depth:${k.depth};--flip:${k.flip};--rot:${k.rot}deg;--dur:${k.dur}s;--delay:${-i * 1.3}s;--z:${Math.round(k.depth * 10)}`}
+      >
+        <span class="sky-kite-tilt">
+          <svg viewBox="0 0 360 320" aria-hidden="true">
+            <defs>
+              <linearGradient id={`sail-${k.key}`} x1="0" y1="1" x2="1" y2="0">
+                <stop offset="0" class="stop-a" />
+                <stop offset="0.55" class="stop-b" />
+                <stop offset="1" class="stop-c" />
+              </linearGradient>
+            </defs>
+            <polygon class="sail" points={sail} fill={`url(#sail-${k.key})`} />
+            <polygon points={shade} fill="#000" opacity="0.12" />
+            <line class="spar" x1="57.6" y1="309.6" x2="360" y2="0" />
+            <line class="spar" x1="151.2" y1="0" x2="360" y2="237.6" />
+          </svg>
+        </span>
+        <span class="kite-name" aria-hidden="true">{k.name}</span>
+      </button>
+    ))
+  }
+
+  <span class="sky-anchor app-icon" aria-hidden="true">
+    <img src="/favicon.svg" alt="" width="64" height="64" />
+  </span>
+</div>
+
+<script>
+  import type { SkyScene } from "../scripts/sky-scene";
+
+  // The kites start as flat SVG with a CSS sway above a flat icon. As the
+  // sky nears the screen, three.js loads and redraws them as 3D tiles
+  // circling a beam of light from a phone, one frame at a time while it's
+  // visible.
+  for (const sky of document.querySelectorAll<HTMLElement>("[data-kite-sky]")) {
+    const canvas = sky.querySelector("canvas[data-scene]") as HTMLCanvasElement;
+    const kites = [...sky.querySelectorAll<HTMLElement>("[data-kite]")];
+    const still = matchMedia("(prefers-reduced-motion: reduce)");
+    let scene: SkyScene | undefined;
+    let frame = 0;
+    let visible = false;
+
+    // Near kites drift a little faster than far ones as the page scrolls.
+    const parallax = () => {
+      const box = sky.getBoundingClientRect();
+      const offset = (box.top + box.height / 2 - innerHeight / 2) / innerHeight;
+      sky.style.setProperty("--scroll", offset.toFixed(3));
+    };
+
+    // Everything moves slowly, so the animation draws at most 30 frames a
+    // second, not at the screen's refresh rate (60–144 Hz). A one-off redraw
+    // (on scroll or resize while still) always draws.
+    const step = 1000 / 30;
+    let drawn = 0;
+    const loop = (now = performance.now()) => {
+      if (frame === 0 || now - drawn >= step - 2) {
+        drawn = now;
+        parallax();
+        scene?.render(still.matches ? 0 : now / 1000);
+      }
+      frame = visible && !still.matches ? requestAnimationFrame(loop) : 0;
+    };
+
+    // three.js is heavy, so fetch it only as the sky comes near the screen.
+    let loading = false;
+    const loadScene = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        const { mountSkyScene } = await import("../scripts/sky-scene");
+        scene = mountSkyScene(
+          canvas,
+          kites.map((el) => ({
+            el,
+            ring: Number(el.dataset.ring),
+            phase: Number(el.dataset.phase),
+            size: Number(el.dataset.size),
+            rot: Number(el.dataset.rot),
+          })),
+        );
+        sky.dataset.scene = "ready";
+        if (import.meta.env.DEV && new URLSearchParams(location.search).has("tune")) {
+          const { mountTuner } = await import("../scripts/sky-tuner");
+          mountTuner(scene, () => frame === 0 && loop());
+        }
+        if (frame === 0) loop();
+      } catch {
+        // No WebGL: keep the flat kites and icon.
+      }
+    };
+    new IntersectionObserver(([entry]) => entry.isIntersecting && loadScene(), { rootMargin: "400px" }).observe(sky);
+
+    new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting;
+      if (visible && frame === 0) loop();
+    }).observe(sky);
+    addEventListener("resize", () => frame === 0 && loop());
+    addEventListener("scroll", () => frame === 0 && loop(), { passive: true });
+  }
+</script>

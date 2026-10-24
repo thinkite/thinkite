@@ -19,7 +19,7 @@ export const links = {
 
 export const site = {
   url: "https://thinkite.dev",
-  name: "thinkite",
+  name: "Thinkite",
   author: "Richard Yang",
   license: "Apache 2.0",
 } as const;

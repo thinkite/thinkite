@@ -1,80 +1,38 @@
 ---
+import BrandMark from "./BrandMark.astro";
+import Kite from "./Kite.astro";
 import { links } from "../config";
 ---
 
+<!-- The demo film's end card, as a page, with the kite flying above it. -->
 <section class="hero">
+  <span class="cloud c1"></span>
+  <span class="cloud c2"></span>
+  <Kite string={260} />
   <div class="wrap">
-    <div class="hero-grid">
-      <div>
-        <!-- Single canonical h1 for all platforms (SEO: one h1/page). The
-             Android-specific "on iOS first." messaging lives in the aside copy
-             below, not in a second h1. -->
-        <h1>
-          By your<br />
-          side<span style="color:var(--accent)">.</span><br />
-          <span class="mute">Run Claude Code</span><br />
-          <span class="mute">from your </span><span class="ital">phone.</span>
-        </h1>
-      </div>
-
-      <aside class="hero-side">
-        <div data-show-on="desktop">
-          <p>
-            A macOS menu-bar daemon and an iOS app. Start, stream, and steer
-            Claude Code sessions on your Mac — peer-to-peer, private by default.
-          </p>
-          <div class="hero-actions">
-            <a class="btn btn-primary" href={links.download}>
-              Download for macOS <span class="arr">↓</span>
-            </a>
-            <a class="btn btn-ghost" href={links.appStore}>
-              iOS · TestFlight <span class="arr">↗</span>
-            </a>
-          </div>
-          <div class="hero-note">
-            Free &amp; open source · no signup · Apple Silicon + iOS
-          </div>
-        </div>
-
-        <div data-show-on="ios">
-          <p>
-            This is the iOS companion. Install it from TestFlight, then pair with
-            the thinkite app on your Mac — and start, stream, and steer Claude
-            Code sessions from your phone.
-          </p>
-          <div class="hero-actions">
-            <a class="btn btn-primary" href={links.appStore}>
-              Get on TestFlight <span class="arr">↗</span>
-            </a>
-            <a class="btn btn-ghost" href={links.download}>
-              On a Mac? Start here <span class="arr">↓</span>
-            </a>
-          </div>
-          <div class="hero-note">
-            TestFlight beta · requires the macOS app · free &amp; open source
-          </div>
-        </div>
-
-        <div data-show-on="android">
-          <p>
-            <strong style="font-weight:500;color:var(--ink)"
-              >macOS and iOS today — Android isn't here yet.</strong
-            ><br />thinkite is free and open source, so an Android port is on the
-            table. Star the repo to hear when it ships.
-          </p>
-          <div class="hero-actions">
-            <a class="btn btn-primary" href={links.github} target="_blank" rel="noopener">
-              Star on GitHub <span class="arr">↗</span>
-            </a>
-            <a class="btn btn-ghost" href="#faq">
-              Why iOS first <span class="arr">↓</span>
-            </a>
-          </div>
-          <div class="hero-note">
-            Android: not yet · macOS (Apple Silicon) + iOS available
-          </div>
-        </div>
-      </aside>
+    <div class="hero-brand">
+      <BrandMark />
+      <h1>Thinkite</h1>
     </div>
+    <p class="hero-tagline">OpenCode on your Mac. <b>In your pocket.</b></p>
+
+    <div class="hero-actions">
+      <div data-show-on="desktop">
+        <a class="btn btn-primary" href={links.download}>Download for Mac</a>
+        <a class="btn btn-ghost" href={links.appStore}>Join the iOS beta</a>
+      </div>
+      <div data-show-on="ios">
+        <a class="btn btn-primary" href={links.appStore}>Join the iOS beta</a>
+        <a class="btn btn-ghost" href={links.download}>Get the Mac app</a>
+      </div>
+      <div data-show-on="android">
+        <a class="btn btn-primary" href={links.github} target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+
+    <p class="hero-note">
+      <span data-show-on="desktop ios">Free and open source · Apple Silicon Mac + iPhone</span>
+      <span data-show-on="android">Mac + iPhone only for now.</span>
+    </p>
   </div>
 </section>

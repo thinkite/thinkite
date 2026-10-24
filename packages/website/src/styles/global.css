@@ -1,39 +1,66 @@
 @import "tailwindcss";
 
 /* ──────────────────────────────────────────────────────────────
-   Paper palette — exposed to Tailwind via @theme.
-   Use as bg-paper-100, text-paper-700, border-paper-300, etc.
+   Sky — the page is the kite's sky: a sunrise glow at the top that
+   turns into the icon's clear blue further down. The kite's own
+   colours (peach, gold, rose, lavender) appear only on the kite.
+   Dark mode is the same sky at night.
    ────────────────────────────────────────────────────────────── */
-@theme {
-  --color-paper-50: #fbf8ee;
-  --color-paper-100: #f2efe4;
-  --color-paper-200: #e6e2d2;
-  --color-paper-300: #d8d3bf;
-  --color-paper-500: #84817a;
-  --color-paper-700: #38362f;
-  --color-paper-950: #111110;
-  --color-accent: #ee5722;
-  --color-accent-ink: #ffffff;
+:root {
+  color-scheme: light dark;
+
+  --sky-top: #fffaf1;
+  --sky-mid: #eef6fc;
+  --sky-low: #cfe6f5;
+  --sun: rgba(246, 198, 125, 0.6);
+  --cloud: rgba(255, 255, 255, 0.85);
+  --bg: var(--sky-top);
+  --bg-elev: rgba(255, 255, 255, 0.62);
+  --ink: #141821;
+  --ink-2: #3d4656;
+  --muted: #5b6474;
+  --line: rgba(20, 24, 33, 0.12);
+  --line-soft: rgba(20, 24, 33, 0.07);
+  --accent: #2f6db3;
+  --accent-ink: #ffffff;
+  --string: rgba(20, 24, 33, 0.35);
+  --pill-bg: #141821;
+  --pill-ink: #ffffff;
+  --tile-shadow:
+    0 14px 34px rgba(60, 80, 110, 0.18), 0 0 0 1px rgba(20, 24, 33, 0.06);
+  --frame-shadow:
+    0 30px 80px -24px rgba(40, 70, 110, 0.35), 0 0 0 1px rgba(20, 24, 33, 0.08);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --font-display: var(--font-sans);
+
+  --max: 1180px;
+  --max-tx: 760px;
 }
 
-/* Legacy CSS-variable aliases so the design-system CSS below keeps working. */
-:root {
-  --bg: var(--color-paper-100);
-  --bg-elev: var(--color-paper-50);
-  --ink: var(--color-paper-950);
-  --ink-2: var(--color-paper-700);
-  --muted: var(--color-paper-500);
-  --line: var(--color-paper-300);
-  --line-soft: var(--color-paper-200);
-  --accent: var(--color-accent);
-  --accent-ink: var(--color-accent-ink);
-
-  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --font-display: "Geist", ui-sans-serif, system-ui, sans-serif;
-
-  --max: 1240px;
-  --max-tx: 880px;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --sky-top: #0c1124;
+    --sky-mid: #121a36;
+    --sky-low: #1d2550;
+    --sun: rgba(246, 198, 125, 0.12);
+    --cloud: rgba(255, 255, 255, 0.06);
+    --bg-elev: rgba(255, 255, 255, 0.06);
+    --ink: #f3f5fb;
+    --ink-2: #c9cfde;
+    --muted: #9aa3ba;
+    --line: rgba(255, 255, 255, 0.14);
+    --line-soft: rgba(255, 255, 255, 0.07);
+    --accent: #9cc7f0;
+    --accent-ink: #0c1124;
+    --string: rgba(255, 255, 255, 0.35);
+    --pill-bg: #ffffff;
+    --pill-ink: #141821;
+    --tile-shadow: 0 18px 44px rgba(0, 0, 0, 0.45);
+    --frame-shadow:
+      0 30px 80px -24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  }
 }
 
 * {
@@ -44,31 +71,112 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: var(--bg);
   color: var(--ink);
   font-family: var(--font-sans);
-  font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+html {
+  background: var(--sky-low);
+}
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(60% 40% at 0% 0%, var(--sun) 0%, transparent 70%),
+    linear-gradient(
+      180deg,
+      var(--sky-top) 0%,
+      var(--sky-mid) 45%,
+      var(--sky-low) 100%
+    );
+}
+
+/* Stars at night: a few fixed points layered over the night sky. */
+@media (prefers-color-scheme: dark) {
+  body {
+    background:
+      radial-gradient(
+        1.2px 1.2px at 12% 18%,
+        rgba(255, 255, 255, 0.8) 50%,
+        transparent 51%
+      ),
+      radial-gradient(
+        1px 1px at 28% 62%,
+        rgba(255, 255, 255, 0.8) 50%,
+        transparent 51%
+      ),
+      radial-gradient(
+        1.4px 1.4px at 44% 12%,
+        rgba(255, 255, 255, 0.8) 50%,
+        transparent 51%
+      ),
+      radial-gradient(
+        1px 1px at 63% 38%,
+        rgba(255, 255, 255, 0.8) 50%,
+        transparent 51%
+      ),
+      radial-gradient(
+        1.2px 1.2px at 78% 8%,
+        rgba(255, 255, 255, 0.8) 50%,
+        transparent 51%
+      ),
+      radial-gradient(
+        1px 1px at 88% 54%,
+        rgba(255, 255, 255, 0.8) 50%,
+        transparent 51%
+      ),
+      radial-gradient(
+        1.3px 1.3px at 8% 82%,
+        rgba(255, 255, 255, 0.8) 50%,
+        transparent 51%
+      ),
+      radial-gradient(
+        1px 1px at 54% 88%,
+        rgba(255, 255, 255, 0.8) 50%,
+        transparent 51%
+      ),
+      radial-gradient(
+        1.1px 1.1px at 94% 26%,
+        rgba(255, 255, 255, 0.8) 50%,
+        transparent 51%
+      ),
+      radial-gradient(60% 40% at 0% 0%, var(--sun) 0%, transparent 70%),
+      linear-gradient(
+        180deg,
+        var(--sky-top) 0%,
+        var(--sky-mid) 45%,
+        var(--sky-low) 100%
+      );
+    background-attachment:
+      fixed, fixed, fixed, fixed, fixed, fixed, fixed, fixed, fixed, scroll,
+      scroll;
+  }
+}
 
 ::selection {
-  background: var(--ink);
-  color: var(--bg);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 a {
   color: inherit;
   text-decoration: none;
 }
-img {
+img,
+video,
+svg {
   display: block;
   max-width: 100%;
 }
+code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--line-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
 
-/* ── disabled links ──────────────────────────────────────────── */
-/* href="" in config.ts → render as disabled button (dimmed + no clicks).
-   Used pre-launch when GitHub repo / App Store listing aren't live yet. */
+/* href="" in config.ts → a dimmed, unclickable button. */
 a[href=""] {
   pointer-events: none;
   opacity: 0.5;
@@ -76,23 +184,14 @@ a[href=""] {
 }
 
 /* ── platform UA gating ──────────────────────────────────────── */
-/* Put data-show-on on a wrapper <div>. Shown wrapper uses display:contents
-   so children stay laid out in the parent (flex/grid) as if no wrapper existed.
-   This avoids specificity ties with .btn / .hero-actions etc. */
-
+/* A wrapper with data-show-on uses display:contents when shown, so its
+   children lay out in the parent as if the wrapper weren't there. */
 [data-show-on] {
   display: none;
 }
-html[data-platform="desktop"] [data-show-on~="desktop"] {
-  display: contents;
-}
-html[data-platform="ios"] [data-show-on~="ios"] {
-  display: contents;
-}
-html[data-platform="android"] [data-show-on~="android"] {
-  display: contents;
-}
-/* Before JS runs (no data-platform yet) → show desktop variant */
+html[data-platform="desktop"] [data-show-on~="desktop"],
+html[data-platform="ios"] [data-show-on~="ios"],
+html[data-platform="android"] [data-show-on~="android"],
 html:not([data-platform]) [data-show-on~="desktop"] {
   display: contents;
 }
@@ -110,59 +209,113 @@ html:not([data-platform]) [data-show-on~="desktop"] {
   padding-inline: 32px;
 }
 
-.eyebrow {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  font: 500 14.5px / 1 var(--font-sans);
-  letter-spacing: -0.005em;
-  padding: 13px 18px;
-  border-radius: 2px;
+  font: 600 15px / 1 var(--font-sans);
+  padding: 14px 24px;
+  border-radius: 999px;
+  white-space: nowrap;
   transition:
     transform 80ms ease,
     background 120ms ease,
-    color 120ms ease,
-    border-color 120ms ease;
-  white-space: nowrap;
+    box-shadow 120ms ease;
+}
+.btn:active {
+  transform: scale(0.98);
 }
 .btn-primary {
-  background: var(--ink);
-  color: var(--bg);
-  border: 1px solid var(--ink);
+  background: var(--pill-bg);
+  color: var(--pill-ink);
 }
 .btn-primary:hover {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
+  box-shadow: 0 8px 22px -8px rgba(20, 24, 33, 0.45);
 }
 .btn-ghost {
-  background: transparent;
+  background: var(--bg-elev);
   color: var(--ink);
-  border: 1px solid var(--line);
+  box-shadow: inset 0 0 0 1.5px var(--line);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 .btn-ghost:hover {
-  border-color: var(--ink);
-}
-.btn-accent {
-  background: var(--accent);
-  color: var(--accent-ink);
-  border: 1px solid var(--accent);
-}
-.btn-accent:hover {
-  filter: brightness(0.92);
+  box-shadow: inset 0 0 0 1.5px var(--ink);
 }
 
-.arr {
-  display: inline-block;
-  transform: translateY(-0.5px);
+/* The kite always sits on its blue tile, clipped to the macOS corner
+   radius (185/824 of the side). */
+.app-icon {
+  display: block;
+  flex: none;
+  border-radius: 22.45%;
+  overflow: hidden;
+  box-shadow: var(--tile-shadow);
+}
+.app-icon img {
+  width: 100%;
+  height: 100%;
+}
+
+/* ── kite ────────────────────────────────────────────────────── */
+
+.kite {
+  overflow: visible;
+}
+.kite-string {
+  stroke: var(--string);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.kite-body {
+  transform-box: fill-box;
+  transform-origin: 20% 90%;
+  animation: kite-bob 7s ease-in-out infinite;
+}
+@keyframes kite-bob {
+  0%,
+  100% {
+    transform: rotate(-2deg) translate(0, 0);
+  }
+  50% {
+    transform: rotate(3deg) translate(6px, -10px);
+  }
+}
+
+/* Soft clouds: two blurred ellipses per cloud, drifting slowly. */
+.cloud {
+  position: absolute;
+  width: 220px;
+  height: 64px;
+  border-radius: 999px;
+  background: var(--cloud);
+  filter: blur(14px);
+  pointer-events: none;
+  animation: cloud-drift 60s linear infinite alternate;
+}
+.cloud::after {
+  content: "";
+  position: absolute;
+  left: 30%;
+  top: -40%;
+  width: 55%;
+  height: 120%;
+  border-radius: 999px;
+  background: inherit;
+}
+@keyframes cloud-drift {
+  to {
+    transform: translateX(80px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kite-body,
+  .cloud {
+    animation: none;
+  }
 }
 
 /* ── nav ─────────────────────────────────────────────────────── */
@@ -172,548 +325,474 @@ html:not([data-platform]) [data-show-on~="desktop"] {
   top: 0;
   z-index: 50;
   backdrop-filter: blur(14px);
-  background: color-mix(in oklab, var(--bg) 80%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  background: color-mix(in oklab, var(--sky-top) 70%, transparent);
   border-bottom: 1px solid var(--line-soft);
 }
 .nav-inner {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 60px;
+  height: 64px;
 }
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font: 600 16px / 1 var(--font-sans);
-  letter-spacing: -0.015em;
+  gap: 10px;
+  font: 700 18px / 1 var(--font-sans);
+  letter-spacing: -0.02em;
 }
-.brand .mark {
-  width: 26px;
-  height: 26px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.brand .mark svg {
-  width: 100%;
-  height: 100%;
-  display: block;
+.brand .app-icon {
+  width: 30px;
+  height: 30px;
+  box-shadow: none;
 }
 .nav-cta {
   display: flex;
-  gap: 18px;
+  gap: 22px;
   align-items: center;
-  font-size: 13.5px;
+  font-size: 14px;
+  font-weight: 500;
 }
 .nav-cta > a:not(.btn) {
-  color: var(--ink-2);
+  color: var(--muted);
 }
 .nav-cta > a:not(.btn):hover {
   color: var(--ink);
 }
 .nav-cta .btn {
-  padding: 9px 14px;
-  font-size: 13.5px;
-  border-radius: 2px;
+  padding: 10px 16px;
+  font-size: 14px;
 }
 
-/* ── hero ────────────────────────────────────────────────────── */
+/* ── hero (the film's end card) ──────────────────────────────── */
 
 .hero {
-  padding: 88px 0 0;
+  position: relative;
+  overflow: hidden;
+  padding: clamp(80px, 13vh, 150px) 0 clamp(120px, 16vh, 180px);
+  text-align: center;
 }
-.hero-grid {
-  display: grid;
-  grid-template-columns: 1.05fr 1fr;
-  gap: 64px;
-  align-items: end;
+.hero .wrap {
+  position: relative;
+  z-index: 1;
+}
+.hero-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: clamp(14px, 2vw, 26px);
+}
+.hero-brand .app-icon {
+  width: clamp(64px, 8.5vw, 112px);
+  height: clamp(64px, 8.5vw, 112px);
 }
 .hero h1 {
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: clamp(56px, 8.4vw, 108px);
-  line-height: 0.93;
-  letter-spacing: -0.045em;
-  margin: 24px 0 0;
-}
-.hero h1 .ital {
-  font-family: "Instrument Serif", serif;
-  font-style: italic;
-  font-weight: 400;
-  letter-spacing: -0.02em;
-  color: var(--accent);
-}
-.hero h1 .mute {
-  color: var(--muted);
-}
-
-.hero-side {
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-  padding-bottom: 6px;
-}
-.hero-side p {
-  font-size: 17.5px;
-  line-height: 1.5;
-  color: var(--ink-2);
   margin: 0;
-  max-width: 36ch;
+  font-size: clamp(48px, 7.6vw, 96px);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1;
 }
-.hero-side p code {
-  font-family: var(--font-mono);
-  font-size: 0.88em;
-  background: color-mix(in oklab, var(--line) 50%, transparent);
-  padding: 1px 6px;
-  border-radius: 3px;
+.hero-tagline {
+  margin: clamp(18px, 2.4vw, 28px) auto 0;
+  font-size: clamp(22px, 3vw, 36px);
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  color: var(--muted);
+  text-wrap: balance;
+}
+.hero-tagline b {
+  font-weight: 600;
+  color: var(--ink);
 }
 .hero-actions {
   display: flex;
-  gap: 10px;
+  justify-content: center;
   flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 40px;
 }
 .hero-note {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  margin: 20px 0 0;
+  font-size: 13px;
   color: var(--muted);
 }
-
-/* ── device showcase ─────────────────────────────────────────── */
-
-.showcase-wrap {
-  padding-block: 64px 96px;
-}
-.showcase {
-  position: relative;
-  background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-  isolation: isolate;
-}
-.showcase::before {
-  content: "";
+.hero .kite {
   position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(transparent 0 0) padding-box,
-    repeating-linear-gradient(
-      45deg,
-      transparent 0 11px,
-      color-mix(in oklab, var(--line) 60%, transparent) 11px 12px
-    );
-  opacity: 0.35;
-  pointer-events: none;
+  top: 6%;
+  right: max(2vw, calc(50% - 600px));
+  width: clamp(70px, 10vw, 140px);
   z-index: 0;
 }
-.showcase-inner {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0;
-  min-height: 460px;
+.hero .cloud.c1 {
+  top: 22%;
+  left: 4%;
 }
-.showcase-cell {
-  padding: 40px 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-}
-.showcase-cell + .showcase-cell {
-  border-left: 1px solid var(--line);
-}
-.showcase-tag {
-  position: absolute;
-  top: 16px;
-  left: 20px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
+.hero .cloud.c2 {
+  top: 62%;
+  right: 10%;
+  width: 280px;
+  animation-duration: 80s;
 }
 
-/* real menu-bar screenshot, framed as a floating popover */
-.menu-shot {
-  width: 300px;
-  border-radius: 28px;
-  corner-shape: squircle;
-  overflow: hidden;
-  box-shadow:
-    0 1px 0 rgba(0, 0, 0, 0.04),
-    0 30px 60px -20px rgba(40, 35, 20, 0.25),
-    0 8px 24px -12px rgba(40, 35, 20, 0.18);
+/* ── film ────────────────────────────────────────────────────── */
+
+.film-wrap {
+  margin-top: clamp(-110px, -10vh, -60px);
+  position: relative;
+  z-index: 2;
 }
-.menu-shot img {
+.film {
+  aspect-ratio: 16 / 9;
   width: 100%;
-  height: auto;
-  display: block;
+  border-radius: 18px;
+  overflow: hidden;
+  background: #fdfcfa;
+  box-shadow: var(--frame-shadow);
 }
-
-/* iPhone mock */
-.phone {
-  width: 180px;
-  height: 376px;
-  background: #0e0e0c;
-  border-radius: 40px;
-  corner-shape: squircle;
-  padding: 4px;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.04) inset,
-    0 30px 60px -20px rgba(40, 35, 20, 0.25),
-    0 8px 24px -12px rgba(40, 35, 20, 0.18);
-  position: relative;
-}
-.phone::after {
-  content: "";
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 72px;
-  height: 20px;
-  background: #0e0e0c;
-  border-radius: 12px;
-  z-index: 3;
-}
-/* real iPhone screenshot fills the frame (no notch overlay) */
-.phone.has-shot::after {
-  display: none;
-}
-.phone.has-shot .phone-screen {
-  padding-top: 0;
-}
-.phone.has-shot .phone-screen img {
+.film video {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: top center;
-  display: block;
-}
-.phone-screen {
-  width: 100%;
-  height: 100%;
-  background: #faf8f0;
-  border-radius: 34px;
-  corner-shape: squircle;
-  overflow: hidden;
-  position: relative;
-  font-family: var(--font-sans);
-  color: #1a1a1a;
-  padding-top: 36px;
 }
 
-/* ── section header ──────────────────────────────────────────── */
+/* ── beats: three lines, nothing else ────────────────────────── */
 
-.section {
-  padding: 96px 0;
-  border-top: 1px solid var(--line);
-}
-.section-head {
+.beats {
   display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: 48px;
-  align-items: baseline;
-  margin-bottom: 56px;
-}
-.section h2 {
-  font-family: var(--font-display);
-  font-size: clamp(36px, 4.6vw, 64px);
-  line-height: 1;
-  letter-spacing: -0.035em;
-  font-weight: 600;
-  margin: 0;
-}
-.section h2 .ital {
-  /* Section accents use Geist (not Instrument Serif).
-     Hero h1 and footer h2 keep the serif italic flourish. */
-  font-family: var(--font-display);
-  font-weight: 600;
-  color: var(--accent);
-}
-.section-head .eyebrow {
-  padding-top: 12px;
-}
-
-.section-head.is-stacked {
-  grid-template-columns: 1fr;
-  gap: 20px;
-}
-.section-head.is-stacked .eyebrow {
-  padding-top: 0;
-}
-.section-head.is-stacked h2 {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 32px;
+  padding: 120px 0 40px;
   text-align: center;
 }
+.beat .mark {
+  width: 36px;
+  height: 36px;
+  margin: 0 auto 18px;
+}
+.beat h2 {
+  margin: 0;
+  font-size: clamp(24px, 2.6vw, 30px);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+.beat p {
+  margin: 8px 0 0;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--muted);
+}
 
-/* ── how-it-works ────────────────────────────────────────────── */
+/* ── strip: one line about privacy and compatibility ─────────── */
 
-.steps {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+.strip {
+  padding: 56px 0 0;
+  text-align: center;
+  font-size: 15px;
+  color: var(--muted);
 }
-.step {
-  padding: 36px 32px 40px;
-  position: relative;
-}
-.step + .step {
-  border-left: 1px solid var(--line);
-}
-.step .n {
-  font-family: var(--font-display);
-  font-size: 64px;
-  line-height: 1;
-  letter-spacing: -0.04em;
-  font-weight: 500;
-  color: var(--ink);
-  margin-bottom: 28px;
-}
-.step .n .slash {
+.strip a {
   color: var(--accent);
-}
-.step h3 {
-  font: 600 22px / 1.2 var(--font-sans);
-  letter-spacing: -0.018em;
-  margin: 0 0 10px;
-}
-.step p {
-  margin: 0;
-  font-size: 15.5px;
-  line-height: 1.55;
-  color: var(--ink-2);
+  font-weight: 600;
 }
 
-/* ── features ────────────────────────────────────────────────── */
-
-.features {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-/* 6-up grid (2 rows of 3): kill col-1 left borders, add row-2 top borders. */
-.features.is-grid {
-  grid-template-columns: repeat(3, 1fr);
-}
-.features.is-grid .feature:nth-child(3n + 1) {
-  border-left: 0;
-}
-.features.is-grid .feature:nth-child(n + 4) {
-  border-top: 1px solid var(--line);
-}
-.feature {
-  padding: 40px 24px 44px;
-  position: relative;
-}
-.feature + .feature {
-  border-left: 1px solid var(--line);
-}
-.feature .ix {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--muted);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  margin-bottom: 32px;
-}
-.feature h3 {
-  font: 600 22px / 1.25 var(--font-sans);
-  letter-spacing: -0.022em;
-  margin: 0 0 12px;
-  text-wrap: balance;
-}
-.feature h3 code,
-.feature p code {
-  font-family: var(--font-mono);
-  font-size: 0.88em;
-  background: color-mix(in oklab, var(--line) 50%, transparent);
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-weight: 500;
-}
-.feature p {
-  margin: 0;
-  font-size: 15.5px;
-  line-height: 1.55;
-  color: var(--ink-2);
-}
-.feature p em {
-  color: var(--muted);
-  font-style: normal;
-}
-
-/* ── faq ─────────────────────────────────────────────────────── */
-
-.faq-list {
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-.faq-item {
-  border-bottom: 1px solid var(--line-soft);
-  padding: 26px 0;
-}
-.faq-item:last-child {
-  border-bottom: 0;
-}
-.faq-item dt {
-  font: 600 19px / 1.35 var(--font-sans);
-  letter-spacing: -0.012em;
-  margin-bottom: 8px;
-}
-.faq-item dd {
-  margin: 0;
-  font-size: 15.5px;
-  line-height: 1.55;
-  color: var(--ink-2);
-}
-.faq-item dd code {
-  font-family: var(--font-mono);
-  font-size: 0.88em;
-  background: color-mix(in oklab, var(--line) 50%, transparent);
-  padding: 1px 6px;
-  border-radius: 3px;
-}
-
-/* ── footer ──────────────────────────────────────────────────── */
+/* ── footer: the kite flies off the top, its string comes down to
+   the buttons ───────────────────────────────────────────────── */
 
 .foot {
-  padding: 80px 0 56px;
-  border-top: 1px solid var(--line);
   position: relative;
+  overflow: hidden;
 }
-.foot.is-minimal {
-  padding-top: 32px;
+.foot-sky {
+  position: relative;
+  padding: 48px 0 120px;
+  text-align: center;
 }
-.foot.is-minimal .foot-grid {
-  border-top: 0;
-  padding-top: 0;
+.foot-sky .cloud.c1 {
+  top: 90px;
+  left: 12%;
 }
-.foot-huge {
-  font-family: var(--font-display);
-  font-size: clamp(80px, 16vw, 220px);
-  line-height: 0.85;
-  letter-spacing: -0.05em;
-  font-weight: 600;
-  margin: 0 0 56px;
-  color: var(--ink);
+.foot-sky .cloud.c2 {
+  top: 200px;
+  right: 8%;
+  width: 260px;
+  animation-duration: 75s;
 }
-.foot-huge .ital {
-  /* Footer "thinkite." period uses Geist (geometric square dot) — not serif italic.
-     Only the hero h1 "Claude." keeps the Instrument Serif italic flourish. */
-  font-family: var(--font-display);
-  font-weight: 600;
-  color: var(--accent);
+.foot-sky h2 {
+  position: relative;
+  margin: 28px 0 0;
+  font-size: clamp(36px, 5vw, 56px);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.05;
 }
-.foot-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  margin-bottom: 24px;
-}
-.foot-disclaimer {
-  font: 500 12.5px / 1.5 var(--font-mono);
-  color: var(--muted);
-  max-width: 62ch;
-  margin: 0 0 28px;
+.foot-sky .hero-actions {
+  position: relative;
+  margin-top: 32px;
 }
 .foot-grid {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 32px;
-  border-top: 1px solid var(--line);
-  padding-top: 32px;
-}
-.foot-grid .meta {
-  font: 500 12.5px / 1.5 var(--font-mono);
-  color: var(--ink-2);
-  letter-spacing: 0.01em;
-}
-.foot-grid .meta b {
-  color: var(--ink);
-  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  padding-block: 24px 36px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 13px;
+  color: var(--muted);
 }
 .foot-grid .links {
   display: flex;
-  gap: 24px;
-  align-items: center;
-  font: 500 13.5px / 1 var(--font-sans);
-}
-.foot-grid .links a {
-  color: var(--ink);
-  border-bottom: 1px solid transparent;
-  padding-bottom: 2px;
-  transition: border-color 120ms ease;
+  gap: 22px;
+  flex-wrap: wrap;
 }
 .foot-grid .links a:hover {
-  border-color: var(--accent);
+  color: var(--ink);
 }
 
 /* ── responsive ──────────────────────────────────────────────── */
 
-@media (max-width: 980px) {
-  .hero-grid {
+@media (max-width: 860px) {
+  .beats {
     grid-template-columns: 1fr;
-    gap: 36px;
-  }
-  .hero-side {
-    padding-bottom: 0;
-  }
-  .showcase-inner {
-    grid-template-columns: 1fr;
-    min-height: auto;
-  }
-  .showcase-cell {
-    padding: 48px 32px;
-  }
-  .showcase-cell + .showcase-cell {
-    border-left: 0;
-    border-top: 1px solid var(--line);
-  }
-  .steps,
-  .features,
-  .features.is-grid {
-    grid-template-columns: 1fr;
-  }
-  .step + .step,
-  .feature + .feature {
-    border-left: 0;
-    border-top: 1px solid var(--line);
-  }
-  .section-head {
-    grid-template-columns: 1fr;
-    gap: 16px;
+    gap: 48px;
+    padding-top: 88px;
   }
   .foot-grid {
-    grid-template-columns: 1fr;
-    gap: 22px;
-  }
-  .foot-grid .links {
-    flex-wrap: wrap;
-    gap: 14px 22px;
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 
 @media (max-width: 560px) {
   .wrap,
   .wrap-tx {
-    padding-inline: 20px;
+    padding-inline: 16px;
   }
-  .hero {
-    padding-top: 56px;
+  .nav-cta {
+    gap: 14px;
   }
-  .section {
-    padding: 64px 0;
+  .nav-cta > a:not(.btn) {
+    display: none;
   }
-  .step .n {
-    font-size: 48px;
+  .hero .kite {
+    top: 2%;
+    right: 4%;
+    width: 56px;
+  }
+  .hero-actions .btn {
+    width: 100%;
+  }
+  .film {
+    border-radius: 12px;
+  }
+}
+
+/* ── kite sky: one kite per model family, above the Thinkite icon ─ */
+
+.kite-sky {
+  --scale: 1;
+  --scroll: 0;
+  position: relative;
+  height: 600px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.sky-kite {
+  position: absolute;
+  left: var(--x);
+  top: var(--y);
+  width: calc(var(--s) * var(--scale) * 1px);
+  aspect-ratio: 360 / 320;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  z-index: var(--z);
+  perspective: 600px;
+  opacity: calc(0.5 + var(--depth) * 0.5);
+  filter: blur(calc((1 - var(--depth)) * 1.1px));
+  transform: translate(-50%, calc(var(--scroll) * var(--depth) * -70px));
+  -webkit-tap-highlight-color: transparent;
+}
+.sky-kite:focus-visible {
+  outline: none;
+}
+.sky-kite-tilt {
+  position: absolute;
+  inset: 0;
+  transform-origin: 45% 60%;
+  animation: kite-sway var(--dur) ease-in-out var(--delay) infinite;
+}
+.sky-kite-tilt svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.sky-kite .spar {
+  stroke: rgba(255, 255, 255, 0.45);
+  stroke-width: 3;
+}
+.sky-kite .stop-a {
+  stop-color: var(--a);
+}
+.sky-kite .stop-b {
+  stop-color: var(--b, var(--a));
+}
+.sky-kite .stop-c {
+  stop-color: var(--c, var(--b, var(--a)));
+}
+@keyframes kite-sway {
+  0%,
+  100% {
+    transform: scaleX(var(--flip)) rotateZ(var(--rot)) rotateX(10deg)
+      rotateY(-16deg) translateY(0);
+  }
+  50% {
+    transform: scaleX(var(--flip)) rotateZ(calc(var(--rot) + 6deg))
+      rotateX(-8deg) rotateY(18deg) translateY(-10px);
+  }
+}
+
+.kite-name {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 10px);
+  transform: translate(-50%, -4px);
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  color: var(--pill-ink);
+  font: 600 12.5px / 1 var(--font-sans);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+.sky-kite:hover,
+.sky-kite:focus-visible,
+.sky-kite:focus {
+  opacity: 1;
+  filter: none;
+  z-index: 20;
+}
+.sky-kite:hover .kite-name,
+.sky-kite:focus-visible .kite-name,
+.sky-kite:focus .kite-name {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Each maker's colour, nothing else of its brand. */
+.k-opencode {
+  --a: #211e1e;
+  --b: #4b4646;
+}
+.k-deepseek {
+  --a: #4d6bfe;
+}
+.k-gemini {
+  --a: #4796e3;
+  --b: #9177c7;
+  --c: #ca6673;
+}
+.k-minimax {
+  --a: #e2167e;
+  --c: #fe603c;
+}
+.k-mimo {
+  --a: #ff6900;
+}
+.k-muse {
+  --a: #0a4cd8;
+  --c: #1784ff;
+}
+.k-glm {
+  --a: #ffffff;
+  --b: #f4f5f7;
+}
+.k-glm .sail {
+  stroke: #141821;
+  stroke-width: 6;
+}
+@media (prefers-color-scheme: dark) {
+  .k-opencode {
+    --a: #b7b1b1;
+    --b: #cfcecd;
+  }
+  .k-glm .sail {
+    stroke: none;
+  }
+}
+
+/* The Thinkite icon the kites fly above. */
+.sky-anchor {
+  position: absolute;
+  left: 50%;
+  bottom: calc(14px * var(--scale));
+  width: calc(68px * var(--scale));
+  height: calc(68px * var(--scale));
+  transform: translateX(-50%);
+  transition: opacity 0.4s ease;
+}
+.sky-anchor img {
+  border-radius: inherit;
+}
+
+/* three.js redraws the kites as tiles orbiting the icon here; the buttons
+   above stay for hover names and focus, moved over their tiles each frame.
+   It reaches past the sky so tiles at the edge of an orbit aren't clipped. */
+.sky-scene {
+  position: absolute;
+  left: 0;
+  top: -40px;
+  width: 100%;
+  height: calc(100% + 80px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+[data-scene="ready"] .sky-scene {
+  opacity: 1;
+}
+[data-scene="ready"] .sky-anchor,
+[data-scene="ready"] .sky-kite-tilt {
+  opacity: 0;
+}
+/* The phone and its beam stand about as tall as they are wide. */
+.kite-sky[data-scene="ready"] {
+  height: clamp(320px, 30vw + 180px, 520px);
+}
+@media (max-width: 560px) {
+  .kite-sky[data-scene="ready"] {
+    height: 560px;
+  }
+}
+[data-scene="ready"] .sky-kite {
+  aspect-ratio: 1;
+  opacity: 1;
+  filter: none;
+  transform: translate(-50%, -50%);
+}
+
+@media (max-width: 860px) {
+  .kite-sky {
+    --scale: 0.72;
+    height: 500px;
+  }
+}
+@media (max-width: 560px) {
+  .kite-sky {
+    --scale: 0.56;
+    height: 420px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sky-kite-tilt {
+    animation: none;
+    transform: scaleX(var(--flip)) rotateZ(var(--rot));
   }
 }

@@ -1,57 +1,26 @@
 ---
-const features = [
-  {
-    ix: "01 · remote start",
-    title: "Start a session from your phone.",
-    body: "Pick any folder on your Mac and kick off a fresh Claude Code session remotely — not just resume one that's already running.",
-  },
-  {
-    ix: "02 · private",
-    title: "Peer-to-peer, private by default.",
-    body: "Your phone talks straight to your Mac over an end-to-end encrypted QUIC connection — and roams seamlessly between Wi-Fi and cellular. No server ever sees your session.",
-  },
-  {
-    ix: "03 · real-time",
-    title: "Real-time, resilient streaming.",
-    body: "Responses stream token-by-token. Lose signal mid-response and thinkite reconnects, replaying only the events you missed.",
-  },
-  {
-    ix: "04 · bridge",
-    title: "Bridge on demand.",
-    body: "Opt in per session to mirror it to <code>claude.ai</code> and Claude Desktop for cross-client control. Everything else stays private, P2P.",
-  },
-  {
-    ix: "05 · native",
-    title: "Mobile-native rendering.",
-    body: "Streaming markdown that's selectable and syntax-highlighted, plus a fast diff viewer for every tool call.",
-  },
-  {
-    ix: "06 · auth",
-    title: "Local-first auth.",
-    body: "Uses your existing Claude login from the keychain. Credentials never leave your Mac, and usage bills against your plan — just like running Claude Code yourself.",
-  },
+// Three lines, each under one of the kite's colours.
+const beats = [
+  { color: "#EE8A57", title: "Start anywhere.", body: "Pick a folder on your Mac, prompt from your phone." },
+  { color: "#F6C67D", title: "Answer anywhere.", body: "Questions and approvals land on your phone." },
+  { color: "#7A63AC", title: "Steer anywhere.", body: "Redirect a turn while it's still running." },
 ];
 ---
 
-<section class="section" id="features">
-  <div class="wrap">
-    <div class="section-head is-stacked">
-      <div class="eyebrow">/ what it does</div>
-      <div>
-        <h2>Claude Code, <span class="ital">from your pocket.</span></h2>
+<section class="wrap beats" id="features">
+  {
+    beats.map((beat) => (
+      <div class="beat">
+        <svg class="mark" viewBox="0 0 360 320" aria-hidden="true">
+          <polygon points="57.6,309.6 151.2,0 360,0 360,237.6" fill={beat.color} />
+        </svg>
+        <h2>{beat.title}</h2>
+        <p>{beat.body}</p>
       </div>
-    </div>
-
-    <div class="features is-grid">
-      {
-        features.map((feature) => (
-          <div class="feature">
-            <div class="ix">{feature.ix}</div>
-            <h3 set:html={feature.title} />
-            <p set:html={feature.body} />
-          </div>
-        ))
-      }
-    </div>
-  </div>
+    ))
+  }
 </section>
+
+<p class="wrap strip">
+  Encrypted, device to device · Works alongside OpenCode Desktop and the TUI · Needs opencode 2.1+ · <a href="/privacy">Privacy</a>
+</p>
