@@ -40,6 +40,7 @@ import {
   useModels,
   VariantPicker,
 } from "../../components/ModelPicker";
+import { OpenIn } from "../../components/OpenIn";
 import { usePendingPrompt } from "../../components/Prompts";
 import { SessionTitle } from "../../components/SessionTitle";
 import { TerminalPanel } from "../../components/TerminalPanel";
@@ -415,41 +416,44 @@ function Session({ sessionId }: { sessionId: string }) {
       <SessionTitle
         session={session}
         trailing={
-          <ToggleButtonGroup
-            label="Session panel"
-            size="sm"
-            value={surface}
-            onChange={pick}
-          >
-            <ToggleButton
-              value="info"
-              label="Session info"
-              isIconOnly
-              tooltip="Session info"
-              icon={<Icon icon={LayoutListIcon} size="sm" />}
-            />
-            <ToggleButton
-              value="terminal"
-              label="Terminal"
-              isIconOnly
-              tooltip="Terminal"
-              icon={<Icon icon={TerminalIcon} size="sm" />}
-            />
-            <ToggleButton
-              value="browser"
-              label="Browser"
-              isIconOnly
-              tooltip="Browser"
-              icon={<Icon icon={GlobeIcon} size="sm" />}
-            />
-            <ToggleButton
-              value="diff"
-              label="Diff"
-              isIconOnly
-              tooltip="Diff"
-              icon={<Icon icon={FileDiffIcon} size="sm" />}
-            />
-          </ToggleButtonGroup>
+          <div className="flex items-center gap-2">
+            <OpenIn directory={session.location.directory} />
+            <ToggleButtonGroup
+              label="Session panel"
+              size="sm"
+              value={surface}
+              onChange={pick}
+            >
+              <ToggleButton
+                value="info"
+                label="Session info"
+                isIconOnly
+                tooltip="Session info"
+                icon={<Icon icon={LayoutListIcon} size="sm" />}
+              />
+              <ToggleButton
+                value="terminal"
+                label="Terminal"
+                isIconOnly
+                tooltip="Terminal"
+                icon={<Icon icon={TerminalIcon} size="sm" />}
+              />
+              <ToggleButton
+                value="browser"
+                label="Browser"
+                isIconOnly
+                tooltip="Browser"
+                icon={<Icon icon={GlobeIcon} size="sm" />}
+              />
+              <ToggleButton
+                value="diff"
+                label="Diff"
+                isIconOnly
+                tooltip="Diff"
+                icon={<Icon icon={FileDiffIcon} size="sm" />}
+              />
+            </ToggleButtonGroup>
+          </div>
         }
       />
       <div className="min-h-0 flex-1">

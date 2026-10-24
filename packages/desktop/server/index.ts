@@ -37,6 +37,7 @@ import {
 import { WebSocketServer } from "ws";
 import { guardWebviews, setupBrowserGuests } from "./browser-guests";
 import { handleOcProxy, stripOcPrefix } from "./oc-proxy";
+import { listOpenInApps, openIn, openInIcon } from "./open-in";
 import { attachPty, killPty, killPtys, ptyParams } from "./pty";
 import { createRequestGuard } from "./request-guard";
 import {
@@ -239,6 +240,44 @@ const server = createServer(async (req, res) => {
             : { canceled: false, path: picked.filePaths[0] },
         ),
       );
+      return;
+    }
+    // The session title bar's "Open in" (server/open-in.ts): the installed
+    // apps, each one's icon, and opening the session's folder in one.
+    if (url.pathname === "/api/open-in" && req.method === "GET") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(await listOpenInApps()));
+      return;
+    }
+    if (url.pathname === "/api/open-in/icon") {
+      const png = await openInIcon(url.searchParams.get("app") ?? "");
+      if (png === null) {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("not installed");
+        return;
+      }
+      res.writeHead(200, {
+        "content-type": "image/png",
+        "cache-control": "max-age=3600",
+      });
+      res.end(png);
+      return;
+    }
+    if (url.pathname === "/api/open-in" && req.method === "POST") {
+      const directory = url.searchParams.get("directory") ?? "";
+      if (!isAbsolute(directory)) {
+        res.writeHead(400, { "content-type": "text/plain" });
+        res.end("directory must be absolute");
+        return;
+      }
+      try {
+        await openIn(url.searchParams.get("app") ?? "", directory);
+        res.writeHead(204);
+        res.end();
+      } catch (e) {
+        res.writeHead(400, { "content-type": "text/plain" });
+        res.end(e instanceof Error ? e.message : String(e));
+      }
       return;
     }
     // The window's update button and About page (src/lib/update.ts) read
