@@ -13,11 +13,12 @@ import { type SimpleGit, simpleGit } from "simple-git";
  *     stream however big the tree), so `+N -M` follows the agent's edits
  *     and whatever the user does outside the app — `git reset --hard`,
  *     `stash`, a branch switch, a commit — within the debounce. Events
- *     from `.git/objects`, `.git/logs` and `node_modules` are dropped:
- *     they never change the numbers on their own, and they are most of
- *     the noise during an install or a fetch.
+ *     from `.git/objects`, `.git/logs`, `.git/index`, git's `.lock` files
+ *     and `node_modules` are dropped (see `isNoise`): they never change
+ *     the numbers on their own, they are most of the noise during an
+ *     install or a fetch, and git touches the index on every read.
  *   - **500ms debounce** on watch events absorbs the storm of writes
- *     that hit `.git/index` during a `git add` / staging operation.
+ *     an agent's edits or a checkout make.
  *     This is the only knob that throttles outgoing pushes; everything
  *     below is read-side dedup, not push-side throttling.
  *   - **15s `cachedStatus` TTL** is a read-side optimization: when
@@ -475,13 +476,21 @@ export class GitWatcher {
 }
 
 /** Watch events that never move the numbers on their own. `filename` is
- *  relative to the watched folder; null when the platform doesn't say. */
+ *  relative to the watched folder; null when the platform doesn't say.
+ *  `.git/index` and the `.lock` files git takes while it works change on
+ *  every read (`git status` locks the index and may rewrite it), so
+ *  counting them would make each refresh, ours or another client's, set
+ *  off the next one. The numbers compare the working tree with a commit,
+ *  which the index doesn't enter into; what does move them (a file, HEAD,
+ *  a ref) has its own event. */
 export function isNoise(filename: string | Buffer | null): boolean {
   if (filename === null) return false;
   const rel = filename.toString().split(path.sep).join("/");
   return (
     rel.startsWith(".git/objects/") ||
     rel.startsWith(".git/logs/") ||
+    rel === ".git/index" ||
+    (rel.startsWith(".git/") && rel.endsWith(".lock")) ||
     rel === "node_modules" ||
     rel.startsWith("node_modules/") ||
     rel.includes("/node_modules/")

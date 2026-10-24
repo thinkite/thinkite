@@ -230,13 +230,40 @@ describe("GitWatcher", () => {
     w.dispose();
   }, 20_000);
 
-  it("isNoise drops object, log and node_modules events only", () => {
+  it("settles after a push instead of refreshing itself forever", async () => {
+    initRepo(dir);
+    writeFileSync(path.join(dir, "a.txt"), "x\n");
+    execFileSync("git", ["add", "a.txt"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "first"], { cwd: dir });
+
+    const w = new GitWatcher(dir);
+    const got: GitStatus[] = [];
+    const unsubscribe = w.subscribe((s) => got.push(s));
+    writeFileSync(path.join(dir, "a.txt"), "x\ny\n");
+    await vi.waitFor(() => expect(got.at(-1)?.insertions).toBe(1), {
+      timeout: 8000,
+      interval: 100,
+    });
+    // Each refresh runs `git status`, which locks the index; another
+    // client reading the repo does the same.
+    const settled = got.length;
+    execFileSync("git", ["status"], { cwd: dir });
+    await new Promise((r) => setTimeout(r, 2500));
+    expect(got.length).toBe(settled);
+    unsubscribe();
+    w.dispose();
+  }, 20_000);
+
+  it("isNoise drops object, log, index, lock and node_modules events", () => {
     expect(isNoise(".git/objects/ab/cdef")).toBe(true);
     expect(isNoise(".git/logs/HEAD")).toBe(true);
+    expect(isNoise(".git/index")).toBe(true);
+    expect(isNoise(".git/index.lock")).toBe(true);
+    expect(isNoise(".git/refs/heads/main.lock")).toBe(true);
     expect(isNoise("node_modules/react/index.js")).toBe(true);
     expect(isNoise("packages/app/node_modules/x.js")).toBe(true);
     expect(isNoise(".git/HEAD")).toBe(false);
-    expect(isNoise(".git/index")).toBe(false);
+    expect(isNoise("bun.lock")).toBe(false);
     expect(isNoise(".git/refs/heads/main")).toBe(false);
     expect(isNoise("src/settings.ts")).toBe(false);
     expect(isNoise(null)).toBe(false);
