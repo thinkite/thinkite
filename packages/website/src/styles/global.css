@@ -594,7 +594,9 @@ html:not([data-platform]) [data-show-on~="desktop"] {
   --scale: 1;
   --scroll: 0;
   position: relative;
-  height: 600px;
+  /* The phone and its beam stand about as tall as they are wide; on a
+     phone the scene stands upright and wants more. */
+  height: clamp(320px, 30vw + 180px, 520px);
   max-width: 1100px;
   margin: 0 auto;
 }
@@ -695,9 +697,13 @@ html:not([data-platform]) [data-show-on~="desktop"] {
   --a: #4d6bfe;
 }
 .k-gemini {
-  --a: #4796e3;
-  --b: #9177c7;
-  --c: #ca6673;
+  --a: #ffb300;
+  --b: #ff4641;
+  --c: #3186ff;
+  /* The 3D tile paints the sparkle's blend instead of a straight gradient:
+     blue, with red bleeding in from the top, yellow from the left and
+     green from the bottom ("colour x y radius", in the tile's 0..1). */
+  --spots: "#ff4641 0.42 0 0.55, #ffb300 0 0.5 0.55, #00b95c 0.42 1 0.5";
 }
 .k-minimax {
   --a: #e2167e;
@@ -744,12 +750,13 @@ html:not([data-platform]) [data-show-on~="desktop"] {
 
 /* three.js redraws the kites as tiles orbiting the icon here; the buttons
    above stay for hover names and focus, moved over their tiles each frame.
-   It reaches past the sky so tiles at the edge of an orbit aren't clipped. */
+   It reaches past the sky, to the page's full width, so tiles at the edge
+   of an orbit aren't clipped (the footer hides the overflow). */
 .sky-scene {
   position: absolute;
-  left: 0;
+  left: calc(50% - 50vw);
   top: -40px;
-  width: 100%;
+  width: 100vw;
   height: calc(100% + 80px);
   pointer-events: none;
   opacity: 0;
@@ -758,20 +765,19 @@ html:not([data-platform]) [data-show-on~="desktop"] {
 [data-scene="ready"] .sky-scene {
   opacity: 1;
 }
-[data-scene="ready"] .sky-anchor,
-[data-scene="ready"] .sky-kite-tilt {
-  opacity: 0;
+/* While the scene loads, and once it's up, the flat kites and icon stay
+   out of sight; they show only if it fails. */
+[data-scene] .sky-anchor,
+[data-scene] .sky-kite-tilt {
+  visibility: hidden;
+  animation: none;
 }
-/* The phone and its beam stand about as tall as they are wide. */
-.kite-sky[data-scene="ready"] {
-  height: clamp(320px, 30vw + 180px, 520px);
-}
-@media (max-width: 560px) {
-  .kite-sky[data-scene="ready"] {
-    height: 560px;
-  }
+[data-scene="loading"] .sky-kite {
+  visibility: hidden;
 }
 [data-scene="ready"] .sky-kite {
+  left: 0;
+  top: 0;
   aspect-ratio: 1;
   opacity: 1;
   filter: none;
@@ -781,13 +787,12 @@ html:not([data-platform]) [data-show-on~="desktop"] {
 @media (max-width: 860px) {
   .kite-sky {
     --scale: 0.72;
-    height: 500px;
   }
 }
 @media (max-width: 560px) {
   .kite-sky {
     --scale: 0.56;
-    height: 420px;
+    height: 560px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

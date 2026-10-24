@@ -18,7 +18,7 @@ import {
   Group,
   Mesh,
   MeshBasicMaterial,
-  MeshPhysicalMaterial,
+  MeshStandardMaterial,
   NeutralToneMapping,
   NormalBlending,
   PerspectiveCamera,
@@ -186,6 +186,25 @@ const colourTexture = ([a, b, c]: string[]) =>
     ctx.fillRect(0, 0, 256, 256);
   });
 
+// A tile painted in its maker's colours as soft spots bleeding into a base
+// colour, for makers whose mark blends several (Gemini's sparkle). `spots`
+// is CSS's "colour x y radius, …", in the tile's 0..1 with y down.
+const spotTexture = (base: string, spots: string) =>
+  texture(256, 256, (ctx) => {
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, 256, 256);
+    for (const spot of spots.split(",")) {
+      const [colour, x, y, r] = spot.trim().split(/\s+/);
+      const [cx, cy, radius] = [x, y, r].map((n) => Number(n) * 256);
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+      g.addColorStop(0, colour);
+      g.addColorStop(0.4, `${colour}d0`);
+      g.addColorStop(1, `${colour}00`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 256, 256);
+    }
+  });
+
 // A soft glow around the screen's edge, clear in the middle: a blurred
 // rounded rectangle with the screen cut out.
 const haloTexture = (sw: number, sh: number, r: number, margin: number) =>
@@ -231,7 +250,6 @@ const moteTexture = () =>
 const beamMaterial = () =>
   new ShaderMaterial({
     uniforms: {
-      night: { value: 0 },
       source: { value: new Color("#ffffff") },
       time: { value: 0 },
       strength: { value: 0.5 },
@@ -245,7 +263,6 @@ const beamMaterial = () =>
       }
     `,
     fragmentShader: `
-      uniform float night;
       uniform vec3 source;
       uniform float time;
       uniform float strength;
@@ -273,31 +290,36 @@ const beamMaterial = () =>
           + 0.5 * (1.0 - smoothstep(0.0, 0.45, d));
         float up = smoothstep(0.0, 0.04, vUv.y) * pow(1.0 - vUv.y, 1.8);
 
-        // By day, a rainbow from gold at the screen the long way round to
-        // sky blue up high (as rainbowHue), skipping green; pastel, paler
-        // down the core, with a slow upward ripple. (Linear light: pastel
-        // sRGB squared, roughly.)
-        float rise = clamp(vUv.y * 1.35
-          + (noise(vec2(side * 1.2, vUv.y * 2.0 - time * 0.15)) - 0.5) * 0.18, 0.0, 1.0);
-        vec3 rainbow = mix(vec3(1.0), hue(fract((410.0 - 210.0 * rise) / 360.0)), 0.62);
-        rainbow = mix(rainbow, vec3(1.0), (1.0 - smoothstep(0.0, 0.5, d)) * 0.3);
-
+        // Only one of these is compiled in (NIGHT is defined by theme), so a
+        // pixel pays for one set of noise, not both.
+      #ifdef NIGHT
         // By night, an aurora: vertical curtains that sway and drift upward,
         // teal low down, through violet, to pink up top, brighter along each
         // fold.
         float fold = noise(vec2(side * 2.6
           + (noise(vec2(vUv.y * 1.4 - time * 0.12, 1.7)) - 0.5) * 1.4
           + time * 0.05, vUv.y * 0.5 - time * 0.18));
-        float curtains = pow(fold, 1.6);
         float height = clamp(vUv.y * 2.0 + (noise(vec2(side * 1.5, time * 0.1)) - 0.5) * 0.5, 0.0, 1.0);
-        vec3 aurora = mix(vec3(0.31, 0.85, 0.77), vec3(0.56, 0.48, 0.94), smoothstep(0.0, 0.4, height));
-        aurora = mix(aurora, vec3(0.93, 0.53, 0.82), smoothstep(0.4, 0.85, height));
+        vec3 color = mix(vec3(0.31, 0.85, 0.77), vec3(0.56, 0.48, 0.94), smoothstep(0.0, 0.4, height));
+        color = mix(color, vec3(0.93, 0.53, 0.82), smoothstep(0.4, 0.85, height));
+        color *= color;
+        float shimmer = 0.35 + 1.4 * pow(fold, 1.6);
+      #else
+        // By day, a rainbow from gold at the screen the long way round to
+        // sky blue up high (as rainbowHue), skipping green; pastel, paler
+        // down the core, with a slow upward ripple. (Linear light: pastel
+        // sRGB squared, roughly.)
+        float rise = clamp(vUv.y * 1.35
+          + (noise(vec2(side * 1.2, vUv.y * 2.0 - time * 0.15)) - 0.5) * 0.18, 0.0, 1.0);
+        vec3 color = mix(vec3(1.0), hue(fract((410.0 - 210.0 * rise) / 360.0)), 0.62);
+        color = mix(color, vec3(1.0), (1.0 - smoothstep(0.0, 0.5, d)) * 0.3);
+        color *= color;
+        float shimmer = 1.0;
+      #endif
 
-        vec3 color = mix(rainbow * rainbow, aurora * aurora, night);
         // Just above the screen the beam still has the screen's own colour,
         // so the light seems to come out of it rather than start above it.
         color = mix(color, source, (1.0 - smoothstep(0.0, 0.14, vUv.y)) * 0.8);
-        float shimmer = mix(1.0, 0.35 + 1.4 * curtains, night);
         gl_FragColor = vec4(color, spread * up * strength * shimmer);
         #include <colorspace_fragment>
       }
@@ -306,19 +328,33 @@ const beamMaterial = () =>
     depthWrite: false,
   });
 
-const glossy = (props: ConstructorParameters<typeof MeshPhysicalMaterial>[0]) =>
-  new MeshPhysicalMaterial({
-    roughness: 0.55,
-    clearcoat: 0.3,
-    clearcoatRoughness: 0.45,
-    ...props,
-  });
+// A standard material, not a physical one: a clear coat added a faint
+// second highlight that cost a good share of each tile's shading.
+const glossy = (props: ConstructorParameters<typeof MeshStandardMaterial>[0]) =>
+  new MeshStandardMaterial({ roughness: 0.5, ...props });
 
-export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
+// The reveal once the scene is ready: the screen switches on, light rises
+// from it, the icon floats up into the light, and the model tiles pop in
+// one after another. Each step runs over its own share of REVEAL ms.
+const REVEAL = 2200;
+const easeOut = (x: number) => 1 - (1 - Math.min(1, Math.max(0, x))) ** 3;
+// Overshoots a little before settling, for the tiles popping in.
+const easeOutBack = (x: number) => {
+  const c = Math.min(1, Math.max(0, x)) - 1;
+  return 1 + 2.4 * c ** 3 + 1.4 * c ** 2;
+};
+
+export function mountSkyScene(
+  canvas: HTMLCanvasElement,
+  kites: SkyKite[],
+  { reveal = true } = {},
+) {
   const renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true });
   // 1.5× is hard to tell from 2× for soft light and moving tiles, and
-  // draws a little over half the pixels.
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+  // draws a little over half the pixels; on a phone's small, dense screen
+  // 1.25× is plenty, and draws about a third fewer again.
+  const coarse = matchMedia("(pointer: coarse)").matches;
+  renderer.setPixelRatio(Math.min(devicePixelRatio, coarse ? 1.25 : 1.5));
   renderer.toneMapping = NeutralToneMapping;
 
   const scene = new Scene();
@@ -393,7 +429,34 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
   scene.add(phone);
 
   const sheet = beamMaterial();
-  const beam = new Mesh(new PlaneGeometry(BEAM.top, BEAM.height), sheet);
+  // A trapezoid as wide as the light at each height, so the transparent
+  // corners of a rectangle aren't shaded for nothing. UVs are as if it were
+  // the full BEAM.top-wide rectangle, which is what the shader expects.
+  const trapezoid = new BufferGeometry();
+  const corners = [
+    [-BEAM.bottom / 2, -BEAM.height / 2],
+    [BEAM.bottom / 2, -BEAM.height / 2],
+    [-BEAM.top / 2, BEAM.height / 2],
+    [BEAM.top / 2, BEAM.height / 2],
+  ];
+  trapezoid.setAttribute(
+    "position",
+    new BufferAttribute(
+      new Float32Array(corners.flatMap(([x, y]) => [x, y, 0])),
+      3,
+    ),
+  );
+  trapezoid.setAttribute(
+    "uv",
+    new BufferAttribute(
+      new Float32Array(
+        corners.flatMap(([x, y]) => [0.5 + x / BEAM.top, y > 0 ? 1 : 0]),
+      ),
+      2,
+    ),
+  );
+  trapezoid.setIndex([0, 1, 2, 2, 1, 3]);
+  const beam = new Mesh(trapezoid, sheet);
   beam.position.y = BEAM.base + BEAM.height / 2;
   scene.add(beam);
 
@@ -436,6 +499,22 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
     curveSegments: 20,
   });
   geometry.translate(-0.5, -0.5, -DEPTH / 2);
+  // Map every vertex straight down onto the face: the caps keep the UVs
+  // they had, and the sides and bevel pick up the face's colour at that
+  // spot, so a tile's edge carries on its face's colours instead of one
+  // flat one.
+  const position = geometry.attributes.position;
+  const uv = geometry.attributes.uv;
+  for (let i = 0; i < position.count; i++) {
+    uv.setXY(i, position.getX(i) + 0.5, position.getY(i) + 0.5);
+  }
+  // The sides a shade darker than the caps, baked into vertex colours, so a
+  // model tile is one material and one draw call rather than two.
+  const shade = new Float32Array(position.count * 3).fill(1);
+  for (const { start, count, materialIndex } of geometry.groups) {
+    if (materialIndex === 1) shade.fill(0.85, start * 3, (start + count) * 3);
+  }
+  geometry.setAttribute("color", new BufferAttribute(shade, 3));
 
   const icon = iconTexture();
   icon.anisotropy = anisotropy;
@@ -447,12 +526,11 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
   scene.add(centre);
 
   const orbiting = kites.map((kite) => {
-    const face = glossy({});
-    const side = glossy({});
-    const mesh = new Mesh(geometry, [face, side]);
+    const face = glossy({ vertexColors: true });
+    const mesh = new Mesh(geometry, face);
     mesh.scale.setScalar(kite.size);
     scene.add(mesh);
-    return { kite, mesh, face, side };
+    return { kite, mesh, face, z: Number.NaN };
   });
 
   // Colours come from the page's CSS, so dark mode's lighter opencode, the
@@ -464,6 +542,9 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
     lift: 0,
   };
   let beamStrength = 1;
+  let haloOpacity = 1;
+  const screenLit = new Color();
+  const screenOff = new Color("#14161a");
   let night = false;
   const white = new Color("#ffffff");
   const dark = matchMedia("(prefers-color-scheme: dark)");
@@ -475,23 +556,28 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
         "#cfe6f5",
     );
     night = fog.getHSL({ h: 0, s: 0, l: 0 }).l < 0.4;
-    for (const { kite, face, side } of orbiting) {
+    for (const { kite, face } of orbiting) {
       const css = getComputedStyle(kite.el);
       const a = css.getPropertyValue("--a").trim();
       const b = css.getPropertyValue("--b").trim() || a;
       const c = css.getPropertyValue("--c").trim() || b;
+      const spots = css
+        .getPropertyValue("--spots")
+        .trim()
+        .replace(/^"|"$/g, "");
       face.map?.dispose();
-      face.map = colourTexture([a, b, c]);
+      face.map = spots ? spotTexture(c, spots) : colourTexture([a, b, c]);
       face.map.anisotropy = anisotropy;
+      // One map for the whole tile: the face, and the edge (a shade darker by
+      // its vertex colours) carrying on the face's colours.
       face.needsUpdate = true;
-      side.color.set(b).multiplyScalar(0.9);
     }
     // Light adds up against a dark sky. Against a pale one it would vanish,
     // so it's laid over instead, and the rainbow's hues, not its brightness,
     // set it apart from the blue.
     const blending = night ? AdditiveBlending : NormalBlending;
     sheet.blending = blending;
-    sheet.uniforms.night.value = night ? 1 : 0;
+    sheet.defines = night ? { NIGHT: "" } : {};
     beamStrength = night ? 1.2 : 0.85;
     sheet.uniforms.strength.value = beamStrength * tuning.beam;
     // The colour the light leaves the screen in: the beam's base colour.
@@ -501,9 +587,9 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
     sheet.uniforms.source.value.set(source);
     haloMaterial.blending = blending;
     haloMaterial.color.set(source);
-    haloMaterial.opacity = night ? 0.9 : 0.8;
+    haloOpacity = night ? 0.9 : 0.8;
     moteMaterial.blending = blending;
-    screenMaterial.color.set(source).lerp(white, 0.6);
+    screenLit.set(source).lerp(white, 0.6);
     glow.color.set(source).lerp(white, 0.3);
     for (const m of [sheet, haloMaterial, moteMaterial]) m.needsUpdate = true;
   };
@@ -555,7 +641,15 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
     for (let i = 0; i < RINGS.length; i++) {
       for (let k = 0; k < 8; k++) {
         const p = onRing(i, (k / 8) * 2 * Math.PI);
-        for (const dy of [-0.45, 0.45]) points.push(p.clone().setY(p.y + dy));
+        // Room for a tile above and below, and a little either side (the
+        // canvas bleeds past the column, so a tile may hang over its edge).
+        for (const [dx, dy] of [
+          [-0.15, -0.45],
+          [0.15, -0.45],
+          [-0.15, 0.45],
+          [0.15, 0.45],
+        ])
+          points.push(p.clone().add(new Vector3(dx, dy, 0)));
       }
     }
     points.push(new Vector3(0, CENTRE.height + tuning.lift + 0.7, 0));
@@ -564,10 +658,20 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
 
   // Aim at the middle of everything, then find the nearest distance at
   // which it all fits.
+  // Where the canvas sits in the sky, read once per resize: reading it
+  // every frame, after moving the buttons, would make the browser lay the
+  // page out again each time.
+  const box = { left: 0, top: 0, width: 1, height: 1 };
   const resize = () => {
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
     if (width === 0 || height === 0) return;
+    Object.assign(box, {
+      left: canvas.offsetLeft,
+      top: canvas.offsetTop,
+      width,
+      height,
+    });
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
@@ -586,12 +690,20 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
       camera.lookAt(target);
       camera.updateMatrixWorld();
     };
+    // The canvas runs the full width of the page so tiles swinging wide
+    // aren't cut off, but the scene is fitted to the sky's own column.
+    const column = Math.min(
+      1,
+      (canvas.parentElement?.clientWidth ?? width) / width,
+    );
     const fits = (d: number) => {
       place(d);
       return points.every((p) => {
         spot.copy(p).project(camera);
         return (
-          Math.abs(spot.x) <= 0.94 && Math.abs(spot.y) <= 0.94 && spot.z < 1
+          Math.abs(spot.x) <= 0.97 * column &&
+          Math.abs(spot.y) <= 0.96 &&
+          spot.z < 1
         );
       });
     };
@@ -605,11 +717,25 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
     place(distance);
     (scene.fog as Fog).near = distance - 1;
     (scene.fog as Fog).far = distance + 9;
+    // Each button is sized once, for its tile at the middle distance; it
+    // only needs to be roughly the tile's size to take the pointer.
+    for (const { kite } of orbiting) {
+      kite.el.style.width = `${(kite.size / (2 * distance * halfH)) * height * 1.1}px`;
+    }
   };
   // The sky changes height once the scene is ready, and with the window.
   new ResizeObserver(resize).observe(canvas);
+  // The reveal starts with the first frame drawn, which waits until the
+  // sky is on screen, however early the scene loaded.
+  let born = 0;
+  // How long the last three.js draw call took (for the ?perf overlay).
+  let drawMs = 0;
 
   return {
+    /** How long three.js took to draw the last frame, in ms. */
+    drawMs: () => drawMs,
+    /** Whether the reveal is still playing. */
+    revealing: () => reveal && (!born || performance.now() - born < REVEAL),
     /** Current knob settings. */
     tuning: () => ({ ...tuning }),
     /** Change some knobs and refit the camera. */
@@ -620,15 +746,32 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
     },
     /** Draw a frame at time `t` in seconds and move each kite's button over its tile. */
     render(t: number) {
+      born ||= performance.now();
+      const shown = reveal ? (performance.now() - born) / REVEAL : 1;
+      const lit = easeOut(shown / 0.25);
+      const beamIn = easeOut((shown - 0.12) / 0.35);
+      const rise = easeOut((shown - 0.25) / 0.4);
+      screenMaterial.color.copy(screenOff).lerp(screenLit, lit);
+      haloMaterial.opacity = haloOpacity * lit;
+      glow.intensity = 9 * beamIn;
+      sheet.uniforms.strength.value = beamStrength * tuning.beam * beamIn;
+
       // The icon floats in the beam, facing the viewer, turning just enough
       // to catch light on its edge.
+      centre.scale.setScalar(CENTRE.size * (0.7 + 0.3 * rise));
       centre.position.y =
-        CENTRE.height + tuning.lift + Math.sin(t * 0.8) * 0.05;
+        CENTRE.height +
+        tuning.lift +
+        Math.sin(t * 0.8) * 0.05 -
+        (1 - rise) * 1.2;
       centre.quaternion.copy(camera.quaternion);
       centre.rotateY(Math.sin(t * 0.35) * 0.22);
       centre.rotateX(Math.sin(t * 0.27) * 0.08);
 
-      for (const { kite, mesh } of orbiting) {
+      orbiting.forEach(({ kite, mesh }, i) => {
+        mesh.scale.setScalar(
+          kite.size * Math.max(0, easeOutBack((shown - 0.5 - i * 0.05) / 0.3)),
+        );
         const { period, turn } = RINGS[kite.ring];
         const angle = (kite.phase + (turn * t) / period) * 2 * Math.PI;
         onRing(kite.ring, angle, mesh.position);
@@ -639,7 +782,7 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
         mesh.rotateZ(kite.rot * DEG);
         mesh.rotateY(Math.sin(t * 0.7 + kite.phase * 6) * 0.45);
         mesh.rotateX(Math.sin(t * 0.5 + kite.phase * 4) * 0.2);
-      }
+      });
 
       const position = moteGeometry.attributes.position as BufferAttribute;
       const colour = moteGeometry.attributes.color as BufferAttribute;
@@ -652,7 +795,7 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
           BEAM.base + 0.2 + climb * BEAM.height * 0.8,
           m.depth,
         );
-        const alpha = Math.sin(climb * Math.PI) ** 1.5;
+        const alpha = Math.sin(climb * Math.PI) ** 1.5 * beamIn;
         // By day a mote takes the rainbow's colour at the height it has
         // reached; by night one of the aurora's.
         if (night) tint.set(AURORA[Math.floor(m.hue * AURORA.length)]);
@@ -663,20 +806,25 @@ export function mountSkyScene(canvas: HTMLCanvasElement, kites: SkyKite[]) {
       colour.needsUpdate = true;
       sheet.uniforms.time.value = t;
 
+      const drawStart = performance.now();
       renderer.render(scene, camera);
+      drawMs = performance.now() - drawStart;
 
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
-      for (const { kite, mesh } of orbiting) {
+      // Move each button over its tile with a transform only (no layout),
+      // and restack only when a tile's depth order changes.
+      for (const entry of orbiting) {
+        const { kite, mesh } = entry;
         const far = mesh.position.distanceTo(camera.position);
         spot.copy(mesh.position).project(camera);
-        const size = (kite.size / (2 * far * halfH)) * height;
-        const style = kite.el.style;
-        style.left = `${canvas.offsetLeft + ((spot.x + 1) / 2) * width}px`;
-        style.top = `${canvas.offsetTop + ((1 - spot.y) / 2) * height}px`;
-        style.width = `${size * 1.1}px`;
+        const x = box.left + ((spot.x + 1) / 2) * box.width;
+        const y = box.top + ((1 - spot.y) / 2) * box.height;
+        kite.el.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) translate(-50%, -50%)`;
         // Nearer tiles stack above farther ones.
-        style.setProperty("--z", String(Math.round((distance + 4 - far) * 2)));
+        const z = Math.round((distance + 4 - far) * 2);
+        if (z !== entry.z) {
+          entry.z = z;
+          kite.el.style.setProperty("--z", String(z));
+        }
       }
     },
   };

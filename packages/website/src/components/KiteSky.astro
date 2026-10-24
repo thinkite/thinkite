@@ -73,17 +73,26 @@ const shade = "57.6,309.6 360,0 360,237.6";
 <script>
   import type { SkyScene } from "../scripts/sky-scene";
 
-  // The kites start as flat SVG with a CSS sway above a flat icon. As the
-  // sky nears the screen, three.js loads and redraws them as 3D tiles
-  // circling a beam of light from a phone, one frame at a time while it's
-  // visible.
+  // Without script (or WebGL) the kites are flat SVG with a CSS sway above
+  // a flat icon. With it, the sky stays empty while three.js loads, well
+  // before the sky reaches the screen, and the 3D scene (tiles circling a
+  // beam of light from a phone) plays its reveal once it's in view, then
+  // draws a frame at a time while it's visible.
   for (const sky of document.querySelectorAll<HTMLElement>("[data-kite-sky]")) {
     const canvas = sky.querySelector("canvas[data-scene]") as HTMLCanvasElement;
     const kites = [...sky.querySelectorAll<HTMLElement>("[data-kite]")];
     const still = matchMedia("(prefers-reduced-motion: reduce)");
     let scene: SkyScene | undefined;
+    sky.dataset.scene = "loading";
     let frame = 0;
     let visible = false;
+    // `?perf` shows frame numbers, for checking on a real device.
+    let record: ((ms: number, drawMs: number) => void) | undefined;
+    if (new URLSearchParams(location.search).has("perf")) {
+      import("../scripts/sky-perf").then(({ mountPerf }) => {
+        record = mountPerf(canvas);
+      });
+    }
 
     // Near kites drift a little faster than far ones as the page scrolls.
     const parallax = () => {
@@ -92,16 +101,20 @@ const shade = "57.6,309.6 360,0 360,237.6";
       sky.style.setProperty("--scroll", offset.toFixed(3));
     };
 
-    // Everything moves slowly, so the animation draws at most 30 frames a
-    // second, not at the screen's refresh rate (60–144 Hz). A one-off redraw
-    // (on scroll or resize while still) always draws.
-    const step = 1000 / 30;
+    // The animation draws at most 60 frames a second, not at the screen's
+    // full refresh rate (up to 120–144 Hz) when nothing moves that fast. A
+    // one-off redraw (on scroll or resize while still) always draws.
+    const step = 1000 / 60;
     let drawn = 0;
     const loop = (now = performance.now()) => {
       if (frame === 0 || now - drawn >= step - 2) {
         drawn = now;
-        parallax();
+        // Only the flat kites drift with the scroll; skip the layout read
+        // once the 3D scene is up.
+        if (!scene) parallax();
+        const started = performance.now();
         scene?.render(still.matches ? 0 : now / 1000);
+        if (scene) record?.(performance.now() - started, scene.drawMs());
       }
       frame = visible && !still.matches ? requestAnimationFrame(loop) : 0;
     };
@@ -122,18 +135,20 @@ const shade = "57.6,309.6 360,0 360,237.6";
             size: Number(el.dataset.size),
             rot: Number(el.dataset.rot),
           })),
+          { reveal: !still.matches },
         );
         sky.dataset.scene = "ready";
         if (import.meta.env.DEV && new URLSearchParams(location.search).has("tune")) {
           const { mountTuner } = await import("../scripts/sky-tuner");
           mountTuner(scene, () => frame === 0 && loop());
         }
-        if (frame === 0) loop();
+        if (visible && frame === 0) loop();
       } catch {
-        // No WebGL: keep the flat kites and icon.
+        // No WebGL: show the flat kites and icon after all.
+        delete sky.dataset.scene;
       }
     };
-    new IntersectionObserver(([entry]) => entry.isIntersecting && loadScene(), { rootMargin: "400px" }).observe(sky);
+    new IntersectionObserver(([entry]) => entry.isIntersecting && loadScene(), { rootMargin: "1500px 0px" }).observe(sky);
 
     new IntersectionObserver(([entry]) => {
       visible = entry.isIntersecting;
