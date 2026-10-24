@@ -362,10 +362,9 @@ export function mountSkyScene(
 ) {
   const renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true });
   // 1.5× is hard to tell from 2× for soft light and moving tiles, and
-  // draws a little over half the pixels; on a phone's small, dense screen
-  // 1.25× is plenty, and draws about a third fewer again.
-  const coarse = matchMedia("(pointer: coarse)").matches;
-  renderer.setPixelRatio(Math.min(devicePixelRatio, coarse ? 1.25 : 1.5));
+  // draws a little over half the pixels. Phones get the same: at 1.25× the
+  // tiles' edges looked soft on a 3× screen.
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
   renderer.toneMapping = NeutralToneMapping;
 
   const scene = new Scene();
