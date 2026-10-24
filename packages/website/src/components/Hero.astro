@@ -1,38 +1,42 @@
 ---
-import BrandMark from "./BrandMark.astro";
-import Kite from "./Kite.astro";
+import KiteSky from "./KiteSky.astro";
 import { links } from "../config";
 ---
 
-<!-- The demo film's end card, as a page, with the kite flying above it. -->
+<!-- The sky (the Thinkite icon floating in light from a phone, with the
+     models circling it) beside the name and the buttons; on a phone, above
+     them. -->
 <section class="hero">
   <span class="cloud c1"></span>
   <span class="cloud c2"></span>
-  <Kite string={260} />
-  <div class="wrap">
-    <div class="hero-brand">
-      <BrandMark />
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
       <h1>Thinkite</h1>
-    </div>
-    <p class="hero-tagline">OpenCode on your Mac. <b>In your pocket.</b></p>
+      <p class="hero-tagline">OpenCode on your Mac. <b>In your pocket.</b></p>
 
-    <div class="hero-actions">
-      <div data-show-on="desktop">
-        <a class="btn btn-primary" href={links.download}>Download for Mac</a>
-        <a class="btn btn-ghost" href={links.appStore}>Join the iOS beta</a>
+      <div class="hero-actions">
+        <div data-show-on="desktop">
+          <a class="btn btn-primary" href={links.download}>Download for Mac</a>
+          <a class="btn btn-ghost" href={links.appStore}>Join the iOS beta</a>
+        </div>
+        <div data-show-on="ios">
+          <a class="btn btn-primary" href={links.appStore}>Join the iOS beta</a>
+          <a class="btn btn-ghost" href={links.download}>Get the Mac app</a>
+        </div>
+        <div data-show-on="android">
+          <a class="btn btn-primary" href={links.github} target="_blank" rel="noopener">GitHub</a>
+        </div>
       </div>
-      <div data-show-on="ios">
-        <a class="btn btn-primary" href={links.appStore}>Join the iOS beta</a>
-        <a class="btn btn-ghost" href={links.download}>Get the Mac app</a>
-      </div>
-      <div data-show-on="android">
-        <a class="btn btn-primary" href={links.github} target="_blank" rel="noopener">GitHub</a>
-      </div>
+
+      <p class="hero-note">
+        <span data-show-on="desktop ios">Free and open source · Apple Silicon Mac + iPhone</span>
+        <span data-show-on="android">Mac + iPhone only for now.</span>
+      </p>
+      <p class="hero-models">
+        Works with the models in opencode, DeepSeek, Gemini, GLM, MiniMax, Xiaomi MiMo and Muse Spark among them.
+      </p>
     </div>
 
-    <p class="hero-note">
-      <span data-show-on="desktop ios">Free and open source · Apple Silicon Mac + iPhone</span>
-      <span data-show-on="android">Mac + iPhone only for now.</span>
-    </p>
+    <KiteSky />
   </div>
 </section>

@@ -365,44 +365,53 @@ html:not([data-platform]) [data-show-on~="desktop"] {
   font-size: 14px;
 }
 
-/* ── hero (the film's end card) ──────────────────────────────── */
+/* ── hero: the name and buttons beside the kite sky ──────────── */
 
 .hero {
   position: relative;
   overflow: hidden;
-  padding: clamp(80px, 13vh, 150px) 0 clamp(120px, 16vh, 180px);
-  text-align: center;
+  padding: clamp(16px, 3vh, 40px) 0 clamp(24px, 4vh, 48px);
 }
 .hero .wrap {
   position: relative;
   z-index: 1;
 }
-.hero-brand {
-  display: inline-flex;
+.hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.85fr);
   align-items: center;
-  gap: clamp(14px, 2vw, 26px);
+  gap: clamp(16px, 3vw, 48px);
 }
-.hero-brand .app-icon {
-  width: clamp(64px, 8.5vw, 112px);
-  height: clamp(64px, 8.5vw, 112px);
+/* Above the sky's canvas where it bleeds past its column. */
+.hero-copy {
+  position: relative;
+  z-index: 2;
+}
+/* The sky comes first (left, or on top on a phone); in the page's order
+   it follows the text, so the name and buttons are read and focused
+   first. */
+.hero .kite-sky {
+  order: -1;
 }
 .hero h1 {
   margin: 0;
-  font-size: clamp(48px, 7.6vw, 96px);
+  font-size: clamp(48px, 6.4vw, 88px);
   font-weight: 700;
   letter-spacing: -0.035em;
   line-height: 1;
 }
 .hero-tagline {
-  margin: clamp(18px, 2.4vw, 28px) auto 0;
-  font-size: clamp(22px, 3vw, 36px);
+  margin: clamp(16px, 2vw, 24px) 0 0;
+  font-size: clamp(22px, 2.6vw, 34px);
   font-weight: 500;
   letter-spacing: -0.015em;
   line-height: 1.2;
   color: var(--muted);
   text-wrap: balance;
 }
+/* Two lines: where it runs, then where it reaches you. */
 .hero-tagline b {
+  display: block;
   font-weight: 600;
   color: var(--ink);
 }
@@ -413,17 +422,21 @@ html:not([data-platform]) [data-show-on~="desktop"] {
   gap: 12px;
   margin-top: 40px;
 }
+.hero .hero-actions {
+  justify-content: flex-start;
+  margin-top: 36px;
+}
 .hero-note {
   margin: 20px 0 0;
   font-size: 13px;
   color: var(--muted);
 }
-.hero .kite {
-  position: absolute;
-  top: 6%;
-  right: max(2vw, calc(50% - 600px));
-  width: clamp(70px, 10vw, 140px);
-  z-index: 0;
+.hero-models {
+  margin: 6px 0 0;
+  max-width: 34em;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
 }
 .hero .cloud.c1 {
   top: 22%;
@@ -439,7 +452,6 @@ html:not([data-platform]) [data-show-on~="desktop"] {
 /* ── film ────────────────────────────────────────────────────── */
 
 .film-wrap {
-  margin-top: clamp(-110px, -10vh, -60px);
   position: relative;
   z-index: 2;
 }
@@ -506,8 +518,14 @@ html:not([data-platform]) [data-show-on~="desktop"] {
 }
 .foot-sky {
   position: relative;
-  padding: 48px 0 120px;
+  padding: 72px 0 120px;
   text-align: center;
+}
+.foot-kite {
+  display: block;
+  width: clamp(76px, 8vw, 104px);
+  margin: 0 auto;
+  translate: 28% 0;
 }
 .foot-sky .cloud.c1 {
   top: 90px;
@@ -521,7 +539,7 @@ html:not([data-platform]) [data-show-on~="desktop"] {
 }
 .foot-sky h2 {
   position: relative;
-  margin: 28px 0 0;
+  margin: 12px 0 0;
   font-size: clamp(36px, 5vw, 56px);
   font-weight: 700;
   letter-spacing: -0.035em;
@@ -553,6 +571,18 @@ html:not([data-platform]) [data-show-on~="desktop"] {
 /* ── responsive ──────────────────────────────────────────────── */
 
 @media (max-width: 860px) {
+  .hero-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    text-align: center;
+  }
+  .hero-tagline,
+  .hero-models {
+    margin-inline: auto;
+  }
+  .hero .hero-actions {
+    justify-content: center;
+  }
   .beats {
     grid-template-columns: 1fr;
     gap: 48px;
@@ -575,11 +605,6 @@ html:not([data-platform]) [data-show-on~="desktop"] {
   .nav-cta > a:not(.btn) {
     display: none;
   }
-  .hero .kite {
-    top: 2%;
-    right: 4%;
-    width: 56px;
-  }
   .hero-actions .btn {
     width: 100%;
   }
@@ -595,10 +620,10 @@ html:not([data-platform]) [data-show-on~="desktop"] {
   --scroll: 0;
   position: relative;
   /* The phone and its beam stand about as tall as they are wide; on a
-     phone the scene stands upright and wants more. */
-  height: clamp(320px, 30vw + 180px, 520px);
-  max-width: 1100px;
-  margin: 0 auto;
+     phone the scene stands upright and wants more. Its own stacking
+     context keeps the kite buttons under the hero's text. */
+  z-index: 0;
+  height: clamp(440px, 24vw + 260px, 620px);
 }
 
 .sky-kite {
@@ -750,13 +775,13 @@ html:not([data-platform]) [data-show-on~="desktop"] {
 
 /* three.js redraws the kites as tiles orbiting the icon here; the buttons
    above stay for hover names and focus, moved over their tiles each frame.
-   It reaches past the sky, to the page's full width, so tiles at the edge
-   of an orbit aren't clipped (the footer hides the overflow). */
+   It reaches a fifth past the sky on each side, so tiles at the edge of an
+   orbit aren't clipped (the hero hides any overflow past the page). */
 .sky-scene {
   position: absolute;
-  left: calc(50% - 50vw);
+  left: -20%;
   top: -40px;
-  width: 100vw;
+  width: 140%;
   height: calc(100% + 80px);
   pointer-events: none;
   opacity: 0;
@@ -787,12 +812,13 @@ html:not([data-platform]) [data-show-on~="desktop"] {
 @media (max-width: 860px) {
   .kite-sky {
     --scale: 0.72;
+    height: 460px;
   }
 }
 @media (max-width: 560px) {
   .kite-sky {
     --scale: 0.56;
-    height: 560px;
+    height: 400px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -1,5 +1,5 @@
 ---
-import KiteSky from "./KiteSky.astro";
+import Kite from "./Kite.astro";
 import { links, site } from "../config";
 
 interface Props {
@@ -19,7 +19,7 @@ const currentYear = new Date().getFullYear();
         <span class="cloud c1" />
         <span class="cloud c2" />
         <div class="wrap">
-          <KiteSky />
+          <Kite class="foot-kite" string={150} />
           <h2>Hold every string.</h2>
           <div class="hero-actions">
             <a class="btn btn-primary" href={links.download}>Download for Mac</a>
