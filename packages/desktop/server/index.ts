@@ -38,6 +38,7 @@ import { WebSocketServer } from "ws";
 import { guardWebviews, setupBrowserGuests } from "./browser-guests";
 import { handleOcProxy, stripOcPrefix } from "./oc-proxy";
 import { attachPty, killPty, killPtys, ptyParams } from "./pty";
+import { createRequestGuard } from "./request-guard";
 import {
   checkForUpdates,
   getUpdateInfo,
@@ -132,9 +133,26 @@ const MIME: Record<string, string> = {
   ".map": "application/json",
 };
 
+// The routes answer only Thinkite's own page (server/request-guard.ts).
+const fromApp = createRequestGuard([
+  BASE,
+  `http://localhost:${PORT}`,
+  pageBase,
+]);
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", BASE);
   try {
+    if (
+      (url.pathname.startsWith("/api/") ||
+        url.pathname === "/oc" ||
+        url.pathname.startsWith("/oc/")) &&
+      !fromApp(req.headers)
+    ) {
+      res.writeHead(403, { "content-type": "text/plain" });
+      res.end("forbidden");
+      return;
+    }
     if (url.pathname === "/api/daemon/status") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
@@ -322,6 +340,10 @@ const server = createServer(async (req, res) => {
 const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url ?? "/", BASE);
+  if (!fromApp(req.headers)) {
+    socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+    return;
+  }
   if (url.pathname === "/pty") {
     const params = ptyParams(url);
     if (typeof params === "string") {
