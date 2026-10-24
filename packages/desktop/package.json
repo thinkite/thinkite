@@ -1,7 +1,7 @@
 {
   "name": "@thinkite/desktop",
   "productName": "Thinkite",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "license": "Apache-2.0",
   "description": "Thinkite desktop GUI — Electron + Vite + React 19 + Astryx",
