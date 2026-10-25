@@ -74,7 +74,7 @@ function registry(
       },
     },
     ports: async (pid) => shells.ports.get(pid) ?? [],
-    probe: async (port) => port === 5180 || port === 3001 || port === 8080,
+    graceMs: 5,
     sleep: () => new Promise((r) => setTimeout(r, 1)),
     waitMs: 40,
     backgroundMs: 200,
@@ -104,7 +104,7 @@ describe("PreviewRegistry.start", () => {
     expect(entry?.opened).toBeUndefined();
     expect(shells.shells.get("sh_1")?.cwd).toBe("/proj/web");
     expect(shells.shells.get("sh_1")?.metadata).toEqual({
-      thinkite: { preview: "web", open: false, session: "ses_a" },
+      thinkite: { preview: "web", open: false, session: "ses_a", port: null },
     });
   });
 
@@ -174,7 +174,6 @@ describe("PreviewRegistry.start", () => {
         },
       },
       ports: async () => [],
-      probe: async () => false,
       sleep: () => new Promise((r) => setTimeout(r, 1)),
       waitMs: 40,
     });
@@ -220,6 +219,58 @@ describe("PreviewRegistry.start", () => {
     const reopen = await r.start(DIR, { name: "web", open: true });
     expect(reopen.isError).toBeFalsy();
     expect(shells.created()).toBe(1);
+  });
+});
+
+describe("PreviewRegistry ports", () => {
+  it("uses the port the agent expected over a lower side port", async () => {
+    const shells = fakeShells();
+    const r = registry(shells, [3001, 5180]);
+    const out = await r.start(DIR, {
+      name: "web",
+      command: "bun run dev",
+      port: 5180,
+    });
+    expect(out.text).toBe(
+      '"web" is running at http://localhost:5180 (also listening on 3001). Registered (not opened).',
+    );
+    expect(shells.shells.get("sh_1")?.metadata).toMatchObject({
+      thinkite: { port: 5180 },
+    });
+  });
+
+  it("takes the lowest port without an expectation", async () => {
+    const shells = fakeShells();
+    const r = registry(shells, [3001, 5180]);
+    await r.start(DIR, { name: "web", command: "bun run dev" });
+    expect((await r.entries(DIR))[0]?.primaryPort).toBe(3001);
+  });
+
+  it("says so when the server listens somewhere else", async () => {
+    const shells = fakeShells();
+    const r = registry(shells, [5174]);
+    const out = await r.start(DIR, {
+      name: "web",
+      command: "vite",
+      port: 5173,
+    });
+    expect(out.isError).toBeFalsy();
+    expect(out.text).toBe(
+      '"web" is running at http://localhost:5174, not on the expected port 5173. Registered (not opened).',
+    );
+  });
+
+  it("keeps the expected port across a rebuild", async () => {
+    const shells = fakeShells();
+    await registry(shells, [3001, 5180]).start(DIR, {
+      name: "web",
+      command: "bun run dev",
+      port: 5180,
+    });
+    const after = registry(shells, [3001, 5180]);
+    await after.rebuild(DIR);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect((await after.entries(DIR))[0]?.primaryPort).toBe(5180);
   });
 });
 

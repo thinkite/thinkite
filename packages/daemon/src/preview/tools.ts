@@ -19,6 +19,9 @@ export interface PreviewTool {
 const str = (v: unknown) =>
   typeof v === "string" && v.trim() !== "" ? v : undefined;
 
+const isPort = (v: unknown): v is number =>
+  typeof v === "number" && Number.isInteger(v) && v > 0 && v < 65536;
+
 export function previewTools(registry: PreviewRegistry): PreviewTool[] {
   return [
     {
@@ -28,8 +31,8 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
         "Use for any long-running process the user or a page reaches over the network: web dev servers, API servers, " +
         "websocket servers. Servers started with the shell tool's background mode or nohup are invisible to the user's " +
         "phone. Set open: true only for a page the user should look at in a browser; leave it false for APIs and other " +
-        "backends. Starting a name that is already running returns it instead of restarting it. Returns the URL once " +
-        "the port is listening.",
+        "backends. Pass port when you know it from the config, script or flags. Starting a name that is already running " +
+        "returns it instead of restarting it. Returns the URL once the port is listening.",
       inputSchema: {
         type: "object",
         properties: {
@@ -51,6 +54,11 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
             type: "boolean",
             description: "Show it to the user in the preview pane (pages only)",
           },
+          port: {
+            type: "integer",
+            description:
+              "The port it will listen on, if you know it (from its config, script or flags)",
+          },
         },
         required: ["name", "command"],
       },
@@ -65,6 +73,7 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
             command: str(args.command),
             cwd: str(args.cwd),
             open: args.open === true,
+            ...(isPort(args.port) ? { port: args.port } : {}),
           },
           ctx.sessionID,
         );

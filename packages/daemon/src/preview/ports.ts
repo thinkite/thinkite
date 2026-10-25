@@ -59,17 +59,3 @@ export async function listeningPorts(root: number): Promise<number[]> {
   }
   return [...ports].sort((a, b) => a - b);
 }
-
-/** Whether `GET /` on localhost answers HTTP at all. */
-export async function probeHttp(port: number): Promise<boolean> {
-  try {
-    const res = await fetch(`http://localhost:${port}/`, {
-      signal: AbortSignal.timeout(1500),
-      redirect: "manual",
-    });
-    await res.body?.cancel();
-    return true;
-  } catch {
-    return false;
-  }
-}

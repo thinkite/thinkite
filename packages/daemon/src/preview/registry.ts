@@ -3,7 +3,7 @@
 //
 // opencode's shells are the source of truth and this is a cache that can
 // always be rebuilt: every shell we create carries
-// `metadata.thinkite = { preview, open, session }`, so after a daemon
+// `metadata.thinkite = { preview, open, session, port }`, so after a daemon
 // restart `rebuild` finds the running ones again. What a rebuild loses is
 // what only lived here: sessions that reused a server after its starter,
 // a later request to open it (the stamp falls back to the start), and the
@@ -11,7 +11,7 @@
 
 import { resolve as resolvePath } from "node:path";
 import type { PreviewEntry } from "@thinkite/protocol";
-import { listeningPorts, probeHttp } from "./ports.ts";
+import { listeningPorts } from "./ports.ts";
 import type { ShellApi, ShellInfo, ShellStatus } from "./shells.ts";
 
 export interface ToolOutcome {
@@ -24,18 +24,21 @@ export interface StartInput {
   command?: string;
   cwd?: string;
   open?: boolean;
+  /** The port the agent expects it to listen on. */
+  port?: number;
 }
 
 export interface RegistryOptions {
   shells: ShellApi;
   ports?: (pid: number) => Promise<number[]>;
-  probe?: (port: number) => Promise<boolean>;
   sleep?: (ms: number) => Promise<void>;
   /** How long `start` waits for a port before answering. */
   waitMs?: number;
   /** How much longer detection keeps going after `start` gave up. */
   backgroundMs?: number;
   pollMs?: number;
+  /** Once some port listens, how long to wait for the expected one. */
+  graceMs?: number;
   log?: (message: string) => void;
 }
 
@@ -48,6 +51,7 @@ interface Entry {
   cwd?: string;
   ports: number[];
   primaryPort?: number;
+  expectedPort?: number;
   status: PreviewEntry["status"];
   opened?: { at: number; sessionID: string };
   sessions: string[];
@@ -62,11 +66,11 @@ const LOG_BYTES = 32 * 1024;
 export class PreviewRegistry {
   private readonly shells: ShellApi;
   private readonly ports: (pid: number) => Promise<number[]>;
-  private readonly probe: (port: number) => Promise<boolean>;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly waitMs: number;
   private readonly backgroundMs: number;
   private readonly pollMs: number;
+  private readonly graceMs: number;
   private readonly log: (message: string) => void;
 
   private readonly dirs = new Map<string, Map<string, Entry>>();
@@ -79,12 +83,12 @@ export class PreviewRegistry {
   constructor(options: RegistryOptions) {
     this.shells = options.shells;
     this.ports = options.ports ?? listeningPorts;
-    this.probe = options.probe ?? probeHttp;
     this.sleep =
       options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.waitMs = options.waitMs ?? 30_000;
     this.backgroundMs = options.backgroundMs ?? 120_000;
     this.pollMs = options.pollMs ?? 250;
+    this.graceMs = options.graceMs ?? 2_000;
     this.log = options.log ?? (() => undefined);
   }
 
@@ -225,6 +229,7 @@ export class PreviewRegistry {
         cwd: shell.cwd,
         ports: [],
         status: "starting",
+        ...(meta.port === undefined ? {} : { expectedPort: meta.port }),
         ...(meta.open && meta.session
           ? { opened: { at: shell.time.started, sessionID: meta.session } }
           : {}),
@@ -285,6 +290,10 @@ export class PreviewRegistry {
         existing.sessions.push(sessionID);
       if (input.open && sessionID)
         existing.opened = { at: Date.now(), sessionID };
+      if (input.port !== undefined && input.port !== existing.expectedPort) {
+        existing.expectedPort = input.port;
+        if (existing.ports.length > 0) this.settle(existing, existing.ports);
+      }
       this.notify(directory);
       return {
         text: `"${input.name}" is already ${describeRunning(existing)}`,
@@ -300,7 +309,12 @@ export class PreviewRegistry {
       command,
       ...(absoluteCwd === undefined ? {} : { cwd: absoluteCwd }),
       metadata: {
-        thinkite: { preview: input.name, open, session: sessionID ?? null },
+        thinkite: {
+          preview: input.name,
+          open,
+          session: sessionID ?? null,
+          port: input.port ?? null,
+        },
       },
     });
     const startedAt = shell.time?.started ?? Date.now();
@@ -313,6 +327,7 @@ export class PreviewRegistry {
       cwd: absoluteCwd,
       ports: [],
       status: "starting",
+      ...(input.port === undefined ? {} : { expectedPort: input.port }),
       ...(open && sessionID ? { opened: { at: Date.now(), sessionID } } : {}),
       sessions: sessionID ? [sessionID] : [],
       startedAt,
@@ -349,6 +364,7 @@ export class PreviewRegistry {
     budgetMs: number,
   ): Promise<"listening" | "ended" | "waiting"> {
     const deadline = Date.now() + budgetMs;
+    let listeningSince: number | undefined;
     for (;;) {
       const info = await this.shells.get(entry.directory, entry.shellID);
       if (info?.status !== "running") {
@@ -359,8 +375,16 @@ export class PreviewRegistry {
       entry.pid ??= info.pid;
       if (entry.pid !== undefined) {
         const ports = await this.ports(entry.pid);
-        if (ports.length > 0) {
-          await this.settle(entry, ports);
+        // A server may open a side port first: give the expected one a
+        // moment before settling on what is there.
+        listeningSince ??= ports.length > 0 ? Date.now() : undefined;
+        if (
+          ports.length > 0 &&
+          (entry.expectedPort === undefined ||
+            ports.includes(entry.expectedPort) ||
+            Date.now() - (listeningSince ?? 0) >= this.graceMs)
+        ) {
+          this.settle(entry, ports);
           this.notify(entry.directory);
           return "listening";
         }
@@ -387,18 +411,15 @@ export class PreviewRegistry {
     }
   }
 
-  private async settle(entry: Entry, ports: number[]): Promise<void> {
+  /** The page's URL is the port the agent expected when it listens there,
+   *  else the lowest one (the result then says so). */
+  private settle(entry: Entry, ports: number[]): void {
     entry.ports = ports;
     entry.status = "running";
-    // The page's URL: the first port that answers HTTP, so a debugger or
-    // other side port of the same process tree isn't the one opened.
-    for (const port of ports) {
-      if (await this.probe(port)) {
-        entry.primaryPort = port;
-        return;
-      }
-    }
-    entry.primaryPort = ports[0];
+    entry.primaryPort =
+      entry.expectedPort !== undefined && ports.includes(entry.expectedPort)
+        ? entry.expectedPort
+        : ports[0];
   }
 
   /** Re-check one entry's shell and ports. */
@@ -413,7 +434,7 @@ export class PreviewRegistry {
     if (entry.pid === undefined) return;
     const ports = await this.ports(entry.pid);
     if (ports.length > 0 && ports.join() !== entry.ports.join())
-      await this.settle(entry, ports);
+      this.settle(entry, ports);
     else entry.ports = ports;
   }
 
@@ -477,13 +498,14 @@ export class PreviewRegistry {
 
 function previewMeta(
   shell: ShellInfo,
-): { preview: string; open: boolean; session?: string } | null {
+): { preview: string; open: boolean; session?: string; port?: number } | null {
   const meta = shell.metadata?.thinkite as Record<string, unknown> | undefined;
   if (!meta || typeof meta.preview !== "string") return null;
   return {
     preview: meta.preview,
     open: meta.open === true,
     ...(typeof meta.session === "string" ? { session: meta.session } : {}),
+    ...(typeof meta.port === "number" ? { port: meta.port } : {}),
   };
 }
 
@@ -513,9 +535,13 @@ function describeRunning(entry: Entry): string {
     return "running, but no port is listening yet. Check preview_logs.";
   }
   const others = entry.ports.filter((p) => p !== entry.primaryPort);
+  const missed =
+    entry.expectedPort !== undefined &&
+    entry.expectedPort !== entry.primaryPort;
   return (
     `running at ${url(entry)}` +
     (others.length > 0 ? ` (also listening on ${others.join(", ")})` : "") +
+    (missed ? `, not on the expected port ${entry.expectedPort}` : "") +
     (entry.opened
       ? ". Sent to the user's preview pane."
       : ". Registered (not opened).")

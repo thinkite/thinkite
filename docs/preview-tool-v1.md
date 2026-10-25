@@ -30,9 +30,11 @@ clicks) is a separate, later piece: thinkite/thinkite#31.
   covers those. Process-tree discovery was measured on 10-24 and can be
   added later.
 - No multi-tab phone browser. One page at a time, with a switcher.
-- No `PORT` injection. Vite ignores `PORT`, and when a port is taken the
-  model reads the error from the result and picks another, as it did in the
-  test.
+- No `PORT` injection or port reassignment (Claude Desktop's `autoPort`
+  rewrites flags and inspects scripts). Vite ignores `PORT`, and when a port
+  is taken the model reads the error from the result and picks another, as
+  it did in the test. The agent says which port it expects (`port`), and
+  the daemon checks it against what is listening.
 - The desktop/phone UI does not start servers. Starting is the agent's job.
 - No launch configuration file. If the UI ever gets a "start web" button,
   that needs Thinkite's own file (for example `.thinkite/launch.json`),
@@ -110,7 +112,7 @@ phone. Set open: true only for a page the user should look at in a browser;
 leave it false for APIs and other backends. Returns the URL once the port is
 listening."
 
-### `preview_start({ name, command, cwd?, open? })`
+### `preview_start({ name, command, cwd?, open?, port? })`
 
 - `name` is the key, unique per directory. A server is a project resource, so
   a second session asking for the same name gets the running one.
@@ -125,11 +127,18 @@ listening."
 - `command` is required. In every test run the model read
   `package.json` and wrote the command itself, so v1 reads no launch
   configuration. A reopen of a running name may omit it.
+- `port` is the port the agent expects, read from the project's config,
+  script or flags. Optional: without it the URL is the lowest listening
+  port.
 - Start: `shell.create({ command, cwd, metadata: { thinkite: { preview:
-  name, open, session } } })` with `location.directory`, and no `timeout`.
+  name, open, session, port } } })` with `location.directory`, and no
+  `timeout`.
 - Wait for a port (see `ports.ts` below), at most 30 s:
   - **Listening:** return `"<name>" is running at http://localhost:<port>`
-    (other ports listed). Add "Sent to the user's preview pane" or
+    (other ports listed). Once some port listens, wait up to 2 s more for
+    the expected one (a server can open a side port first). If it never
+    shows, the URL is the lowest port and the result says "not on the
+    expected port N", so the agent tells the user the real URL. Add "Sent to the user's preview pane" or
     "Registered (not opened)". The words matter: in the test the model used
     this result to decide what to say to the user. They must not claim more
     than the daemon knows: it sees the request, not the user's tabs.
@@ -177,7 +186,8 @@ type PreviewEntry = {
   command: string;
   cwd: string;
   ports: number[];          // all listening ports of the process tree
-  primaryPort?: number;     // the first one that answers HTTP
+  primaryPort?: number;     // the expected port if listening, else the lowest
+  expectedPort?: number;    // preview_start's `port`
   opened?: { at: number; sessionID: string }; // latest request to show it
   sessions: string[];       // starter first
   status: "starting" | "running" | "exited" | "killed" | "timeout";
@@ -245,9 +255,11 @@ type PreviewEntry = {
   3. `lsof -a -p <pids> -nP -iTCP -sTCP:LISTEN -Fn`.
 - Measured 10-24: Vite, Next.js and `bun --hot` are found 0.1–1.4 s after
   the shell starts. Per-pid lsof costs about 20 ms, and so does `ps`.
-- `primaryPort`: the first port whose `GET /` answers, with a 1.5 s timeout,
-  so a debugger or other side port isn't the one opened. No page/API
-  classification: whether to show a server is the agent's `open`.
+- `primaryPort`: the agent's expected port when the process tree listens
+  there, else the lowest listening port (ports are sorted). No HTTP probe:
+  a debugger port answers HTTP too (Node's inspector says 400, Bun's 404),
+  and `GET /` makes some dev servers compile. No page/API classification:
+  whether to show a server is the agent's `open`.
 
 ## Clients
 
