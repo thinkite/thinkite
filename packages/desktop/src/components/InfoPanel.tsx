@@ -27,7 +27,7 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ocClient, ocStore } from "../lib/oc";
 import { prefs, updatePrefs } from "../lib/prefs";
-import { isLive, previewUrl, stopPreview, usePreviews } from "../lib/previews";
+import { isLive, serverLabel, stopPreview, usePreviews } from "../lib/previews";
 import { vcsKeys } from "../lib/query";
 import { findModel, useModels } from "./ModelPicker";
 
@@ -321,10 +321,8 @@ function Changes({
 /** One server's state in a word or two. */
 function serverState(e: PreviewEntry): string {
   switch (e.status) {
-    case "starting":
-      return "Starting";
     case "running":
-      return e.ports.length === 0 ? "No port" : "Running";
+      return "Running";
     case "exited":
       return e.exit === undefined ? "Exited" : `Exited (${e.exit})`;
     default:
@@ -343,12 +341,9 @@ function ServerRow({
 }) {
   const [isStopping, setStopping] = useState(false);
   const live = isLive(entry);
-  const port = entry.primaryPort ?? entry.ports[0];
-  const dot = !live
-    ? "bg-[var(--color-text-secondary)]"
-    : entry.status === "running" && port !== undefined
-      ? "bg-[var(--color-text-green)]"
-      : "bg-[var(--color-text-yellow)]";
+  const dot = live
+    ? "bg-[var(--color-text-green)]"
+    : "bg-[var(--color-text-secondary)]";
   return (
     <div
       className="flex min-h-7 min-w-0 items-center gap-2"
@@ -358,14 +353,15 @@ function ServerRow({
       <Text size="sm" maxLines={1}>
         {entry.name}
       </Text>
-      {live && port !== undefined ? (
+      {live ? (
         <button
           type="button"
-          className="rounded px-1 font-mono text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-background-secondary)] hover:text-[var(--color-text-primary)]"
+          className="min-w-0 truncate rounded px-1 font-mono text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-background-secondary)] hover:text-[var(--color-text-primary)]"
           aria-label={`Open ${entry.name} in the browser`}
-          onClick={() => onOpenPage(previewUrl(entry))}
+          title={entry.url}
+          onClick={() => onOpenPage(entry.url)}
         >
-          {`:${port}`}
+          {serverLabel(entry)}
         </button>
       ) : null}
       <span className="ml-auto flex shrink-0 items-center gap-1">
@@ -394,7 +390,7 @@ function ServerRow({
   );
 }
 
-/** The servers the agent started in the folder (lib/previews); hidden
+/** The servers the agent registered in the folder (lib/previews); hidden
  *  while there are none. */
 function Servers({
   directory,

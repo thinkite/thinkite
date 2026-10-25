@@ -2,7 +2,7 @@ import type { PreviewEntry } from "@thinkite/protocol";
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { showBrowserPage } from "./browser";
 
-// The servers the agent started in a folder, from the daemon's preview
+// The servers the agent registered in a folder, from the daemon's preview
 // registry (/api/previews/events, docs/preview-tool-v1.md): one stream per
 // folder however many views read it. The pages they serve open as the
 // user's own tabs; after that the tabs are the user's, and nothing here
@@ -61,11 +61,36 @@ export function usePreviews(
   );
 }
 
-export const isLive = (e: PreviewEntry) =>
-  e.status === "running" || e.status === "starting";
+export const isLive = (e: PreviewEntry) => e.status === "running";
 
-export const previewUrl = (e: PreviewEntry) =>
-  `http://localhost:${e.primaryPort ?? e.ports[0]}/`;
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** The Servers card's label for a server: `:5173` for a page on this Mac,
+ *  the host otherwise (a tunnel). */
+export function serverLabel(e: PreviewEntry): string {
+  try {
+    const u = new URL(e.url);
+    return LOOPBACK.has(u.hostname) ? `:${port(u)}` : u.host;
+  } catch {
+    return e.url;
+  }
+}
+
+const port = (u: URL) => u.port || (u.protocol === "https:" ? "443" : "80");
+
+/** One server for both URLs: the same origin, with localhost and
+ *  127.0.0.1 counted as one host. */
+function sameServer(a: string, b: string): boolean {
+  try {
+    const x = new URL(a);
+    const y = new URL(b);
+    if (LOOPBACK.has(x.hostname) && LOOPBACK.has(y.hostname))
+      return x.protocol === y.protocol && port(x) === port(y);
+    return x.origin === y.origin;
+  } catch {
+    return false;
+  }
+}
 
 /** The Servers card's stop button. */
 export async function stopPreview(
@@ -101,8 +126,8 @@ function loadHandled(): Record<string, number> {
 const handled = loadHandled();
 const handledKey = (directory: string, name: string) => `${directory}\0${name}`;
 
-/** The entries the agent asked to show in `sessionID` that this device has
- *  not acted on, once they serve a page. */
+/** The running entries the agent asked to show in `sessionID` that this
+ *  device has not acted on. */
 export function dueToShow(
   entries: readonly PreviewEntry[],
   sessionID: string,
@@ -113,8 +138,7 @@ export function dueToShow(
       e.opened !== undefined &&
       e.opened.sessionID === sessionID &&
       e.opened.at > (handledAt(e.name) ?? 0) &&
-      e.status === "running" &&
-      e.primaryPort !== undefined,
+      e.status === "running",
   );
 }
 
@@ -141,7 +165,7 @@ export function usePreviewRequests(
     for (const e of due) {
       // Recorded either way: with every tab taken, the Servers card still
       // opens it.
-      showBrowserPage(sessionID, previewUrl(e));
+      showBrowserPage(sessionID, e.url);
       handled[handledKey(directory, e.name)] = e.opened?.at ?? 0;
     }
     try {
@@ -154,25 +178,12 @@ export function usePreviewRequests(
 }
 
 /** The ended server whose page a tab at `url` shows, when nothing live
- *  serves that port now: the tab's "web stopped" strip. */
+ *  serves it now: the tab's "web stopped" strip. */
 export function stoppedServerAt(
   entries: readonly PreviewEntry[],
   url: string,
 ): PreviewEntry | undefined {
-  let port: number;
-  try {
-    const u = new URL(url);
-    if (u.hostname !== "localhost" && u.hostname !== "127.0.0.1")
-      return undefined;
-    port = Number(u.port || (u.protocol === "https:" ? 443 : 80));
-  } catch {
+  if (entries.some((e) => isLive(e) && sameServer(e.url, url)))
     return undefined;
-  }
-  if (
-    entries.some(
-      (e) => isLive(e) && (e.primaryPort === port || e.ports.includes(port)),
-    )
-  )
-    return undefined;
-  return entries.find((e) => !isLive(e) && e.primaryPort === port);
+  return entries.find((e) => !isLive(e) && sameServer(e.url, url));
 }

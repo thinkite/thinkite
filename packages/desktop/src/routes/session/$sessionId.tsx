@@ -404,8 +404,8 @@ function Session({ sessionId }: { sessionId: string }) {
     if (s === "browser") setBrowserVisited(true);
     surfaceBySession.set(sessionId, s);
   };
-  // A page the agent asked to show (preview_start with open: true) opens in
-  // a tab of this session's browser, and the browser comes up.
+  // A page the agent asked to show (preview_open) opens in a tab of this
+  // session's browser, and the browser comes up.
   usePreviewRequests(sessionId, session?.location.directory, () =>
     pick("browser"),
   );

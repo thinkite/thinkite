@@ -331,11 +331,11 @@ describe("executeSummary", () => {
       executeSummary(
         run("const a = await tools.thinkite.preview_stop({});", [
           { tool: "thinkite.preview_stop", status: "completed" },
-          { tool: "thinkite.preview_start", status: "completed" },
+          { tool: "thinkite.preview_open", status: "completed" },
           { tool: "thinkite.preview_stop", status: "completed" },
         ]),
       ),
-    ).toBe("thinkite.preview_stop, thinkite.preview_start");
+    ).toBe("thinkite.preview_stop, thinkite.preview_open");
   });
 
   it("falls back to the script's first line when it called no tool", () => {

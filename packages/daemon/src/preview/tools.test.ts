@@ -6,11 +6,10 @@ import { previewTools } from "./tools.ts";
 const tools = previewTools(new PreviewRegistry({ shells: {} as ShellApi }));
 
 describe("preview tools", () => {
-  it("are the four documented names", () => {
+  it("are the three documented names", () => {
     expect(tools.map((t) => t.name)).toEqual([
-      "preview_start",
+      "preview_open",
       "preview_list",
-      "preview_logs",
       "preview_stop",
     ]);
   });
@@ -24,9 +23,20 @@ describe("preview tools", () => {
     expect(first.length).toBeGreaterThan(20);
   });
 
-  it("tells the model to prefer preview_start over shell background", () => {
+  it("tells the model where the shell ID comes from", () => {
     expect(tools[0]?.description.split("\n")[0]).toContain(
-      "not shell background/nohup",
+      "shell tool's background mode",
     );
+  });
+
+  it("asks for name, shell ID and URL", async () => {
+    const outcome = await tools[0]?.call(
+      { name: "web", url: "http://localhost:5173/" },
+      { directory: "/proj" },
+    );
+    expect(outcome).toEqual({
+      text: "name, shellID and url are required",
+      isError: true,
+    });
   });
 });

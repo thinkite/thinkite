@@ -1,44 +1,37 @@
-// The daemon's list of servers the agent started with the preview tools,
-// per project directory (docs/preview-tool-v1.md).
+// The daemon's list of servers the agent showed with `preview_open`, per
+// project directory (docs/preview-tool-v1.md).
 //
-// opencode's shells are the source of truth and this is a cache that can
-// always be rebuilt: every shell we create carries
-// `metadata.thinkite = { preview, open, session, port }`, so after a daemon
-// restart `rebuild` finds the running ones again. What a rebuild loses is
-// what only lived here: sessions that reused a server after its starter,
-// a later request to open it (the stamp falls back to the start), and the
-// entries of servers that had already ended.
+// The agent starts a server itself, with the shell tool's background mode,
+// and registers it by name, shell ID and URL. opencode's shell says whether
+// it still runs; the rest (name, URL, the request to show it, sessions)
+// only exists here, so it is kept in a small file in the Thinkite home and
+// read back when the daemon starts.
 
-import { resolve as resolvePath } from "node:path";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 import type { PreviewEntry } from "@thinkite/protocol";
 import { listeningPorts } from "./ports.ts";
-import type { ShellApi, ShellInfo, ShellStatus } from "./shells.ts";
+import type { ShellApi, ShellStatus } from "./shells.ts";
 
 export interface ToolOutcome {
   text: string;
   isError?: boolean;
 }
 
-export interface StartInput {
+export interface OpenInput {
   name: string;
-  command?: string;
-  cwd?: string;
+  shellID: string;
+  url: string;
+  /** Default true. */
   open?: boolean;
-  /** The port the agent expects it to listen on. */
-  port?: number;
 }
 
 export interface RegistryOptions {
   shells: ShellApi;
   ports?: (pid: number) => Promise<number[]>;
   sleep?: (ms: number) => Promise<void>;
-  /** How long `start` waits for a port before answering. */
-  waitMs?: number;
-  /** How much longer detection keeps going after `start` gave up. */
-  backgroundMs?: number;
-  pollMs?: number;
-  /** Once some port listens, how long to wait for the expected one. */
-  graceMs?: number;
+  /** Where entries persist across daemon restarts. Absent: memory only. */
+  stateFile?: string;
   log?: (message: string) => void;
 }
 
@@ -48,10 +41,9 @@ interface Entry {
   shellID: string;
   pid?: number;
   command: string;
-  cwd?: string;
-  ports: number[];
-  primaryPort?: number;
-  expectedPort?: number;
+  url: string;
+  /** The URL's port when the URL is on this machine (and so was checked). */
+  localPort?: number;
   status: PreviewEntry["status"];
   opened?: { at: number; sessionID: string };
   sessions: string[];
@@ -59,18 +51,16 @@ interface Entry {
   exit?: number;
 }
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escapes start with ESC
-const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
-const LOG_BYTES = 32 * 1024;
+interface StateFile {
+  v: 1;
+  entries: Entry[];
+}
 
 export class PreviewRegistry {
   private readonly shells: ShellApi;
   private readonly ports: (pid: number) => Promise<number[]>;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly waitMs: number;
-  private readonly backgroundMs: number;
-  private readonly pollMs: number;
-  private readonly graceMs: number;
+  private readonly stateFile?: string;
   private readonly log: (message: string) => void;
 
   private readonly dirs = new Map<string, Map<string, Entry>>();
@@ -85,22 +75,20 @@ export class PreviewRegistry {
     this.ports = options.ports ?? listeningPorts;
     this.sleep =
       options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
-    this.waitMs = options.waitMs ?? 30_000;
-    this.backgroundMs = options.backgroundMs ?? 120_000;
-    this.pollMs = options.pollMs ?? 250;
-    this.graceMs = options.graceMs ?? 2_000;
+    this.stateFile = options.stateFile;
     this.log = options.log ?? (() => undefined);
+    this.load();
   }
 
   // ─── Tools ──────────────────────────────────────────────────────────────
 
-  start(
+  open(
     directory: string,
-    input: StartInput,
+    input: OpenInput,
     sessionID?: string,
   ): Promise<ToolOutcome> {
     return this.locked(`${directory}\0${input.name}`, () =>
-      this.startLocked(directory, input, sessionID),
+      this.openLocked(directory, input, sessionID),
     );
   }
 
@@ -120,26 +108,11 @@ export class PreviewRegistry {
       lines.push(
         all
           ? "No servers in this project."
-          : "No servers started in this session.",
+          : "No servers registered in this session.",
       );
     if (hidden > 0)
       lines.push(`${hidden} more in this project (pass all: true).`);
     return { text: lines.join("\n") };
-  }
-
-  async logs(
-    directory: string,
-    name: string,
-    lines = 40,
-  ): Promise<ToolOutcome> {
-    const entry = this.dir(directory).get(name);
-    if (!entry)
-      return {
-        text: `No server named "${name}". Call preview_list.`,
-        isError: true,
-      };
-    const text = await this.tail(entry, Math.min(Math.max(1, lines), 200));
-    return { text: text || "(no output yet)" };
   }
 
   async stop(
@@ -154,17 +127,17 @@ export class PreviewRegistry {
           text: `No server named "${name}". Call preview_list.`,
           isError: true,
         };
-      if (entry.status !== "running" && entry.status !== "starting")
+      if (entry.status !== "running")
         return { text: `"${name}" is not running (${entry.status}).` };
       await this.shells.remove(directory, entry.shellID).catch(() => undefined);
-      if (entry.pid !== undefined) {
+      if (entry.pid !== undefined && entry.localPort !== undefined) {
         for (let i = 0; i < 12 && (await this.ports(entry.pid)).length > 0; i++)
           await this.sleep(250);
       }
-      // Kept as ended, not dropped: its logs stay readable and clients can
-      // show it stopped. A later start of the name replaces it.
+      // Kept as ended, not dropped: clients show it stopped. A later
+      // preview_open of the name replaces it.
       this.markEnded(entry, "killed");
-      this.notify(directory);
+      this.changed(directory);
       const others = entry.sessions.filter((s) => s !== sessionID);
       return {
         text:
@@ -200,56 +173,19 @@ export class PreviewRegistry {
 
   // ─── opencode side ──────────────────────────────────────────────────────
 
-  /** Recover entries from the directory's running shells (after a daemon
-   *  restart or an opencode reconnect) and drop the ones whose shell is gone. */
+  /** Re-check the directory's entries against their shells: after a daemon
+   *  restart or an opencode reconnect, `shell.exited` may have been missed. */
   async rebuild(directory: string): Promise<void> {
-    const running = await this.shells.list(directory);
-    const dir = this.dir(directory);
-    const byShell = new Map(running.map((s) => [s.id, s]));
-    for (const entry of dir.values()) {
-      if (
-        (entry.status === "running" || entry.status === "starting") &&
-        !byShell.has(entry.shellID)
-      ) {
-        const info = await this.shells.get(directory, entry.shellID);
-        this.markEnded(entry, info?.status ?? "killed", info?.exit);
-      }
-    }
-    for (const shell of running) {
-      const meta = previewMeta(shell);
-      if (!meta) continue;
-      const current = dir.get(meta.preview);
-      if (current?.shellID === shell.id) continue;
-      const entry: Entry = {
-        directory,
-        name: meta.preview,
-        shellID: shell.id,
-        pid: shell.pid,
-        command: shell.command,
-        cwd: shell.cwd,
-        ports: [],
-        status: "starting",
-        ...(meta.port === undefined ? {} : { expectedPort: meta.port }),
-        ...(meta.open && meta.session
-          ? { opened: { at: shell.time.started, sessionID: meta.session } }
-          : {}),
-        sessions: meta.session ? [meta.session] : [],
-        startedAt: shell.time.started,
-      };
-      dir.set(entry.name, entry);
-      this.log(`preview rebuilt ${entry.name} (${shell.id}) in ${directory}`);
-      void this.detectInBackground(entry, this.backgroundMs);
-    }
-    this.notify(directory);
+    await this.refreshAll(directory);
   }
 
   /** opencode's `shell.exited` event. */
   shellExited(shellID: string, status: ShellStatus, exit?: number): void {
     for (const [directory, dir] of this.dirs) {
       for (const entry of dir.values()) {
-        if (entry.shellID !== shellID) continue;
+        if (entry.shellID !== shellID || entry.status !== "running") continue;
         this.markEnded(entry, status, exit);
-        this.notify(directory);
+        this.changed(directory);
         return;
       }
     }
@@ -261,186 +197,103 @@ export class PreviewRegistry {
 
   // ─── Internals ──────────────────────────────────────────────────────────
 
-  private async startLocked(
+  private async openLocked(
     directory: string,
-    input: StartInput,
+    input: OpenInput,
     sessionID?: string,
   ): Promise<ToolOutcome> {
+    let url: URL;
+    try {
+      url = new URL(input.url);
+    } catch {
+      return { text: `Not a URL: ${input.url}`, isError: true };
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:")
+      return { text: "The URL must be http or https.", isError: true };
+
     const dir = this.dir(directory);
     const existing = dir.get(input.name);
-    if (
-      existing &&
-      (existing.status === "running" || existing.status === "starting")
-    ) {
-      await this.refresh(existing);
-    }
-    const command = input.command?.trim() || undefined;
-    const cwd = input.cwd;
-    if (
-      existing &&
-      (existing.status === "running" || existing.status === "starting")
-    ) {
-      if (command !== undefined && command !== existing.command) {
-        return {
-          text: `"${input.name}" is already running \`${existing.command}\`; call preview_stop first to change it.`,
-          isError: true,
-        };
-      }
-      if (sessionID && !existing.sessions.includes(sessionID))
-        existing.sessions.push(sessionID);
-      if (input.open && sessionID)
-        existing.opened = { at: Date.now(), sessionID };
-      if (input.port !== undefined && input.port !== existing.expectedPort) {
-        existing.expectedPort = input.port;
-        if (existing.ports.length > 0) this.settle(existing, existing.ports);
-      }
-      this.notify(directory);
+    if (existing?.status === "running") await this.refresh(existing);
+    const same = existing?.shellID === input.shellID ? existing : undefined;
+    if (existing?.status === "running" && same === undefined) {
       return {
-        text: `"${input.name}" is already ${describeRunning(existing)}`,
+        text: `"${input.name}" is shell ${existing.shellID}, still running; call preview_stop first or use another name.`,
+        isError: true,
       };
     }
-    if (command === undefined) {
-      return { text: "command is required to start a server.", isError: true };
+
+    const shell = await this.shells.get(directory, input.shellID);
+    if (!shell)
+      return {
+        text: `No shell ${input.shellID} in this project. Pass the shell ID the shell tool returned for the background command.`,
+        isError: true,
+      };
+    if (shell.status !== "running")
+      return {
+        text: `Shell ${input.shellID} is not running (${shell.status}${shell.exit === undefined ? "" : `, code ${shell.exit}`}). Check its output.`,
+        isError: true,
+      };
+
+    // The one fact checked: a URL on this machine is served by this shell's
+    // processes. Others (a tunnel, a public host) are taken as given.
+    let localPort: number | undefined;
+    if (isThisMachine(url.hostname)) {
+      const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+      const listening =
+        shell.pid === undefined ? [] : await this.ports(shell.pid);
+      if (!listening.includes(port))
+        return {
+          text:
+            `Shell ${input.shellID} is not listening on ${port}` +
+            (listening.length > 0
+              ? ` (it listens on ${listening.join(", ")}).`
+              : " yet. Wait until its output shows the server is ready.") +
+            " Nothing was opened.",
+          isError: true,
+        };
+      localPort = port;
     }
-    const absoluteCwd =
-      cwd === undefined ? undefined : resolvePath(directory, cwd);
-    const open = input.open === true;
-    const shell = await this.shells.create(directory, {
-      command,
-      ...(absoluteCwd === undefined ? {} : { cwd: absoluteCwd }),
-      metadata: {
-        thinkite: {
-          preview: input.name,
-          open,
-          session: sessionID ?? null,
-          port: input.port ?? null,
-        },
-      },
-    });
-    const startedAt = shell.time?.started ?? Date.now();
+
+    const open = input.open !== false;
+    const sessions = same?.sessions ?? [];
+    if (sessionID && !sessions.includes(sessionID)) sessions.push(sessionID);
+    const opened =
+      open && sessionID ? { at: Date.now(), sessionID } : same?.opened;
     const entry: Entry = {
       directory,
       name: input.name,
       shellID: shell.id,
-      pid: shell.pid,
-      command,
-      cwd: absoluteCwd,
-      ports: [],
-      status: "starting",
-      ...(input.port === undefined ? {} : { expectedPort: input.port }),
-      ...(open && sessionID ? { opened: { at: Date.now(), sessionID } } : {}),
-      sessions: sessionID ? [sessionID] : [],
-      startedAt,
+      ...(shell.pid === undefined ? {} : { pid: shell.pid }),
+      command: shell.command,
+      url: url.href,
+      ...(localPort === undefined ? {} : { localPort }),
+      status: "running",
+      ...(opened === undefined ? {} : { opened }),
+      sessions,
+      startedAt: shell.time.started,
     };
     dir.set(entry.name, entry);
     this.log(
-      `preview start ${entry.name} (${shell.id}) in ${directory}: ${command}`,
+      `preview open ${entry.name} (${shell.id}) in ${directory}: ${entry.url}`,
     );
-    this.notify(directory);
-
-    const outcome = await this.detect(entry, this.waitMs);
-    if (outcome === "listening") {
-      return { text: `"${entry.name}" is ${describeRunning(entry)}` };
-    }
-    if (outcome === "ended") {
-      const tail = await this.tail(entry, 40);
-      return {
-        text:
-          `"${entry.name}" ${entry.status === "exited" ? `exited (code ${entry.exit ?? "?"})` : entry.status} before listening on a port.` +
-          (tail ? `\nLast output:\n${tail}` : ""),
-        isError: true,
-      };
-    }
-    void this.detectInBackground(entry, this.backgroundMs);
+    this.changed(directory);
     return {
-      text: `"${entry.name}" is running but no port is listening after ${Math.round(this.waitMs / 1000)} s. Check preview_logs.`,
-      isError: true,
+      text:
+        `Registered "${entry.name}" at ${entry.url}` +
+        (!open
+          ? " (not opened)."
+          : sessionID
+            ? ". Sent to the user's browser."
+            : " (no session to show it in)."),
     };
   }
 
-  /** Poll until the shell listens on a port, ends, or `budgetMs` passes. */
-  private async detect(
-    entry: Entry,
-    budgetMs: number,
-  ): Promise<"listening" | "ended" | "waiting"> {
-    const deadline = Date.now() + budgetMs;
-    let listeningSince: number | undefined;
-    for (;;) {
-      const info = await this.shells.get(entry.directory, entry.shellID);
-      if (info?.status !== "running") {
-        this.markEnded(entry, info?.status ?? "killed", info?.exit);
-        this.notify(entry.directory);
-        return "ended";
-      }
-      entry.pid ??= info.pid;
-      if (entry.pid !== undefined) {
-        const ports = await this.ports(entry.pid);
-        // A server may open a side port first: give the expected one a
-        // moment before settling on what is there.
-        listeningSince ??= ports.length > 0 ? Date.now() : undefined;
-        if (
-          ports.length > 0 &&
-          (entry.expectedPort === undefined ||
-            ports.includes(entry.expectedPort) ||
-            Date.now() - (listeningSince ?? 0) >= this.graceMs)
-        ) {
-          this.settle(entry, ports);
-          this.notify(entry.directory);
-          return "listening";
-        }
-      }
-      if (Date.now() >= deadline) return "waiting";
-      await this.sleep(this.pollMs);
-    }
-  }
-
-  private async detectInBackground(
-    entry: Entry,
-    budgetMs: number,
-  ): Promise<void> {
-    try {
-      const outcome = await this.detect(entry, budgetMs);
-      if (outcome === "waiting") {
-        entry.status = "running";
-        this.notify(entry.directory);
-      }
-    } catch (err) {
-      this.log(
-        `preview detect ${entry.name}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-
-  /** The page's URL: the listening port nearest the one the agent
-   *  expected (a busy port usually moves up by one: 5173 → 5174), the
-   *  lower on a tie; the lowest without an expectation. A miss is said in
-   *  the result. `ports` is ascending. */
-  private settle(entry: Entry, ports: number[]): void {
-    entry.ports = ports;
-    entry.status = "running";
-    const expected = entry.expectedPort;
-    entry.primaryPort =
-      expected === undefined
-        ? ports[0]
-        : ports.reduce((best, p) =>
-            Math.abs(p - expected) < Math.abs(best - expected) ? p : best,
-          );
-  }
-
-  /** Re-check one entry's shell and ports. */
+  /** Re-check one entry's shell. */
   private async refresh(entry: Entry): Promise<void> {
-    if (entry.status !== "running" && entry.status !== "starting") return;
+    if (entry.status !== "running") return;
     const info = await this.shells.get(entry.directory, entry.shellID);
-    if (info?.status !== "running") {
+    if (info?.status !== "running")
       this.markEnded(entry, info?.status ?? "killed", info?.exit);
-      return;
-    }
-    if (entry.pid === undefined) entry.pid = info.pid;
-    if (entry.pid === undefined) return;
-    const ports = await this.ports(entry.pid);
-    if (ports.length > 0 && ports.join() !== entry.ports.join())
-      this.settle(entry, ports);
-    else entry.ports = ports;
   }
 
   private async refreshAll(directory: string): Promise<Entry[]> {
@@ -450,34 +303,57 @@ export class PreviewRegistry {
       entries.map((e) => this.refresh(e).catch(() => undefined)),
     );
     if (JSON.stringify(entries.map(toPublic)) !== before)
-      this.notify(directory);
+      this.changed(directory);
     return entries;
   }
 
   private markEnded(entry: Entry, status: ShellStatus, exit?: number): void {
     entry.status = status === "running" ? "killed" : status;
-    entry.ports = [];
     if (exit !== undefined) entry.exit = exit;
   }
 
-  private async tail(entry: Entry, lines: number): Promise<string> {
-    const text = await this.shells
-      .tail(entry.directory, entry.shellID, LOG_BYTES)
-      .catch(() => "");
-    return text
-      .replace(ANSI, "")
-      .replace(/\r/g, "")
-      .trimEnd()
-      .split("\n")
-      .slice(-lines)
-      .join("\n");
-  }
-
-  private notify(directory: string): void {
+  /** Persist, then push to the directory's clients. */
+  private changed(directory: string): void {
+    this.save();
     const listeners = this.listeners.get(directory);
     if (!listeners || listeners.size === 0) return;
     const entries = [...this.dir(directory).values()].map(toPublic);
     for (const listener of listeners) listener(entries);
+  }
+
+  /** Running entries come back and `rebuild` re-checks them; ones that had
+   *  already ended are left behind. */
+  private load(): void {
+    if (this.stateFile === undefined) return;
+    let state: StateFile;
+    try {
+      state = JSON.parse(readFileSync(this.stateFile, "utf8")) as StateFile;
+    } catch {
+      return;
+    }
+    if (state.v !== 1 || !Array.isArray(state.entries)) return;
+    for (const entry of state.entries)
+      if (entry.status === "running")
+        this.dir(entry.directory).set(entry.name, entry);
+  }
+
+  private save(): void {
+    if (this.stateFile === undefined) return;
+    const state: StateFile = {
+      v: 1,
+      entries: [...this.dirs.values()].flatMap((d) => [...d.values()]),
+    };
+    try {
+      const tmp = `${this.stateFile}.tmp`;
+      writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      renameSync(tmp, this.stateFile);
+    } catch (err) {
+      this.log(
+        `preview save: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   private dir(directory: string): Map<string, Entry> {
@@ -501,26 +377,27 @@ export class PreviewRegistry {
   }
 }
 
-function previewMeta(
-  shell: ShellInfo,
-): { preview: string; open: boolean; session?: string; port?: number } | null {
-  const meta = shell.metadata?.thinkite as Record<string, unknown> | undefined;
-  if (!meta || typeof meta.preview !== "string") return null;
-  return {
-    preview: meta.preview,
-    open: meta.open === true,
-    ...(typeof meta.session === "string" ? { session: meta.session } : {}),
-    ...(typeof meta.port === "number" ? { port: meta.port } : {}),
-  };
+/** Loopback, `*.localhost`, or one of this machine's interface addresses. */
+export function isThisMachine(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "0.0.0.0" ||
+    host === "::" ||
+    host === "::1" ||
+    host.startsWith("127.")
+  )
+    return true;
+  return Object.values(networkInterfaces()).some((list) =>
+    list?.some((i) => i.address.toLowerCase() === host),
+  );
 }
 
 function toPublic(entry: Entry): PreviewEntry {
   return {
     name: entry.name,
-    ports: entry.ports,
-    ...(entry.primaryPort === undefined
-      ? {}
-      : { primaryPort: entry.primaryPort }),
+    url: entry.url,
     status: entry.status,
     ...(entry.opened === undefined ? {} : { opened: entry.opened }),
     command: entry.command,
@@ -530,46 +407,19 @@ function toPublic(entry: Entry): PreviewEntry {
   };
 }
 
-function url(entry: Entry): string {
-  return `http://localhost:${entry.primaryPort ?? entry.ports[0]}`;
-}
-
-/** "running at http://localhost:5180 (also listening on 24678). Sent to…" */
-function describeRunning(entry: Entry): string {
-  if (entry.status === "starting" || entry.ports.length === 0) {
-    return "running, but no port is listening yet. Check preview_logs.";
-  }
-  const others = entry.ports.filter((p) => p !== entry.primaryPort);
-  const missed =
-    entry.expectedPort !== undefined &&
-    entry.expectedPort !== entry.primaryPort;
-  return (
-    `running at ${url(entry)}` +
-    (others.length > 0 ? ` (also listening on ${others.join(", ")})` : "") +
-    (missed ? `, not on the expected port ${entry.expectedPort}` : "") +
-    (entry.opened
-      ? ". Sent to the user's preview pane."
-      : ". Registered (not opened).")
-  );
-}
-
 /** One `preview_list` line after the name. */
 function describe(entry: Entry): string {
+  const tail = ` — shell ${entry.shellID}, \`${entry.command}\``;
   switch (entry.status) {
-    case "starting":
-      return `starting, no port yet — \`${entry.command}\``;
     case "running":
-      if (entry.ports.length === 0)
-        return `running (no port listening) — \`${entry.command}\``;
       return (
-        `${url(entry)} — running` +
+        `${entry.url} — running` +
         (entry.opened ? ", shown to the user" : "") +
-        (entry.ports.length > 1 ? `, ports ${entry.ports.join(", ")}` : "") +
-        ` — \`${entry.command}\``
+        tail
       );
     case "exited":
-      return `exited (code ${entry.exit ?? "?"}) — \`${entry.command}\``;
+      return `exited (code ${entry.exit ?? "?"})${tail}`;
     default:
-      return `${entry.status} — \`${entry.command}\``;
+      return `${entry.status}${tail}`;
   }
 }

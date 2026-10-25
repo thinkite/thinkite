@@ -6,8 +6,8 @@
 //   `session.created` events) and kept until the daemon stops. opencode
 //   scopes client tools to the exact directory: a connection for
 //   `proj/web` is invisible to a session at `proj`.
-// - Each time a connection comes up, the registry is rebuilt from that
-//   directory's running shells.
+// - Each time a connection comes up, the registry re-checks that
+//   directory's entries against their shells.
 // - opencode's event bus feeds `shell.exited` into the registry, so a
 //   server that dies shows up as stopped without anyone polling.
 
@@ -22,6 +22,8 @@ import { previewTools } from "./tools.ts";
 export interface PreviewHostOptions {
   resolve: ResolveOpencode;
   version: string;
+  /** Where the registry persists (`$THINKITE_HOME/previews.json`). */
+  stateFile?: string;
   log?: (message: string) => void;
 }
 
@@ -35,6 +37,9 @@ export class PreviewHost {
     this.log = options.log ?? (() => undefined);
     this.registry = new PreviewRegistry({
       shells: createShellApi(options.resolve),
+      ...(options.stateFile === undefined
+        ? {}
+        : { stateFile: options.stateFile }),
       log: this.log,
     });
   }

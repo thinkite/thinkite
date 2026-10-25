@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { PROTOCOL_VERSION } from "@thinkite/protocol";
 import { deleteDaemonLock, writeDaemonLock } from "./daemon-lock.ts";
 import { GitWatcherRegistry } from "./git-watch.ts";
@@ -82,8 +83,9 @@ export interface Daemon {
    */
   watchGit(cwd: string, onChange: () => void): () => void;
   /**
-   * Servers the agent started with the preview tools (`thinkite_preview_*`,
-   * served to opencode over client MCP), per project directory. The phone
+   * Servers the agent registered with the preview tools
+   * (`thinkite_preview_*`, served to opencode over client MCP), per project
+   * directory. The phone
    * reaches the same registry through the RPC.
    */
   previews: PreviewRegistry;
@@ -169,10 +171,11 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
 
   // The agent's preview tools: one client-MCP connection per session
   // directory on the user's opencode service, plus the registry of the
-  // servers they started (docs/preview-tool-v1.md).
+  // servers it registered (docs/preview-tool-v1.md).
   const previewHost = new PreviewHost({
     resolve: resolveOpencode,
     version: PROTOCOL_VERSION,
+    stateFile: join(home, "previews.json"),
     log: (message) => console.log(`[thinkite] ${message}`),
   });
   previewHost.start();

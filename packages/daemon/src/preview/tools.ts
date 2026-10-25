@@ -1,4 +1,4 @@
-// The four preview tools as opencode sees them: `thinkite_<name>`, called in
+// The three preview tools as opencode sees them: `thinkite_<name>`, called in
 // Code Mode as `tools.thinkite.<name>(…)`. Code Mode's catalog shows only
 // the first line of each description, cut at 120 characters, and MCP
 // `instructions` never reach the model for attached clients — so each
@@ -19,20 +19,17 @@ export interface PreviewTool {
 const str = (v: unknown) =>
   typeof v === "string" && v.trim() !== "" ? v : undefined;
 
-const isPort = (v: unknown): v is number =>
-  typeof v === "number" && Number.isInteger(v) && v > 0 && v < 65536;
-
 export function previewTools(registry: PreviewRegistry): PreviewTool[] {
   return [
     {
-      name: "preview_start",
+      name: "preview_open",
       description:
-        "Run a dev server or API in the background so the user can open it (use this, not shell background/nohup).\n" +
-        "Use for any long-running process the user or a page reaches over the network: web dev servers, API servers, " +
-        "websocket servers. Servers started with the shell tool's background mode or nohup are invisible to the user's " +
-        "phone. Set open: true only for a page the user should look at in a browser; leave it false for APIs and other " +
-        "backends. Pass port when you know it from the config, script or flags. Starting a name that is already running " +
-        "returns it instead of restarting it. Returns the URL once the port is listening.",
+        "Show a server you started with the shell tool's background mode in the user's browser: name, shell ID, URL.\n" +
+        "Start the server first (shell tool, background: true) and wait until its output shows the URL it serves; " +
+        "pass the shell ID from that result and that URL. open defaults to true; set it false for an API or other " +
+        "backend the user does not look at, so it still shows in their Servers list. A URL on this machine must be " +
+        "served by that shell's processes; a tunnel or public URL is taken as given. Calling again with the same name " +
+        "and shell shows it again; a running name with another shell is refused until you preview_stop it.",
       inputSchema: {
         type: "object",
         properties: {
@@ -40,41 +37,36 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
             type: "string",
             description: "Short label, unique in this project, e.g. web or api",
           },
-          command: {
+          shellID: {
             type: "string",
             description:
-              "Shell command that starts the server, e.g. npm run dev or PORT=8080 bun server.ts",
+              "The shell ID the shell tool returned for the background command",
           },
-          cwd: {
+          url: {
             type: "string",
             description:
-              "Working directory, absolute or relative to the project",
+              "The URL the server printed, e.g. http://localhost:5173/",
           },
           open: {
             type: "boolean",
-            description: "Show it to the user in the preview pane (pages only)",
-          },
-          port: {
-            type: "integer",
             description:
-              "The port it will listen on, if you know it (from its config, script or flags)",
+              "Show it to the user (default true); false for APIs and backends",
           },
         },
-        required: ["name", "command"],
+        required: ["name", "shellID", "url"],
       },
       call: (args, ctx) => {
         const name = str(args.name);
-        if (!name)
-          return Promise.resolve({ text: "name is required", isError: true });
-        return registry.start(
+        const shellID = str(args.shellID);
+        const url = str(args.url);
+        if (!name || !shellID || !url)
+          return Promise.resolve({
+            text: "name, shellID and url are required",
+            isError: true,
+          });
+        return registry.open(
           ctx.directory,
-          {
-            name,
-            command: str(args.command),
-            cwd: str(args.cwd),
-            open: args.open === true,
-            ...(isPort(args.port) ? { port: args.port } : {}),
-          },
+          { name, shellID, url, open: args.open !== false },
           ctx.sessionID,
         );
       },
@@ -82,7 +74,7 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
     {
       name: "preview_list",
       description:
-        "List servers started with preview_start: URL, status, and whether it was shown to the user.\n" +
+        "List servers registered with preview_open: URL, status, shell ID, and whether it was shown to the user.\n" +
         "Shows this session's servers; pass all: true for every server in the project.",
       inputSchema: {
         type: "object",
@@ -97,36 +89,9 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
         registry.list(ctx.directory, ctx.sessionID, args.all === true),
     },
     {
-      name: "preview_logs",
-      description:
-        "Show the recent output of a server started with preview_start.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          lines: {
-            type: "number",
-            description:
-              "How many lines from the end (default 40, at most 200)",
-          },
-        },
-        required: ["name"],
-      },
-      call: (args, ctx) => {
-        const name = str(args.name);
-        if (!name)
-          return Promise.resolve({ text: "name is required", isError: true });
-        return registry.logs(
-          ctx.directory,
-          name,
-          typeof args.lines === "number" ? args.lines : undefined,
-        );
-      },
-    },
-    {
       name: "preview_stop",
       description:
-        "Stop a server started with preview_start and free its port.",
+        "Stop a server registered with preview_open: kills its shell and frees its port.",
       inputSchema: {
         type: "object",
         properties: { name: { type: "string" } },

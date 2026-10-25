@@ -1,11 +1,10 @@
 import type { PreviewEntry } from "@thinkite/protocol";
 import { describe, expect, it } from "vitest";
-import { dueToShow, stoppedServerAt } from "./previews";
+import { dueToShow, serverLabel, stoppedServerAt } from "./previews";
 
 const entry = (over: Partial<PreviewEntry>): PreviewEntry => ({
   name: "web",
-  ports: [5180],
-  primaryPort: 5180,
+  url: "http://localhost:5180/",
   status: "running",
   command: "bun run dev",
   sessions: ["ses_a"],
@@ -30,28 +29,14 @@ describe("dueToShow", () => {
     ).toHaveLength(1);
   });
 
-  it("leaves other sessions' requests, and servers not serving yet", () => {
+  it("leaves other sessions' requests, and servers that ended", () => {
     expect(dueToShow([entry({ opened })], "ses_b", () => undefined)).toEqual(
       [],
     );
     expect(dueToShow([entry({})], "ses_a", () => undefined)).toEqual([]);
     expect(
       dueToShow(
-        [
-          entry({
-            opened,
-            status: "starting",
-            ports: [],
-            primaryPort: undefined,
-          }),
-        ],
-        "ses_a",
-        () => undefined,
-      ),
-    ).toEqual([]);
-    expect(
-      dueToShow(
-        [entry({ opened, status: "killed", ports: [] })],
+        [entry({ opened, status: "killed" })],
         "ses_a",
         () => undefined,
       ),
@@ -61,7 +46,7 @@ describe("dueToShow", () => {
 
 describe("stoppedServerAt", () => {
   it("names the ended server of a tab's port", () => {
-    const killed = entry({ status: "killed", ports: [] });
+    const killed = entry({ status: "killed" });
     expect(stoppedServerAt([killed], "http://localhost:5180/about")?.name).toBe(
       "web",
     );
@@ -71,7 +56,7 @@ describe("stoppedServerAt", () => {
   });
 
   it("says nothing while something live serves the port, or for other pages", () => {
-    const killed = entry({ status: "killed", ports: [] });
+    const killed = entry({ status: "killed" });
     const again = entry({ name: "web2" });
     expect(
       stoppedServerAt([killed, again], "http://localhost:5180/"),
@@ -81,5 +66,27 @@ describe("stoppedServerAt", () => {
       stoppedServerAt([killed], "https://example.com:5180/"),
     ).toBeUndefined();
     expect(stoppedServerAt([killed], "about:blank")).toBeUndefined();
+  });
+
+  it("matches a tunnel by its origin", () => {
+    const tunnel = entry({
+      url: "https://abc.trycloudflare.com/",
+      status: "exited",
+    });
+    expect(
+      stoppedServerAt([tunnel], "https://abc.trycloudflare.com/x")?.name,
+    ).toBe("web");
+    expect(
+      stoppedServerAt([tunnel], "https://other.trycloudflare.com/"),
+    ).toBeUndefined();
+  });
+});
+
+describe("serverLabel", () => {
+  it("is the port on this Mac and the host elsewhere", () => {
+    expect(serverLabel(entry({}))).toBe(":5180");
+    expect(serverLabel(entry({ url: "https://abc.trycloudflare.com/" }))).toBe(
+      "abc.trycloudflare.com",
+    );
   });
 });

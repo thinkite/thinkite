@@ -511,10 +511,7 @@ describe("createCommandHandler — previews", () => {
       time: { started: 1 },
     };
     const shells: ShellApi = {
-      create: async () => shell,
       get: async () => shell,
-      list: async () => [shell],
-      tail: async () => "",
       remove: async () => {
         shell.status = "killed";
       },
@@ -555,9 +552,9 @@ describe("createCommandHandler — previews", () => {
       { type: "subscribePreviews", requestId: "r1", directory: "/other" },
       b.ctx,
     );
-    await previews.start(
+    await previews.open(
       "/proj",
-      { name: "web", command: "bun run dev", open: true },
+      { name: "web", shellID: "sh_1", url: "http://localhost:5180/" },
       "ses_a",
     );
 
@@ -572,7 +569,7 @@ describe("createCommandHandler — previews", () => {
         {
           name: "web",
           status: "running",
-          primaryPort: 5180,
+          url: "http://localhost:5180/",
           opened: { sessionID: "ses_a" },
         },
       ],
@@ -581,9 +578,9 @@ describe("createCommandHandler — previews", () => {
 
     a.fireDisconnect();
     const before = a.sent.length;
-    await previews.start(
+    await previews.open(
       "/proj",
-      { name: "web", command: "bun run dev", open: true },
+      { name: "web", shellID: "sh_1", url: "http://localhost:5180/" },
       "ses_a",
     );
     expect(a.sent).toHaveLength(before);
@@ -593,7 +590,11 @@ describe("createCommandHandler — previews", () => {
     const previews = previewRegistry();
     const handler = createCommandHandler(makeDeps({ previews }));
     const { ctx, sent } = makeCtx();
-    await previews.start("/proj", { name: "web", command: "bun run dev" });
+    await previews.open("/proj", {
+      name: "web",
+      shellID: "sh_1",
+      url: "http://localhost:5180/",
+    });
     await handler(
       { type: "getPreviews", requestId: "r1", directory: "/proj" },
       ctx,
