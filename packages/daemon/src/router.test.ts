@@ -520,7 +520,11 @@ describe("createCommandHandler — previews", () => {
     };
     return new PreviewRegistry({
       shells,
-      ports: async () => (shell.status === "running" ? [5180] : []),
+      ports: async (roots) =>
+        new Map(
+          roots.map((r) => [r, shell.status === "running" ? [5180] : []]),
+        ),
+      repeat: () => () => undefined,
       sleep: async () => undefined,
       schedule: () => undefined,
       startWaitMs: 0,

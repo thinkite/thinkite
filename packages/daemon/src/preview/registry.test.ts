@@ -75,13 +75,39 @@ function fakeShells(
   return fake;
 }
 
+/** The fake shells' ports as a scan; `scans` counts the scans. */
+function scanOf(shells: ReturnType<typeof fakeShells>, scans = { n: 0 }) {
+  return async (roots: number[]) => {
+    scans.n += 1;
+    return new Map(roots.map((r) => [r, shells.ports.get(r) ?? []]));
+  };
+}
+
+/** Timers run by hand: `repeat` adds to `ticking`, its stop removes. */
+function ticker() {
+  const ticking = new Set<() => void>();
+  return {
+    ticking,
+    repeat: (fn: () => void) => {
+      ticking.add(fn);
+      return () => ticking.delete(fn);
+    },
+  };
+}
+
 function registry(
   shells: ReturnType<typeof fakeShells>,
-  options: { stateFile?: string; scheduled?: (() => void)[] } = {},
+  options: {
+    stateFile?: string;
+    scheduled?: (() => void)[];
+    repeat?: (fn: () => void, ms: number) => () => void;
+    ports?: (roots: number[]) => Promise<Map<number, number[]> | null>;
+  } = {},
 ) {
   return new PreviewRegistry({
     shells: shells.api,
-    ports: async (pid) => shells.ports.get(pid) ?? [],
+    ports: options.ports ?? scanOf(shells),
+    repeat: options.repeat ?? ticker().repeat,
     sleep: () => new Promise((r) => setTimeout(r, 1)),
     schedule: (fn) => options.scheduled?.push(fn),
     startWaitMs: 500,
@@ -155,7 +181,7 @@ describe("PreviewRegistry.start / logs", () => {
           return { ...info, status: "running" };
         },
       },
-      ports: async () => [],
+      ports: async () => new Map(),
       sleep: async () => undefined,
       schedule: () => undefined,
       startWaitMs: 500,
@@ -251,6 +277,56 @@ describe("PreviewRegistry ports and URL", () => {
     expect((await r.list(DIR)).text).toBe(
       "web: was stopped by the user just now — `vite`",
     );
+  });
+});
+
+describe("PreviewRegistry port checks", () => {
+  it("checks every 5 s while a client watches and a server runs", async () => {
+    const shells = fakeShells(() => []);
+    const t = ticker();
+    const r = registry(shells, { repeat: t.repeat });
+    const off = r.subscribe(DIR, () => undefined);
+    expect(t.ticking.size).toBe(0); // nothing runs
+    await r.start(DIR, { name: "web", command: "next dev" });
+    expect(t.ticking.size).toBe(1);
+    shells.ports.set(1001, [3000]);
+    for (const fn of t.ticking) fn();
+    await tick();
+    expect((await r.snapshot(DIR)).entries[0]?.url).toBe(
+      "http://localhost:3000/",
+    );
+    off();
+    expect(t.ticking.size).toBe(0);
+    const offPorts = r.subscribePorts(() => undefined);
+    expect(t.ticking.size).toBe(1);
+    await r.stop(DIR, "web", { by: "user" });
+    expect(t.ticking.size).toBe(0); // nothing runs any more
+    offPorts();
+  });
+
+  it("runs one scan at a time and queues one more behind it", async () => {
+    const shells = fakeShells();
+    const scans = { n: 0 };
+    const r = registry(shells, { ports: scanOf(shells, scans) });
+    await r.start(DIR, { name: "web", command: "vite" });
+    scans.n = 0;
+    await Promise.all([r.forwardPorts(), r.forwardPorts(), r.forwardPorts()]);
+    expect(scans.n).toBe(2);
+  });
+
+  it("keeps what it knew when a scan fails", async () => {
+    const shells = fakeShells();
+    let fail = false;
+    const scan = scanOf(shells);
+    const r = registry(shells, {
+      ports: (roots) => (fail ? Promise.resolve(null) : scan(roots)),
+    });
+    await r.start(DIR, { name: "web", command: "vite" });
+    fail = true;
+    expect(await r.forwardPorts()).toEqual([
+      { port: 5173, directory: DIR, name: "web" },
+    ]);
+    expect((await r.snapshot(DIR)).entries[0]?.ports).toEqual([5173]);
   });
 });
 

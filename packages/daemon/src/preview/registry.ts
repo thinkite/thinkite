@@ -13,7 +13,7 @@
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import type { ForwardPort, PreviewEntry } from "@thinkite/protocol";
-import { listeningPorts } from "./ports.ts";
+import { type PortScan, scanPorts } from "./ports.ts";
 import type { ShellApi, ShellStatus } from "./shells.ts";
 
 export interface ToolOutcome {
@@ -36,10 +36,13 @@ export interface PreviewSnapshot {
 
 export interface RegistryOptions {
   shells: ShellApi;
-  ports?: (pid: number) => Promise<number[]>;
+  ports?: PortScan;
   sleep?: (ms: number) => Promise<void>;
-  /** Runs `fn` after `ms`; the forward-port checks after a start use it. */
+  /** Runs `fn` after `ms`; the port checks after a start use it. */
   schedule?: (fn: () => void, ms: number) => void;
+  /** Runs `fn` every `ms` until the returned function is called; the port
+   *  checks while someone watches use it. */
+  repeat?: (fn: () => void, ms: number) => () => void;
   /** How long `start` collects output before answering. */
   startWaitMs?: number;
   /** Where entries persist across daemon restarts. Absent: memory only. */
@@ -75,12 +78,17 @@ const POLL_MS = 250;
 /** After a start, when to look again for the server's ports: servers
  *  open them a moment after their shell starts, some only on first use. */
 const PORT_CHECKS_MS = [1_000, 3_000, 10_000, 30_000];
+/** How often to look up ports while a client watches (a project's servers
+ *  or the forward ports) and a server runs. t3code's scanner runs every
+ *  3 s while subscribed. */
+const WATCHED_CHECK_MS = 5_000;
 
 export class PreviewRegistry {
   private readonly shells: ShellApi;
-  private readonly ports: (pid: number) => Promise<number[]>;
+  private readonly ports: PortScan;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly schedule: (fn: () => void, ms: number) => void;
+  private readonly repeat: (fn: () => void, ms: number) => () => void;
   private readonly startWaitMs: number;
   private readonly stateFile?: string;
   private readonly log: (message: string) => void;
@@ -95,14 +103,26 @@ export class PreviewRegistry {
   >();
   private readonly portListeners = new Set<(ports: ForwardPort[]) => void>();
   private lastPorts = "[]";
+  /** The check in progress, and the one queued behind it. */
+  private checking: Promise<void> | undefined;
+  private checkAgain: Promise<void> | undefined;
+  /** Stops the watched-time checks; set while they run. */
+  private stopWatching: (() => void) | undefined;
 
   constructor(options: RegistryOptions) {
     this.shells = options.shells;
-    this.ports = options.ports ?? listeningPorts;
+    this.ports = options.ports ?? scanPorts;
     this.sleep =
       options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.schedule =
       options.schedule ?? ((fn, ms) => setTimeout(fn, ms).unref?.());
+    this.repeat =
+      options.repeat ??
+      ((fn, ms) => {
+        const timer = setInterval(fn, ms);
+        timer.unref?.();
+        return () => clearInterval(timer);
+      });
     this.startWaitMs = options.startWaitMs ?? 2_000;
     this.stateFile = options.stateFile;
     this.log = options.log ?? (() => undefined);
@@ -174,12 +194,12 @@ export class PreviewRegistry {
         await this.shells
           .remove(directory, entry.shellID)
           .catch(() => undefined);
-        if (entry.pid !== undefined) {
-          for (
-            let i = 0;
-            i < 12 && (await this.ports(entry.pid)).length > 0;
-            i++
-          )
+        const pid = entry.pid;
+        if (pid !== undefined) {
+          const listens = async () =>
+            ((await this.ports([pid]).catch(() => null))?.get(pid)?.length ??
+              0) > 0;
+          for (let i = 0; i < 12 && (await listens()); i++)
             await this.sleep(POLL_MS);
         }
       } finally {
@@ -218,8 +238,10 @@ export class PreviewRegistry {
       this.listeners.set(directory, set);
     }
     set.add(listener);
+    this.watch();
     return () => {
       set.delete(listener);
+      this.watch();
     };
   }
 
@@ -232,8 +254,10 @@ export class PreviewRegistry {
 
   subscribePorts(listener: (ports: ForwardPort[]) => void): () => void {
     this.portListeners.add(listener);
+    this.watch();
     return () => {
       this.portListeners.delete(listener);
+      this.watch();
     };
   }
 
@@ -388,21 +412,61 @@ export class PreviewRegistry {
     entry.ended = cause;
   }
 
-  /** Look up the running servers' ports: each entry's (and so its URL),
-   *  and the ones to forward. Pushes what changed. */
-  private async checkPorts(): Promise<void> {
-    const running = [...this.dirs.values()].flatMap((d) =>
+  /** Look up ports every few seconds while a client watches and a server
+   *  runs; stop when either ends. */
+  private watch(): void {
+    const watched =
+      this.portListeners.size > 0 ||
+      [...this.listeners.values()].some((set) => set.size > 0);
+    const want = watched && this.running().length > 0;
+    if (want && this.stopWatching === undefined) {
+      this.stopWatching = this.repeat(
+        () => void this.checkPorts(),
+        WATCHED_CHECK_MS,
+      );
+      void this.checkPorts();
+    } else if (!want && this.stopWatching !== undefined) {
+      this.stopWatching();
+      this.stopWatching = undefined;
+    }
+  }
+
+  private running(): Entry[] {
+    return [...this.dirs.values()].flatMap((d) =>
       [...d.values()].filter((e) => e.status === "running"),
     );
-    const found = await Promise.all(
-      running.map(async (entry) => ({
+  }
+
+  /** Look up the running servers' ports: each entry's (and so its URL),
+   *  and the ones to forward. Pushes what changed. A call while one runs
+   *  waits for the next, which starts once that one is done: one scan at
+   *  a time, and none answers with ports from before the call. */
+  private checkPorts(): Promise<void> {
+    if (this.checking === undefined) {
+      this.checking = this.scan().finally(() => {
+        this.checking = undefined;
+      });
+      return this.checking;
+    }
+    this.checkAgain ??= this.checking.then(() => {
+      this.checkAgain = undefined;
+      return this.checkPorts();
+    });
+    return this.checkAgain;
+  }
+
+  private async scan(): Promise<void> {
+    const running = this.running();
+    const pids = running.flatMap((e) => (e.pid === undefined ? [] : [e.pid]));
+    const scanned = await this.ports(pids).catch(() => null);
+    // A failed scan (a timeout) is no news: keep what was known.
+    if (scanned === null) return;
+    const found = running
+      .filter((entry) => entry.status === "running")
+      .map((entry) => ({
         entry,
-        ports:
-          entry.pid === undefined
-            ? []
-            : await this.ports(entry.pid).catch(() => []),
-      })),
-    );
+        ports: entry.pid === undefined ? [] : (scanned.get(entry.pid) ?? []),
+      }));
     const moved = new Set<string>();
     for (const { entry, ports } of found) {
       // Kept once seen, not cleared: after the server ends, a tab still
@@ -449,6 +513,7 @@ export class PreviewRegistry {
   /** Persist, then push to the directory's clients. */
   private changed(directory: string): void {
     this.save();
+    this.watch();
     const listeners = this.listeners.get(directory);
     if (!listeners || listeners.size === 0) return;
     const snapshot = this.current(directory);

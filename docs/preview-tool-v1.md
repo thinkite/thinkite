@@ -335,18 +335,31 @@ better writes the right link in its reply anyway.
 
 ## Ports (`ports.ts`)
 
-- A server's pid, its descendants from `ps -axo pid=,ppid=`, then
-  `lsof -a -p <pids> -nP -iTCP -sTCP:LISTEN -Fn`. Each costs about 20 ms
-  (measured 10-24).
+- One scan covers every running server: `ps -axo pid=,ppid=` for the
+  process tree and one machine-wide `lsof -nP -iTCP -sTCP:LISTEN -F pn`,
+  run together; each server gets the ports held by its shell's pid and its
+  descendants. About 70 ms in all, however many servers run (measured
+  10-25: `ps` ~20 ms, the machine-wide `lsof` ~50 ms). t3code's port
+  scanner runs the same `lsof`.
 - Scoped to the server's tree, so a port held by another project (Vite on
   5173 elsewhere, this one moved to 5174) does not pass for this server.
+- Each command has a 5 s timeout (`lsof` can hang on a stuck network
+  volume). A scan that fails changes nothing: entries and the forward-port
+  list keep what was known.
 - No HTTP probe: an HTTP request can make a dev server compile (Next.js
   takes seconds on the first one) or upset a non-HTTP listener.
-- One lookup feeds both: each running entry's `ports` (only replaced by a
+- One scan feeds both: each running entry's `ports` (only replaced by a
   non-empty, different list) and the forward-port list (every running
-  server of every project). Run 2 s into a start and at 1, 3, 10 and 30 s
-  after it, after a stop or exit, in `server_logs` and `server_list`, and
-  on request.
+  server of every project).
+- One scan at a time: a check asked for while one runs waits for the next
+  one, which starts when that one ends (several callers share it), so no
+  caller gets ports from before its call.
+- When: 2 s into a start and at 1, 3, 10 and 30 s after it; after a stop
+  or exit; in `server_logs`, `server_list` and `getForwardPorts`; and
+  every 5 s while a client watches (any `subscribePreviews` or desktop
+  stream, or `subscribeForwardPorts`) and a server runs. With no one
+  watching or nothing running, nothing polls. t3code polls every 3 s
+  while subscribed.
 
 ## Clients
 
@@ -460,7 +473,10 @@ decision of its own. 14.0.1 is `latest`; 16.0.0 is on the `next` tag.
   start (output, idempotency across sessions, a different command, a
   server that ends at once, a restart that says how the last one ended),
   logs, ports and URL (the lowest port, a port that opens after the start,
-  the ports of an ended server), the project-wide list with "(yours)", stop reasons
+  the ports of an ended server), port checks (every 5 s only while watched
+  and running, one scan at a time, a failed scan changes nothing), the
+  tree-to-ports mapping from `ps`/`lsof` output, the project-wide list
+  with "(yours)", stop reasons
   (user, agent, the exit event arriving first, process exit, an outside
   kill), the forward-port list across projects, persistence across a
   restart with an exit in between, the router frames, and the 120
