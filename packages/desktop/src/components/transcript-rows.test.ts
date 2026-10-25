@@ -329,13 +329,13 @@ describe("executeSummary", () => {
   it("names the tools the script called, each once, in call order", () => {
     expect(
       executeSummary(
-        run("const a = await tools.thinkite.preview_stop({});", [
-          { tool: "thinkite.preview_stop", status: "completed" },
+        run("const a = await tools.thinkite.server_stop({});", [
+          { tool: "thinkite.server_stop", status: "completed" },
           { tool: "thinkite.preview_open", status: "completed" },
-          { tool: "thinkite.preview_stop", status: "completed" },
+          { tool: "thinkite.server_stop", status: "completed" },
         ]),
       ),
-    ).toBe("thinkite.preview_stop, thinkite.preview_open");
+    ).toBe("thinkite.server_stop, thinkite.preview_open");
   });
 
   it("falls back to the script's first line when it called no tool", () => {

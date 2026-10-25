@@ -2,7 +2,7 @@ import type { PreviewEntry } from "@thinkite/protocol";
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { showBrowserPage } from "./browser";
 
-// The servers the agent registered in a folder, from the daemon's preview
+// The servers the agent started in a folder, from the daemon's preview
 // registry (/api/previews/events, docs/preview-tool-v1.md): one stream per
 // folder however many views read it. The pages they serve open as the
 // user's own tabs; after that the tabs are the user's, and nothing here
@@ -65,14 +65,14 @@ export const isLive = (e: PreviewEntry) => e.status === "running";
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-/** The Servers card's label for a server: `:5173` for a page on this Mac,
- *  the host otherwise (a tunnel). */
-export function serverLabel(e: PreviewEntry): string {
+/** The Servers card's label for a page: `:5173` on this Mac, the host
+ *  otherwise (a tunnel). */
+export function serverLabel(url: string): string {
   try {
-    const u = new URL(e.url);
+    const u = new URL(url);
     return LOOPBACK.has(u.hostname) ? `:${port(u)}` : u.host;
   } catch {
-    return e.url;
+    return url;
   }
 }
 
@@ -80,7 +80,8 @@ const port = (u: URL) => u.port || (u.protocol === "https:" ? "443" : "80");
 
 /** One server for both URLs: the same origin, with localhost and
  *  127.0.0.1 counted as one host. */
-function sameServer(a: string, b: string): boolean {
+function sameServer(a: string | undefined, b: string): boolean {
+  if (a === undefined) return false;
   try {
     const x = new URL(a);
     const y = new URL(b);
@@ -132,9 +133,10 @@ export function dueToShow(
   entries: readonly PreviewEntry[],
   sessionID: string,
   handledAt: (name: string) => number | undefined,
-): PreviewEntry[] {
+): (PreviewEntry & { url: string })[] {
   return entries.filter(
-    (e) =>
+    (e): e is PreviewEntry & { url: string } =>
+      e.url !== undefined &&
       e.opened !== undefined &&
       e.opened.sessionID === sessionID &&
       e.opened.at > (handledAt(e.name) ?? 0) &&

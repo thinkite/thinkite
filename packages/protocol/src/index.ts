@@ -388,12 +388,11 @@ export const getFilesystemRootsResponse = z.object({
   recentCwds: z.array(recentCwd),
 });
 
-// ─── Previews: servers the agent registered (thinkite_preview_* tools) ────
+// ─── Previews: servers the agent started (thinkite_server_* tools) ────────
 //
-// The agent starts a dev server or API with its shell tool's background
-// mode and registers it with `preview_open` (name, shell ID, URL;
-// docs/preview-tool-v1.md); the daemon keeps a registry per project
-// directory. Same shape as git status: `getPreviews` is the snapshot,
+// The agent starts dev servers and APIs with the daemon's `server_start`
+// and shows a page with `preview_open` (docs/preview-tool-v1.md); the
+// daemon keeps a registry per project directory. Same shape as git status: `getPreviews` is the snapshot,
 // `subscribePreviews` a pure change stream of full `previews` lists for
 // that directory. An agent's request to show a server to the user is the
 // entry's `opened` stamp, not an event: a device that was not showing the
@@ -403,10 +402,11 @@ export const getFilesystemRootsResponse = z.object({
 export const previewEntry = z.object({
   /** The agent's label, unique per directory ("web", "api"). */
   name: z.string(),
-  /** The page, as the agent gave it: usually `http://localhost:<port>/`,
-   *  or a tunnel or public URL. One on this machine was checked to be
-   *  served by the server's shell. */
-  url: z.string(),
+  /** The page, once `preview_open` showed it: usually
+   *  `http://localhost:<port>/`, or a tunnel or public URL. One on this
+   *  machine was checked to be served by the server's shell. Absent for
+   *  servers never shown (APIs, backends). */
+  url: z.string().optional(),
   status: z.enum(["running", "exited", "killed", "timeout"]),
   /** The agent's latest request to show it to the user: when, and in which
    *  session. A new `at` means a new request (a reopen of a running server
@@ -414,7 +414,7 @@ export const previewEntry = z.object({
   opened: z.object({ at: z.number(), sessionID: z.string() }).optional(),
   /** The shell's command. */
   command: z.string(),
-  /** Sessions that registered it, the first one first. */
+  /** Sessions that started, reused or showed it, the first one first. */
   sessions: z.array(z.string()),
   /** When its shell started, epoch ms. */
   startedAt: z.number(),

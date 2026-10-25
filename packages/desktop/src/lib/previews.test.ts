@@ -29,7 +29,10 @@ describe("dueToShow", () => {
     ).toHaveLength(1);
   });
 
-  it("leaves other sessions' requests, and servers that ended", () => {
+  it("leaves other sessions' requests, servers that ended, and ones never shown", () => {
+    expect(
+      dueToShow([entry({ opened, url: undefined })], "ses_a", () => undefined),
+    ).toEqual([]);
     expect(dueToShow([entry({ opened })], "ses_b", () => undefined)).toEqual(
       [],
     );
@@ -84,8 +87,8 @@ describe("stoppedServerAt", () => {
 
 describe("serverLabel", () => {
   it("is the port on this Mac and the host elsewhere", () => {
-    expect(serverLabel(entry({}))).toBe(":5180");
-    expect(serverLabel(entry({ url: "https://abc.trycloudflare.com/" }))).toBe(
+    expect(serverLabel("http://localhost:5180/")).toBe(":5180");
+    expect(serverLabel("https://abc.trycloudflare.com/")).toBe(
       "abc.trycloudflare.com",
     );
   });

@@ -511,7 +511,9 @@ describe("createCommandHandler — previews", () => {
       time: { started: 1 },
     };
     const shells: ShellApi = {
+      create: async () => shell,
       get: async () => shell,
+      tail: async () => "",
       remove: async () => {
         shell.status = "killed";
       },
@@ -520,6 +522,7 @@ describe("createCommandHandler — previews", () => {
       shells,
       ports: async () => (shell.status === "running" ? [5180] : []),
       sleep: async () => undefined,
+      startWaitMs: 0,
     });
   }
 
@@ -552,11 +555,12 @@ describe("createCommandHandler — previews", () => {
       { type: "subscribePreviews", requestId: "r1", directory: "/other" },
       b.ctx,
     );
-    await previews.open(
+    await previews.start(
       "/proj",
-      { name: "web", shellID: "sh_1", url: "http://localhost:5180/" },
+      { name: "web", command: "bun run dev" },
       "ses_a",
     );
+    await previews.open("/proj", "web", "http://localhost:5180/", "ses_a");
 
     expect(a.sent[0]).toEqual({
       type: "subscribePreviews.response",
@@ -578,11 +582,7 @@ describe("createCommandHandler — previews", () => {
 
     a.fireDisconnect();
     const before = a.sent.length;
-    await previews.open(
-      "/proj",
-      { name: "web", shellID: "sh_1", url: "http://localhost:5180/" },
-      "ses_a",
-    );
+    await previews.open("/proj", "web", "http://localhost:5180/", "ses_a");
     expect(a.sent).toHaveLength(before);
   });
 
@@ -590,11 +590,7 @@ describe("createCommandHandler — previews", () => {
     const previews = previewRegistry();
     const handler = createCommandHandler(makeDeps({ previews }));
     const { ctx, sent } = makeCtx();
-    await previews.open("/proj", {
-      name: "web",
-      shellID: "sh_1",
-      url: "http://localhost:5180/",
-    });
+    await previews.start("/proj", { name: "web", command: "bun run dev" });
     await handler(
       { type: "getPreviews", requestId: "r1", directory: "/proj" },
       ctx,

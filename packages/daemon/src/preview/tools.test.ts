@@ -4,13 +4,17 @@ import type { ShellApi } from "./shells.ts";
 import { previewTools } from "./tools.ts";
 
 const tools = previewTools(new PreviewRegistry({ shells: {} as ShellApi }));
+const first = (name: string) =>
+  tools.find((t) => t.name === name)?.description.split("\n")[0] ?? "";
 
 describe("preview tools", () => {
-  it("are the three documented names", () => {
+  it("are the documented names", () => {
     expect(tools.map((t) => t.name)).toEqual([
+      "server_start",
+      "server_logs",
       "preview_open",
-      "preview_list",
-      "preview_stop",
+      "server_list",
+      "server_stop",
     ]);
   });
 
@@ -18,24 +22,21 @@ describe("preview tools", () => {
   // cut at 120 characters, and attached clients have no other channel.
   it.each(
     tools.map((t) => [t.name, t.description.split("\n")[0] ?? ""]),
-  )("%s keeps its first line under 120 characters", (_name, first) => {
-    expect(first.length).toBeLessThanOrEqual(120);
-    expect(first.length).toBeGreaterThan(20);
+  )("%s keeps its first line under 120 characters", (_name, line) => {
+    expect(line.length).toBeLessThanOrEqual(120);
+    expect(line.length).toBeGreaterThan(20);
   });
 
-  it("tells the model where the shell ID comes from", () => {
-    expect(tools[0]?.description.split("\n")[0]).toContain(
-      "shell tool's background mode",
-    );
+  it("ties server_start and preview_open together in their first lines", () => {
+    expect(first("server_start")).toContain("not shell background/nohup");
+    expect(first("server_start")).toContain("preview_open");
+    expect(first("preview_open")).toContain("server_start");
   });
 
-  it("asks for name, shell ID and URL", async () => {
-    const outcome = await tools[0]?.call(
-      { name: "web", url: "http://localhost:5173/" },
-      { directory: "/proj" },
-    );
-    expect(outcome).toEqual({
-      text: "name, shellID and url are required",
+  it("asks for the server's name and the URL", async () => {
+    const open = tools.find((t) => t.name === "preview_open");
+    expect(await open?.call({ name: "web" }, { directory: "/proj" })).toEqual({
+      text: "url is required",
       isError: true,
     });
   });

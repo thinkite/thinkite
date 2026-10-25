@@ -344,7 +344,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     // The Servers card's stop button: the same path as the agent's
-    // preview_stop.
+    // server_stop.
     if (url.pathname === "/api/previews/stop" && req.method === "POST") {
       const directory = url.searchParams.get("directory") ?? "";
       const name = url.searchParams.get("name") ?? "";

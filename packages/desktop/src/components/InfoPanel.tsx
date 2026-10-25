@@ -341,6 +341,7 @@ function ServerRow({
 }) {
   const [isStopping, setStopping] = useState(false);
   const live = isLive(entry);
+  const url = live ? entry.url : undefined;
   const dot = live
     ? "bg-[var(--color-text-green)]"
     : "bg-[var(--color-text-secondary)]";
@@ -353,15 +354,15 @@ function ServerRow({
       <Text size="sm" maxLines={1}>
         {entry.name}
       </Text>
-      {live ? (
+      {url !== undefined ? (
         <button
           type="button"
           className="min-w-0 truncate rounded px-1 font-mono text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-background-secondary)] hover:text-[var(--color-text-primary)]"
           aria-label={`Open ${entry.name} in the browser`}
-          title={entry.url}
-          onClick={() => onOpenPage(entry.url)}
+          title={url}
+          onClick={() => onOpenPage(url)}
         >
-          {serverLabel(entry)}
+          {serverLabel(url)}
         </button>
       ) : null}
       <span className="ml-auto flex shrink-0 items-center gap-1">
@@ -390,7 +391,7 @@ function ServerRow({
   );
 }
 
-/** The servers the agent registered in the folder (lib/previews); hidden
+/** The servers the agent started in the folder (lib/previews); hidden
  *  while there are none. */
 function Servers({
   directory,
