@@ -1,12 +1,17 @@
-import type { PreviewEntry } from "@thinkite/protocol";
+import type { BrowserRequest, PreviewEntry } from "@thinkite/protocol";
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { showBrowserPage } from "./browser";
 
-// The servers the agent started in a folder, from the daemon's preview
-// registry (/api/previews/events, docs/preview-tool-v1.md): one stream per
-// folder however many views read it. The pages they serve open as the
-// user's own tabs; after that the tabs are the user's, and nothing here
-// moves, reloads or closes them.
+// The servers the agent started in a folder and the pages it asked to open,
+// from the daemon's preview registry (/api/previews/events,
+// docs/preview-tool-v1.md): one stream per folder however many views read
+// it. The pages open as the user's own tabs; after that the tabs are the
+// user's, and nothing here moves, reloads or closes them.
+
+interface Snapshot {
+  entries: PreviewEntry[];
+  requests: BrowserRequest[];
+}
 
 interface Feed {
   source: EventSource;
@@ -14,10 +19,10 @@ interface Feed {
 }
 
 const feeds = new Map<string, Feed>();
-/** The last list per folder, kept after its stream closes, so a session
- *  screen that mounts again starts from it instead of empty. */
-const latest = new Map<string, PreviewEntry[]>();
-const EMPTY: PreviewEntry[] = [];
+/** The last snapshot per folder, kept after its stream closes, so a
+ *  session screen that mounts again starts from it instead of empty. */
+const latest = new Map<string, Snapshot>();
+const EMPTY: Snapshot = { entries: [], requests: [] };
 
 function subscribe(directory: string, listener: () => void): () => void {
   let feed = feeds.get(directory);
@@ -28,7 +33,7 @@ function subscribe(directory: string, listener: () => void): () => void {
     const created: Feed = { source, listeners: new Set() };
     source.onmessage = (e: MessageEvent<string>) => {
       try {
-        latest.set(directory, JSON.parse(e.data) as PreviewEntry[]);
+        latest.set(directory, JSON.parse(e.data) as Snapshot);
       } catch {
         return;
       }
@@ -47,9 +52,7 @@ function subscribe(directory: string, listener: () => void): () => void {
   };
 }
 
-export function usePreviews(
-  directory: string | null | undefined,
-): PreviewEntry[] {
+function useSnapshot(directory: string | null | undefined): Snapshot {
   const sub = useCallback(
     (listener: () => void) =>
       directory ? subscribe(directory, listener) : () => undefined,
@@ -61,7 +64,29 @@ export function usePreviews(
   );
 }
 
+/** The folder's servers. */
+export function usePreviews(
+  directory: string | null | undefined,
+): PreviewEntry[] {
+  return useSnapshot(directory).entries;
+}
+
 export const isLive = (e: PreviewEntry) => e.status === "running";
+
+/** A server's state in a word or two, with who stopped it. */
+export function serverState(e: PreviewEntry): string {
+  if (e.status === "running") return "Running";
+  switch (e.ended?.by) {
+    case "user":
+      return "Stopped";
+    case "agent":
+      return "Stopped by agent";
+    case "process":
+      return e.ended.exit === undefined ? "Exited" : `Exited (${e.ended.exit})`;
+    default:
+      return "Killed";
+  }
+}
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -105,15 +130,15 @@ export async function stopPreview(
   if (!res.ok && res.status !== 404) throw new Error(await res.text());
 }
 
-// ─── The agent's requests to show a page ──────────────────────────────────
+// ─── The agent's requests to open a page ──────────────────────────────────
 //
-// An entry's `opened` stamp is the agent's latest request to show it. This
-// device keeps, per folder and name, the last stamp it acted on, so a
-// request made while another session was on screen is still acted on when
-// the user comes to this one, and a tab the user closed stays closed until
-// the agent asks again.
+// A request is the agent's latest ask to open a page, per session and
+// origin. This device keeps, per folder, session and origin, the last
+// request it acted on, so a request made while another session was on
+// screen is still acted on when the user comes to this one, and a tab the
+// user closed stays closed until the agent asks again.
 
-const HANDLED_KEY = "thinkite:previews-opened";
+const HANDLED_KEY = "thinkite:browser-requests";
 
 function loadHandled(): Record<string, number> {
   try {
@@ -125,23 +150,33 @@ function loadHandled(): Record<string, number> {
 }
 
 const handled = loadHandled();
-const handledKey = (directory: string, name: string) => `${directory}\0${name}`;
 
-/** The running entries the agent asked to show in `sessionID` that this
- *  device has not acted on. */
+/** Per session and origin, as the daemon keeps them. */
+export function requestKey(r: BrowserRequest): string {
+  try {
+    return `${r.sessionID}\0${new URL(r.url).origin}`;
+  } catch {
+    return `${r.sessionID}\0${r.url}`;
+  }
+}
+
+/** The requests in `sessionID` this device has not acted on yet (all of
+ *  them get recorded), and of those the ones to open: a page whose server
+ *  has stopped since is not opened. */
 export function dueToShow(
-  entries: readonly PreviewEntry[],
+  snapshot: Snapshot,
   sessionID: string,
-  handledAt: (name: string) => number | undefined,
-): (PreviewEntry & { url: string })[] {
-  return entries.filter(
-    (e): e is PreviewEntry & { url: string } =>
-      e.url !== undefined &&
-      e.opened !== undefined &&
-      e.opened.sessionID === sessionID &&
-      e.opened.at > (handledAt(e.name) ?? 0) &&
-      e.status === "running",
+  handledAt: (key: string) => number | undefined,
+): { pending: BrowserRequest[]; open: BrowserRequest[] } {
+  const pending = snapshot.requests.filter(
+    (r) => r.sessionID === sessionID && r.at > (handledAt(requestKey(r)) ?? 0),
   );
+  const open = pending.filter(
+    (r) =>
+      r.server === undefined ||
+      snapshot.entries.some((e) => e.name === r.server && isLive(e)),
+  );
+  return { pending, open };
 }
 
 /**
@@ -153,30 +188,29 @@ export function usePreviewRequests(
   directory: string | null | undefined,
   onShow: () => void,
 ): void {
-  const entries = usePreviews(directory);
+  const snapshot = useSnapshot(directory);
   const show = useRef(onShow);
   show.current = onShow;
   useEffect(() => {
     if (!directory) return;
-    const due = dueToShow(
-      entries,
+    const key = (k: string) => `${directory}\0${k}`;
+    const { pending, open } = dueToShow(
+      snapshot,
       sessionID,
-      (name) => handled[handledKey(directory, name)],
+      (k) => handled[key(k)],
     );
-    if (due.length === 0) return;
-    for (const e of due) {
-      // Recorded either way: with every tab taken, the Servers card still
-      // opens it.
-      showBrowserPage(sessionID, e.url);
-      handled[handledKey(directory, e.name)] = e.opened?.at ?? 0;
-    }
+    if (pending.length === 0) return;
+    // Recorded whether or not a tab was made: with every tab taken, the
+    // Servers card still opens it.
+    for (const r of open) showBrowserPage(sessionID, r.url);
+    for (const r of pending) handled[key(requestKey(r))] = r.at;
     try {
       localStorage.setItem(HANDLED_KEY, JSON.stringify(handled));
     } catch {
       // private window: requests are acted on again after a reload
     }
-    show.current();
-  }, [entries, sessionID, directory]);
+    if (open.length > 0) show.current();
+  }, [snapshot, sessionID, directory]);
 }
 
 /** The ended server whose page a tab at `url` shows, when nothing live

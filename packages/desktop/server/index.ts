@@ -19,12 +19,12 @@ import { dirname, extname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type Daemon,
+  type PreviewSnapshot,
   readActiveDaemonLock,
   resolveThinkiteHome,
   start as startDaemon,
   startsTask,
 } from "@thinkite/daemon";
-import type { PreviewEntry } from "@thinkite/protocol";
 import {
   app,
   BrowserWindow,
@@ -321,9 +321,9 @@ const server = createServer(async (req, res) => {
       req.on("close", stop);
       return;
     }
-    // The servers the agent started in one folder (the daemon's preview
-    // registry): the whole list at once, then again after every change
-    // (lib/previews).
+    // The servers the agent started in one folder and the pages it asked
+    // to open (the daemon's preview registry): the whole snapshot at once,
+    // then again after every change (lib/previews).
     if (url.pathname === "/api/previews/events") {
       const directory = url.searchParams.get("directory");
       if (daemon === null || directory === null || !isAbsolute(directory)) {
@@ -336,15 +336,17 @@ const server = createServer(async (req, res) => {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
       });
-      const send = (entries: PreviewEntry[]) =>
-        res.write(`data: ${JSON.stringify(entries)}\n\n`);
+      const send = (snapshot: PreviewSnapshot) =>
+        res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
       const stop = previews.subscribe(directory, send);
       req.on("close", stop);
-      previews.entries(directory).then(send, () => send([]));
+      previews
+        .snapshot(directory)
+        .then(send, () => send({ entries: [], requests: [] }));
       return;
     }
-    // The Servers card's stop button: the same path as the agent's
-    // server_stop.
+    // The Servers card's stop button: the agent's server_stop, recorded as
+    // the user's.
     if (url.pathname === "/api/previews/stop" && req.method === "POST") {
       const directory = url.searchParams.get("directory") ?? "";
       const name = url.searchParams.get("name") ?? "";
@@ -353,7 +355,9 @@ const server = createServer(async (req, res) => {
         res.end("directory and name required");
         return;
       }
-      const outcome = await daemon.previews.stop(directory, name);
+      const outcome = await daemon.previews.stop(directory, name, {
+        by: "user",
+      });
       res.writeHead(outcome.isError ? 404 : 204, {
         "content-type": "text/plain",
       });

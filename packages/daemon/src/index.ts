@@ -35,7 +35,10 @@ export { readActiveDaemonLock } from "./daemon-lock.ts";
 export { resolveThinkiteHome } from "./home.ts";
 export type { OpencodeConnection } from "./opencode/registry.ts";
 export { startsTask } from "./opencode/service.ts";
-export type { PreviewRegistry } from "./preview/registry.ts";
+export type {
+  PreviewRegistry,
+  PreviewSnapshot,
+} from "./preview/registry.ts";
 
 export interface Daemon {
   stop(): Promise<void>;

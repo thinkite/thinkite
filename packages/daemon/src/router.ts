@@ -16,8 +16,8 @@ export interface RouterDeps {
   gitWatchers: GitWatcherRegistry;
   /** Recent sessions on the user's opencode service, for the picker's recents. */
   recentSessions: () => Promise<RecentSession[]>;
-  /** Servers the agent started with the preview tools. Absent: the preview
-   *  commands answer `unsupported`. */
+  /** Servers the agent started and pages it opened, with the preview
+   *  tools. Absent: the preview commands answer `unsupported`. */
   previews?: PreviewRegistry;
 }
 
@@ -28,8 +28,10 @@ const GIT_SUBS_KEY = "router:gitSubs";
 /** Per-conn map: cwd → unsubscribe-fn returned by GitWatcher.subscribe. */
 type GitSubsMap = Map<string, () => void>;
 
-// Per-conn preview subscriptions: directory → unsubscribe.
+// Per-conn preview subscriptions: directory → unsubscribe, plus the
+// forward-port list under a key no directory can have.
 const PREVIEW_SUBS_KEY = "router:previewSubs";
+const FORWARD_PORTS_SUB = "\0forwardPorts";
 
 type PreviewSubs = Map<string, () => void>;
 
@@ -57,7 +59,8 @@ function getOrCreateGitSubs(ctx: { state: Map<string, unknown> }): GitSubsMap {
 
 /**
  * The daemon's own RPC: git status and diffs for a folder, the folder
- * picker, and the servers the agent started (previews). Sessions, prompts
+ * picker, the servers the agent started and pages it opened (previews),
+ * and the ports to forward. Sessions, prompts
  * and transcripts are opencode's, reached over the HTTP tunnel instead.
  *
  * Other command types are answered with an `unsupported` error frame so a
@@ -275,7 +278,10 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
       case "getPreviews":
       case "subscribePreviews":
       case "unsubscribePreviews":
-      case "stopPreview": {
+      case "stopPreview":
+      case "getForwardPorts":
+      case "subscribeForwardPorts":
+      case "unsubscribeForwardPorts": {
         const previews = deps.previews;
         if (previews === undefined) {
           ctx.send({
@@ -292,7 +298,7 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
               type: "getPreviews.response",
               requestId: cmd.requestId,
               directory: cmd.directory,
-              entries: await previews.entries(cmd.directory),
+              ...(await previews.snapshot(cmd.directory)),
             });
           } else if (cmd.type === "subscribePreviews") {
             // Pure change stream, like subscribeGitStatus: the snapshot is
@@ -302,8 +308,8 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             const directory = cmd.directory;
             subs.set(
               directory,
-              previews.subscribe(directory, (entries) =>
-                ctx.send({ type: "previews", directory, entries }),
+              previews.subscribe(directory, (snapshot) =>
+                ctx.send({ type: "previews", directory, ...snapshot }),
               ),
             );
             ctx.send({
@@ -321,8 +327,39 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
               type: "unsubscribePreviews.response",
               requestId: cmd.requestId,
             });
+          } else if (cmd.type === "getForwardPorts") {
+            ctx.send({
+              type: "getForwardPorts.response",
+              requestId: cmd.requestId,
+              ports: await previews.forwardPorts(),
+            });
+          } else if (cmd.type === "subscribeForwardPorts") {
+            const subs = getOrCreatePreviewSubs(ctx);
+            subs.get(FORWARD_PORTS_SUB)?.();
+            subs.set(
+              FORWARD_PORTS_SUB,
+              previews.subscribePorts((ports) =>
+                ctx.send({ type: "forwardPorts", ports }),
+              ),
+            );
+            ctx.send({
+              type: "subscribeForwardPorts.response",
+              requestId: cmd.requestId,
+            });
+          } else if (cmd.type === "unsubscribeForwardPorts") {
+            const subs = ctx.state.get(PREVIEW_SUBS_KEY) as
+              | PreviewSubs
+              | undefined;
+            subs?.get(FORWARD_PORTS_SUB)?.();
+            subs?.delete(FORWARD_PORTS_SUB);
+            ctx.send({
+              type: "unsubscribeForwardPorts.response",
+              requestId: cmd.requestId,
+            });
           } else {
-            const outcome = await previews.stop(cmd.directory, cmd.name);
+            const outcome = await previews.stop(cmd.directory, cmd.name, {
+              by: "user",
+            });
             if (outcome.isError) {
               ctx.send({
                 type: "error",

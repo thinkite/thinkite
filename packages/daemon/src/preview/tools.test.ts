@@ -12,7 +12,7 @@ describe("preview tools", () => {
     expect(tools.map((t) => t.name)).toEqual([
       "server_start",
       "server_logs",
-      "preview_open",
+      "browser_open",
       "server_list",
       "server_stop",
     ]);
@@ -27,15 +27,15 @@ describe("preview tools", () => {
     expect(line.length).toBeGreaterThan(20);
   });
 
-  it("ties server_start and preview_open together in their first lines", () => {
+  it("ties server_start and browser_open together in their first lines", () => {
     expect(first("server_start")).toContain("not shell background/nohup");
-    expect(first("server_start")).toContain("preview_open");
-    expect(first("preview_open")).toContain("server_start");
+    expect(first("server_start")).toContain("browser_open");
+    expect(first("browser_open")).toContain("server_start");
   });
 
-  it("asks for the server's name and the URL", async () => {
-    const open = tools.find((t) => t.name === "preview_open");
-    expect(await open?.call({ name: "web" }, { directory: "/proj" })).toEqual({
+  it("asks browser_open for a URL", async () => {
+    const open = tools.find((t) => t.name === "browser_open");
+    expect(await open?.call({}, { directory: "/proj" })).toEqual({
       text: "url is required",
       isError: true,
     });

@@ -27,7 +27,13 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ocClient, ocStore } from "../lib/oc";
 import { prefs, updatePrefs } from "../lib/prefs";
-import { isLive, serverLabel, stopPreview, usePreviews } from "../lib/previews";
+import {
+  isLive,
+  serverLabel,
+  serverState,
+  stopPreview,
+  usePreviews,
+} from "../lib/previews";
 import { vcsKeys } from "../lib/query";
 import { findModel, useModels } from "./ModelPicker";
 
@@ -316,18 +322,6 @@ function Changes({
       )}
     </InfoCard>
   );
-}
-
-/** One server's state in a word or two. */
-function serverState(e: PreviewEntry): string {
-  switch (e.status) {
-    case "running":
-      return "Running";
-    case "exited":
-      return e.exit === undefined ? "Exited" : `Exited (${e.exit})`;
-    default:
-      return "Stopped";
-  }
 }
 
 function ServerRow({

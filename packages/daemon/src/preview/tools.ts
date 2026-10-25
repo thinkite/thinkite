@@ -1,10 +1,11 @@
 // The preview tools as opencode sees them: `thinkite_<name>`, called in
 // Code Mode as `tools.thinkite.<name>(…)`. `server_*` run servers, pages
-// and APIs alike; `preview_open` shows one's page to the user. Code Mode's
-// catalog shows only the first line of each description, cut at 120
-// characters, and MCP `instructions` never reach the model for attached
-// clients — so each first line is the whole guidance, and names the other
-// side of the server/preview pair (tools.test.ts holds them under 120).
+// and APIs alike; `browser_open` puts a page in the user's browser, the
+// first of the browser tools (thinkite/thinkite#31). Code Mode's catalog
+// shows only the first line of each description, cut at 120 characters,
+// and MCP `instructions` never reach the model for attached clients — so
+// each first line is the whole guidance, and server_start and browser_open
+// name each other (tools.test.ts holds them under 120).
 
 import type { PreviewRegistry, ToolOutcome } from "./registry.ts";
 
@@ -43,12 +44,12 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
     {
       name: "server_start",
       description:
-        "Run a dev server or API in the background (not shell background/nohup); to show a page, then call preview_open.\n" +
+        "Run a dev server or API in the background (not shell background/nohup); to show a page, then call browser_open.\n" +
         "Use for any long-running process the user or a page reaches over the network: web dev servers, API servers, " +
         "websocket servers, tunnels. Servers started with the shell tool's background mode or nohup are invisible to " +
         "the user and their phone. Returns the first output, where servers usually print their URL; if it is not there " +
-        "yet, check server_logs. The user sees every server in their Servers list; preview_open puts a page in their " +
-        "browser. Starting a name that is already running returns it instead of restarting it.",
+        "yet, check server_logs. The user sees every server in their Servers list; browser_open puts a page in their " +
+        "browser. Names are per project: starting a name that is already running returns it instead of restarting it.",
       inputSchema: {
         type: "object",
         properties: {
@@ -95,61 +96,56 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
           ctx.directory,
           n,
           typeof args.lines === "number" ? args.lines : undefined,
+          ctx.sessionID,
         ),
       ),
     },
     {
-      name: "preview_open",
+      name: "browser_open",
       description:
-        "Show the user a page served by a server_start server, once its output says the URL it serves.\n" +
-        "Pass the server's name and the URL from its output. A URL on this machine must be served by that server's " +
-        "processes; a tunnel or public URL is taken as given. Not for APIs or backends the user does not look at. " +
-        "Calling it again shows the page again.",
+        "Open a page in the user's browser: a URL from a server_start server's output, or any http(s) page.\n" +
+        "A URL on this machine must be served by a server this project started with server_start; open it once the " +
+        "output says the server is ready. Not for APIs or backends the user does not look at. Opening the same page " +
+        "again brings it back to the user.",
       inputSchema: {
         type: "object",
         properties: {
-          name: { type: "string", description: "The server_start name" },
           url: {
             type: "string",
-            description: "The URL from its output, e.g. http://localhost:5173/",
+            description: "e.g. http://localhost:5173/ from the server's output",
           },
         },
-        required: ["name", "url"],
+        required: ["url"],
       },
-      call: nameOnly((n, args, ctx) => {
+      call: (args, ctx) => {
         const url = str(args.url);
         if (!url)
           return Promise.resolve({ text: "url is required", isError: true });
-        return registry.open(ctx.directory, n, url, ctx.sessionID);
-      }),
+        return registry.open(ctx.directory, url, ctx.sessionID);
+      },
     },
     {
       name: "server_list",
       description:
-        "List servers started with server_start: status, and the URL if preview_open showed it.\n" +
-        "Shows this session's servers; pass all: true for every server in the project.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          all: {
-            type: "boolean",
-            description: "Every server in the project, not just this session's",
-          },
-        },
-      },
-      call: (args, ctx) =>
-        registry.list(ctx.directory, ctx.sessionID, args.all === true),
+        "List this project's servers: status, URL if opened, which are yours, and why one stopped.",
+      inputSchema: { type: "object", properties: {} },
+      call: (_args, ctx) => registry.list(ctx.directory, ctx.sessionID),
     },
     {
       name: "server_stop",
-      description: "Stop a server started with server_start and free its port.",
+      description:
+        "Stop a server started with server_start and free its port.\n" +
+        "Any of the project's servers can be stopped, another session's too; server_list marks yours.",
       inputSchema: {
         type: "object",
         properties: { name },
         required: ["name"],
       },
       call: nameOnly((n, _args, ctx) =>
-        registry.stop(ctx.directory, n, ctx.sessionID),
+        registry.stop(ctx.directory, n, {
+          by: "agent",
+          ...(ctx.sessionID === undefined ? {} : { sessionID: ctx.sessionID }),
+        }),
       ),
     },
   ];

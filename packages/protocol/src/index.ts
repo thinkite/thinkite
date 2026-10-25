@@ -388,40 +388,58 @@ export const getFilesystemRootsResponse = z.object({
   recentCwds: z.array(recentCwd),
 });
 
-// ─── Previews: servers the agent started (thinkite_server_* tools) ────────
+// ─── Previews: servers the agent started, pages it opened ─────────────────
 //
 // The agent starts dev servers and APIs with the daemon's `server_start`
-// and shows a page with `preview_open` (docs/preview-tool-v1.md); the
-// daemon keeps a registry per project directory. Same shape as git status: `getPreviews` is the snapshot,
-// `subscribePreviews` a pure change stream of full `previews` lists for
-// that directory. An agent's request to show a server to the user is the
-// entry's `opened` stamp, not an event: a device that was not showing the
-// session at the time still sees it later, and each device remembers on its
-// own which stamps it has handled.
+// and opens pages in the user's browser with `browser_open`
+// (docs/preview-tool-v1.md). Per project directory, same shape as git
+// status: `getPreviews` is the snapshot, `subscribePreviews` a pure change
+// stream of full `previews` snapshots. An open request is state, not an
+// event: a device that was not showing the session at the time still sees
+// it later, and each device remembers on its own which it has handled.
+// Separately, `forwardPorts` lists every running server's ports across
+// projects: what the phone forwards while it is in the foreground.
 
 export const previewEntry = z.object({
   /** The agent's label, unique per directory ("web", "api"). */
   name: z.string(),
-  /** The page, once `preview_open` showed it: usually
-   *  `http://localhost:<port>/`, or a tunnel or public URL. One on this
-   *  machine was checked to be served by the server's shell. Absent for
-   *  servers never shown (APIs, backends). */
+  /** The page `browser_open` last opened from this server. Absent for
+   *  servers never opened (APIs, backends). */
   url: z.string().optional(),
-  status: z.enum(["running", "exited", "killed", "timeout"]),
-  /** The agent's latest request to show it to the user: when, and in which
-   *  session. A new `at` means a new request (a reopen of a running server
-   *  stamps it again). It says nothing about the user's tabs. */
-  opened: z.object({ at: z.number(), sessionID: z.string() }).optional(),
+  /** That URL's port, checked to be this server's: a client on another
+   *  device loads `http://localhost:<localPort>` + the URL's path through
+   *  its forwarder, whatever host the agent wrote (a LAN address, say). */
+  localPort: z.number().int().positive().optional(),
+  status: z.enum(["running", "ended"]),
   /** The shell's command. */
   command: z.string(),
-  /** Sessions that started, reused or showed it, the first one first. */
-  sessions: z.array(z.string()),
-  /** When its shell started, epoch ms. */
-  startedAt: z.number(),
-  /** Exit code once exited. */
-  exit: z.number().int().optional(),
+  /** When its shell started, and the session whose agent started it. */
+  started: z.object({ at: z.number(), sessionID: z.string().optional() }),
+  /** How it ended: the user's stop button, an agent's `server_stop` (and
+   *  which session), the process exiting, or something outside Thinkite
+   *  (opencode's kill, a service restart). */
+  ended: z
+    .object({
+      at: z.number(),
+      by: z.enum(["user", "agent", "process", "external"]),
+      sessionID: z.string().optional(),
+      exit: z.number().int().optional(),
+    })
+    .optional(),
 });
 export type PreviewEntry = z.infer<typeof previewEntry>;
+
+/** The agent's request to open `url` in the user's browser, the latest per
+ *  session and origin. A newer `at` is a new request. It says nothing
+ *  about the user's tabs. */
+export const browserRequest = z.object({
+  url: z.string(),
+  sessionID: z.string(),
+  at: z.number(),
+  /** The server serving it, for a URL on the Mac. */
+  server: z.string().optional(),
+});
+export type BrowserRequest = z.infer<typeof browserRequest>;
 
 export const getPreviewsCommand = z.object({
   type: z.literal("getPreviews"),
@@ -434,6 +452,7 @@ export const getPreviewsResponse = z.object({
   requestId: z.string(),
   directory: z.string(),
   entries: z.array(previewEntry),
+  requests: z.array(browserRequest),
 });
 
 /** Pure change-stream ack — NO initial snapshot (use `getPreviews`). */
@@ -460,7 +479,8 @@ export const unsubscribePreviewsResponse = z.object({
   requestId: z.string(),
 });
 
-/** The user's stop button: same path as the agent's `preview_stop`. */
+/** The user's stop button: the agent's `server_stop`, recorded as the
+ *  user's. */
 export const stopPreviewCommand = z.object({
   type: z.literal("stopPreview"),
   requestId: z.string(),
@@ -473,11 +493,58 @@ export const stopPreviewResponse = z.object({
   requestId: z.string(),
 });
 
-/** Server-initiated push: the directory's full list after any change. */
+/** Server-initiated push: the directory's full snapshot after any change. */
 export const previewsEvent = z.object({
   type: z.literal("previews"),
   directory: z.string(),
   entries: z.array(previewEntry),
+  requests: z.array(browserRequest),
+});
+
+/** A port a running server listens on, in any project. */
+export const forwardPort = z.object({
+  port: z.number().int().positive(),
+  directory: z.string(),
+  name: z.string(),
+});
+export type ForwardPort = z.infer<typeof forwardPort>;
+
+export const getForwardPortsCommand = z.object({
+  type: z.literal("getForwardPorts"),
+  requestId: z.string(),
+});
+
+export const getForwardPortsResponse = z.object({
+  type: z.literal("getForwardPorts.response"),
+  requestId: z.string(),
+  ports: z.array(forwardPort),
+});
+
+/** Pure change-stream ack — NO initial snapshot (use `getForwardPorts`). */
+export const subscribeForwardPortsCommand = z.object({
+  type: z.literal("subscribeForwardPorts"),
+  requestId: z.string(),
+});
+
+export const subscribeForwardPortsResponse = z.object({
+  type: z.literal("subscribeForwardPorts.response"),
+  requestId: z.string(),
+});
+
+export const unsubscribeForwardPortsCommand = z.object({
+  type: z.literal("unsubscribeForwardPorts"),
+  requestId: z.string(),
+});
+
+export const unsubscribeForwardPortsResponse = z.object({
+  type: z.literal("unsubscribeForwardPorts.response"),
+  requestId: z.string(),
+});
+
+/** Server-initiated push: the full list whenever it changes. */
+export const forwardPortsEvent = z.object({
+  type: z.literal("forwardPorts"),
+  ports: z.array(forwardPort),
 });
 
 // ─── Health + error ────────────────────────────────────────────────────────
@@ -549,8 +616,9 @@ export type ServerInfoEvent = z.infer<typeof serverInfoEvent>;
 // ─── Top-level direction unions (parse the wire against these) ─────────────
 //
 // The RPC carries what opencode does not offer the phone: git status and
-// diffs, the folder picker, and the agent's previews. Sessions, prompts and transcripts go to
-// opencode over the HTTP tunnel (IROH_HTTP_ALPN) instead.
+// diffs, the folder picker, the agent's servers and pages, and the ports to
+// forward. Sessions, prompts and transcripts go to opencode over the HTTP
+// tunnel (IROH_HTTP_ALPN) instead.
 
 export const command = z.discriminatedUnion("type", [
   getGitStatusCommand,
@@ -563,6 +631,9 @@ export const command = z.discriminatedUnion("type", [
   subscribePreviewsCommand,
   unsubscribePreviewsCommand,
   stopPreviewCommand,
+  getForwardPortsCommand,
+  subscribeForwardPortsCommand,
+  unsubscribeForwardPortsCommand,
 ]);
 
 export type Command = z.infer<typeof command>;
@@ -578,6 +649,9 @@ export const response = z.discriminatedUnion("type", [
   subscribePreviewsResponse,
   unsubscribePreviewsResponse,
   stopPreviewResponse,
+  getForwardPortsResponse,
+  subscribeForwardPortsResponse,
+  unsubscribeForwardPortsResponse,
 ]);
 
 export type Response = z.infer<typeof response>;
@@ -602,6 +676,7 @@ export const daemonFrame = z.discriminatedUnion("type", [
   errorFrame,
   gitStatusEvent,
   previewsEvent,
+  forwardPortsEvent,
   ...response.options,
 ]);
 

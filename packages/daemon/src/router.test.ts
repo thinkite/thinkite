@@ -522,6 +522,7 @@ describe("createCommandHandler — previews", () => {
       shells,
       ports: async () => (shell.status === "running" ? [5180] : []),
       sleep: async () => undefined,
+      schedule: () => undefined,
       startWaitMs: 0,
     });
   }
@@ -560,7 +561,7 @@ describe("createCommandHandler — previews", () => {
       { name: "web", command: "bun run dev" },
       "ses_a",
     );
-    await previews.open("/proj", "web", "http://localhost:5180/", "ses_a");
+    await previews.open("/proj", "http://localhost:5180/", "ses_a");
 
     expect(a.sent[0]).toEqual({
       type: "subscribePreviews.response",
@@ -574,15 +575,16 @@ describe("createCommandHandler — previews", () => {
           name: "web",
           status: "running",
           url: "http://localhost:5180/",
-          opened: { sessionID: "ses_a" },
+          localPort: 5180,
         },
       ],
+      requests: [{ url: "http://localhost:5180/", sessionID: "ses_a" }],
     });
     expect(b.sent.map((f) => f.type)).toEqual(["subscribePreviews.response"]);
 
     a.fireDisconnect();
     const before = a.sent.length;
-    await previews.open("/proj", "web", "http://localhost:5180/", "ses_a");
+    await previews.open("/proj", "http://localhost:5180/", "ses_a");
     expect(a.sent).toHaveLength(before);
   });
 
@@ -598,12 +600,16 @@ describe("createCommandHandler — previews", () => {
     expect(sent[0]).toMatchObject({
       type: "getPreviews.response",
       entries: [{ name: "web" }],
+      requests: [],
     });
     await handler(
       { type: "stopPreview", requestId: "r2", directory: "/proj", name: "web" },
       ctx,
     );
     expect(sent[1]).toEqual({ type: "stopPreview.response", requestId: "r2" });
+    expect((await previews.snapshot("/proj")).entries[0]?.ended?.by).toBe(
+      "user",
+    );
     await handler(
       {
         type: "stopPreview",
@@ -617,6 +623,33 @@ describe("createCommandHandler — previews", () => {
       type: "error",
       requestId: "r3",
       code: "not_found",
+    });
+  });
+
+  it("answers and pushes the ports to forward", async () => {
+    const previews = previewRegistry();
+    const handler = createCommandHandler(makeDeps({ previews }));
+    const a = makeCtx();
+    await handler({ type: "subscribeForwardPorts", requestId: "r1" }, a.ctx);
+    await previews.start("/proj", { name: "web", command: "bun run dev" });
+    await handler({ type: "getForwardPorts", requestId: "r2" }, a.ctx);
+    expect(a.sent).toEqual([
+      { type: "subscribeForwardPorts.response", requestId: "r1" },
+      {
+        type: "forwardPorts",
+        ports: [{ port: 5180, directory: "/proj", name: "web" }],
+      },
+      {
+        type: "getForwardPorts.response",
+        requestId: "r2",
+        ports: [{ port: 5180, directory: "/proj", name: "web" }],
+      },
+    ]);
+    await handler({ type: "unsubscribeForwardPorts", requestId: "r3" }, a.ctx);
+    await previews.stop("/proj", "web", { by: "user" });
+    expect(a.sent.at(-1)).toEqual({
+      type: "unsubscribeForwardPorts.response",
+      requestId: "r3",
     });
   });
 });

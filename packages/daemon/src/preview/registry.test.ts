@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PreviewEntry } from "@thinkite/protocol";
+import type { ForwardPort, PreviewEntry } from "@thinkite/protocol";
 import { describe, expect, it } from "vitest";
 import { isThisMachine, PreviewRegistry } from "./registry.ts";
 import type { ShellApi, ShellInfo } from "./shells.ts";
@@ -9,7 +9,8 @@ import type { ShellApi, ShellInfo } from "./shells.ts";
 const DIR = "/proj";
 
 /** opencode's shells in memory. A created shell's process tree listens on
- *  `listen(command)` and prints `print(command)`. */
+ *  `listen(command)` and prints `print(command)`; `onRemove` runs inside
+ *  `remove`, where opencode publishes `shell.exited`. */
 function fakeShells(
   listen: (command: string) => number[] = () => [5173],
   print: (command: string) => string = () =>
@@ -20,41 +21,42 @@ function fakeShells(
   const ports = new Map<number, number[]>();
   const created: ShellInfo[] = [];
   let next = 1;
-  const api: ShellApi = {
-    async create(_directory, input) {
-      const id = `sh_${next}`;
-      const info: ShellInfo = {
-        id,
-        status: "running",
-        command: input.command,
-        cwd: input.cwd ?? DIR,
-        pid: 1000 + next,
-        metadata: input.metadata,
-        time: { started: 1 },
-      };
-      next += 1;
-      shells.set(id, info);
-      created.push(info);
-      ports.set(info.pid as number, listen(input.command));
-      output.set(id, print(input.command));
-      return info;
-    },
-    async get(_directory, id) {
-      return shells.get(id) ?? null;
-    },
-    async tail(_directory, id) {
-      return output.get(id) ?? "";
-    },
-    async remove(_directory, id) {
-      const s = shells.get(id);
-      if (s) {
-        s.status = "killed";
-        if (s.pid) ports.delete(s.pid);
-      }
-    },
-  };
-  return {
-    api,
+  const fake = {
+    onRemove: undefined as ((id: string) => void) | undefined,
+    api: {
+      async create(_directory, input) {
+        const id = `sh_${next}`;
+        const info: ShellInfo = {
+          id,
+          status: "running",
+          command: input.command,
+          cwd: input.cwd ?? DIR,
+          pid: 1000 + next,
+          metadata: input.metadata,
+          time: { started: 1 },
+        };
+        next += 1;
+        shells.set(id, info);
+        created.push(info);
+        ports.set(info.pid as number, listen(input.command));
+        output.set(id, print(input.command));
+        return info;
+      },
+      async get(_directory, id) {
+        return shells.get(id) ?? null;
+      },
+      async tail(_directory, id) {
+        return output.get(id) ?? "";
+      },
+      async remove(_directory, id) {
+        const s = shells.get(id);
+        if (s) {
+          s.status = "killed";
+          if (s.pid) ports.delete(s.pid);
+        }
+        fake.onRemove?.(id);
+      },
+    } as ShellApi,
     ports,
     output,
     created,
@@ -64,16 +66,28 @@ function fakeShells(
       s.exit = code;
       if (s.pid) ports.delete(s.pid);
     },
+    kill(id: string) {
+      const s = shells.get(id) as ShellInfo;
+      s.status = "killed";
+      if (s.pid) ports.delete(s.pid);
+    },
   };
+  return fake;
 }
 
-function registry(shells: ReturnType<typeof fakeShells>, stateFile?: string) {
+function registry(
+  shells: ReturnType<typeof fakeShells>,
+  options: { stateFile?: string; scheduled?: (() => void)[] } = {},
+) {
   return new PreviewRegistry({
     shells: shells.api,
     ports: async (pid) => shells.ports.get(pid) ?? [],
     sleep: () => new Promise((r) => setTimeout(r, 1)),
+    schedule: (fn) => options.scheduled?.push(fn),
     startWaitMs: 500,
-    ...(stateFile === undefined ? {} : { stateFile }),
+    ...(options.stateFile === undefined
+      ? {}
+      : { stateFile: options.stateFile }),
   });
 }
 
@@ -95,25 +109,22 @@ describe("PreviewRegistry.start / logs", () => {
       cwd: "/proj/web",
       metadata: { thinkite: { server: "web", session: "ses_a" } },
     });
-    const [entry] = await r.entries(DIR);
-    expect(entry).toMatchObject({
+    const [entry] = (await r.snapshot(DIR)).entries;
+    expect(entry).toEqual({
       name: "web",
       status: "running",
       command: "bun run dev",
-      sessions: ["ses_a"],
-    });
-    expect(entry?.url).toBeUndefined();
-    expect(entry?.opened).toBeUndefined();
+      started: { at: 1, sessionID: "ses_a" },
+    } satisfies PreviewEntry);
   });
 
-  it("is idempotent per name and never restarts implicitly", async () => {
+  it("is idempotent per name across sessions, and never restarts implicitly", async () => {
     const shells = fakeShells();
     const r = registry(shells);
     await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
     const again = await r.start(DIR, { name: "web" }, "ses_b");
     expect(again.text).toContain(`"web" is already running. Recent output:`);
     expect(shells.created).toHaveLength(1);
-    expect((await r.entries(DIR))[0]?.sessions).toEqual(["ses_a", "ses_b"]);
     expect(
       await r.start(DIR, { name: "web", command: "vite --port 6000" }),
     ).toEqual({
@@ -142,18 +153,44 @@ describe("PreviewRegistry.start / logs", () => {
       },
       ports: async () => [],
       sleep: async () => undefined,
+      schedule: () => undefined,
       startWaitMs: 500,
     });
     expect(
       await r.start(DIR, { name: "api", command: "bun server.ts" }),
     ).toEqual({
-      text: `"api" exited (code 1) right away. Output:\nerror: Failed to start server. Is port 8790 in use?`,
+      text: `"api" exited right away (code 1). Output:\nerror: Failed to start server. Is port 8790 in use?`,
       isError: true,
     });
-    expect((await r.entries(DIR))[0]?.status).toBe("exited");
+    expect((await r.snapshot(DIR)).entries[0]).toMatchObject({
+      status: "ended",
+      ended: { by: "process", exit: 1 },
+    });
   });
 
-  it("shows the latest output with the state", async () => {
+  it("restarts a name that ended, and tells the agent how it ended", async () => {
+    const shells = fakeShells();
+    const r = registry(shells);
+    await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
+    await r.stop(DIR, "web", { by: "user" });
+    const out = await r.start(
+      DIR,
+      { name: "web", command: "bun run dev" },
+      "ses_b",
+    );
+    expect(out.text).toMatch(
+      /\nNote: the previous "web" was stopped by the user just now\.$/,
+    );
+    expect(shells.created).toHaveLength(2);
+    const [entry] = (await r.snapshot(DIR)).entries;
+    expect(entry).toMatchObject({
+      status: "running",
+      started: { sessionID: "ses_b" },
+    });
+    expect(entry?.ended).toBeUndefined();
+  });
+
+  it("shows the latest output with how the server stands", async () => {
     const shells = fakeShells();
     const r = registry(shells);
     await r.start(DIR, { name: "web", command: "next dev" });
@@ -161,177 +198,239 @@ describe("PreviewRegistry.start / logs", () => {
     expect((await r.logs(DIR, "web")).text).toBe(
       `"web" is running.\n▲ Next.js\n✓ Ready in 1.2s`,
     );
+    shells.exit("sh_1", 1);
+    expect((await r.logs(DIR, "web")).text).toMatch(
+      /^"web" exited \(code 1\) just now\./,
+    );
     expect((await r.logs(DIR, "nope")).isError).toBe(true);
   });
 });
 
 describe("PreviewRegistry.open", () => {
-  it("shows a page its server serves", async () => {
-    const shells = fakeShells(() => [5173, 24678]);
+  it("opens a page one of the project's servers serves", async () => {
+    const shells = fakeShells((c) =>
+      c === "bun api.ts" ? [8787] : [5173, 24678],
+    );
     const r = registry(shells);
+    await r.start(DIR, { name: "api", command: "bun api.ts" }, "ses_a");
     await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
-    expect(await r.open(DIR, "web", "http://localhost:5173", "ses_a")).toEqual({
+    expect(await r.open(DIR, "http://localhost:5173", "ses_b")).toEqual({
       text: "Sent http://localhost:5173/ to the user's browser.",
     });
-    expect((await r.entries(DIR))[0]).toMatchObject({
+    const snapshot = await r.snapshot(DIR);
+    expect(snapshot.entries.find((e) => e.name === "web")).toMatchObject({
       url: "http://localhost:5173/",
-      opened: { sessionID: "ses_a" },
+      localPort: 5173,
     });
+    expect(snapshot.requests).toEqual([
+      {
+        url: "http://localhost:5173/",
+        sessionID: "ses_b",
+        at: expect.any(Number),
+        server: "web",
+      },
+    ]);
   });
 
-  it("refuses a local URL the server does not listen on, and says where it does", async () => {
-    const shells = fakeShells((c) => (c === "vite" ? [5174] : []));
-    const r = registry(shells);
-    await r.start(DIR, { name: "web", command: "vite" });
-    expect(await r.open(DIR, "web", "http://localhost:5173/")).toEqual({
-      text: `"web" is not listening on 5173 (it listens on 5174). Nothing was opened.`,
-      isError: true,
-    });
-    await r.start(DIR, { name: "next", command: "next dev" });
-    const early = await r.open(DIR, "next", "http://localhost:3000/");
-    expect(early.isError).toBe(true);
-    expect(early.text).toContain("not listening on 3000 yet");
-    expect((await r.entries(DIR)).every((e) => e.url === undefined)).toBe(true);
-  });
-
-  it("takes a tunnel or public URL as given", async () => {
-    const shells = fakeShells(() => []);
-    const r = registry(shells);
-    await r.start(DIR, {
-      name: "tunnel",
-      command: "cloudflared tunnel --url http://localhost:5173",
-    });
-    expect(
-      (await r.open(DIR, "tunnel", "https://abc.trycloudflare.com", "ses_a"))
-        .isError,
-    ).toBeFalsy();
-    expect((await r.entries(DIR))[0]?.url).toBe(
-      "https://abc.trycloudflare.com/",
-    );
-  });
-
-  it("needs a running server of that name and an http(s) URL", async () => {
+  it("takes 127.0.0.1 as this Mac too", async () => {
     const shells = fakeShells();
     const r = registry(shells);
-    expect((await r.open(DIR, "web", "http://localhost:5173/")).text).toBe(
-      `No server named "web". List them, or start it first.`,
+    await r.start(DIR, { name: "web", command: "vite" });
+    expect(
+      (await r.open(DIR, "http://127.0.0.1:5173/", "ses_a")).isError,
+    ).toBeFalsy();
+    expect((await r.snapshot(DIR)).entries[0]?.localPort).toBe(5173);
+  });
+
+  it("refuses a local URL no server of the project listens on, and says what does", async () => {
+    const shells = fakeShells((c) => (c === "vite" ? [5174] : []));
+    const r = registry(shells);
+    expect(await r.open(DIR, "http://localhost:5173/", "ses_a")).toEqual({
+      text: "No server started with server_start in this project listens on 5173. Start it with server_start, or wait until its output says it is ready. Nothing was opened.",
+      isError: true,
+    });
+    await r.start(DIR, { name: "web", command: "vite" });
+    expect(await r.open(DIR, "http://localhost:5173/", "ses_a")).toEqual({
+      text: `No server started with server_start in this project listens on 5173 ("web" listens on 5174). Nothing was opened.`,
+      isError: true,
+    });
+    expect((await r.snapshot(DIR)).requests).toEqual([]);
+  });
+
+  it("says who stopped the server a local URL belonged to", async () => {
+    const shells = fakeShells();
+    const r = registry(shells);
+    await r.start(DIR, { name: "web", command: "vite" }, "ses_a");
+    await r.open(DIR, "http://localhost:5173/", "ses_a");
+    await r.stop(DIR, "web", { by: "agent", sessionID: "ses_b" });
+    expect((await r.open(DIR, "http://localhost:5173/", "ses_a")).text).toBe(
+      `"web", which served port 5173, was stopped by another session just now. Nothing was opened.`,
     );
-    await r.start(DIR, { name: "web", command: "bun run dev" });
-    expect(await r.open(DIR, "web", "file:///tmp/a.html")).toEqual({
+  });
+
+  it("opens a tunnel or a public page as given", async () => {
+    const shells = fakeShells();
+    const r = registry(shells);
+    expect(
+      (await r.open(DIR, "https://abc.trycloudflare.com", "ses_a")).isError,
+    ).toBeFalsy();
+    expect((await r.snapshot(DIR)).requests).toEqual([
+      {
+        url: "https://abc.trycloudflare.com/",
+        sessionID: "ses_a",
+        at: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("keeps the latest request per session and origin", async () => {
+    const shells = fakeShells();
+    const r = registry(shells);
+    await r.start(DIR, { name: "web", command: "vite" });
+    await r.open(DIR, "http://localhost:5173/", "ses_a");
+    const first = (await r.snapshot(DIR)).requests[0]?.at ?? 0;
+    await tick();
+    await r.open(DIR, "http://localhost:5173/about", "ses_a");
+    await r.open(DIR, "http://localhost:5173/", "ses_b");
+    const { requests } = await r.snapshot(DIR);
+    expect(requests.map((q) => [q.sessionID, q.url])).toEqual([
+      ["ses_a", "http://localhost:5173/about"],
+      ["ses_b", "http://localhost:5173/"],
+    ]);
+    expect(requests[0]?.at).toBeGreaterThan(first);
+  });
+
+  it("needs an http(s) URL and a session", async () => {
+    const r = registry(fakeShells());
+    expect(await r.open(DIR, "file:///tmp/a.html", "ses_a")).toEqual({
       text: "The URL must be http or https.",
       isError: true,
     });
-    shells.exit("sh_1", 1);
-    expect((await r.open(DIR, "web", "http://localhost:5173/")).text).toBe(
-      `"web" is not running (exited (code 1)). Check its logs.`,
+    expect((await r.open(DIR, "nope", "ses_a")).isError).toBe(true);
+    expect((await r.open(DIR, "https://example.com/")).text).toBe(
+      "No session to show it in.",
     );
-  });
-
-  it("shows the page again with a new stamp, and adds the session", async () => {
-    const shells = fakeShells();
-    const r = registry(shells);
-    await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
-    await r.open(DIR, "web", "http://localhost:5173/", "ses_a");
-    const first = (await r.entries(DIR))[0]?.opened?.at ?? 0;
-    await tick();
-    await r.open(DIR, "web", "http://localhost:5173/", "ses_b");
-    const [entry] = await r.entries(DIR);
-    expect(entry?.opened?.sessionID).toBe("ses_b");
-    expect(entry?.opened?.at).toBeGreaterThan(first);
-    expect(entry?.sessions).toEqual(["ses_a", "ses_b"]);
   });
 });
 
 describe("PreviewRegistry.list / stop", () => {
-  it("lists the caller's servers by default and counts the rest", async () => {
+  it("lists the whole project and marks the caller's own", async () => {
     const shells = fakeShells((c) => (c === "bun api.ts" ? [8787] : [5173]));
     const r = registry(shells);
     await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
-    await r.open(DIR, "web", "http://localhost:5173/", "ses_a");
+    await r.open(DIR, "http://localhost:5173/", "ses_a");
     await r.start(DIR, { name: "api", command: "bun api.ts" }, "ses_b");
+    await r.start(DIR, { name: "docs", command: "bun run docs" }, "ses_b");
+    await r.stop(DIR, "docs", { by: "user" });
     expect((await r.list(DIR, "ses_a")).text).toBe(
-      "web: running, http://localhost:5173/ shown to the user — `bun run dev`\n" +
-        "1 more in this project (pass all: true).",
+      "web: is running, http://localhost:5173/ — `bun run dev` (yours)\n" +
+        "api: is running — `bun api.ts`\n" +
+        "docs: was stopped by the user just now — `bun run docs`",
     );
-    expect((await r.list(DIR, "ses_b")).text.split("\n")[0]).toBe(
-      "api: running — `bun api.ts`",
+    expect((await r.list("/empty", "ses_a")).text).toBe(
+      "No servers in this project.",
     );
-    expect((await r.list(DIR, "ses_a", true)).text.split("\n")).toHaveLength(2);
   });
 
-  it("shows a dead server as exited", async () => {
+  it("records who stopped a server, even when the exit event comes first", async () => {
     const shells = fakeShells();
     const r = registry(shells);
-    await r.start(DIR, { name: "web", command: "bun run dev" });
-    shells.exit("sh_1", 137);
-    expect((await r.list(DIR)).text).toBe(
-      "web: exited (code 137) — `bun run dev`",
+    shells.onRemove = (id) => r.shellExited(id, "killed");
+    await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
+    expect(
+      (await r.stop(DIR, "web", { by: "agent", sessionID: "ses_a" })).text,
+    ).toBe(`Stopped "web".`);
+    expect((await r.snapshot(DIR)).entries[0]?.ended).toEqual({
+      at: expect.any(Number),
+      by: "agent",
+      sessionID: "ses_a",
+    });
+    expect((await r.stop(DIR, "web", { by: "user" })).text).toBe(
+      `"web" is not running: it was stopped by another session just now.`,
     );
+    expect((await r.stop(DIR, "nope", { by: "user" })).isError).toBe(true);
   });
 
-  it("stops the shell, keeps the entry as killed and names the other sessions", async () => {
+  it("warns an agent that stops another session's server", async () => {
     const shells = fakeShells();
     const r = registry(shells);
     await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
-    await r.start(DIR, { name: "web" }, "ses_b");
-    expect((await r.stop(DIR, "web", "ses_a")).text).toBe(
-      `Stopped "web". It was also in use by 1 other session(s); it stopped for them too.`,
-    );
-    expect((await r.entries(DIR))[0]?.status).toBe("killed");
-    expect((await r.stop(DIR, "web")).text).toBe(
-      `"web" is not running (killed).`,
-    );
-    expect((await r.stop(DIR, "nope")).isError).toBe(true);
+    expect(
+      (await r.stop(DIR, "web", { by: "agent", sessionID: "ses_b" })).text,
+    ).toBe(`Stopped "web". Another session started it; it stopped there too.`);
   });
 
-  it("starts a new shell for a name whose server ended", async () => {
+  it("tells a process exit from a kill outside Thinkite", async () => {
     const shells = fakeShells();
     const r = registry(shells);
-    await r.start(DIR, { name: "web", command: "bun run dev" });
-    await r.stop(DIR, "web");
-    await r.start(DIR, { name: "web", command: "bun run dev" });
-    expect(shells.created).toHaveLength(2);
-    expect((await r.entries(DIR))[0]?.status).toBe("running");
-  });
-
-  it("pushes shell.exited to subscribers", async () => {
-    const shells = fakeShells();
-    const r = registry(shells);
-    await r.start(DIR, { name: "web", command: "bun run dev" });
+    await r.start(DIR, { name: "web", command: "vite" });
+    await r.start(DIR, { name: "api", command: "bun api.ts" });
     const pushed: PreviewEntry[][] = [];
-    r.subscribe(DIR, (entries) => pushed.push(entries));
+    r.subscribe(DIR, (s) => pushed.push(s.entries));
+    shells.exit("sh_1", 2);
     r.shellExited("sh_1", "exited", 2);
-    expect(pushed.at(-1)?.[0]).toMatchObject({ status: "exited", exit: 2 });
+    shells.kill("sh_2");
+    expect((await r.snapshot(DIR)).entries.map((e) => e.ended?.by)).toEqual([
+      "process",
+      "external",
+    ]);
+    expect(pushed[0]?.[0]?.ended).toMatchObject({ by: "process", exit: 2 });
+  });
+});
+
+describe("PreviewRegistry forward ports", () => {
+  it("lists every running server's ports across projects, and pushes changes", async () => {
+    const shells = fakeShells((c) =>
+      c === "bun api.ts" ? [8787] : c === "vite" ? [5173, 24678] : [],
+    );
+    const scheduled: (() => void)[] = [];
+    const r = registry(shells, { scheduled });
+    const pushed: ForwardPort[][] = [];
+    r.subscribePorts((p) => pushed.push(p));
+    await r.start(DIR, { name: "web", command: "vite" });
+    await r.start("/other", { name: "api", command: "bun api.ts" });
+    expect(scheduled).toHaveLength(8); // four checks after each start
+    expect(await r.forwardPorts()).toEqual([
+      { port: 5173, directory: DIR, name: "web" },
+      { port: 8787, directory: "/other", name: "api" },
+      { port: 24678, directory: DIR, name: "web" },
+    ]);
+    expect(pushed).toHaveLength(1);
+    await r.stop(DIR, "web", { by: "user" });
+    await tick();
+    expect(pushed.at(-1)).toEqual([
+      { port: 8787, directory: "/other", name: "api" },
+    ]);
   });
 });
 
 describe("PreviewRegistry persistence", () => {
-  it("brings running entries back after a restart and re-checks them", async () => {
-    const file = join(
+  it("brings running entries and requests back after a restart and re-checks them", async () => {
+    const stateFile = join(
       mkdtempSync(join(tmpdir(), "previews-")),
       "previews.json",
     );
     const shells = fakeShells();
-    const before = registry(shells, file);
-    await before.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
-    await before.open(DIR, "web", "http://localhost:5173/", "ses_a");
+    const before = registry(shells, { stateFile });
+    await before.start(DIR, { name: "web", command: "vite" }, "ses_a");
+    await before.open(DIR, "http://localhost:5173/", "ses_a");
     await before.start(DIR, { name: "api", command: "bun api.ts" }, "ses_a");
     await before.start(DIR, { name: "old", command: "bun old.ts" });
-    await before.stop(DIR, "old");
-    expect(JSON.parse(readFileSync(file, "utf8")).entries).toHaveLength(3);
+    await before.stop(DIR, "old", { by: "user" });
+    const saved = JSON.parse(readFileSync(stateFile, "utf8"));
+    expect(saved.v).toBe(2);
+    expect(saved.entries).toHaveLength(3);
 
     shells.exit("sh_2", 0); // api, while the daemon was down
-    const after = registry(shells, file);
+    const after = registry(shells, { stateFile });
     await after.rebuild(DIR);
-    const entries = await after.entries(DIR);
-    expect(entries.map((e) => [e.name, e.status])).toEqual([
-      ["web", "running"],
-      ["api", "exited"],
+    const { entries, requests } = await after.snapshot(DIR);
+    expect(entries.map((e) => [e.name, e.status, e.ended?.by])).toEqual([
+      ["web", "running", undefined],
+      ["api", "ended", "process"],
     ]);
-    expect(entries[0]).toMatchObject({
-      url: "http://localhost:5173/",
-      opened: { sessionID: "ses_a" },
-    });
+    expect(entries[0]).toMatchObject({ url: "http://localhost:5173/" });
+    expect(requests).toHaveLength(1);
   });
 });
 
