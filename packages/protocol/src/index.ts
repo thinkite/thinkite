@@ -388,6 +388,104 @@ export const getFilesystemRootsResponse = z.object({
   recentCwds: z.array(recentCwd),
 });
 
+// ─── Previews: servers the agent started (thinkite_preview_* tools) ───────
+//
+// The agent starts dev servers and APIs through the daemon's preview tools
+// (docs/preview-tool-v1.md); the daemon keeps a registry per project
+// directory. Same shape as git status: `getPreviews` is the snapshot,
+// `subscribePreviews` a pure change stream of full `previews` lists for
+// that directory. `previewOpened` is pushed when the agent starts a server
+// with `open: true`, so a client showing that session can offer it.
+
+export const previewEntry = z.object({
+  /** The agent's label, unique per directory ("web", "api"). */
+  name: z.string(),
+  /** Every TCP port the server's process tree listens on. */
+  ports: z.array(z.number().int().positive()),
+  /** The first port that answered HTTP. Absent while starting. */
+  primaryPort: z.number().int().positive().optional(),
+  /** `page` when `GET /` answered text/html, `api` otherwise. */
+  kind: z.enum(["page", "api"]).optional(),
+  status: z.enum(["starting", "running", "exited", "killed", "timeout"]),
+  /** The agent asked to show it to the user. */
+  open: z.boolean(),
+  command: z.string(),
+  /** Sessions that started or reused it, starter first. */
+  sessions: z.array(z.string()),
+  /** Epoch ms. */
+  startedAt: z.number(),
+  /** Exit code once exited. */
+  exit: z.number().int().optional(),
+});
+export type PreviewEntry = z.infer<typeof previewEntry>;
+
+export const getPreviewsCommand = z.object({
+  type: z.literal("getPreviews"),
+  requestId: z.string(),
+  directory: z.string(),
+});
+
+export const getPreviewsResponse = z.object({
+  type: z.literal("getPreviews.response"),
+  requestId: z.string(),
+  directory: z.string(),
+  entries: z.array(previewEntry),
+});
+
+/** Pure change-stream ack — NO initial snapshot (use `getPreviews`). */
+export const subscribePreviewsCommand = z.object({
+  type: z.literal("subscribePreviews"),
+  requestId: z.string(),
+  directory: z.string(),
+});
+
+export const subscribePreviewsResponse = z.object({
+  type: z.literal("subscribePreviews.response"),
+  requestId: z.string(),
+  directory: z.string(),
+});
+
+export const unsubscribePreviewsCommand = z.object({
+  type: z.literal("unsubscribePreviews"),
+  requestId: z.string(),
+  directory: z.string(),
+});
+
+export const unsubscribePreviewsResponse = z.object({
+  type: z.literal("unsubscribePreviews.response"),
+  requestId: z.string(),
+});
+
+/** The user's stop button: same path as the agent's `preview_stop`. */
+export const stopPreviewCommand = z.object({
+  type: z.literal("stopPreview"),
+  requestId: z.string(),
+  directory: z.string(),
+  name: z.string(),
+});
+
+export const stopPreviewResponse = z.object({
+  type: z.literal("stopPreview.response"),
+  requestId: z.string(),
+});
+
+/** Server-initiated push: the directory's full list after any change. */
+export const previewsEvent = z.object({
+  type: z.literal("previews"),
+  directory: z.string(),
+  entries: z.array(previewEntry),
+});
+
+/** Server-initiated push: the agent started (or reused) a server with
+ *  `open: true`. A client showing `sessionID` offers to open `url`. */
+export const previewOpenedEvent = z.object({
+  type: z.literal("previewOpened"),
+  directory: z.string(),
+  name: z.string(),
+  sessionID: z.string(),
+  url: z.string(),
+});
+
 // ─── Health + error ────────────────────────────────────────────────────────
 
 export const pingFrame = z.object({
@@ -457,7 +555,7 @@ export type ServerInfoEvent = z.infer<typeof serverInfoEvent>;
 // ─── Top-level direction unions (parse the wire against these) ─────────────
 //
 // The RPC carries what opencode does not offer the phone: git status and
-// diffs, and the folder picker. Sessions, prompts and transcripts go to
+// diffs, the folder picker, and the agent's previews. Sessions, prompts and transcripts go to
 // opencode over the HTTP tunnel (IROH_HTTP_ALPN) instead.
 
 export const command = z.discriminatedUnion("type", [
@@ -467,6 +565,10 @@ export const command = z.discriminatedUnion("type", [
   getWorkingTreeDiffCommand,
   listDirectoryCommand,
   getFilesystemRootsCommand,
+  getPreviewsCommand,
+  subscribePreviewsCommand,
+  unsubscribePreviewsCommand,
+  stopPreviewCommand,
 ]);
 
 export type Command = z.infer<typeof command>;
@@ -478,6 +580,10 @@ export const response = z.discriminatedUnion("type", [
   getWorkingTreeDiffResponse,
   listDirectoryResponse,
   getFilesystemRootsResponse,
+  getPreviewsResponse,
+  subscribePreviewsResponse,
+  unsubscribePreviewsResponse,
+  stopPreviewResponse,
 ]);
 
 export type Response = z.infer<typeof response>;
@@ -501,6 +607,8 @@ export const daemonFrame = z.discriminatedUnion("type", [
   pongFrame,
   errorFrame,
   gitStatusEvent,
+  previewsEvent,
+  previewOpenedEvent,
   ...response.options,
 ]);
 
