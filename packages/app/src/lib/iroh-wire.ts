@@ -51,11 +51,12 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
  * reused across reconnects. Rebinding per connect would race two
  * endpoints publishing the same key to pkarr and churn relay
  * connections; a connection per connect on a stable endpoint is the
- * intended iroh usage.
+ * intended iroh usage. Exported so the preview screen's `forwardTcp`
+ * listeners (thinkite/tcp/1) dial from the same endpoint.
  */
 let endpointPromise: Promise<EndpointLike> | null = null;
 
-function getEndpoint(identity: ClientIdentity): Promise<EndpointLike> {
+export function getEndpoint(identity: ClientIdentity): Promise<EndpointLike> {
   endpointPromise ??= (async () => {
     const builder = new EndpointBuilder();
     builder.applyN0();

@@ -67,7 +67,7 @@
         "react-native-enriched-markdown": "1.0.2",
         "react-native-gesture-handler": "~3.3.0",
         "react-native-get-random-values": "~1.11.0",
-        "react-native-iroh-ffi": "0.1.0-alpha.4",
+        "react-native-iroh-ffi": "0.1.0-alpha.5",
         "react-native-keyboard-controller": "1.22.8",
         "react-native-nitro-modules": "^0.37.1",
         "react-native-reanimated": "4.7.1",
@@ -171,7 +171,7 @@
     },
     "packages/protocol": {
       "name": "@thinkite/protocol",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "semver": "^7.8.0",
         "zod": "catalog:",
@@ -2035,7 +2035,7 @@
 
     "react-native-get-random-values": ["react-native-get-random-values@1.11.0", "", { "dependencies": { "fast-base64-decode": "^1.0.0" }, "peerDependencies": { "react-native": ">=0.56" } }, "sha512-4BTbDbRmS7iPdhYLRcz3PGFIpFJBwNZg9g42iwa2P6FOv9vZj/xJc678RZXnLNZzd0qd7Q3CCF6Yd+CU2eoXKQ=="],
 
-    "react-native-iroh-ffi": ["react-native-iroh-ffi@0.1.0-alpha.4", "", { "dependencies": { "@ubjs/core": "0.31.0-5", "uniffi-bindgen-react-native": "0.31.0-5" }, "peerDependencies": { "react": "*", "react-native": "*" } }, "sha512-4solvsuMo+JXJdnqf5N4EQlruJti78BzABac+fei34fsk6pPcu7k3GW6SRJl1S/Wv46bpurTO+DPqboc1kbB3A=="],
+    "react-native-iroh-ffi": ["react-native-iroh-ffi@0.1.0-alpha.5", "", { "dependencies": { "@ubjs/core": "0.31.0-5", "uniffi-bindgen-react-native": "0.31.0-5" }, "peerDependencies": { "react": "*", "react-native": "*" } }, "sha512-KeLwjeias9tJHY+faHTwShuZA8uR1kKYt5KlODNdO04AaO+Wh0nnvnCJe7Lx9JhKYUUsG6gTYkgcDqsceRWhQg=="],
 
     "react-native-is-edge-to-edge": ["react-native-is-edge-to-edge@1.3.1", "", { "peerDependencies": { "react": "*", "react-native": "*" } }, "sha512-NIXU/iT5+ORyCc7p0z2nnlkouYKX425vuU1OEm6bMMtWWR9yvb+Xg5AZmImTKoF9abxCPqrKC3rOZsKzUYgYZA=="],
 

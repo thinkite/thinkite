@@ -62,7 +62,7 @@
     "react-native-enriched-markdown": "1.0.2",
     "react-native-gesture-handler": "~3.3.0",
     "react-native-get-random-values": "~1.11.0",
-    "react-native-iroh-ffi": "0.1.0-alpha.4",
+    "react-native-iroh-ffi": "0.1.0-alpha.5",
     "react-native-keyboard-controller": "1.22.8",
     "react-native-nitro-modules": "^0.37.1",
     "react-native-reanimated": "4.7.1",
