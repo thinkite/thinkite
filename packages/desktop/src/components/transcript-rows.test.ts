@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentSessionOf,
   duration,
+  executeSummary,
   groupLabel,
   keepGroupKeys,
   rowsOf,
@@ -308,6 +309,40 @@ describe("groupLabel", () => {
     expect(group?.kind === "group" ? groupLabel(group.items) : "").toBe(
       "Used 2 Thoughts",
     );
+  });
+});
+
+describe("executeSummary", () => {
+  const run = (code: string, toolCalls?: unknown) =>
+    ({
+      type: "tool",
+      id: "t",
+      name: "execute",
+      state: {
+        status: "completed",
+        input: { code },
+        content: [],
+        metadata: toolCalls === undefined ? {} : { toolCalls },
+      },
+    }) as unknown as Parameters<typeof executeSummary>[0];
+
+  it("names the tools the script called, each once, in call order", () => {
+    expect(
+      executeSummary(
+        run("const a = await tools.thinkite.preview_stop({});", [
+          { tool: "thinkite.preview_stop", status: "completed" },
+          { tool: "thinkite.preview_start", status: "completed" },
+          { tool: "thinkite.preview_stop", status: "completed" },
+        ]),
+      ),
+    ).toBe("thinkite.preview_stop, thinkite.preview_start");
+  });
+
+  it("falls back to the script's first line when it called no tool", () => {
+    expect(executeSummary(run("\n  return 1 + 1;\n// done", []))).toBe(
+      "return 1 + 1;",
+    );
+    expect(executeSummary(run(""))).toBe("");
   });
 });
 

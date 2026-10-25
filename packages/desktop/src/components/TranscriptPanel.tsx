@@ -48,6 +48,8 @@ import { modelName, useModels } from "./ModelPicker";
 import {
   agentSessionOf,
   duration,
+  executeCode,
+  executeSummary,
   type GroupItem,
   groupLabel,
   keepGroupKeys,
@@ -196,8 +198,65 @@ function hunksOf(patch: string): string {
   return first <= 0 ? patch : lines.slice(first).join("\n");
 }
 
+/** JSON results (a script returning an object) read best highlighted. */
+function isJson(text: string): boolean {
+  if (!/^[[{]/.test(text.trimStart())) return false;
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A Code Mode run opens to its script and, under it, what it returned or
+ *  why it failed, as opencode's execute card. */
+function executeDetail(tool: ToolPart): ReactNode {
+  const code = executeCode(tool);
+  const error =
+    tool.state.status === "error" ? tool.state.error.message : undefined;
+  const result = error === undefined ? toolOutput(tool) : "";
+  if (code === "" && result === "" && error === undefined) return null;
+  return (
+    <>
+      {code !== "" && (
+        <CodeBlock
+          code={code}
+          language="javascript"
+          tokenizer={highlightTokens}
+          width="100%"
+          size="sm"
+          maxHeight={480}
+        />
+      )}
+      {result !== "" && (
+        <CodeBlock
+          code={result}
+          title="Result"
+          width="100%"
+          size="sm"
+          maxHeight={480}
+          {...(isJson(result)
+            ? { language: "json", tokenizer: highlightTokens }
+            : {})}
+        />
+      )}
+      {error !== undefined && (
+        <Text
+          size="sm"
+          className="whitespace-pre-wrap"
+          style={{ color: "var(--color-text-red)" }}
+        >
+          {error}
+        </Text>
+      )}
+    </>
+  );
+}
+
 /** What a tool line opens to: its diffs, its error, or its output. */
 function toolDetail(tool: ToolPart): ReactNode {
+  if (tool.name === "execute") return executeDetail(tool);
   const diffs = toolDiffs(tool);
   if (diffs.length > 0) {
     return diffs.map((d) => (
@@ -292,7 +351,8 @@ function ToolLine({ tool }: { tool: ToolPart }) {
   const status = tool.state.status;
   const pending = status === "streaming" || status === "running";
   const failed = status === "error";
-  const summary = toolSummary(tool);
+  const summary =
+    tool.name === "execute" ? executeSummary(tool) : toolSummary(tool);
   const diffs = toolDiffs(tool);
   const added = diffs.reduce((n, d) => n + d.additions, 0);
   const removed = diffs.reduce((n, d) => n + d.deletions, 0);

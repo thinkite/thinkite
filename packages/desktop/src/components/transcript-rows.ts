@@ -70,6 +70,30 @@ export function agentSessionOf(tool: ToolPart): string | undefined {
   return typeof id === "string" ? id : undefined;
 }
 
+/** A Code Mode run's script (`execute`'s input). */
+export function executeCode(tool: ToolPart): string {
+  const input = tool.state.input as { code?: unknown } | undefined;
+  return typeof input?.code === "string" ? input.code : "";
+}
+
+/**
+ * What a Code Mode run's line says: the tools its script called, in the
+ * order first called (`metadata.toolCalls`, as opencode's TUI lists them),
+ * or the script's first line when it called none.
+ */
+export function executeSummary(tool: ToolPart): string {
+  const state = tool.state as { metadata?: { toolCalls?: unknown } };
+  const calls = state.metadata?.toolCalls;
+  const names = Array.isArray(calls)
+    ? calls.flatMap((call: unknown) => {
+        const name = (call as { tool?: unknown } | null)?.tool;
+        return typeof name === "string" && name !== "" ? [name] : [];
+      })
+    : [];
+  if (names.length > 0) return [...new Set(names)].join(", ");
+  return executeCode(tool).trim().split("\n", 1)[0] ?? "";
+}
+
 /** A tool's name as opencode's GUI titles it (`toolTitle` in session-ui). */
 export function toolTitle(name: string): string {
   const titles: Record<string, string> = {
