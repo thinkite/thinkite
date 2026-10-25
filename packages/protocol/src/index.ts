@@ -394,8 +394,10 @@ export const getFilesystemRootsResponse = z.object({
 // (docs/preview-tool-v1.md); the daemon keeps a registry per project
 // directory. Same shape as git status: `getPreviews` is the snapshot,
 // `subscribePreviews` a pure change stream of full `previews` lists for
-// that directory. `previewOpened` is pushed when the agent starts a server
-// with `open: true`, so a client showing that session can offer it.
+// that directory. An agent's request to show a server to the user is the
+// entry's `opened` stamp, not an event: a device that was not showing the
+// session at the time still sees it later, and each device remembers on its
+// own which stamps it has handled.
 
 export const previewEntry = z.object({
   /** The agent's label, unique per directory ("web", "api"). */
@@ -407,8 +409,10 @@ export const previewEntry = z.object({
   /** `page` when `GET /` answered text/html, `api` otherwise. */
   kind: z.enum(["page", "api"]).optional(),
   status: z.enum(["starting", "running", "exited", "killed", "timeout"]),
-  /** The agent asked to show it to the user. */
-  open: z.boolean(),
+  /** The agent's latest request to show it to the user: when, and in which
+   *  session. A new `at` means a new request (a reopen of a running server
+   *  stamps it again). It says nothing about the user's tabs. */
+  opened: z.object({ at: z.number(), sessionID: z.string() }).optional(),
   command: z.string(),
   /** Sessions that started or reused it, starter first. */
   sessions: z.array(z.string()),
@@ -474,16 +478,6 @@ export const previewsEvent = z.object({
   type: z.literal("previews"),
   directory: z.string(),
   entries: z.array(previewEntry),
-});
-
-/** Server-initiated push: the agent started (or reused) a server with
- *  `open: true`. A client showing `sessionID` offers to open `url`. */
-export const previewOpenedEvent = z.object({
-  type: z.literal("previewOpened"),
-  directory: z.string(),
-  name: z.string(),
-  sessionID: z.string(),
-  url: z.string(),
 });
 
 // ─── Health + error ────────────────────────────────────────────────────────
@@ -608,7 +602,6 @@ export const daemonFrame = z.discriminatedUnion("type", [
   errorFrame,
   gitStatusEvent,
   previewsEvent,
-  previewOpenedEvent,
   ...response.options,
 ]);
 

@@ -1,6 +1,6 @@
 import type { PreviewEntry } from "@thinkite/protocol";
 import { describe, expect, it } from "vitest";
-import { type PreviewOpened, PreviewRegistry } from "./registry.ts";
+import { PreviewRegistry } from "./registry.ts";
 import type { ShellApi, ShellInfo } from "./shells.ts";
 
 const DIR = "/proj";
@@ -106,19 +106,17 @@ describe("PreviewRegistry.start", () => {
       status: "running",
       primaryPort: 5180,
       kind: "page",
-      open: false,
     });
+    expect(entry?.opened).toBeUndefined();
     expect(shells.shells.get("sh_1")?.cwd).toBe("/proj/web");
     expect(shells.shells.get("sh_1")?.metadata).toEqual({
       thinkite: { preview: "web", open: false, session: "ses_a" },
     });
   });
 
-  it("is idempotent: the same name and command reuse the server, and open just opens it", async () => {
+  it("is idempotent: the same name and command reuse the server, and open just stamps it", async () => {
     const shells = fakeShells();
     const r = registry(shells);
-    const opened: PreviewOpened[] = [];
-    r.onOpened((e) => opened.push(e));
     await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
     const again = await r.start(
       DIR,
@@ -127,19 +125,20 @@ describe("PreviewRegistry.start", () => {
     );
     expect(shells.created()).toBe(1);
     expect(again.text).toBe(
-      '"web" is already running at http://localhost:5180. It is open in the user\'s preview pane.',
+      '"web" is already running at http://localhost:5180. Sent to the user\'s preview pane.',
     );
-    expect(opened).toEqual([
-      {
-        directory: DIR,
-        name: "web",
-        sessionID: "ses_b",
-        url: "http://localhost:5180/",
-      },
-    ]);
     const [entry] = await r.entries(DIR);
     expect(entry?.sessions).toEqual(["ses_a", "ses_b"]);
-    expect(entry?.open).toBe(true);
+    expect(entry?.opened?.sessionID).toBe("ses_b");
+
+    // Every request is a new stamp, so a device that handled the first one
+    // still opens the second.
+    const first = entry?.opened?.at ?? 0;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await r.start(DIR, { name: "web", open: true }, "ses_a");
+    const [later] = await r.entries(DIR);
+    expect(later?.opened?.sessionID).toBe("ses_a");
+    expect(later?.opened?.at).toBeGreaterThan(first);
   });
 
   it("refuses a different command for a running name instead of killing it", async () => {
@@ -242,7 +241,7 @@ describe("PreviewRegistry.list / stop", () => {
     await r.start(DIR, { name: "site", command: "next dev" }, "ses_b");
     const mine = await r.list(DIR, "ses_a");
     expect(mine.text).toBe(
-      "web: http://localhost:5180 (page) — running, open — `bun run dev`\n1 more in this project (pass all: true).",
+      "web: http://localhost:5180 (page) — running, shown to the user — `bun run dev`\n1 more in this project (pass all: true).",
     );
     expect((await r.list(DIR, "ses_a", true)).text.split("\n")).toHaveLength(2);
   });
@@ -257,7 +256,7 @@ describe("PreviewRegistry.list / stop", () => {
     );
   });
 
-  it("stops the shell, drops the entry and names the other sessions", async () => {
+  it("stops the shell, keeps the entry as killed and names the other sessions", async () => {
     const shells = fakeShells();
     const r = registry(shells);
     await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
@@ -267,8 +266,14 @@ describe("PreviewRegistry.list / stop", () => {
       'Stopped "web". It was also in use by 1 other session(s); it stopped for them too.',
     );
     expect(shells.shells.get("sh_1")?.status).toBe("killed");
-    expect(await r.entries(DIR)).toEqual([]);
-    expect((await r.stop(DIR, "web")).isError).toBe(true);
+    expect((await r.entries(DIR))[0]?.status).toBe("killed");
+    expect(await r.stop(DIR, "web")).toEqual({
+      text: '"web" is not running (killed).',
+    });
+    expect((await r.stop(DIR, "nope")).isError).toBe(true);
+    const again = await r.start(DIR, { name: "web", command: "bun run dev" });
+    expect(again.isError).toBeFalsy();
+    expect(shells.created()).toBe(2);
   });
 });
 
@@ -294,7 +299,10 @@ describe("PreviewRegistry rebuild and events", () => {
     expect(entries[0]).toMatchObject({
       name: "web",
       status: "running",
-      open: true,
+      opened: {
+        at: shells.shells.get("sh_1")?.time.started,
+        sessionID: "ses_a",
+      },
       sessions: ["ses_a"],
       primaryPort: 5180,
       command: "bun run dev",

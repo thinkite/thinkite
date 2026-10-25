@@ -73,7 +73,7 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
     {
       name: "preview_list",
       description:
-        "List servers started with preview_start: URL, status, and whether the user has it open.\n" +
+        "List servers started with preview_start: URL, status, and whether it was shown to the user.\n" +
         "Shows this session's servers; pass all: true for every server in the project.",
       inputSchema: {
         type: "object",

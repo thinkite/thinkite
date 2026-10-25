@@ -98,7 +98,7 @@ Lengths are measured and must stay under 120 characters.
 | Tool | First line of the description | Length |
 |---|---|---|
 | `preview_start` | Run a dev server or API in the background so the user can open it (use this, not shell background/nohup). | 105 |
-| `preview_list` | List servers started with preview_start: URL, status, and whether the user has it open. | 87 |
+| `preview_list` | List servers started with preview_start: URL, status, and whether it was shown to the user. | 91 |
 | `preview_logs` | Show the recent output of a server started with preview_start. | 62 |
 | `preview_stop` | Stop a server started with preview_start and free its port. | 59 |
 
@@ -116,8 +116,8 @@ listening."
   a second session asking for the same name gets the running one.
 - Idempotent:
   - **Same name, running, same command:** no restart. Add the caller's
-    session to the entry's `sessions`. If `open` is true, mark the entry
-    open and emit `previewOpened` (below). Return the current URL.
+    session to the entry's `sessions`. If `open` is true, stamp the entry's
+    `opened` again (below). Return the current URL.
   - **Same name, running, different command:** return an error result:
     "`web` is already running `<command>`; call preview_stop first to change
     it." Never kill a server implicitly.
@@ -129,9 +129,10 @@ listening."
   name, open, session } } })` with `location.directory`, and no `timeout`.
 - Wait for a port (see `ports.ts` below), at most 30 s:
   - **Listening:** return `"<name>" is running at http://localhost:<port>`
-    (other ports listed). Add "It is open in the user's preview pane" or
+    (other ports listed). Add "Sent to the user's preview pane" or
     "Registered (not opened)". The words matter: in the test the model used
-    this result to decide what to say to the user.
+    this result to decide what to say to the user. They must not claim more
+    than the daemon knows: it sees the request, not the user's tabs.
   - **Exited first:** an error result with the status, the exit code and
     the last 40 lines of output. The entry stays as `exited`, so logs keep
     working.
@@ -156,9 +157,14 @@ listening."
 ### `preview_stop({ name })`
 
 - `shell.remove`, which kills the process tree. Confirm the ports are free,
-  then drop the entry.
+  then mark the entry `killed`. It stays, so its logs remain readable and
+  clients can show it stopped; a later start of the name replaces it.
+- Stopping an entry that already ended answers "not running (exited)".
 - If the entry has other sessions, say so in the result: the server
   stopped for them too.
+- Stop never touches the user's tabs (see Desktop). Pages already loaded
+  stay on screen; when the agent starts the name again on the same port,
+  the dev server's client reconnects on its own.
 
 ## Registry
 
@@ -173,7 +179,7 @@ type PreviewEntry = {
   ports: number[];          // all listening ports of the process tree
   primaryPort?: number;     // the first one that answers HTTP
   kind?: "page" | "api";    // GET / content-type: text/html → page
-  open: boolean;
+  opened?: { at: number; sessionID: string }; // latest request to show it
   sessions: string[];       // starter first
   status: "starting" | "running" | "exited" | "killed" | "timeout";
   startedAt: number;
@@ -184,8 +190,9 @@ type PreviewEntry = {
   can always be rebuilt. On attach, and on every reconnect, run
   `shell.list({ location: { directory } })`. Running shells with
   `metadata.thinkite.preview` become entries again: re-detect their ports,
-  restore `open` and `session` from the metadata. Entries whose shells are
-  gone are dropped.
+  restore `session` from the metadata, and `opened` (stamped at the shell's
+  start) when `open` was set. Entries whose shells are gone are marked
+  ended, not dropped.
 - **Liveness:** subscribe to the event bus (the daemon already has
   `client.event`). On `shell.exited` for a known shell, update the entry
   and push to clients. `preview_list` and the clients' subscribe also
@@ -193,10 +200,17 @@ type PreviewEntry = {
 - A daemon restart loses what only lived in memory, and v1 accepts both:
   - sessions that reused a server after its starter, so their
     `preview_list` needs `all: true` to see it;
-  - an `open` set by a later start (shell metadata is written once, at
-    create).
-  A small sidecar file in the Thinkite home, keyed by shell id, can keep
-  them if this turns out to matter.
+  - a later request to open it (shell metadata is written once, at
+    create). The rebuilt stamp is the shell's start, older than what any
+    device already handled, so nothing reopens;
+  - entries of servers that had already ended (`shell.list` returns
+    running shells only).
+- No persistence of our own. While the opencode service runs, the servers
+  and their metadata are there to rebuild from; when it restarts, its
+  shells end and there is nothing left to show. If the losses above ever
+  matter, write them back into the shell's metadata once opencode can
+  update it, so opencode stays the one source. A sidecar file in the
+  Thinkite home is the fallback.
 
 ## Client MCP connection
 
@@ -245,15 +259,35 @@ type PreviewEntry = {
 - `unsubscribePreviews { directory }`.
 - `stopPreview { directory, name }`: the user's stop button. Same path as
   the tool.
-- Event `previewOpened { directory, name, sessionID, url }`: sent when a start
-  passes `open: true`. A client showing that session opens the preview.
+- No "opened" event. An agent's request to show a server is the entry's
+  `opened: { at, sessionID }` stamp. An event would be lost on every device
+  that was not showing the session at that moment, the common case when the
+  user switches sessions while the agent works. Each device keeps its own
+  record of the stamps it has handled (per directory and name, the last
+  `at`) and acts on newer ones when the user is in that session.
+- `open`/`opened` is about the request, never about the user's tabs. The
+  daemon does not know which tabs a device has, and the agent must not
+  depend on them.
 
 ### Desktop
 
-- `previewOpened` for the session on screen: open or select a tab at the URL
-  in `BrowserPanel` (per-session tabs already exist, `lib/browser.ts`).
+- Tabs opened from a preview are the user's tabs, in the user's partition
+  (`persist:thinkite-browser`). The agent's own pages, later
+  (thinkite/thinkite#31), live elsewhere and never in this panel.
+- When the session on screen has an entry with an `opened` stamp newer than
+  this device handled, and the entry is running with a primary port:
+  - a tab of that session already on `localhost:<port>`: select it, no
+    reload (HMR keeps it current);
+  - otherwise add a tab at the URL. Never navigate a tab the user is on.
+  - show the browser panel if it is closed: `open: true` is only for "let
+    me see it" requests.
+  - record the stamp as handled, whether or not a tab was made. A tab the
+    user closes stays closed until the agent asks again.
+- After that the tab is an ordinary tab: no following a port change, no
+  closing on stop. A tab on the port of a stopped entry shows a strip:
+  "web stopped" (no restart button in v1).
 - The info panel gets a "Servers" card: name, `localhost:<port>`, kind,
-  status, open, stop.
+  status, shown to the user, stop. Stopped entries stay listed.
 - No tunnel: the pages are on this Mac.
 
 ### Phone
@@ -274,8 +308,10 @@ type PreviewEntry = {
 - The session screen shows a "Preview · web :5180" banner when the session
   has running previews. It is built from the registry, not the transcript:
   in Code Mode the tool call sits inside an `execute` row.
-- `previewOpened` for the session on screen: show the banner's open action.
-  Don't navigate on the user's behalf.
+- A newer `opened` stamp for the session on screen (same per-device record
+  as the desktop): show the banner's open action. Don't navigate on the
+  user's behalf.
+- The selected entry stopped: show it as stopped; don't switch to another.
 
 ## Landing the spike
 

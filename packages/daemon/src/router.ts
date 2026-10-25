@@ -28,32 +28,21 @@ const GIT_SUBS_KEY = "router:gitSubs";
 /** Per-conn map: cwd → unsubscribe-fn returned by GitWatcher.subscribe. */
 type GitSubsMap = Map<string, () => void>;
 
-// Per-conn preview subscriptions: directory → unsubscribe, plus one
-// `previewOpened` listener for the connection, filtered to those directories.
+// Per-conn preview subscriptions: directory → unsubscribe.
 const PREVIEW_SUBS_KEY = "router:previewSubs";
 
-interface PreviewSubs {
-  dirs: Map<string, () => void>;
-  offOpened: () => void;
-}
+type PreviewSubs = Map<string, () => void>;
 
 function getOrCreatePreviewSubs(
   ctx: Parameters<CommandHandler>[1],
-  previews: PreviewRegistry,
 ): PreviewSubs {
   const existing = ctx.state.get(PREVIEW_SUBS_KEY) as PreviewSubs | undefined;
   if (existing !== undefined) return existing;
-  const dirs = new Map<string, () => void>();
-  const send = ctx.send;
-  const offOpened = previews.onOpened((event) => {
-    if (dirs.has(event.directory)) send({ type: "previewOpened", ...event });
-  });
-  const created: PreviewSubs = { dirs, offOpened };
+  const created: PreviewSubs = new Map();
   ctx.state.set(PREVIEW_SUBS_KEY, created);
   ctx.onDisconnect(() => {
-    offOpened();
-    for (const unsubscribe of dirs.values()) unsubscribe();
-    dirs.clear();
+    for (const unsubscribe of created.values()) unsubscribe();
+    created.clear();
   });
   return created;
 }
@@ -308,10 +297,10 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           } else if (cmd.type === "subscribePreviews") {
             // Pure change stream, like subscribeGitStatus: the snapshot is
             // `getPreviews`. Re-subscribing a directory replaces the listener.
-            const subs = getOrCreatePreviewSubs(ctx, previews);
-            subs.dirs.get(cmd.directory)?.();
+            const subs = getOrCreatePreviewSubs(ctx);
+            subs.get(cmd.directory)?.();
             const directory = cmd.directory;
-            subs.dirs.set(
+            subs.set(
               directory,
               previews.subscribe(directory, (entries) =>
                 ctx.send({ type: "previews", directory, entries }),
@@ -326,8 +315,8 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
             const subs = ctx.state.get(PREVIEW_SUBS_KEY) as
               | PreviewSubs
               | undefined;
-            subs?.dirs.get(cmd.directory)?.();
-            subs?.dirs.delete(cmd.directory);
+            subs?.get(cmd.directory)?.();
+            subs?.delete(cmd.directory);
             ctx.send({
               type: "unsubscribePreviews.response",
               requestId: cmd.requestId,

@@ -543,7 +543,7 @@ describe("createCommandHandler — previews", () => {
     ]);
   });
 
-  it("pushes the list and previewOpened to a subscribed connection only", async () => {
+  it("pushes the list to a subscribed connection only", async () => {
     const previews = previewRegistry();
     const handler = createCommandHandler(makeDeps({ previews }));
     const a = makeCtx();
@@ -570,27 +570,24 @@ describe("createCommandHandler — previews", () => {
     expect(a.sent.filter((f) => f.type === "previews").at(-1)).toMatchObject({
       directory: "/proj",
       entries: [
-        { name: "web", status: "running", primaryPort: 5180, open: true },
+        {
+          name: "web",
+          status: "running",
+          primaryPort: 5180,
+          opened: { sessionID: "ses_a" },
+        },
       ],
     });
-    expect(a.sent.filter((f) => f.type === "previewOpened")).toEqual([
-      {
-        type: "previewOpened",
-        directory: "/proj",
-        name: "web",
-        sessionID: "ses_a",
-        url: "http://localhost:5180/",
-      },
-    ]);
     expect(b.sent.map((f) => f.type)).toEqual(["subscribePreviews.response"]);
 
     a.fireDisconnect();
+    const before = a.sent.length;
     await previews.start(
       "/proj",
       { name: "web", command: "bun run dev", open: true },
       "ses_a",
     );
-    expect(a.sent.filter((f) => f.type === "previewOpened")).toHaveLength(1);
+    expect(a.sent).toHaveLength(before);
   });
 
   it("getPreviews snapshots and stopPreview stops", async () => {
@@ -612,7 +609,12 @@ describe("createCommandHandler — previews", () => {
     );
     expect(sent[1]).toEqual({ type: "stopPreview.response", requestId: "r2" });
     await handler(
-      { type: "stopPreview", requestId: "r3", directory: "/proj", name: "web" },
+      {
+        type: "stopPreview",
+        requestId: "r3",
+        directory: "/proj",
+        name: "nope",
+      },
       ctx,
     );
     expect(sent[2]).toMatchObject({

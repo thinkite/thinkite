@@ -6,7 +6,8 @@
 // `metadata.thinkite = { preview, open, session }`, so after a daemon
 // restart `rebuild` finds the running ones again. What a rebuild loses is
 // what only lived here: sessions that reused a server after its starter,
-// and an `open` set by a later start.
+// a later request to open it (the stamp falls back to the start), and the
+// entries of servers that had already ended.
 
 import { resolve as resolvePath } from "node:path";
 import type { PreviewEntry } from "@thinkite/protocol";
@@ -16,13 +17,6 @@ import type { ShellApi, ShellInfo, ShellStatus } from "./shells.ts";
 export interface ToolOutcome {
   text: string;
   isError?: boolean;
-}
-
-export interface PreviewOpened {
-  directory: string;
-  name: string;
-  sessionID: string;
-  url: string;
 }
 
 export interface StartInput {
@@ -56,7 +50,7 @@ interface Entry {
   primaryPort?: number;
   kind?: "page" | "api";
   status: PreviewEntry["status"];
-  open: boolean;
+  opened?: { at: number; sessionID: string };
   sessions: string[];
   startedAt: number;
   exit?: number;
@@ -82,7 +76,6 @@ export class PreviewRegistry {
     string,
     Set<(entries: PreviewEntry[]) => void>
   >();
-  private readonly openedListeners = new Set<(event: PreviewOpened) => void>();
 
   constructor(options: RegistryOptions) {
     this.shells = options.shells;
@@ -158,12 +151,16 @@ export class PreviewRegistry {
           text: `No server named "${name}". Call preview_list.`,
           isError: true,
         };
+      if (entry.status !== "running" && entry.status !== "starting")
+        return { text: `"${name}" is not running (${entry.status}).` };
       await this.shells.remove(directory, entry.shellID).catch(() => undefined);
       if (entry.pid !== undefined) {
         for (let i = 0; i < 12 && (await this.ports(entry.pid)).length > 0; i++)
           await this.sleep(250);
       }
-      this.dir(directory).delete(name);
+      // Kept as ended, not dropped: its logs stay readable and clients can
+      // show it stopped. A later start of the name replaces it.
+      this.markEnded(entry, "killed");
       this.notify(directory);
       const others = entry.sessions.filter((s) => s !== sessionID);
       return {
@@ -198,13 +195,6 @@ export class PreviewRegistry {
     };
   }
 
-  onOpened(listener: (event: PreviewOpened) => void): () => void {
-    this.openedListeners.add(listener);
-    return () => {
-      this.openedListeners.delete(listener);
-    };
-  }
-
   // ─── opencode side ──────────────────────────────────────────────────────
 
   /** Recover entries from the directory's running shells (after a daemon
@@ -236,7 +226,9 @@ export class PreviewRegistry {
         cwd: shell.cwd,
         ports: [],
         status: "starting",
-        open: meta.open,
+        ...(meta.open && meta.session
+          ? { opened: { at: shell.time.started, sessionID: meta.session } }
+          : {}),
         sessions: meta.session ? [meta.session] : [],
         startedAt: shell.time.started,
       };
@@ -292,9 +284,9 @@ export class PreviewRegistry {
       }
       if (sessionID && !existing.sessions.includes(sessionID))
         existing.sessions.push(sessionID);
-      if (input.open) existing.open = true;
+      if (input.open && sessionID)
+        existing.opened = { at: Date.now(), sessionID };
       this.notify(directory);
-      if (input.open) this.opened(existing, sessionID);
       return {
         text: `"${input.name}" is already ${describeRunning(existing)}`,
       };
@@ -312,6 +304,7 @@ export class PreviewRegistry {
         thinkite: { preview: input.name, open, session: sessionID ?? null },
       },
     });
+    const startedAt = shell.time?.started ?? Date.now();
     const entry: Entry = {
       directory,
       name: input.name,
@@ -321,9 +314,9 @@ export class PreviewRegistry {
       cwd: absoluteCwd,
       ports: [],
       status: "starting",
-      open,
+      ...(open && sessionID ? { opened: { at: Date.now(), sessionID } } : {}),
       sessions: sessionID ? [sessionID] : [],
-      startedAt: shell.time?.started ?? Date.now(),
+      startedAt,
     };
     dir.set(entry.name, entry);
     this.log(
@@ -333,7 +326,6 @@ export class PreviewRegistry {
 
     const outcome = await this.detect(entry, this.waitMs);
     if (outcome === "listening") {
-      if (open) this.opened(entry, sessionID);
       return { text: `"${entry.name}" is ${describeRunning(entry)}` };
     }
     if (outcome === "ended") {
@@ -457,18 +449,6 @@ export class PreviewRegistry {
       .join("\n");
   }
 
-  private opened(entry: Entry, sessionID?: string): void {
-    const session = sessionID ?? entry.sessions[0];
-    if (!session || entry.primaryPort === undefined) return;
-    const event = {
-      directory: entry.directory,
-      name: entry.name,
-      sessionID: session,
-      url: `http://localhost:${entry.primaryPort}/`,
-    };
-    for (const listener of this.openedListeners) listener(event);
-  }
-
   private notify(directory: string): void {
     const listeners = this.listeners.get(directory);
     if (!listeners || listeners.size === 0) return;
@@ -518,7 +498,7 @@ function toPublic(entry: Entry): PreviewEntry {
       : { primaryPort: entry.primaryPort }),
     ...(entry.kind === undefined ? {} : { kind: entry.kind }),
     status: entry.status,
-    open: entry.open,
+    ...(entry.opened === undefined ? {} : { opened: entry.opened }),
     command: entry.command,
     sessions: entry.sessions,
     startedAt: entry.startedAt,
@@ -530,7 +510,7 @@ function url(entry: Entry): string {
   return `http://localhost:${entry.primaryPort ?? entry.ports[0]}`;
 }
 
-/** "running at http://localhost:5180 (also listening on 24678). It is open…" */
+/** "running at http://localhost:5180 (also listening on 24678). Sent to…" */
 function describeRunning(entry: Entry): string {
   if (entry.status === "starting" || entry.ports.length === 0) {
     return "running, but no port is listening yet. Check preview_logs.";
@@ -539,8 +519,8 @@ function describeRunning(entry: Entry): string {
   return (
     `running at ${url(entry)}` +
     (others.length > 0 ? ` (also listening on ${others.join(", ")})` : "") +
-    (entry.open
-      ? ". It is open in the user's preview pane."
+    (entry.opened
+      ? ". Sent to the user's preview pane."
       : ". Registered (not opened).")
   );
 }
@@ -555,7 +535,7 @@ function describe(entry: Entry): string {
         return `running (no port listening) — \`${entry.command}\``;
       return (
         `${url(entry)}${entry.kind ? ` (${entry.kind})` : ""} — running` +
-        (entry.open ? ", open" : "") +
+        (entry.opened ? ", shown to the user" : "") +
         (entry.ports.length > 1 ? `, ports ${entry.ports.join(", ")}` : "") +
         ` — \`${entry.command}\``
       );
