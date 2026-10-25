@@ -8,6 +8,8 @@ export {
   encodeWireFrame,
   IROH_HTTP_ALPN,
   IROH_RPC_ALPN,
+  IROH_TCP_ALPN,
+  IROH_TCP_HEADER_BYTES,
   MAX_WIRE_FRAME_BYTES,
   WIRE_FRAME_HEADER_BYTES,
 } from "./wire-frame.ts";

@@ -9,6 +9,7 @@ import {
   encodeWireFrame,
   IROH_HTTP_ALPN,
   IROH_RPC_ALPN,
+  IROH_TCP_ALPN,
   isProtocolCompatible,
   PROTOCOL_VERSION,
   WIRE_FRAME_HEADER_BYTES,
@@ -17,6 +18,7 @@ import type { CommandContext, CommandHandler } from "./command.ts";
 import type { Identity } from "./identity.ts";
 import { fingerprintFromPubkeyB64, seedFromPrivateKey } from "./identity.ts";
 import { IrohHttpTunnel } from "./iroh-http-tunnel.ts";
+import { IrohTcpTunnel } from "./iroh-tcp-tunnel.ts";
 import type { KnownClients } from "./known-clients.ts";
 import type { ResolveOpencode } from "./opencode/service.ts";
 
@@ -116,6 +118,8 @@ export class IrohPeerServer {
   private readonly log: NonNullable<IrohPeerServerOptions["log"]>;
   /** HTTP ALPN surface: one bi-stream per HTTP/1.1 connection. */
   private readonly tunnel: IrohHttpTunnel;
+  /** TCP ALPN surface: one bi-stream per TCP connection to a Mac port. */
+  private readonly tcpTunnel: IrohTcpTunnel;
 
   constructor(options: IrohPeerServerOptions) {
     this.identity = options.identity;
@@ -132,6 +136,7 @@ export class IrohPeerServer {
         }),
       log: this.log,
     });
+    this.tcpTunnel = new IrohTcpTunnel({ log: this.log });
   }
 
   /**
@@ -152,6 +157,7 @@ export class IrohPeerServer {
     b.alpns([
       Array.from(Buffer.from(IROH_RPC_ALPN)),
       Array.from(Buffer.from(IROH_HTTP_ALPN)),
+      Array.from(Buffer.from(IROH_TCP_ALPN)),
     ]);
     const ep = await b.bind();
     if (this.stopped) {
@@ -164,6 +170,7 @@ export class IrohPeerServer {
       endpointId: ep.id().toString(),
       alpn: IROH_RPC_ALPN,
       httpAlpn: IROH_HTTP_ALPN,
+      tcpAlpn: IROH_TCP_ALPN,
     });
     void this.acceptLoop(ep);
   }
@@ -176,6 +183,7 @@ export class IrohPeerServer {
     this.peers.clear();
     // Close tunnel connections + the proxy before the endpoint goes away.
     this.tunnel.stop();
+    this.tcpTunnel.stop();
     if (this.endpoint) {
       const ep = this.endpoint;
       this.endpoint = null;
@@ -195,6 +203,14 @@ export class IrohPeerServer {
   /** Active HTTP-tunnel connections (the other half of the same gate). */
   httpTunnelCount(): number {
     return this.tunnel.activeConnections();
+  }
+
+  /** Active TCP-tunnel connections and the sockets they hold open. */
+  tcpTunnelCounts(): { connections: number; sockets: number } {
+    return {
+      connections: this.tcpTunnel.activeConnections(),
+      sockets: this.tcpTunnel.activeSockets(),
+    };
   }
 
   /** Test hook: the bound endpoint's dialable address (id + direct addrs). */
@@ -239,6 +255,7 @@ export class IrohPeerServer {
     // below, HTTP connections go to the tunnel after the gate.
     const alpn = Buffer.from(Uint8Array.from(conn.alpn())).toString();
     const isHttp = alpn === IROH_HTTP_ALPN;
+    const isTcp = alpn === IROH_TCP_ALPN;
 
     // ── known_clients gate ──
     // remoteId is authenticated by the QUIC handshake itself (the peer
@@ -253,7 +270,11 @@ export class IrohPeerServer {
     if (!known) {
       if (!this.isPairing()) {
         this.log(
-          isHttp ? "iroh.http.rejected_unknown" : "iroh.peer.rejected_unknown",
+          isHttp
+            ? "iroh.http.rejected_unknown"
+            : isTcp
+              ? "iroh.tcp.rejected_unknown"
+              : "iroh.peer.rejected_unknown",
           { pubkey: clientPubkey.slice(0, 12) },
         );
         conn.close(CLOSE_UNKNOWN_CLIENT, Array.from(Buffer.from("unknown")));
@@ -273,6 +294,10 @@ export class IrohPeerServer {
       // The tunnel accepts bi-streams itself; fire-and-forget so the main
       // accept loop keeps serving other connections.
       void this.tunnel.serveConnection(conn);
+      return;
+    }
+    if (isTcp) {
+      void this.tcpTunnel.serveConnection(conn);
       return;
     }
 

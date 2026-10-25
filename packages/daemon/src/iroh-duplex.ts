@@ -10,6 +10,7 @@ const READ_CHUNK = 64 * 1024;
 export function irohDuplex(bi: BiStream, log?: (m: string) => void): Duplex {
   let reading = false;
   let ended = false;
+  let finished = false;
   let writeChain: Promise<void> = Promise.resolve();
 
   const d = new Duplex({
@@ -49,13 +50,18 @@ export function irohDuplex(bi: BiStream, log?: (m: string) => void): Duplex {
       writeChain
         .then(() => bi.send.finish())
         .then(
-          () => cb(),
+          () => {
+            finished = true;
+            cb();
+          },
           (err) => cb(err),
         );
     },
     destroy(err, cb) {
-      bi.send.reset(0n).catch(() => {});
-      bi.recv.stop(0n).catch(() => {});
+      // After a clean finish/EOF there is nothing to abort, and a reset
+      // after finish would discard bytes the peer hasn't acknowledged yet.
+      if (!finished) bi.send.reset(0n).catch(() => {});
+      if (!ended) bi.recv.stop(0n).catch(() => {});
       cb(err);
     },
   });

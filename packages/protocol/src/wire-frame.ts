@@ -27,6 +27,16 @@ export const IROH_RPC_ALPN = "thinkite/rpc/1";
  *  the same endpoint; the accept loop dispatches on the negotiated ALPN. */
 export const IROH_HTTP_ALPN = "thinkite/http/1";
 
+/** ALPN for the daemon's TCP tunnel to the Mac's own dev servers
+ *  (`thinkite/tcp/1`): each bi-stream starts with the port as two bytes,
+ *  big-endian, then carries one TCP connection to that port on the Mac's
+ *  loopback, byte for byte. The app's side is react-native-iroh-ffi's
+ *  `forwardTcp`. */
+export const IROH_TCP_ALPN = "thinkite/tcp/1";
+
+/** Bytes in the TCP tunnel's port header. */
+export const IROH_TCP_HEADER_BYTES = 2;
+
 /** Bytes in the length prefix. */
 export const WIRE_FRAME_HEADER_BYTES = 4;
 
