@@ -11,7 +11,7 @@
 
 import { resolve as resolvePath } from "node:path";
 import type { PreviewEntry } from "@thinkite/protocol";
-import { type HttpProbe, listeningPorts, probeHttp } from "./ports.ts";
+import { listeningPorts, probeHttp } from "./ports.ts";
 import type { ShellApi, ShellInfo, ShellStatus } from "./shells.ts";
 
 export interface ToolOutcome {
@@ -29,7 +29,7 @@ export interface StartInput {
 export interface RegistryOptions {
   shells: ShellApi;
   ports?: (pid: number) => Promise<number[]>;
-  probe?: (port: number) => Promise<HttpProbe>;
+  probe?: (port: number) => Promise<boolean>;
   sleep?: (ms: number) => Promise<void>;
   /** How long `start` waits for a port before answering. */
   waitMs?: number;
@@ -48,7 +48,6 @@ interface Entry {
   cwd?: string;
   ports: number[];
   primaryPort?: number;
-  kind?: "page" | "api";
   status: PreviewEntry["status"];
   opened?: { at: number; sessionID: string };
   sessions: string[];
@@ -63,7 +62,7 @@ const LOG_BYTES = 32 * 1024;
 export class PreviewRegistry {
   private readonly shells: ShellApi;
   private readonly ports: (pid: number) => Promise<number[]>;
-  private readonly probe: (port: number) => Promise<HttpProbe>;
+  private readonly probe: (port: number) => Promise<boolean>;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly waitMs: number;
   private readonly backgroundMs: number;
@@ -391,16 +390,15 @@ export class PreviewRegistry {
   private async settle(entry: Entry, ports: number[]): Promise<void> {
     entry.ports = ports;
     entry.status = "running";
+    // The page's URL: the first port that answers HTTP, so a debugger or
+    // other side port of the same process tree isn't the one opened.
     for (const port of ports) {
-      const probe = await this.probe(port);
-      if (probe) {
+      if (await this.probe(port)) {
         entry.primaryPort = port;
-        entry.kind = probe.kind;
         return;
       }
     }
     entry.primaryPort = ports[0];
-    entry.kind = undefined;
   }
 
   /** Re-check one entry's shell and ports. */
@@ -496,7 +494,6 @@ function toPublic(entry: Entry): PreviewEntry {
     ...(entry.primaryPort === undefined
       ? {}
       : { primaryPort: entry.primaryPort }),
-    ...(entry.kind === undefined ? {} : { kind: entry.kind }),
     status: entry.status,
     ...(entry.opened === undefined ? {} : { opened: entry.opened }),
     command: entry.command,
@@ -534,7 +531,7 @@ function describe(entry: Entry): string {
       if (entry.ports.length === 0)
         return `running (no port listening) — \`${entry.command}\``;
       return (
-        `${url(entry)}${entry.kind ? ` (${entry.kind})` : ""} — running` +
+        `${url(entry)} — running` +
         (entry.opened ? ", shown to the user" : "") +
         (entry.ports.length > 1 ? `, ports ${entry.ports.join(", ")}` : "") +
         ` — \`${entry.command}\``

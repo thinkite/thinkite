@@ -74,12 +74,7 @@ function registry(
       },
     },
     ports: async (pid) => shells.ports.get(pid) ?? [],
-    probe: async (port) =>
-      port === 5180 || port === 3001
-        ? { kind: "page" }
-        : port === 8080
-          ? { kind: "api" }
-          : null,
+    probe: async (port) => port === 5180 || port === 3001 || port === 8080,
     sleep: () => new Promise((r) => setTimeout(r, 1)),
     waitMs: 40,
     backgroundMs: 200,
@@ -105,7 +100,6 @@ describe("PreviewRegistry.start", () => {
       name: "web",
       status: "running",
       primaryPort: 5180,
-      kind: "page",
     });
     expect(entry?.opened).toBeUndefined();
     expect(shells.shells.get("sh_1")?.cwd).toBe("/proj/web");
@@ -180,7 +174,7 @@ describe("PreviewRegistry.start", () => {
         },
       },
       ports: async () => [],
-      probe: async () => null,
+      probe: async () => false,
       sleep: () => new Promise((r) => setTimeout(r, 1)),
       waitMs: 40,
     });
@@ -211,7 +205,7 @@ describe("PreviewRegistry.start", () => {
     expect(pushes.at(-1)?.[0]).toMatchObject({
       status: "running",
       ports: [8080],
-      kind: "api",
+      primaryPort: 8080,
     });
   });
 
@@ -241,7 +235,7 @@ describe("PreviewRegistry.list / stop", () => {
     await r.start(DIR, { name: "site", command: "next dev" }, "ses_b");
     const mine = await r.list(DIR, "ses_a");
     expect(mine.text).toBe(
-      "web: http://localhost:5180 (page) — running, shown to the user — `bun run dev`\n1 more in this project (pass all: true).",
+      "web: http://localhost:5180 — running, shown to the user — `bun run dev`\n1 more in this project (pass all: true).",
     );
     expect((await r.list(DIR, "ses_a", true)).text.split("\n")).toHaveLength(2);
   });

@@ -6,7 +6,6 @@ const entry = (over: Partial<PreviewEntry>): PreviewEntry => ({
   name: "web",
   ports: [5180],
   primaryPort: 5180,
-  kind: "page",
   status: "running",
   command: "bun run dev",
   sessions: ["ses_a"],

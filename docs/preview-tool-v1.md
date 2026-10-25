@@ -178,7 +178,6 @@ type PreviewEntry = {
   cwd: string;
   ports: number[];          // all listening ports of the process tree
   primaryPort?: number;     // the first one that answers HTTP
-  kind?: "page" | "api";    // GET / content-type: text/html → page
   opened?: { at: number; sessionID: string }; // latest request to show it
   sessions: string[];       // starter first
   status: "starting" | "running" | "exited" | "killed" | "timeout";
@@ -246,8 +245,9 @@ type PreviewEntry = {
   3. `lsof -a -p <pids> -nP -iTCP -sTCP:LISTEN -Fn`.
 - Measured 10-24: Vite, Next.js and `bun --hot` are found 0.1–1.4 s after
   the shell starts. Per-pid lsof costs about 20 ms, and so does `ps`.
-- `primaryPort`: the first port whose `GET /` answers, with a 1.5 s timeout.
-  `kind`: `page` if that response is `text/html`.
+- `primaryPort`: the first port whose `GET /` answers, with a 1.5 s timeout,
+  so a debugger or other side port isn't the one opened. No page/API
+  classification: whether to show a server is the agent's `open`.
 
 ## Clients
 
@@ -286,8 +286,8 @@ type PreviewEntry = {
 - After that the tab is an ordinary tab: no following a port change, no
   closing on stop. A tab on the port of a stopped entry shows a strip:
   "web stopped" (no restart button in v1).
-- The info panel gets a "Servers" card: name, `localhost:<port>`, kind,
-  status, shown to the user, stop. Stopped entries stay listed.
+- The info panel gets a "Servers" card: a status dot, name, `:<port>`
+  (opens it in a tab), status, stop. Stopped entries stay listed.
 - No tunnel: the pages are on this Mac.
 
 ### Phone

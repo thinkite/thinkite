@@ -60,19 +60,16 @@ export async function listeningPorts(root: number): Promise<number[]> {
   return [...ports].sort((a, b) => a - b);
 }
 
-export type HttpProbe = { kind: "page" | "api" } | null;
-
-/** `GET /` on localhost: null when it doesn't answer HTTP. */
-export async function probeHttp(port: number): Promise<HttpProbe> {
+/** Whether `GET /` on localhost answers HTTP at all. */
+export async function probeHttp(port: number): Promise<boolean> {
   try {
     const res = await fetch(`http://localhost:${port}/`, {
       signal: AbortSignal.timeout(1500),
       redirect: "manual",
     });
     await res.body?.cancel();
-    const type = res.headers.get("content-type") ?? "";
-    return { kind: type.includes("text/html") ? "page" : "api" };
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }

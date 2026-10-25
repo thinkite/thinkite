@@ -406,8 +406,6 @@ export const previewEntry = z.object({
   ports: z.array(z.number().int().positive()),
   /** The first port that answered HTTP. Absent while starting. */
   primaryPort: z.number().int().positive().optional(),
-  /** `page` when `GET /` answered text/html, `api` otherwise. */
-  kind: z.enum(["page", "api"]).optional(),
   status: z.enum(["starting", "running", "exited", "killed", "timeout"]),
   /** The agent's latest request to show it to the user: when, and in which
    *  session. A new `at` means a new request (a reopen of a running server

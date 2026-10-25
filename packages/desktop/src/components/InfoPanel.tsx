@@ -324,7 +324,7 @@ function serverState(e: PreviewEntry): string {
     case "starting":
       return "Starting";
     case "running":
-      return e.ports.length === 0 ? "No port" : (e.kind ?? "Running");
+      return e.ports.length === 0 ? "No port" : "Running";
     case "exited":
       return e.exit === undefined ? "Exited" : `Exited (${e.exit})`;
     default:
