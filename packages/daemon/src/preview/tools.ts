@@ -40,7 +40,7 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
           command: {
             type: "string",
             description:
-              "Shell command that starts the server. Omit to use .claude/launch.json's configuration of this name.",
+              "Shell command that starts the server, e.g. npm run dev or PORT=8080 bun server.ts",
           },
           cwd: {
             type: "string",
@@ -52,7 +52,7 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
             description: "Show it to the user in the preview pane (pages only)",
           },
         },
-        required: ["name"],
+        required: ["name", "command"],
       },
       call: (args, ctx) => {
         const name = str(args.name);

@@ -34,6 +34,9 @@ clicks) is a separate, later piece: thinkite/thinkite#31.
   model reads the error from the result and picks another, as it did in the
   test.
 - The desktop/phone UI does not start servers. Starting is the agent's job.
+- No launch configuration file. If the UI ever gets a "start web" button,
+  that needs Thinkite's own file (for example `.thinkite/launch.json`),
+  not Claude Code's `.claude/launch.json`.
 
 ## What the 10-24 experiment settled
 
@@ -80,7 +83,6 @@ packages/daemon/src/preview/
   host.ts       connection per directory, tool handlers
   registry.ts   entries, idempotency, rebuild, liveness
   ports.ts      process tree → listening ports (ps + lsof -a -p)
-  launch.ts     .claude/launch.json lookup
   tools.ts      names, descriptions, input schemas
 ```
 
@@ -108,7 +110,7 @@ phone. Set open: true only for a page the user should look at in a browser;
 leave it false for APIs and other backends. Returns the URL once the port is
 listening."
 
-### `preview_start({ name, command?, cwd?, open? })`
+### `preview_start({ name, command, cwd?, open? })`
 
 - `name` is the key, unique per directory. A server is a project resource, so
   a second session asking for the same name gets the running one.
@@ -120,10 +122,9 @@ listening."
     "`web` is already running `<command>`; call preview_stop first to change
     it." Never kill a server implicitly.
   - **Same name, exited, or new:** create a new shell and replace the entry.
-- `command` omitted: look up a configuration called `name` in
-  `<directory>/.claude/launch.json` (`runtimeExecutable` + `runtimeArgs`,
-  `cwd`, `env`). No file or no match is an error that says to pass
-  `command`.
+- `command` is required. In every test run the model read
+  `package.json` and wrote the command itself, so v1 reads no launch
+  configuration. A reopen of a running name may omit it.
 - Start: `shell.create({ command, cwd, metadata: { thinkite: { preview:
   name, open, session } } })` with `location.directory`, and no `timeout`.
 - Wait for a port (see `ports.ts` below), at most 30 s:

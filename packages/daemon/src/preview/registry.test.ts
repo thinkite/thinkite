@@ -1,6 +1,3 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { PreviewEntry } from "@thinkite/protocol";
 import { describe, expect, it } from "vitest";
 import { type PreviewOpened, PreviewRegistry } from "./registry.ts";
@@ -219,32 +216,17 @@ describe("PreviewRegistry.start", () => {
     });
   });
 
-  it("uses .claude/launch.json when no command is given", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "preview-launch-"));
-    mkdirSync(join(dir, ".claude"));
-    writeFileSync(
-      join(dir, ".claude", "launch.json"),
-      JSON.stringify({
-        version: "0.0.1",
-        configurations: [
-          {
-            name: "web",
-            runtimeExecutable: "npm",
-            runtimeArgs: ["run", "dev"],
-            env: { PORT: "5180" },
-          },
-        ],
-      }),
-    );
+  it("needs a command for a new name, but not to reopen a running one", async () => {
     const shells = fakeShells();
     const r = registry(shells);
-    expect((await r.start(dir, { name: "web" })).isError).toBeFalsy();
-    expect(shells.shells.get("sh_1")?.command).toBe("PORT=5180 npm run dev");
-    const missing = await r.start(dir, { name: "api" });
-    expect(missing).toEqual({
-      text: '.claude/launch.json has no configuration named "api"; pass command',
+    expect(await r.start(DIR, { name: "web" })).toEqual({
+      text: "command is required to start a server.",
       isError: true,
     });
+    await r.start(DIR, { name: "web", command: "bun run dev" });
+    const reopen = await r.start(DIR, { name: "web", open: true });
+    expect(reopen.isError).toBeFalsy();
+    expect(shells.created()).toBe(1);
   });
 });
 

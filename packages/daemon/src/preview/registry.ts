@@ -10,7 +10,6 @@
 
 import { resolve as resolvePath } from "node:path";
 import type { PreviewEntry } from "@thinkite/protocol";
-import { launchCommand } from "./launch.ts";
 import { type HttpProbe, listeningPorts, probeHttp } from "./ports.ts";
 import type { ShellApi, ShellInfo, ShellStatus } from "./shells.ts";
 
@@ -279,8 +278,8 @@ export class PreviewRegistry {
     ) {
       await this.refresh(existing);
     }
-    let command = input.command?.trim() || undefined;
-    let cwd = input.cwd;
+    const command = input.command?.trim() || undefined;
+    const cwd = input.cwd;
     if (
       existing &&
       (existing.status === "running" || existing.status === "starting")
@@ -301,10 +300,7 @@ export class PreviewRegistry {
       };
     }
     if (command === undefined) {
-      const launch = await launchCommand(directory, input.name);
-      if ("error" in launch) return { text: launch.error, isError: true };
-      command = launch.command;
-      cwd ??= launch.cwd;
+      return { text: "command is required to start a server.", isError: true };
     }
     const absoluteCwd =
       cwd === undefined ? undefined : resolvePath(directory, cwd);
