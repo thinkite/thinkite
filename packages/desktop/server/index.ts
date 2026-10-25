@@ -24,6 +24,7 @@ import {
   start as startDaemon,
   startsTask,
 } from "@thinkite/daemon";
+import type { PreviewEntry } from "@thinkite/protocol";
 import {
   app,
   BrowserWindow,
@@ -318,6 +319,45 @@ const server = createServer(async (req, res) => {
         res.write("data: changed\n\n");
       });
       req.on("close", stop);
+      return;
+    }
+    // The servers the agent started in one folder (the daemon's preview
+    // registry): the whole list at once, then again after every change
+    // (lib/previews).
+    if (url.pathname === "/api/previews/events") {
+      const directory = url.searchParams.get("directory");
+      if (daemon === null || directory === null || !isAbsolute(directory)) {
+        res.writeHead(400, { "content-type": "text/plain" });
+        res.end("directory required");
+        return;
+      }
+      const previews = daemon.previews;
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+      });
+      const send = (entries: PreviewEntry[]) =>
+        res.write(`data: ${JSON.stringify(entries)}\n\n`);
+      const stop = previews.subscribe(directory, send);
+      req.on("close", stop);
+      previews.entries(directory).then(send, () => send([]));
+      return;
+    }
+    // The Servers card's stop button: the same path as the agent's
+    // preview_stop.
+    if (url.pathname === "/api/previews/stop" && req.method === "POST") {
+      const directory = url.searchParams.get("directory") ?? "";
+      const name = url.searchParams.get("name") ?? "";
+      if (daemon === null || !isAbsolute(directory) || name === "") {
+        res.writeHead(400, { "content-type": "text/plain" });
+        res.end("directory and name required");
+        return;
+      }
+      const outcome = await daemon.previews.stop(directory, name);
+      res.writeHead(outcome.isError ? 404 : 204, {
+        "content-type": "text/plain",
+      });
+      res.end(outcome.isError ? outcome.text : undefined);
       return;
     }
     if (url.pathname === "/oc" || url.pathname.startsWith("/oc/")) {

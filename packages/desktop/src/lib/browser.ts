@@ -61,6 +61,40 @@ export function openBrowserTab(sessionID: string, url = BLANK) {
   });
 }
 
+const originOf = (url: string) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Show `url` without taking a page from the user: select the tab already
+ * on its origin (no reload), else put it in place of the blank tab the user
+ * is on, else in a new tab. False when every tab is taken.
+ */
+export function showBrowserPage(sessionID: string, url: string): boolean {
+  const origin = originOf(url);
+  let shown = true;
+  update(sessionID, (t) => {
+    const same = t.open.find((x) => originOf(x.url) === origin);
+    if (same !== undefined) return { ...t, active: same.n };
+    const n = Math.max(0, ...t.open.map((x) => x.n)) + 1;
+    const tab = { n, url, title: "" };
+    // A fresh number, so the page mounts at the address (a page's address
+    // is set once, at mount).
+    const blank = t.open.findIndex((x) => x.n === t.active && x.url === BLANK);
+    if (blank !== -1) return { open: t.open.with(blank, tab), active: n };
+    if (t.open.length >= MAX_BROWSER_TABS) {
+      shown = false;
+      return t;
+    }
+    return { open: [...t.open, tab], active: n };
+  });
+  return shown;
+}
+
 export function selectBrowserTab(sessionID: string, n: number) {
   update(sessionID, (t) => ({ ...t, active: n }));
 }

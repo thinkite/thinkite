@@ -49,8 +49,10 @@ import {
   type MessageActions,
   TranscriptPanel,
 } from "../../components/TranscriptPanel";
+import { showBrowserPage } from "../../lib/browser";
 import { useGitEvents } from "../../lib/git-events";
 import { ocClient, ocReady, ocStore } from "../../lib/oc";
+import { usePreviewRequests } from "../../lib/previews";
 
 // Session screen: transcript center column with a live composer (opencode
 // v2 `session.prompt` through the same-origin `/oc` proxy), and a right
@@ -402,6 +404,15 @@ function Session({ sessionId }: { sessionId: string }) {
     if (s === "browser") setBrowserVisited(true);
     surfaceBySession.set(sessionId, s);
   };
+  // A page the agent asked to show (preview_start with open: true) opens in
+  // a tab of this session's browser, and the browser comes up.
+  usePreviewRequests(sessionId, session?.location.directory, () =>
+    pick("browser"),
+  );
+  const openPage = (url: string) => {
+    showBrowserPage(sessionId, url);
+    pick("browser");
+  };
 
   // The row is gone: deleted, or blank until the effect above brings it back.
   if (session === undefined)
@@ -552,6 +563,7 @@ function Session({ sessionId }: { sessionId: string }) {
                     session={session}
                     isRunning={running}
                     onOpenDiff={() => pick("diff")}
+                    onOpenPage={openPage}
                   />
                 ) : null}
                 {terminalVisited ? (
@@ -572,7 +584,10 @@ function Session({ sessionId }: { sessionId: string }) {
                       surface === "browser" ? "h-full min-h-0" : "hidden"
                     }
                   >
-                    <BrowserPanel sessionId={sessionId} />
+                    <BrowserPanel
+                      sessionId={sessionId}
+                      directory={session.location.directory}
+                    />
                   </div>
                 ) : null}
                 {diffVisited ? (

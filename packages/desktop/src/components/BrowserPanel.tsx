@@ -27,6 +27,7 @@ import {
   updateBrowserTab,
 } from "../lib/browser";
 import { isDesktopShell } from "../lib/desktop-shell";
+import { stoppedServerAt, usePreviews } from "../lib/previews";
 
 // The browser surface, after DeepSeek Harness's sidebar browser: a
 // session's pages as tabs, each an Electron `<webview>` guest that the
@@ -35,7 +36,9 @@ import { isDesktopShell } from "../lib/desktop-shell";
 // the terminal surface's does: × and + at its end, + always last. A tab's
 // page mounts the first time it is selected and then stays mounted, so
 // switching tabs keeps each page as it was. For the user only: the agent
-// neither sees nor drives these pages.
+// neither sees nor drives these pages. A page the agent asks to show
+// (lib/previews) opens here as one of the user's tabs, and stays the
+// user's: a stopped server leaves its tab where it is, with a note.
 
 /** Must match server/browser-guests. */
 const PARTITION = "persist:thinkite-browser";
@@ -194,7 +197,13 @@ function Page({
   );
 }
 
-export function BrowserPanel({ sessionId }: { sessionId: string }) {
+export function BrowserPanel({
+  sessionId,
+  directory,
+}: {
+  sessionId: string;
+  directory: string;
+}) {
   const { open, active } = useSelector(browserTabs, (all) =>
     browserTabsOf(all, sessionId),
   );
@@ -205,6 +214,9 @@ export function BrowserPanel({ sessionId }: { sessionId: string }) {
   const [seen, setSeen] = useState(() => new Set([active]));
   if (open.length > 0 && !seen.has(active)) setSeen(new Set(seen).add(active));
   const [draft, setDraft] = useState<string | null>(null);
+  const previews = usePreviews(directory);
+  const stopped =
+    current === undefined ? undefined : stoppedServerAt(previews, current.url);
 
   // A page's popup, sent back by the main process (server/browser-guests).
   useEffect(() => {
@@ -346,6 +358,13 @@ export function BrowserPanel({ sessionId }: { sessionId: string }) {
               !/^https?:/.test(current.url),
             )}
           </div>
+          {stopped !== undefined ? (
+            <div className="shrink-0 border-b border-[var(--color-border)] px-3 py-2">
+              <Text size="sm" color="secondary">
+                {`${stopped.name} stopped`}
+              </Text>
+            </div>
+          ) : null}
           {nav.error !== null ? (
             <div className="shrink-0 border-b border-[var(--color-border)] px-3 py-2">
               <Text size="sm" color="secondary">

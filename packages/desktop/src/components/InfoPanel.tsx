@@ -1,3 +1,4 @@
+import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { ProgressBar } from "@astryxdesign/core/ProgressBar";
 import { Text } from "@astryxdesign/core/Text";
@@ -14,25 +15,29 @@ import {
   type VcsInfo,
 } from "@thinkite/oc-client";
 import { useMessages } from "@thinkite/oc-client/react";
+import type { PreviewEntry } from "@thinkite/protocol";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
   FileDiffIcon,
   FolderIcon,
   GitBranchIcon,
+  SquareIcon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ocClient, ocStore } from "../lib/oc";
 import { prefs, updatePrefs } from "../lib/prefs";
+import { isLive, previewUrl, stopPreview, usePreviews } from "../lib/previews";
 import { vcsKeys } from "../lib/query";
 import { findModel, useModels } from "./ModelPicker";
 
 // The session panel's default view, after Claude Code's: a column of small
 // cards that each sum up one thing in a line and open in place for more —
-// where the session runs, how full its context is, and what it changed
-// (a click on that opens the diff). Which cards are open is a client pref.
+// where the session runs, how full its context is, what it changed (a
+// click on that opens the diff), and the servers the agent started in the
+// folder. Which cards are open is a client pref.
 
-type CardID = "environment" | "context" | "changes";
+type CardID = "environment" | "context" | "changes" | "servers";
 
 const compact = new Intl.NumberFormat("en", {
   notation: "compact",
@@ -313,6 +318,118 @@ function Changes({
   );
 }
 
+/** One server's state in a word or two. */
+function serverState(e: PreviewEntry): string {
+  switch (e.status) {
+    case "starting":
+      return "Starting";
+    case "running":
+      return e.ports.length === 0 ? "No port" : (e.kind ?? "Running");
+    case "exited":
+      return e.exit === undefined ? "Exited" : `Exited (${e.exit})`;
+    default:
+      return "Stopped";
+  }
+}
+
+function ServerRow({
+  directory,
+  entry,
+  onOpenPage,
+}: {
+  directory: string;
+  entry: PreviewEntry;
+  onOpenPage: (url: string) => void;
+}) {
+  const [isStopping, setStopping] = useState(false);
+  const live = isLive(entry);
+  const port = entry.primaryPort ?? entry.ports[0];
+  const dot = !live
+    ? "bg-[var(--color-text-secondary)]"
+    : entry.status === "running" && port !== undefined
+      ? "bg-[var(--color-text-green)]"
+      : "bg-[var(--color-text-yellow)]";
+  return (
+    <div
+      className="flex min-h-7 min-w-0 items-center gap-2"
+      title={entry.command}
+    >
+      <span className={`size-1.5 shrink-0 rounded-full ${dot}`} />
+      <Text size="sm" maxLines={1}>
+        {entry.name}
+      </Text>
+      {live && port !== undefined ? (
+        <button
+          type="button"
+          className="rounded px-1 font-mono text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-background-secondary)] hover:text-[var(--color-text-primary)]"
+          aria-label={`Open ${entry.name} in the browser`}
+          onClick={() => onOpenPage(previewUrl(entry))}
+        >
+          {`:${port}`}
+        </button>
+      ) : null}
+      <span className="ml-auto flex shrink-0 items-center gap-1">
+        <Text size="sm" color="secondary">
+          {serverState(entry)}
+        </Text>
+        {live ? (
+          <Button
+            label={`Stop ${entry.name}`}
+            tooltip="Stop"
+            icon={<Icon icon={SquareIcon} size="xsm" />}
+            isIconOnly
+            variant="ghost"
+            size="sm"
+            isDisabled={isStopping}
+            onClick={() => {
+              setStopping(true);
+              stopPreview(directory, entry.name)
+                .catch(() => undefined)
+                .finally(() => setStopping(false));
+            }}
+          />
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
+/** The servers the agent started in the folder (lib/previews); hidden
+ *  while there are none. */
+function Servers({
+  directory,
+  onOpenPage,
+}: {
+  directory: string;
+  onOpenPage: (url: string) => void;
+}) {
+  const entries = usePreviews(directory);
+  if (entries.length === 0) return null;
+  const live = entries.filter(isLive).length;
+  return (
+    <InfoCard
+      id="servers"
+      title="Servers"
+      summary={
+        <Text size="sm" color="secondary">
+          {live > 0 ? `${live} running` : "None running"}
+        </Text>
+      }
+    >
+      <div className="flex flex-col">
+        {entries.map((e) => (
+          <ServerRow
+            key={e.name}
+            directory={directory}
+            entry={e}
+            onOpenPage={onOpenPage}
+          />
+        ))}
+      </div>
+    </InfoCard>
+  );
+}
+
 /**
  * The repository state of `directory`, cached per folder (lib/query), so
  * the panel of another session in it — a subagent's, say — opens with it.
@@ -346,10 +463,13 @@ export function InfoPanel({
   session,
   isRunning,
   onOpenDiff,
+  onOpenPage,
 }: {
   session: SessionInfo;
   isRunning: boolean;
   onOpenDiff: () => void;
+  /** Show a page in the session's browser. */
+  onOpenPage: (url: string) => void;
 }) {
   const directory = session.location.directory;
   const { vcs, status } = useVcs(directory, isRunning);
@@ -358,6 +478,7 @@ export function InfoPanel({
       <Environment directory={directory} vcs={vcs} />
       <Context session={session} />
       <Changes vcs={vcs} status={status} onOpenDiff={onOpenDiff} />
+      <Servers directory={directory} onOpenPage={onOpenPage} />
     </div>
   );
 }
