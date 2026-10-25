@@ -2,6 +2,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import {
   type DirectoryEntry,
   decodePairOfferPayload,
+  type ForwardPort,
   type GitStatus,
   PAIR_OFFER_VERSION,
 } from "@thinkite/protocol";
@@ -385,6 +386,15 @@ export class Transport {
     return res.status;
   }
 
+  /** Every port the Mac's running servers listen on, across projects. */
+  async getForwardPorts(): Promise<ForwardPort[]> {
+    const res = (await this.request({
+      type: "getForwardPorts",
+      requestId: Crypto.randomUUID(),
+    })) as { ports: ForwardPort[] };
+    return res.ports;
+  }
+
   /**
    * Subscribe to live git status for a `cwd` — a PURE change stream (no
    * initial snapshot; fetch that via `getGitStatus`). Subsequent changes
@@ -669,6 +679,12 @@ export class DaemonClient {
   async getGitStatus(cwd: string): Promise<GitStatus> {
     const t = await this.readyPromise;
     return t.getGitStatus(cwd);
+  }
+
+  /** Every port the Mac's running servers listen on (one-shot). */
+  async getForwardPorts(): Promise<ForwardPort[]> {
+    const t = await this.readyPromise;
+    return t.getForwardPorts();
   }
 
   /**

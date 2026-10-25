@@ -1,11 +1,11 @@
 // The preview tools as opencode sees them: `thinkite_<name>`, called in
 // Code Mode as `tools.thinkite.<name>(…)`. `server_*` run servers, pages
-// and APIs alike; `browser_open` puts a page in the user's browser, the
-// first of the browser tools (thinkite/thinkite#31). Code Mode's catalog
-// shows only the first line of each description, cut at 120 characters,
-// and MCP `instructions` never reach the model for attached clients — so
-// each first line is the whole guidance, and server_start and browser_open
-// name each other (tools.test.ts holds them under 120).
+// and APIs alike. Nothing here opens a page for the user: the agent writes
+// the link in its reply, and whichever client the user reads it in opens
+// it (docs/preview-tool-v1.md). Code Mode's catalog shows only the first
+// line of each description, cut at 120 characters, and MCP `instructions`
+// never reach the model for attached clients — so each first line is the
+// whole guidance (tools.test.ts holds them under 120).
 
 import type { PreviewRegistry, ToolOutcome } from "./registry.ts";
 
@@ -44,12 +44,13 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
     {
       name: "server_start",
       description:
-        "Run a dev server or API in the background (not shell background/nohup); to show a page, then call browser_open.\n" +
+        "Run a dev server or API in the background (not shell background/nohup); to show a page, write its URL in your reply.\n" +
         "Use for any long-running process the user or a page reaches over the network: web dev servers, API servers, " +
         "websocket servers, tunnels. Servers started with the shell tool's background mode or nohup are invisible to " +
-        "the user and their phone. Returns the first output, where servers usually print their URL; if it is not there " +
-        "yet, check server_logs. The user sees every server in their Servers list; browser_open puts a page in their " +
-        "browser. Names are per project: starting a name that is already running returns it instead of restarting it.",
+        "the user and their phone. Returns the first output and, once the server listens, its URL; if it is not ready " +
+        "yet, check server_logs. The user sees every server in their Servers list and opens a page from a link in " +
+        "your reply, on their Mac or phone; do not run `open` on a URL, which only reaches this Mac's default browser. " +
+        "Names are per project: starting a name that is already running returns it instead of restarting it.",
       inputSchema: {
         type: "object",
         properties: {
@@ -101,33 +102,9 @@ export function previewTools(registry: PreviewRegistry): PreviewTool[] {
       ),
     },
     {
-      name: "browser_open",
-      description:
-        "Open a page in the user's browser: a URL from a server_start server's output, or any http(s) page.\n" +
-        "A URL on this machine must be served by a server this project started with server_start; open it once the " +
-        "output says the server is ready. Not for APIs or backends the user does not look at. Opening the same page " +
-        "again brings it back to the user.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          url: {
-            type: "string",
-            description: "e.g. http://localhost:5173/ from the server's output",
-          },
-        },
-        required: ["url"],
-      },
-      call: (args, ctx) => {
-        const url = str(args.url);
-        if (!url)
-          return Promise.resolve({ text: "url is required", isError: true });
-        return registry.open(ctx.directory, url, ctx.sessionID);
-      },
-    },
-    {
       name: "server_list",
       description:
-        "List this project's servers: status, URL if opened, which are yours, and why one stopped.",
+        "List this project's servers: status, URL, which are yours, and why one stopped.",
       inputSchema: { type: "object", properties: {} },
       call: (_args, ctx) => registry.list(ctx.directory, ctx.sessionID),
     },

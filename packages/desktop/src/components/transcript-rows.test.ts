@@ -331,11 +331,11 @@ describe("executeSummary", () => {
       executeSummary(
         run("const a = await tools.thinkite.server_stop({});", [
           { tool: "thinkite.server_stop", status: "completed" },
-          { tool: "thinkite.preview_open", status: "completed" },
+          { tool: "thinkite.server_logs", status: "completed" },
           { tool: "thinkite.server_stop", status: "completed" },
         ]),
       ),
-    ).toBe("thinkite.server_stop, thinkite.preview_open");
+    ).toBe("thinkite.server_stop, thinkite.server_logs");
   });
 
   it("falls back to the script's first line when it called no tool", () => {

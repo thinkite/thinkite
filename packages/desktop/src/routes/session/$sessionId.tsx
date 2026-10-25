@@ -52,7 +52,7 @@ import {
 import { showBrowserPage } from "../../lib/browser";
 import { useGitEvents } from "../../lib/git-events";
 import { ocClient, ocReady, ocStore } from "../../lib/oc";
-import { usePreviewRequests } from "../../lib/previews";
+import { serverForLink, usePreviews } from "../../lib/previews";
 
 // Session screen: transcript center column with a live composer (opencode
 // v2 `session.prompt` through the same-origin `/oc` proxy), and a right
@@ -404,14 +404,17 @@ function Session({ sessionId }: { sessionId: string }) {
     if (s === "browser") setBrowserVisited(true);
     surfaceBySession.set(sessionId, s);
   };
-  // A page the agent asked to show (preview_open) opens in a tab of this
-  // session's browser, and the browser comes up.
-  usePreviewRequests(sessionId, session?.location.directory, () =>
-    pick("browser"),
-  );
   const openPage = (url: string) => {
     showBrowserPage(sessionId, url);
     pick("browser");
+  };
+  // The agent shows a page by linking it in a reply: a link to one of the
+  // project's running servers opens in this session's browser.
+  const previews = usePreviews(session?.location.directory);
+  const openLink = (href: string) => {
+    if (serverForLink(previews, href) === undefined) return false;
+    openPage(href);
+    return true;
   };
 
   // The row is gone: deleted, or blank until the effect above brings it back.
@@ -491,6 +494,7 @@ function Session({ sessionId }: { sessionId: string }) {
                 anchorUuid={anchorUuid}
                 {...(isChild ? {} : { actions })}
                 onOpenSession={openSession}
+                onOpenLink={openLink}
                 composer={
                   prompt ??
                   (session.parentID !== undefined ? (

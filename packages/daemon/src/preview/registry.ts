@@ -1,22 +1,18 @@
 // The daemon's list of servers the agent started with `server_start`, per
-// project directory, and of its requests to open pages in the user's
-// browser (docs/preview-tool-v1.md).
+// project directory (docs/preview-tool-v1.md).
 //
 // The daemon creates each server's shell itself and hands the agent its
-// output; the agent reads the URL there and calls `browser_open` when the
-// server is ready. opencode's shell says whether a server still runs; the
-// rest (name, URL, who started and stopped it, the open requests) only
+// output; the ports the server's processes listen on are looked up here,
+// and the lowest is its URL. To show the user a page, the agent writes the
+// link in its reply: which of the user's clients they are looking at is
+// nothing the daemon can know. opencode's shell says whether a server
+// still runs; the rest (name, ports, who started and stopped it) only
 // exists here, so it is kept in a small file in the Thinkite home and read
 // back when the daemon starts.
 
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { networkInterfaces } from "node:os";
 import { resolve as resolvePath } from "node:path";
-import type {
-  BrowserRequest,
-  ForwardPort,
-  PreviewEntry,
-} from "@thinkite/protocol";
+import type { ForwardPort, PreviewEntry } from "@thinkite/protocol";
 import { listeningPorts } from "./ports.ts";
 import type { ShellApi, ShellStatus } from "./shells.ts";
 
@@ -36,7 +32,6 @@ export type Stopper = { by: "user" } | { by: "agent"; sessionID?: string };
 
 export interface PreviewSnapshot {
   entries: PreviewEntry[];
-  requests: BrowserRequest[];
 }
 
 export interface RegistryOptions {
@@ -61,23 +56,16 @@ interface Entry {
   pid?: number;
   command: string;
   cwd?: string;
-  /** The page `browser_open` last opened from this server. */
-  url?: string;
-  /** That URL's port (checked to be this server's). */
-  localPort?: number;
+  /** The ports its processes listen on, last seen; kept after it ends. */
+  ports?: number[];
   status: PreviewEntry["status"];
   started: PreviewEntry["started"];
   ended?: Ended;
 }
 
-interface Request extends BrowserRequest {
-  directory: string;
-}
-
 interface StateFile {
   v: 2;
   entries: Entry[];
-  requests: Request[];
 }
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escapes start with ESC
@@ -87,8 +75,6 @@ const POLL_MS = 250;
 /** After a start, when to look again for the server's ports: servers
  *  open them a moment after their shell starts, some only on first use. */
 const PORT_CHECKS_MS = [1_000, 3_000, 10_000, 30_000];
-/** Open requests kept per directory (the latest per session and origin). */
-const MAX_REQUESTS = 100;
 
 export class PreviewRegistry {
   private readonly shells: ShellApi;
@@ -100,8 +86,6 @@ export class PreviewRegistry {
   private readonly log: (message: string) => void;
 
   private readonly dirs = new Map<string, Map<string, Entry>>();
-  /** Per directory, keyed by session and origin: the latest request. */
-  private readonly requests = new Map<string, Map<string, Request>>();
   /** Shells being stopped through `stop`, so their exit event is theirs. */
   private readonly stopping = new Map<string, Stopper>();
   private readonly locks = new Map<string, Promise<unknown>>();
@@ -146,21 +130,22 @@ export class PreviewRegistry {
     const entry = this.dir(directory).get(name);
     if (!entry) return noServer(name);
     await this.refresh(entry).catch(() => undefined);
+    await this.checkPorts();
     const text = await this.tail(entry, Math.min(Math.max(1, lines), 200));
     return {
-      text: `"${name}" ${state(entry, sessionID)}.\n${text || "(no output yet)"}`,
+      text: `"${name}" ${state(entry, sessionID)}${served(entry)}.\n${text || "(no output yet)"}`,
     };
   }
 
   async list(directory: string, sessionID?: string): Promise<ToolOutcome> {
     const entries = await this.refreshAll(directory);
     if (entries.length === 0) return { text: "No servers in this project." };
+    await this.checkPorts();
     return {
       text: entries
         .map(
           (e) =>
-            `${e.name}: ${state(e, sessionID)}` +
-            (e.status === "running" && e.url ? `, ${e.url}` : "") +
+            `${e.name}: ${state(e, sessionID)}${served(e)}` +
             ` — \`${e.command}\`` +
             (sessionID !== undefined && e.started.sessionID === sessionID
               ? " (yours)"
@@ -215,82 +200,9 @@ export class PreviewRegistry {
     });
   }
 
-  async open(
-    directory: string,
-    raw: string,
-    sessionID?: string,
-  ): Promise<ToolOutcome> {
-    let url: URL;
-    try {
-      url = new URL(raw);
-    } catch {
-      return { text: `Not a URL: ${raw}`, isError: true };
-    }
-    if (url.protocol !== "http:" && url.protocol !== "https:")
-      return { text: "The URL must be http or https.", isError: true };
-    if (sessionID === undefined)
-      return { text: "No session to show it in.", isError: true };
-
-    // The one fact checked: a URL on this machine is served by one of this
-    // project's servers. Others (a tunnel, a public site) are taken as given.
-    let server: Entry | undefined;
-    if (isThisMachine(url.hostname)) {
-      const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
-      const entries = await this.refreshAll(directory);
-      const running = entries.filter((e) => e.status === "running");
-      const listening = await Promise.all(
-        running.map(async (e) => ({
-          entry: e,
-          ports: e.pid === undefined ? [] : await this.ports(e.pid),
-        })),
-      );
-      server = listening.find((l) => l.ports.includes(port))?.entry;
-      if (server === undefined) {
-        const gone = entries.find(
-          (e) => e.status !== "running" && e.localPort === port,
-        );
-        const others = listening
-          .filter((l) => l.ports.length > 0)
-          .map((l) => `"${l.entry.name}" listens on ${l.ports.join(", ")}`);
-        return {
-          text:
-            (gone
-              ? `"${gone.name}", which served port ${port}, ${ended(gone, sessionID)}.`
-              : `No server started with server_start in this project listens on ${port}` +
-                (others.length > 0
-                  ? ` (${others.join("; ")}).`
-                  : ". Start it with server_start, or wait until its output says it is ready.")) +
-            " Nothing was opened.",
-          isError: true,
-        };
-      }
-      server.url = url.href;
-      server.localPort = port;
-    }
-
-    const requests = this.requestsOf(directory);
-    const key = `${sessionID}\0${url.origin}`;
-    requests.delete(key);
-    requests.set(key, {
-      directory,
-      url: url.href,
-      sessionID,
-      at: Date.now(),
-      ...(server === undefined ? {} : { server: server.name }),
-    });
-    for (const old of requests.keys()) {
-      if (requests.size <= MAX_REQUESTS) break;
-      requests.delete(old);
-    }
-    this.log(`browser open ${url.href} in ${directory}`);
-    this.changed(directory);
-    return { text: `Sent ${url.href} to the user's browser.` };
-  }
-
   // ─── Clients ────────────────────────────────────────────────────────────
 
-  /** The directory's servers (re-checked against the shells) and open
-   *  requests. */
+  /** The directory's servers, re-checked against the shells. */
   async snapshot(directory: string): Promise<PreviewSnapshot> {
     await this.refreshAll(directory);
     return this.current(directory);
@@ -369,7 +281,7 @@ export class PreviewRegistry {
           isError: true,
         };
       return {
-        text: `"${input.name}" is already running${existing.url ? ` at ${existing.url}` : ""}. Recent output:\n${(await this.tail(existing, 20)) || "(none)"}`,
+        text: `"${input.name}" is already running${served(existing)}. Recent output:\n${(await this.tail(existing, 20)) || "(none)"}`,
       };
     }
     if (command === undefined)
@@ -427,8 +339,11 @@ export class PreviewRegistry {
         };
       }
     }
+    // Most servers listen within those two seconds; the scheduled checks
+    // catch the rest.
+    await this.checkPorts();
     return {
-      text: `Started "${entry.name}". Output so far:\n${(await this.tail(entry, 40)) || "(none yet)"}${note}`,
+      text: `Started "${entry.name}"${served(entry, "listening on ")}. Output so far:\n${(await this.tail(entry, 40)) || "(none yet)"}${note}`,
     };
   }
 
@@ -473,26 +388,41 @@ export class PreviewRegistry {
     entry.ended = cause;
   }
 
-  /** Recompute the ports to forward and push them when they changed. */
+  /** Look up the running servers' ports: each entry's (and so its URL),
+   *  and the ones to forward. Pushes what changed. */
   private async checkPorts(): Promise<void> {
     const running = [...this.dirs.values()].flatMap((d) =>
       [...d.values()].filter((e) => e.status === "running"),
     );
     const found = await Promise.all(
-      running.map(async (e) =>
-        (e.pid === undefined
-          ? []
-          : await this.ports(e.pid).catch(() => [])
-        ).map(
+      running.map(async (entry) => ({
+        entry,
+        ports:
+          entry.pid === undefined
+            ? []
+            : await this.ports(entry.pid).catch(() => []),
+      })),
+    );
+    const moved = new Set<string>();
+    for (const { entry, ports } of found) {
+      // Kept once seen, not cleared: after the server ends, a tab still
+      // showing its page knows which server that was.
+      if (ports.length === 0 || ports.join() === entry.ports?.join()) continue;
+      entry.ports = ports;
+      moved.add(entry.directory);
+    }
+    for (const directory of moved) this.changed(directory);
+    const ports = found
+      .flatMap(({ entry, ports }) =>
+        ports.map(
           (port): ForwardPort => ({
             port,
-            directory: e.directory,
-            name: e.name,
+            directory: entry.directory,
+            name: entry.name,
           }),
         ),
-      ),
-    );
-    const ports = found.flat().sort((a, b) => a.port - b.port);
+      )
+      .sort((a, b) => a.port - b.port);
     const text = JSON.stringify(ports);
     if (text === this.lastPorts) return;
     this.lastPorts = text;
@@ -513,12 +443,7 @@ export class PreviewRegistry {
   }
 
   private current(directory: string): PreviewSnapshot {
-    return {
-      entries: [...this.dir(directory).values()].map(toPublic),
-      requests: [...this.requestsOf(directory).values()].map(
-        ({ directory: _, ...request }) => request,
-      ),
-    };
+    return { entries: [...this.dir(directory).values()].map(toPublic) };
   }
 
   /** Persist, then push to the directory's clients. */
@@ -531,7 +456,7 @@ export class PreviewRegistry {
   }
 
   /** Running entries come back and `rebuild` re-checks them; ones that had
-   *  already ended are left behind. Open requests all come back. */
+   *  already ended are left behind. */
   private load(): void {
     if (this.stateFile === undefined) return;
     let state: StateFile;
@@ -544,11 +469,6 @@ export class PreviewRegistry {
     for (const entry of state.entries ?? [])
       if (entry.status === "running")
         this.dir(entry.directory).set(entry.name, entry);
-    for (const request of state.requests ?? [])
-      this.requestsOf(request.directory).set(
-        `${request.sessionID}\0${new URL(request.url).origin}`,
-        request,
-      );
   }
 
   private save(): void {
@@ -556,7 +476,6 @@ export class PreviewRegistry {
     const state: StateFile = {
       v: 2,
       entries: [...this.dirs.values()].flatMap((d) => [...d.values()]),
-      requests: [...this.requests.values()].flatMap((r) => [...r.values()]),
     };
     try {
       const tmp = `${this.stateFile}.tmp`;
@@ -580,15 +499,6 @@ export class PreviewRegistry {
     return dir;
   }
 
-  private requestsOf(directory: string): Map<string, Request> {
-    let requests = this.requests.get(directory);
-    if (!requests) {
-      requests = new Map();
-      this.requests.set(directory, requests);
-    }
-    return requests;
-  }
-
   private locked<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.locks.get(key) ?? Promise.resolve();
     const next = previous.then(fn, fn);
@@ -599,23 +509,6 @@ export class PreviewRegistry {
     });
     return next;
   }
-}
-
-/** Loopback, `*.localhost`, or one of this machine's interface addresses. */
-export function isThisMachine(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host === "0.0.0.0" ||
-    host === "::" ||
-    host === "::1" ||
-    host.startsWith("127.")
-  )
-    return true;
-  return Object.values(networkInterfaces()).some((list) =>
-    list?.some((i) => i.address.toLowerCase() === host),
-  );
 }
 
 const noServer = (name: string): ToolOutcome => ({
@@ -648,6 +541,21 @@ function ended(entry: Entry, sessionID?: string): string {
   }
 }
 
+/** A server's page: `http://localhost:<port>/` on the lowest port it
+ *  listens on (Vite's HMR, a debugger's port come after the page's). */
+function urlOf(entry: Entry): string | undefined {
+  const port = entry.ports?.[0];
+  return port === undefined ? undefined : `http://localhost:${port}/`;
+}
+
+/** ", http://localhost:5173/" after a running server's state, if known. */
+function served(entry: Entry, lead = ""): string {
+  const url = urlOf(entry);
+  return entry.status === "running" && url !== undefined
+    ? `, ${lead}${url}`
+    : "";
+}
+
 function ago(at: number): string {
   const s = Math.max(0, Math.round((Date.now() - at) / 1000));
   if (s < 60) return "just now";
@@ -658,8 +566,9 @@ function ago(at: number): string {
 function toPublic(entry: Entry): PreviewEntry {
   return {
     name: entry.name,
-    ...(entry.url === undefined ? {} : { url: entry.url }),
-    ...(entry.localPort === undefined ? {} : { localPort: entry.localPort }),
+    ...(entry.ports === undefined
+      ? {}
+      : { ports: entry.ports, url: urlOf(entry) }),
     status: entry.status,
     command: entry.command,
     started: entry.started,

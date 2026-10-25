@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ForwardPort, PreviewEntry } from "@thinkite/protocol";
 import { describe, expect, it } from "vitest";
-import { isThisMachine, PreviewRegistry } from "./registry.ts";
+import { PreviewRegistry } from "./registry.ts";
 import type { ShellApi, ShellInfo } from "./shells.ts";
 
 const DIR = "/proj";
@@ -103,7 +103,7 @@ describe("PreviewRegistry.start / logs", () => {
       "ses_a",
     );
     expect(out).toEqual({
-      text: `Started "web". Output so far:\n  ➜  Local:   http://localhost:5173/`,
+      text: `Started "web", listening on http://localhost:5173/. Output so far:\n  ➜  Local:   http://localhost:5173/`,
     });
     expect(shells.created[0]).toMatchObject({
       cwd: "/proj/web",
@@ -112,6 +112,8 @@ describe("PreviewRegistry.start / logs", () => {
     const [entry] = (await r.snapshot(DIR)).entries;
     expect(entry).toEqual({
       name: "web",
+      ports: [5173],
+      url: "http://localhost:5173/",
       status: "running",
       command: "bun run dev",
       started: { at: 1, sessionID: "ses_a" },
@@ -123,7 +125,9 @@ describe("PreviewRegistry.start / logs", () => {
     const r = registry(shells);
     await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
     const again = await r.start(DIR, { name: "web" }, "ses_b");
-    expect(again.text).toContain(`"web" is already running. Recent output:`);
+    expect(again.text).toContain(
+      `"web" is already running, http://localhost:5173/. Recent output:`,
+    );
     expect(shells.created).toHaveLength(1);
     expect(
       await r.start(DIR, { name: "web", command: "vite --port 6000" }),
@@ -196,7 +200,7 @@ describe("PreviewRegistry.start / logs", () => {
     await r.start(DIR, { name: "web", command: "next dev" });
     shells.output.set("sh_1", "▲ Next.js\n✓ Ready in 1.2s\n");
     expect((await r.logs(DIR, "web")).text).toBe(
-      `"web" is running.\n▲ Next.js\n✓ Ready in 1.2s`,
+      `"web" is running, http://localhost:5173/.\n▲ Next.js\n✓ Ready in 1.2s`,
     );
     shells.exit("sh_1", 1);
     expect((await r.logs(DIR, "web")).text).toMatch(
@@ -206,109 +210,46 @@ describe("PreviewRegistry.start / logs", () => {
   });
 });
 
-describe("PreviewRegistry.open", () => {
-  it("opens a page one of the project's servers serves", async () => {
-    const shells = fakeShells((c) =>
-      c === "bun api.ts" ? [8787] : [5173, 24678],
-    );
+describe("PreviewRegistry ports and URL", () => {
+  it("takes the URL from the lowest port the server listens on", async () => {
+    const shells = fakeShells(() => [24678, 5173].sort((a, b) => a - b));
     const r = registry(shells);
-    await r.start(DIR, { name: "api", command: "bun api.ts" }, "ses_a");
-    await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
-    expect(await r.open(DIR, "http://localhost:5173", "ses_b")).toEqual({
-      text: "Sent http://localhost:5173/ to the user's browser.",
-    });
-    const snapshot = await r.snapshot(DIR);
-    expect(snapshot.entries.find((e) => e.name === "web")).toMatchObject({
+    await r.start(DIR, { name: "web", command: "vite" });
+    expect((await r.snapshot(DIR)).entries[0]).toMatchObject({
+      ports: [5173, 24678],
       url: "http://localhost:5173/",
-      localPort: 5173,
     });
-    expect(snapshot.requests).toEqual([
-      {
-        url: "http://localhost:5173/",
-        sessionID: "ses_b",
-        at: expect.any(Number),
-        server: "web",
-      },
-    ]);
   });
 
-  it("takes 127.0.0.1 as this Mac too", async () => {
-    const shells = fakeShells();
-    const r = registry(shells);
-    await r.start(DIR, { name: "web", command: "vite" });
-    expect(
-      (await r.open(DIR, "http://127.0.0.1:5173/", "ses_a")).isError,
-    ).toBeFalsy();
-    expect((await r.snapshot(DIR)).entries[0]?.localPort).toBe(5173);
-  });
-
-  it("refuses a local URL no server of the project listens on, and says what does", async () => {
-    const shells = fakeShells((c) => (c === "vite" ? [5174] : []));
-    const r = registry(shells);
-    expect(await r.open(DIR, "http://localhost:5173/", "ses_a")).toEqual({
-      text: "No server started with server_start in this project listens on 5173. Start it with server_start, or wait until its output says it is ready. Nothing was opened.",
-      isError: true,
-    });
-    await r.start(DIR, { name: "web", command: "vite" });
-    expect(await r.open(DIR, "http://localhost:5173/", "ses_a")).toEqual({
-      text: `No server started with server_start in this project listens on 5173 ("web" listens on 5174). Nothing was opened.`,
-      isError: true,
-    });
-    expect((await r.snapshot(DIR)).requests).toEqual([]);
-  });
-
-  it("says who stopped the server a local URL belonged to", async () => {
-    const shells = fakeShells();
-    const r = registry(shells);
-    await r.start(DIR, { name: "web", command: "vite" }, "ses_a");
-    await r.open(DIR, "http://localhost:5173/", "ses_a");
-    await r.stop(DIR, "web", { by: "agent", sessionID: "ses_b" });
-    expect((await r.open(DIR, "http://localhost:5173/", "ses_a")).text).toBe(
-      `"web", which served port 5173, was stopped by another session just now. Nothing was opened.`,
+  it("finds a port that opens after the start, and pushes it", async () => {
+    const shells = fakeShells(() => []);
+    const scheduled: (() => void)[] = [];
+    const r = registry(shells, { scheduled });
+    const out = await r.start(DIR, { name: "web", command: "next dev" });
+    expect(out.text).toMatch(/^Started "web"\. Output so far:/);
+    expect((await r.snapshot(DIR)).entries[0]?.url).toBeUndefined();
+    const pushed: PreviewEntry[][] = [];
+    r.subscribe(DIR, (s) => pushed.push(s.entries));
+    shells.ports.set(1001, [3000]);
+    scheduled[0]?.();
+    await tick();
+    expect(pushed.at(-1)?.[0]?.url).toBe("http://localhost:3000/");
+    expect((await r.logs(DIR, "web")).text).toMatch(
+      /^"web" is running, http:\/\/localhost:3000\/\./,
     );
   });
 
-  it("opens a tunnel or a public page as given", async () => {
-    const shells = fakeShells();
-    const r = registry(shells);
-    expect(
-      (await r.open(DIR, "https://abc.trycloudflare.com", "ses_a")).isError,
-    ).toBeFalsy();
-    expect((await r.snapshot(DIR)).requests).toEqual([
-      {
-        url: "https://abc.trycloudflare.com/",
-        sessionID: "ses_a",
-        at: expect.any(Number),
-      },
-    ]);
-  });
-
-  it("keeps the latest request per session and origin", async () => {
+  it("keeps the ports of a server that ended, and leaves the URL out of its state", async () => {
     const shells = fakeShells();
     const r = registry(shells);
     await r.start(DIR, { name: "web", command: "vite" });
-    await r.open(DIR, "http://localhost:5173/", "ses_a");
-    const first = (await r.snapshot(DIR)).requests[0]?.at ?? 0;
-    await tick();
-    await r.open(DIR, "http://localhost:5173/about", "ses_a");
-    await r.open(DIR, "http://localhost:5173/", "ses_b");
-    const { requests } = await r.snapshot(DIR);
-    expect(requests.map((q) => [q.sessionID, q.url])).toEqual([
-      ["ses_a", "http://localhost:5173/about"],
-      ["ses_b", "http://localhost:5173/"],
-    ]);
-    expect(requests[0]?.at).toBeGreaterThan(first);
-  });
-
-  it("needs an http(s) URL and a session", async () => {
-    const r = registry(fakeShells());
-    expect(await r.open(DIR, "file:///tmp/a.html", "ses_a")).toEqual({
-      text: "The URL must be http or https.",
-      isError: true,
+    await r.stop(DIR, "web", { by: "user" });
+    expect((await r.snapshot(DIR)).entries[0]).toMatchObject({
+      status: "ended",
+      ports: [5173],
     });
-    expect((await r.open(DIR, "nope", "ses_a")).isError).toBe(true);
-    expect((await r.open(DIR, "https://example.com/")).text).toBe(
-      "No session to show it in.",
+    expect((await r.list(DIR)).text).toBe(
+      "web: was stopped by the user just now — `vite`",
     );
   });
 });
@@ -318,13 +259,12 @@ describe("PreviewRegistry.list / stop", () => {
     const shells = fakeShells((c) => (c === "bun api.ts" ? [8787] : [5173]));
     const r = registry(shells);
     await r.start(DIR, { name: "web", command: "bun run dev" }, "ses_a");
-    await r.open(DIR, "http://localhost:5173/", "ses_a");
     await r.start(DIR, { name: "api", command: "bun api.ts" }, "ses_b");
     await r.start(DIR, { name: "docs", command: "bun run docs" }, "ses_b");
     await r.stop(DIR, "docs", { by: "user" });
     expect((await r.list(DIR, "ses_a")).text).toBe(
       "web: is running, http://localhost:5173/ — `bun run dev` (yours)\n" +
-        "api: is running — `bun api.ts`\n" +
+        "api: is running, http://localhost:8787/ — `bun api.ts`\n" +
         "docs: was stopped by the user just now — `bun run docs`",
     );
     expect((await r.list("/empty", "ses_a")).text).toBe(
@@ -395,7 +335,7 @@ describe("PreviewRegistry forward ports", () => {
       { port: 8787, directory: "/other", name: "api" },
       { port: 24678, directory: DIR, name: "web" },
     ]);
-    expect(pushed).toHaveLength(1);
+    expect(pushed).toHaveLength(2); // once per start, as each one listens
     await r.stop(DIR, "web", { by: "user" });
     await tick();
     expect(pushed.at(-1)).toEqual([
@@ -405,7 +345,7 @@ describe("PreviewRegistry forward ports", () => {
 });
 
 describe("PreviewRegistry persistence", () => {
-  it("brings running entries and requests back after a restart and re-checks them", async () => {
+  it("brings running entries back after a restart and re-checks them", async () => {
     const stateFile = join(
       mkdtempSync(join(tmpdir(), "previews-")),
       "previews.json",
@@ -413,7 +353,6 @@ describe("PreviewRegistry persistence", () => {
     const shells = fakeShells();
     const before = registry(shells, { stateFile });
     await before.start(DIR, { name: "web", command: "vite" }, "ses_a");
-    await before.open(DIR, "http://localhost:5173/", "ses_a");
     await before.start(DIR, { name: "api", command: "bun api.ts" }, "ses_a");
     await before.start(DIR, { name: "old", command: "bun old.ts" });
     await before.stop(DIR, "old", { by: "user" });
@@ -424,27 +363,11 @@ describe("PreviewRegistry persistence", () => {
     shells.exit("sh_2", 0); // api, while the daemon was down
     const after = registry(shells, { stateFile });
     await after.rebuild(DIR);
-    const { entries, requests } = await after.snapshot(DIR);
+    const { entries } = await after.snapshot(DIR);
     expect(entries.map((e) => [e.name, e.status, e.ended?.by])).toEqual([
       ["web", "running", undefined],
       ["api", "ended", "process"],
     ]);
     expect(entries[0]).toMatchObject({ url: "http://localhost:5173/" });
-    expect(requests).toHaveLength(1);
-  });
-});
-
-describe("isThisMachine", () => {
-  it("knows loopback and *.localhost, not other hosts", () => {
-    for (const host of [
-      "localhost",
-      "127.0.0.1",
-      "[::1]",
-      "app.localhost",
-      "0.0.0.0",
-    ])
-      expect(isThisMachine(host)).toBe(true);
-    for (const host of ["example.com", "abc.trycloudflare.com", "8.8.8.8"])
-      expect(isThisMachine(host)).toBe(false);
   });
 });

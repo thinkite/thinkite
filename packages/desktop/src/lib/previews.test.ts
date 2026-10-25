@@ -1,8 +1,8 @@
-import type { BrowserRequest, PreviewEntry } from "@thinkite/protocol";
+import type { PreviewEntry } from "@thinkite/protocol";
 import { describe, expect, it } from "vitest";
 import {
-  dueToShow,
-  requestKey,
+  localPort,
+  serverForLink,
   serverLabel,
   serverState,
   stoppedServerAt,
@@ -10,68 +10,53 @@ import {
 
 const entry = (over: Partial<PreviewEntry>): PreviewEntry => ({
   name: "web",
+  ports: [5180, 24678],
   url: "http://localhost:5180/",
-  localPort: 5180,
   status: "running",
   command: "bun run dev",
   started: { at: 1, sessionID: "ses_a" },
   ...over,
 });
 
-const request = (over: Partial<BrowserRequest>): BrowserRequest => ({
-  url: "http://localhost:5180/",
-  sessionID: "ses_a",
-  at: 10,
-  server: "web",
-  ...over,
+describe("localPort", () => {
+  it("reads the port of a page on this Mac", () => {
+    expect(localPort("http://localhost:5180/about")).toBe(5180);
+    expect(localPort("http://127.0.0.1:5180/")).toBe(5180);
+    expect(localPort("http://[::1]:5180/")).toBe(5180);
+    expect(localPort("http://app.localhost:5180/")).toBe(5180);
+    expect(localPort("http://localhost/")).toBe(80);
+  });
+
+  it("leaves other hosts and schemes alone", () => {
+    expect(localPort("https://abc.trycloudflare.com/")).toBeUndefined();
+    expect(localPort("https://example.com:5180/")).toBeUndefined();
+    expect(localPort("about:blank")).toBeUndefined();
+    expect(localPort("not a url")).toBeUndefined();
+  });
 });
 
-describe("dueToShow", () => {
-  const handledAt = (map: Record<string, number>) => (key: string) => map[key];
-
-  it("takes this session's requests this device has not acted on", () => {
-    const snapshot = { entries: [entry({})], requests: [request({})] };
-    const key = requestKey(request({}));
-    expect(dueToShow(snapshot, "ses_a", handledAt({})).open).toHaveLength(1);
-    expect(
-      dueToShow(snapshot, "ses_a", handledAt({ [key]: 10 })).pending,
-    ).toEqual([]);
-    expect(
-      dueToShow(
-        { ...snapshot, requests: [request({ at: 11 })] },
-        "ses_a",
-        handledAt({ [key]: 10 }),
-      ).open,
-    ).toHaveLength(1);
-  });
-
-  it("leaves other sessions' requests", () => {
-    const snapshot = { entries: [entry({})], requests: [request({})] };
-    expect(dueToShow(snapshot, "ses_b", handledAt({})).pending).toEqual([]);
-  });
-
-  it("records but does not open a page whose server has stopped", () => {
-    const due = dueToShow(
-      {
-        entries: [entry({ status: "ended", ended: { at: 20, by: "user" } })],
-        requests: [request({})],
-      },
-      "ses_a",
-      handledAt({}),
+describe("serverForLink", () => {
+  it("finds the running server listening on a link's port", () => {
+    expect(serverForLink([entry({})], "http://localhost:5180/x")?.name).toBe(
+      "web",
     );
-    expect(due.pending).toHaveLength(1);
-    expect(due.open).toEqual([]);
+    expect(serverForLink([entry({})], "http://127.0.0.1:24678/")?.name).toBe(
+      "web",
+    );
   });
 
-  it("opens a page no server of ours serves (a tunnel, a public site)", () => {
-    const tunnel = request({
-      url: "https://abc.trycloudflare.com/",
-      server: undefined,
-    });
+  it("leaves links no running server serves to the user's browser", () => {
+    const ended = entry({ status: "ended", ended: { at: 2, by: "user" } });
+    expect(serverForLink([ended], "http://localhost:5180/")).toBeUndefined();
     expect(
-      dueToShow({ entries: [], requests: [tunnel] }, "ses_a", handledAt({}))
-        .open,
-    ).toEqual([tunnel]);
+      serverForLink([entry({})], "http://localhost:3000/"),
+    ).toBeUndefined();
+    expect(
+      serverForLink([entry({})], "https://example.com:5180/"),
+    ).toBeUndefined();
+    expect(
+      serverForLink([entry({ ports: undefined })], "http://localhost:5180/"),
+    ).toBeUndefined();
   });
 });
 
@@ -97,35 +82,12 @@ describe("stoppedServerAt", () => {
       stoppedServerAt([killed], "https://example.com:5180/"),
     ).toBeUndefined();
     expect(stoppedServerAt([killed], "about:blank")).toBeUndefined();
-    expect(
-      stoppedServerAt(
-        [entry({ url: undefined, status: "ended" })],
-        "about:blank",
-      ),
-    ).toBeUndefined();
-  });
-
-  it("matches a tunnel by its origin", () => {
-    const tunnel = entry({
-      url: "https://abc.trycloudflare.com/",
-      status: "ended",
-      ended: { at: 2, by: "process", exit: 1 },
-    });
-    expect(
-      stoppedServerAt([tunnel], "https://abc.trycloudflare.com/x")?.name,
-    ).toBe("web");
-    expect(
-      stoppedServerAt([tunnel], "https://other.trycloudflare.com/"),
-    ).toBeUndefined();
   });
 });
 
 describe("serverLabel / serverState", () => {
-  it("labels a page by its port on this Mac and by its host elsewhere", () => {
+  it("labels a page by its port", () => {
     expect(serverLabel("http://localhost:5180/")).toBe(":5180");
-    expect(serverLabel("https://abc.trycloudflare.com/")).toBe(
-      "abc.trycloudflare.com",
-    );
   });
 
   it("says how a server ended", () => {

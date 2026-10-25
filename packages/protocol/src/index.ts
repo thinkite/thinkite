@@ -388,28 +388,26 @@ export const getFilesystemRootsResponse = z.object({
   recentCwds: z.array(recentCwd),
 });
 
-// ─── Previews: servers the agent started, pages it opened ─────────────────
+// ─── Previews: servers the agent started ──────────────────────────────────
 //
 // The agent starts dev servers and APIs with the daemon's `server_start`
-// and opens pages in the user's browser with `browser_open`
-// (docs/preview-tool-v1.md). Per project directory, same shape as git
-// status: `getPreviews` is the snapshot, `subscribePreviews` a pure change
-// stream of full `previews` snapshots. An open request is state, not an
-// event: a device that was not showing the session at the time still sees
-// it later, and each device remembers on its own which it has handled.
-// Separately, `forwardPorts` lists every running server's ports across
-// projects: what the phone forwards while it is in the foreground.
+// (docs/preview-tool-v1.md); to show the user a page it writes the link in
+// its reply, and the client the user reads it in opens it by its port. Per
+// project directory, same shape as git status: `getPreviews` is the
+// snapshot, `subscribePreviews` a pure change stream of full `previews`
+// snapshots. Separately, `forwardPorts` lists every running server's ports
+// across projects: what the phone forwards while it is in the foreground.
 
 export const previewEntry = z.object({
   /** The agent's label, unique per directory ("web", "api"). */
   name: z.string(),
-  /** The page `browser_open` last opened from this server. Absent for
-   *  servers never opened (APIs, backends). */
+  /** The TCP ports its processes listen on, ascending, as last seen: kept
+   *  after it ends. Absent until it listens. A link in a reply to
+   *  `localhost` on one of these ports is this server's page. */
+  ports: z.array(z.number().int().positive()).optional(),
+  /** `http://localhost:<lowest port>/`, with `ports`: the page the Servers
+   *  list opens. */
   url: z.string().optional(),
-  /** That URL's port, checked to be this server's: a client on another
-   *  device loads `http://localhost:<localPort>` + the URL's path through
-   *  its forwarder, whatever host the agent wrote (a LAN address, say). */
-  localPort: z.number().int().positive().optional(),
   status: z.enum(["running", "ended"]),
   /** The shell's command. */
   command: z.string(),
@@ -429,18 +427,6 @@ export const previewEntry = z.object({
 });
 export type PreviewEntry = z.infer<typeof previewEntry>;
 
-/** The agent's request to open `url` in the user's browser, the latest per
- *  session and origin. A newer `at` is a new request. It says nothing
- *  about the user's tabs. */
-export const browserRequest = z.object({
-  url: z.string(),
-  sessionID: z.string(),
-  at: z.number(),
-  /** The server serving it, for a URL on the Mac. */
-  server: z.string().optional(),
-});
-export type BrowserRequest = z.infer<typeof browserRequest>;
-
 export const getPreviewsCommand = z.object({
   type: z.literal("getPreviews"),
   requestId: z.string(),
@@ -452,7 +438,6 @@ export const getPreviewsResponse = z.object({
   requestId: z.string(),
   directory: z.string(),
   entries: z.array(previewEntry),
-  requests: z.array(browserRequest),
 });
 
 /** Pure change-stream ack — NO initial snapshot (use `getPreviews`). */
@@ -498,7 +483,6 @@ export const previewsEvent = z.object({
   type: z.literal("previews"),
   directory: z.string(),
   entries: z.array(previewEntry),
-  requests: z.array(browserRequest),
 });
 
 /** A port a running server listens on, in any project. */

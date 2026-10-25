@@ -648,7 +648,20 @@ function renderRow(
   live: boolean,
   actions: MessageActions | undefined,
   onOpenSession: ((sessionID: string) => void) | undefined,
+  onOpenLink: ((href: string) => boolean) | undefined,
 ) {
+  // Bare URLs too: agents write `http://localhost:5173/` as often as a
+  // link. A link `onOpenLink` takes stays here; others open in the user's
+  // browser (the window's open handler).
+  const md = (text: string) => (
+    <Markdown
+      components={MARKDOWN_COMPONENTS}
+      autolink="gfm"
+      onLinkClick={(href) => (onOpenLink?.(href) ? false : undefined)}
+    >
+      {text}
+    </Markdown>
+  );
   switch (row.kind) {
     case "user":
       return (
@@ -670,7 +683,7 @@ function renderRow(
             <ChatMessageBubble
               metadata={<UserMeta row={row} actions={actions} />}
             >
-              <Markdown components={MARKDOWN_COMPONENTS}>{row.text}</Markdown>
+              {md(row.text)}
             </ChatMessageBubble>
           ) : (
             <UserMeta row={row} actions={actions} />
@@ -685,7 +698,7 @@ function renderRow(
             ? { metadata: <ReplyLine text={row.text} meta={row.meta} /> }
             : {})}
         >
-          <Markdown components={MARKDOWN_COMPONENTS}>{row.text}</Markdown>
+          {md(row.text)}
         </ChatMessage>
       );
     case "group":
@@ -810,6 +823,7 @@ export function TranscriptPanel({
   anchorUuid = null,
   actions,
   onOpenSession,
+  onOpenLink,
   composer,
 }: {
   sessionId: string;
@@ -820,6 +834,10 @@ export function TranscriptPanel({
   actions?: MessageActions;
   /** Open a subagent's session from its line. */
   onOpenSession?: (sessionID: string) => void;
+  /** A link in a message was clicked: true when it was opened here (a
+   *  page of one of the project's servers), false to leave it to the
+   *  user's browser. */
+  onOpenLink?: (href: string) => boolean;
   /** Renders a working indicator under the last message. */
   isRunning?: boolean;
   /** A question or permission request is waiting on the user: the turn
@@ -1039,7 +1057,13 @@ export function TranscriptPanel({
         // from blowing the column open.
         renderItem={({ item }) => (
           <div className="chat-col overflow-x-clip pb-3">
-            {renderRow(item, item.key === liveKey, actions, onOpenSession)}
+            {renderRow(
+              item,
+              item.key === liveKey,
+              actions,
+              onOpenSession,
+              onOpenLink,
+            )}
           </div>
         )}
         getItemType={(g) => g.kind}

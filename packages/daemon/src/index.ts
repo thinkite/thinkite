@@ -86,8 +86,8 @@ export interface Daemon {
    */
   watchGit(cwd: string, onChange: () => void): () => void;
   /**
-   * Servers the agent started with the preview tools (`thinkite_server_*`
-   * and `thinkite_preview_open`, served to opencode over client MCP), per
+   * Servers the agent started with the preview tools (`thinkite_server_*`,
+   * served to opencode over client MCP), per
    * project directory. The phone reaches the same registry through the
    * RPC.
    */

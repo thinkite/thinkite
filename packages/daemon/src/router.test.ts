@@ -561,7 +561,6 @@ describe("createCommandHandler — previews", () => {
       { name: "web", command: "bun run dev" },
       "ses_a",
     );
-    await previews.open("/proj", "http://localhost:5180/", "ses_a");
 
     expect(a.sent[0]).toEqual({
       type: "subscribePreviews.response",
@@ -574,17 +573,16 @@ describe("createCommandHandler — previews", () => {
         {
           name: "web",
           status: "running",
+          ports: [5180],
           url: "http://localhost:5180/",
-          localPort: 5180,
         },
       ],
-      requests: [{ url: "http://localhost:5180/", sessionID: "ses_a" }],
     });
     expect(b.sent.map((f) => f.type)).toEqual(["subscribePreviews.response"]);
 
     a.fireDisconnect();
     const before = a.sent.length;
-    await previews.open("/proj", "http://localhost:5180/", "ses_a");
+    await previews.start("/proj", { name: "api", command: "bun api.ts" });
     expect(a.sent).toHaveLength(before);
   });
 
@@ -600,7 +598,6 @@ describe("createCommandHandler — previews", () => {
     expect(sent[0]).toMatchObject({
       type: "getPreviews.response",
       entries: [{ name: "web" }],
-      requests: [],
     });
     await handler(
       { type: "stopPreview", requestId: "r2", directory: "/proj", name: "web" },

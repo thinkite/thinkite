@@ -340,9 +340,7 @@ const server = createServer(async (req, res) => {
         res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
       const stop = previews.subscribe(directory, send);
       req.on("close", stop);
-      previews
-        .snapshot(directory)
-        .then(send, () => send({ entries: [], requests: [] }));
+      previews.snapshot(directory).then(send, () => send({ entries: [] }));
       return;
     }
     // The Servers card's stop button: the agent's server_stop, recorded as

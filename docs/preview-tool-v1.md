@@ -1,48 +1,52 @@
 # Preview tool v1 — servers the agent starts, opened from desktop and phone
 
 The agent starts dev servers and APIs through the daemon's `server_*`
-tools and opens pages in the user's browser with `browser_open`. The daemon
-creates each server's shell, hands the agent its output, and keeps a
-registry of the servers and of the open requests; the agent reads the URL
-from the output and decides when the server is ready. The desktop opens
-the requested pages in its browser panel, and the phone reaches the
-servers through the iroh TCP tunnel from the `forward-tcp-spike` branch.
-`browser_open` is the first of the browser tools; letting the agent look at
-pages itself (screenshots, snapshots, clicks) is the later piece:
+tools. The daemon creates each server's shell, hands the agent its output,
+looks up the ports the server listens on, and keeps a registry of the
+servers; its URL is `http://localhost:<lowest port>/`. To show the user a
+page, the agent writes the link in its reply. The client the user reads it
+in opens it by its port: the desktop in the session's browser panel, the
+phone through the iroh TCP tunnel from the `forward-tcp-spike` branch.
+No tool opens or touches the user's tabs: one opencode server has many
+clients, each with its own tabs, and neither opencode nor the daemon knows
+which one the user is looking at. A browser for the agent itself (off
+screen: screenshots, snapshots, clicks) is the later piece:
 thinkite/thinkite#31.
 
 ## Goal
 
-- Agent-side: `thinkite_server_start`, `_server_logs`, `_server_list`,
-  `_server_stop` and `_browser_open`, served by the daemon over opencode's
-  client MCP. Every long-running server the agent starts, page or API, goes
-  through `server_start`.
-- The daemon's registry is the one list of servers and open requests per
-  project. Desktop and phone subscribe to it.
-- Desktop: a page the agent opens with `browser_open` becomes a tab in the
-  session's browser panel. The info panel lists the project's servers, with
-  why each one stopped and a stop button for the running ones.
+- Agent-side: `thinkite_server_start`, `_server_logs`, `_server_list` and
+  `_server_stop`, served by the daemon over opencode's client MCP. Every
+  long-running server the agent starts, page or API, goes through
+  `server_start`.
+- The daemon's registry is the one list of servers per project. Desktop
+  and phone subscribe to it.
+- Desktop: a link in a reply to one of the project's running servers (by
+  port) opens in the session's browser panel; any other link opens in the
+  user's browser. The info panel lists the project's servers, with why
+  each one stopped and a stop button for the running ones.
 - Phone: while the app is in the foreground, every port of every running
   server is forwarded, so a page can call its API on another port (the case
   in the 10-24 test, where the page fetched `localhost:8080`) and a
-  `localhost` link anywhere in the app opens. A preview screen per session
-  shows its pages.
+  `localhost` link anywhere in the app opens.
 
 ## Non-goals
 
-- No browser automation for the agent yet (thinkite/thinkite#31).
-- No agent-owned tabs yet. `browser_open` only opens the user's tabs; see
-  "Later: tab owners".
-- No waiting for readiness and no choosing a port. `server_start` returns
-  the first output; the agent reads the URL there (or in `server_logs`) and
-  passes it to `browser_open`, which checks one fact and answers at once.
+- No tool that opens, reads or acts on the user's tabs, now or later. Tabs
+  belong to a client, and the agent cannot address a client: a request
+  sent to "the user's browser" lands on whichever device acts on it first,
+  or none (the TUI, OpenCode's own app). See "Removed: browser_open".
+- No browser automation for the agent yet (thinkite/thinkite#31). When it
+  comes, its tabs are the agent's, per session, off screen.
+- No waiting for readiness. `server_start` returns the first output and the
+  URL once the server listens; the agent reads the rest in `server_logs`.
 - No automatic discovery of servers the agent or the user started some other
   way (nohup, the shell tool's background mode, the user's own terminal).
   Manual port entry on the phone covers those.
 - No multi-tab phone browser. One page at a time, with a switcher.
 - No `PORT` injection or port reassignment (Claude Desktop's `autoPort`
   rewrites flags and inspects scripts). When a port is taken the server
-  prints where it went, and the agent passes that URL.
+  moves or fails, and the lookup finds where it went.
 - No pushing anything into agent sessions. A stop is recorded on the
   server and reaches an agent through the next tool result that touches it.
 - The desktop/phone UI does not start servers.
@@ -100,12 +104,35 @@ thinkite/thinkite#31.
   stop, "the page doesn't load anymore" in the same session: the agent's
   `server_list` read "web: was stopped by the user just now", it started
   web again (the result carried the same note) and reopened the page.
+- **10-25, links instead of `browser_open`.** Removed: see below. The
+  entry's URL comes from the ports the daemon looks up, not from the
+  agent; `server_start` tells the agent to write the URL in its reply.
+
+### Removed: `browser_open`
+
+`browser_open({ url })` recorded an open request per session and origin;
+each device kept its own record of the requests it had acted on and opened
+newer ones when the user came to that session. It had to, because the
+daemon cannot know which client the user is on: one opencode server serves
+Thinkite on the Mac, the phone, the TUI and OpenCode's own app, each with
+its own tabs. So the result ("Sent … to the user's browser") promised more
+than the daemon knew: the desktop opened the page only once the user came
+to the session, the phone would have opened it whenever the app next came
+up, and the other clients never did. Tools that act on a user's tab later
+(read it, click) would need to name a client's tab, which nothing on the
+server side can. opencode's `experimental.browser`, which lends one
+client's embedded browser to every client of the session, runs into the
+same thing.
+
+A link in the reply has none of this: it stays in the transcript, every
+client shows it, and the user's tap is the intent. The cost is that the
+agent can no longer bring a page up by itself.
 
 What the experiment settled still holds:
 
 | Finding | Consequence |
 |---|---|
-| `open: true` only for "let me see" prompts; false for checks and APIs | Opening is its own tool, `browser_open` |
+| `open: true` only for "let me see" prompts; false for checks and APIs | Opening is the user's: a link in the reply |
 | A second start of the same name with `open: true` restarted the server and hit "port in use" | Start is idempotent per name (below) |
 | The stub's list showed servers from earlier sessions that were already dead | List checks liveness |
 | Restarting the stub lost its in-memory registry while the servers kept running | The registry persists (below) |
@@ -120,7 +147,7 @@ What the experiment settled still holds:
 ```
 opencode service ──client MCP (WS, per directory)── daemon: PreviewHost
       │  POST/GET/DELETE /api/shell, shell.exited events       │
-      │                                                        ├─ Registry: servers + open requests per
+      │                                                        ├─ Registry: servers and their ports per
       │                                                        │   directory, ports to forward (global),
       │                                                        │   $THINKITE_HOME/previews.json
       ▼                                                        ├─ router: subscribePreviews, stopPreview,
@@ -136,7 +163,7 @@ work under `thinkite up` too.
 ```
 packages/daemon/src/preview/
   host.ts       connection per directory, events, re-checks
-  registry.ts   servers, open requests, ports to forward, persistence
+  registry.ts   servers, their ports, ports to forward, persistence
   ports.ts      process tree → listening ports (ps + lsof -a -p)
   shells.ts     the slice of /api/shell used (create, get, tail, remove)
   tools.ts      names, descriptions, input schemas
@@ -150,20 +177,19 @@ carries `_meta["ai.opencode/sessionID"]`. The model is never shown session
 IDs (opencode's prompt does not carry its own either); where it matters,
 the daemon compares them and writes "yours" or "another session".
 
-Two groups: `server_*` run servers, pages and APIs alike; `browser_open`
-puts a page in the user's browser. "Server", not "service": service
-already means launchd, systemd and `brew services` to the model, and
-opencode's own managed service to us. The first lines below are the whole
-guidance the model sees in the catalog, so the first lines of
-`server_start` and `browser_open` each name the other. Lengths are
-measured and must stay under 120 characters.
+`server_*` run servers, pages and APIs alike. "Server", not "service":
+service already means launchd, systemd and `brew services` to the model,
+and opencode's own managed service to us. The first lines below are the
+whole guidance the model sees in the catalog, so `server_start`'s says how
+to show a page: write its URL in the reply. Its body adds that `open` on a
+URL only reaches this Mac's default browser. Lengths are measured and must
+stay under 120 characters.
 
 | Tool | First line of the description | Length |
 |---|---|---|
-| `server_start` | Run a dev server or API in the background (not shell background/nohup); to show a page, then call browser_open. | 111 |
+| `server_start` | Run a dev server or API in the background (not shell background/nohup); to show a page, write its URL in your reply. | 116 |
 | `server_logs` | Show a server_start server's recent output: whether it is ready, and the URL it serves. | 87 |
-| `browser_open` | Open a page in the user's browser: a URL from a server_start server's output, or any http(s) page. | 98 |
-| `server_list` | List this project's servers: status, URL if opened, which are yours, and why one stopped. | 89 |
+| `server_list` | List this project's servers: status, URL, which are yours, and why one stopped. | 79 |
 | `server_stop` | Stop a server started with server_start and free its port. | 58 |
 
 ### `server_start({ name, command, cwd? })`
@@ -186,40 +212,20 @@ measured and must stay under 120 characters.
   session } } })` with `location.directory`, and no `timeout`. A shell
   created this way belongs to no session's jobs: nothing is posted to a
   session when it ends.
-- Wait 2 s, re-checking the shell every 250 ms, then return
-  `Started "web". Output so far:` and the last 40 lines (ANSI stripped). If
-  the shell ends first, an error result with how it ended and its output
-  (a busy port usually shows up here).
-- Then look for its ports at 1, 3, 10 and 30 s and push the forward-port
-  list when it changes.
+- Wait 2 s, re-checking the shell every 250 ms, look up its ports, then
+  return `Started "web", listening on http://localhost:5173/. Output so
+  far:` and the last 40 lines (ANSI stripped); without "listening on" when
+  it does not listen yet. If the shell ends first, an error result with how
+  it ended and its output (a busy port usually shows up here).
+- Then look up its ports again at 1, 3, 10 and 30 s; push the entry and
+  the forward-port list when they change.
 
 ### `server_logs({ name, lines? })`
 
-- How the server stands and `shell.output`, default 40 lines, at most 200.
-  Works on ended entries (opencode keeps exited shells for a while).
-
-### `browser_open({ url })`
-
-- `url` must be http or https. By host:
-  - **This Mac** (`localhost`, `127.x`, `::1`, `*.localhost`, `0.0.0.0`, or
-    one of its interface addresses, like Vite's `Network:` line): one of
-    the project's running servers must listen on the URL's port (its
-    process tree, `ports.ts`; one check per running server, about 40 ms
-    each). That server's entry gets the URL and `localPort`. If none
-    listens, an error result: which server served that port and how it
-    ended, or which ports the running servers do listen on. Nothing is
-    opened.
-  - **Anything else** (a cloudflared or ngrok tunnel, a public site, docs):
-    taken as given. It is no more than a link in the agent's reply, opened
-    for the user.
-  - A reverse proxy on this Mac (`https://app.localhost` through Caddy) is
-    rejected, since the proxy, not a server of ours, holds the port. The
-    error's port list lets the agent pass `http://localhost:<port>`.
-- Record an open request `{ url, sessionID, at, server? }`, the latest per
-  session and origin (at most 100 per project, oldest dropped).
-- Result: `Sent http://localhost:5174/ to the user's browser.` The words
-  must not claim more than the daemon knows: it sees the request, not the
-  user's tabs.
+- How the server stands (with its URL while it runs) and `shell.output`,
+  default 40 lines, at most 200. Looks up ports first, so a server that
+  started listening after the start shows its URL here. Works on ended
+  entries (opencode keeps exited shells for a while).
 
 ### `server_list()`
 
@@ -257,7 +263,7 @@ publishes during the removal is attributed to them, not to "external".
 
 Agents rarely call `server_list` before acting (once in 15 runs), so the
 reason goes where they will meet it: `server_start` on that name,
-`browser_open` on its port, `server_logs`, `server_list`, `server_stop`.
+`server_logs`, `server_list`, `server_stop`.
 
 ## Registry
 
@@ -269,8 +275,7 @@ type Entry = {
   pid?: number;
   command: string;
   cwd?: string;
-  url?: string;               // the page browser_open last opened from it
-  localPort?: number;         // that URL's port (checked to be this server's)
+  ports?: number[];           // listening, ascending; last seen, kept after it ends
   status: "running" | "ended";
   started: { at: number; sessionID?: string };
   ended?: {
@@ -281,22 +286,21 @@ type Entry = {
   };
 };
 
-type BrowserRequest = {
-  url: string;
-  sessionID: string;
-  at: number;
-  server?: string;            // for a URL on this Mac
-};
 ```
 
+The URL is derived, not stored: `http://localhost:<ports[0]>/`. The lowest
+port is the page's in the common cases (Vite's old HMR port 24678, Node's
+inspector 9229 and wrangler's 9229 all come after it); an agent that knows
+better writes the right link in its reply anyway.
+
 - **opencode's shells say whether a server runs; everything else lives
-  here.** The URL, who started and stopped it, and the open requests come
-  after the shell is created, and opencode has no API to change a shell's
-  metadata.
+  here.** The ports, who started and stopped it come after the shell is
+  created, and opencode has no API to change a shell's metadata.
 - **Persistence:** every change writes `$THINKITE_HOME/previews.json`
   (`v: 2`, atomic rename, mode 600). At start the daemon reads back the
-  servers that were running and all open requests; servers that had
-  already ended are left behind.
+  servers that were running; servers that had already ended are left
+  behind. Files from before carry a `requests` list and `url`/`localPort`
+  on entries; they are ignored, and the next lookup fills `ports`.
 - **Liveness:** subscribe to the event bus. On `shell.exited` for a known
   shell, end the entry and push to clients. On attach and every reconnect,
   re-check the directory's running entries with `shell.get` (catches exits
@@ -336,58 +340,49 @@ type BrowserRequest = {
   (measured 10-24).
 - Scoped to the server's tree, so a port held by another project (Vite on
   5173 elsewhere, this one moved to 5174) does not pass for this server.
-- No HTTP probe: a listening port is the fact the agent's URL depends on,
-  and an HTTP request can make a dev server compile or upset a non-HTTP
-  listener.
-- Used twice: `browser_open`'s check, and the forward-port list (every
-  running server of every project, recomputed after a start at 1, 3, 10
-  and 30 s, after a stop or exit, and on request).
+- No HTTP probe: an HTTP request can make a dev server compile (Next.js
+  takes seconds on the first one) or upset a non-HTTP listener.
+- One lookup feeds both: each running entry's `ports` (only replaced by a
+  non-empty, different list) and the forward-port list (every running
+  server of every project). Run 2 s into a start and at 1, 3, 10 and 30 s
+  after it, after a stop or exit, in `server_logs` and `server_list`, and
+  on request.
 
 ## Clients
 
-### Protocol (`@thinkite/protocol` 0.2.4)
+### Protocol (`@thinkite/protocol` 0.2.5)
 
 - Per project, same shape as git status: `getPreviews { directory }` is the
-  snapshot `{ entries, requests }`, `subscribePreviews { directory }` a
-  pure change stream of `previews { directory, entries, requests }` on
-  every change. `unsubscribePreviews { directory }`.
+  snapshot `{ entries }`, `subscribePreviews { directory }` a pure change
+  stream of `previews { directory, entries }` on every change.
+  `unsubscribePreviews { directory }`.
+- An entry carries `ports` and `url` once its server listens. 0.2.5 drops
+  0.2.4's `requests` and `localPort`.
 - `stopPreview { directory, name }`: the user's stop button, recorded as
   `by: "user"`.
 - Global, for the phone: `getForwardPorts` is the snapshot,
   `subscribeForwardPorts` a pure change stream of `forwardPorts { ports }`,
   each `{ port, directory, name }`. `unsubscribeForwardPorts`.
-- An open request is state, not an event. An event would be lost on every
-  device that was not showing the session at that moment, the common case
-  when the user switches sessions while the agent works. Each device keeps
-  its own record of the requests it has handled (per directory, session
-  and origin, the last `at`) and acts on newer ones when the user is in
-  that session.
-- A request is about the request, never about the user's tabs. The daemon
-  does not know which tabs a device has, and the agent must not depend on
-  them.
 
 ### Desktop
 
-- Tabs opened from a request are the user's tabs, in the user's partition
+- Links in messages: bare URLs are linked too (`autolink="gfm"`), since
+  agents write `http://localhost:5173/` as often as a markdown link. A link
+  to `localhost`, `127.x`, `[::1]` or `*.localhost` on a port of one of the
+  project's running servers opens in the session's browser panel
+  (`serverForLink`): a tab already on that origin is selected, otherwise a
+  new tab or the blank active one, and the panel comes up. Any other link
+  opens in the user's browser.
+- Those tabs are the user's, in the user's partition
   (`persist:thinkite-browser`). The agent's own pages, later
   (thinkite/thinkite#31), live elsewhere and never in this panel.
-- When the session on screen has requests newer than this device handled:
-  - one whose server has stopped since: record it, open nothing;
-  - a tab of that session already on the same origin: select it, no reload
-    (HMR keeps it current);
-  - otherwise add a tab at the URL, or reuse the active tab if it is
-    blank. Never navigate a tab the user is on.
-  - show the browser panel if it is closed (when something was opened).
-  - record every one as handled, whether or not a tab was made. A tab the
-    user closes stays closed until the agent asks again.
 - After that the tab is an ordinary tab: no following a URL change, no
-  closing on stop. A tab on the page of a stopped server (localhost and
-  127.0.0.1 count as one host) shows a strip: "web stopped" (no restart
-  button in v1).
-- The info panel's "Servers" card: a status dot, name, `:<port>` for an
-  opened page on this Mac or the host for a tunnel (opens it in a tab),
-  state (Running, Stopped, Stopped by agent, Exited (n), Killed), stop.
-  Servers never opened (APIs) have no link. Stopped entries stay listed.
+  closing on stop. A tab on a port of a stopped server shows a strip:
+  "web stopped" (no restart button in v1).
+- The info panel's "Servers" card: a status dot, name, `:<port>` of its
+  URL while it runs (opens it in a tab), state (Running, Stopped, Stopped
+  by agent, Exited (n), Killed), stop. A server that does not listen yet
+  has no link. Stopped entries stay listed.
 - No tunnel: local pages are on this Mac.
 
 ### Phone
@@ -403,29 +398,28 @@ type BrowserRequest = {
     by all apps.
   - **Taken port:** show it; don't pick another number. The page's origin
     must stay `localhost:<same port>`.
-- **Loading a page:** an entry or request with `localPort` loads as
-  `http://localhost:<localPort>` plus the URL's path, through the listener,
-  whatever host the agent wrote. Anything else (a tunnel, a public site)
-  loads directly.
-- Preview screen per session: the project's servers and the session's
-  requests from `getPreviews` plus `subscribePreviews`, and a WebView on
-  the selected page. No JS bridge to the app: no `onMessage`, no injected
-  scripts. The screen's design (server list, banner, manual entry) is
-  still open.
-- A newer request for the session on screen (same per-device record as the
-  desktop): offer to open it. Don't navigate on the user's behalf.
+- **Links in messages, now** (`lib/open-link.ts`): a link to the Mac
+  itself (`localhost`, `127.x`, `[::1]`, `*.localhost`) is told apart by
+  its port against `getForwardPorts`. Until forwarding lands it opens an
+  alert: the server that serves it on the Mac, or that none does. Any
+  other http(s) link opens in the in-app browser (`expo-web-browser`).
+- **With forwarding:** a `localhost` link on a forwarded port loads as
+  `http://localhost:<port>` plus its path, through the listener. Anything
+  else (a tunnel, a public site) loads directly.
+- Preview screen: the project's servers from `getPreviews` plus
+  `subscribePreviews`, and a WebView on the selected page. No JS bridge to
+  the app: no `onMessage`, no injected scripts. The screen's design
+  (server list, banner, manual entry) is still open.
 - The selected page's server stopped: show it as stopped and why; don't
   switch to another.
 
-## Later: tab owners
+## Later: the agent's browser
 
-When the agent gets tabs of its own, `browser_open` takes
-`owner: "user" | "agent"`, defaulting to `"user"` (no break for existing
-calls). User tabs live in the user's browser; with permission the agent may
-read and act on them. Agent tabs render off screen for the agent's own
-checks; the user cannot operate them (maybe watch read-only). Not added
-now: a parameter with one usable value makes the model wonder when to pass
-the other.
+The agent gets a browser of its own (thinkite/thinkite#31): tabs held by
+the daemon, per session, rendered off screen for the agent's own checks
+(screenshots, snapshots, console, clicks). The user may watch, read only.
+It never touches the user's tabs, and the `browser_*` names are kept for
+it.
 
 ## Landing the spike
 
@@ -450,9 +444,9 @@ decision of its own. 14.0.1 is `latest`; 16.0.0 is on the `next` tag.
   shell command needs that action set to ask too. To verify: the default
   permission of a client MCP tool, and how the approval card shows the
   command.
-- An agent can put any http(s) URL in the user's browser through
-  `browser_open`. That is no more than a link in its reply, opened for the
-  user; the tab is in the user's partition, as any page they open.
+- A page opens only when the user taps its link. On the desktop, a link
+  to one of the project's servers opens in the user's partition, as any
+  page they open.
 - The TCP tunnel reaches any port on the Mac's loopback, behind the same
   known_clients gate that lets a paired phone drive the agent. That is no
   wider than what the phone can already do. The phone only listens on the
@@ -465,20 +459,20 @@ decision of its own. 14.0.1 is `latest`; 16.0.0 is on the `next` tag.
 - **vitest (daemon):** the registry against a fake shell client. Covered:
   start (output, idempotency across sessions, a different command, a
   server that ends at once, a restart that says how the last one ended),
-  logs, `browser_open` (a page a server serves, 127.0.0.1, no server on
-  the port, a stopped server's port, a tunnel, the latest request per
-  session and origin), the project-wide list with "(yours)", stop reasons
+  logs, ports and URL (the lowest port, a port that opens after the start,
+  the ports of an ended server), the project-wide list with "(yours)", stop reasons
   (user, agent, the exit event arriving first, process exit, an outside
   kill), the forward-port list across projects, persistence across a
   restart with an exit in between, the router frames, and the 120
-  character first lines.
+  character first lines. Desktop and phone: which links count as a
+  server's page (`serverForLink`, `localPort`, `macPageNotice`).
 - **Gated e2e** (`THINKITE_E2E_PROVIDERS=1` style, isolated `opencode
-  serve` with `HOME` and the XDG dirs in a temp dir): start, logs, open,
-  stop against real shells, and a daemon restart in the middle.
+  serve` with `HOME` and the XDG dirs in a temp dir): start, logs, stop
+  against real shells, and a daemon restart in the middle.
 - **Model rerun:** the 10-24 prompts against the real host. Check that the
-  agent uses `server_start` rather than shell background, opens pages with
-  `browser_open` and not APIs, and that stopping a server from outside
-  does not make it start the server again.
+  agent uses `server_start` rather than shell background, writes the page's
+  link in its reply (and not an API's, nor `open`), and that stopping a
+  server from outside does not make it start the server again.
 - **Device:** a dev page that lists the forward ports and opens pages:
   - a page on 5180 calling an API on 8080, with HMR, over the tunnel;
   - opening and closing all listeners in a loop, timed, on Wi-Fi and 5G;

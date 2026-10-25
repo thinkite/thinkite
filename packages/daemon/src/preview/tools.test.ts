@@ -12,7 +12,6 @@ describe("preview tools", () => {
     expect(tools.map((t) => t.name)).toEqual([
       "server_start",
       "server_logs",
-      "browser_open",
       "server_list",
       "server_stop",
     ]);
@@ -27,16 +26,15 @@ describe("preview tools", () => {
     expect(line.length).toBeGreaterThan(20);
   });
 
-  it("ties server_start and browser_open together in their first lines", () => {
+  it("tells the agent to show a page by writing its URL, not by a tool", () => {
     expect(first("server_start")).toContain("not shell background/nohup");
-    expect(first("server_start")).toContain("browser_open");
-    expect(first("browser_open")).toContain("server_start");
+    expect(first("server_start")).toContain("write its URL in your reply");
   });
 
-  it("asks browser_open for a URL", async () => {
-    const open = tools.find((t) => t.name === "browser_open");
-    expect(await open?.call({}, { directory: "/proj" })).toEqual({
-      text: "url is required",
+  it("asks server_logs for a name", async () => {
+    const logs = tools.find((t) => t.name === "server_logs");
+    expect(await logs?.call({}, { directory: "/proj" })).toEqual({
+      text: "name is required",
       isError: true,
     });
   });

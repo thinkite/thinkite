@@ -4,6 +4,7 @@ import {
   type MarkdownStyle,
 } from "react-native-enriched-markdown";
 
+import { useOpenLink } from "@/lib/open-link";
 import { useRemend } from "./remend";
 
 /**
@@ -316,6 +317,7 @@ export function ChatMarkdown({
   const colorScheme = useColorScheme() ?? "light";
   const markdownStyle = colorScheme === "dark" ? DARK_STYLE : LIGHT_STYLE;
   const content = useRemend(markdown, streaming);
+  const openLink = useOpenLink();
   return (
     // The plain View wrapper is LOAD-BEARING, not decoration: with enriched
     // as a direct flex child of the message column, repeated layout passes
@@ -336,6 +338,7 @@ export function ChatMarkdown({
           codeBlockMode: "progressive",
         }}
         markdownStyle={markdownStyle}
+        onLinkPress={(e) => openLink(e.url)}
       />
     </View>
   );
