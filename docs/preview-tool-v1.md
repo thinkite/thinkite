@@ -189,8 +189,13 @@ type PreviewEntry = {
   `client.event`). On `shell.exited` for a known shell, update the entry
   and push to clients. `preview_list` and the clients' subscribe also
   re-check, in case an event was missed.
-- `sessions` beyond the starter live in memory only, so a rebuild returns
-  just the starter. That is acceptable for v1.
+- A daemon restart loses what only lived in memory, and v1 accepts both:
+  - sessions that reused a server after its starter, so their
+    `preview_list` needs `all: true` to see it;
+  - an `open` set by a later start (shell metadata is written once, at
+    create).
+  A small sidecar file in the Thinkite home, keyed by shell id, can keep
+  them if this turns out to matter.
 
 ## Client MCP connection
 
@@ -209,8 +214,14 @@ type PreviewEntry = {
 - Implement the WebSocket MCP server ourselves (about 100 lines, as in the
   stub). The `@opencode/client/mcp` helper would also work, but we need the
   connection events for the rebuild, and we don't send `instructions`.
-- To verify: does attaching before a session's first turn avoid the notice?
-  The tools would then be in the initial catalog.
+- Attaching before a session's first turn avoids the notice: verified
+  10-25. The host attached on `session.created` about 1 ms after the
+  event, and the first turn had the tools with no "catalog changed"
+  message.
+- Protocol version: speak 2025-11-25 only. opencode supports 2026-07-28
+  since anomalyco/opencode#48937, but pins attached connections to the
+  legacy handshake (`packages/core/src/mcp/client.ts`: `config.type ===
+  "attached" ? "legacy"`). Follow `connectClientMcp` if that changes.
 
 ## Port detection (`ports.ts`)
 
@@ -227,8 +238,9 @@ type PreviewEntry = {
 
 ### Protocol (`@thinkite/protocol`, patch bump, additive frames)
 
-- `subscribePreviews { directory }`: replies with a snapshot, then a
-  `previews { directory, entries }` event (full list) on every change.
+- Same shape as git status: `getPreviews { directory }` is the snapshot,
+  `subscribePreviews { directory }` a pure change stream of
+  `previews { directory, entries }` events (full list) on every change.
 - `unsubscribePreviews { directory }`.
 - `stopPreview { directory, name }`: the user's stop button. Same path as
   the tool.
@@ -245,7 +257,8 @@ type PreviewEntry = {
 
 ### Phone
 
-- Preview screen per session: the list from `subscribePreviews`, and a
+- Preview screen per session: the list from `getPreviews` plus
+  `subscribePreviews`, and a
   WebView on `http://localhost:<primaryPort>` of the selected entry. It has
   no JS bridge to the app: no `onMessage`, no injected scripts.
 - While the screen is in the foreground, keep a `forwardTcp` listener for
@@ -310,7 +323,9 @@ decision of its own. 14.0.1 is `latest`; 16.0.0 is on the `next` tag.
 
 ## Open questions
 
-- Should the first line of `preview_start` name `open`? It worked without
-  that in the test. Re-test with a weaker model before adding words.
+- Should the first line of `preview_start` name `open`? In the 10-25
+  rerun against the real host, the "let me see it" prompt started the
+  page without `open` (both stub runs had set it). One sample. Watch it
+  before adding words.
 - Do phone listeners need to cover ports of other projects? Not in v1: the
   preview screen covers the session's project only.

@@ -12,6 +12,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { CommandContext } from "./command.ts";
 import { GitWatcherRegistry } from "./git-watch.ts";
 import type { RecentSession } from "./opencode/recent.ts";
+import { PreviewRegistry } from "./preview/registry.ts";
+import type { ShellApi, ShellInfo } from "./preview/shells.ts";
 import { createCommandHandler } from "./router.ts";
 
 function makeCtx(): {
@@ -493,5 +495,130 @@ describe("createCommandHandler — getFilesystemRoots", () => {
     if (sent[0]?.type !== "getFilesystemRoots.response")
       throw new Error("expected response");
     expect(sent[0].recentCwds).toEqual([]);
+  });
+});
+
+describe("createCommandHandler — previews", () => {
+  // One running `web` server on 5180 in /proj.
+  function previewRegistry(): PreviewRegistry {
+    const shell: ShellInfo = {
+      id: "sh_1",
+      status: "running",
+      command: "bun run dev",
+      cwd: "/proj",
+      pid: 4242,
+      metadata: {},
+      time: { started: 1 },
+    };
+    const shells: ShellApi = {
+      create: async () => shell,
+      get: async () => shell,
+      list: async () => [shell],
+      tail: async () => "",
+      remove: async () => {
+        shell.status = "killed";
+      },
+    };
+    return new PreviewRegistry({
+      shells,
+      ports: async () => (shell.status === "running" ? [5180] : []),
+      probe: async () => ({ kind: "page" }),
+      sleep: async () => undefined,
+    });
+  }
+
+  it("answers unsupported when the daemon has no registry", async () => {
+    const handler = createCommandHandler(makeDeps());
+    const { ctx, sent } = makeCtx();
+    await handler(
+      { type: "getPreviews", requestId: "r1", directory: "/proj" },
+      ctx,
+    );
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        requestId: "r1",
+        code: "unsupported",
+      }),
+    ]);
+  });
+
+  it("pushes the list and previewOpened to a subscribed connection only", async () => {
+    const previews = previewRegistry();
+    const handler = createCommandHandler(makeDeps({ previews }));
+    const a = makeCtx();
+    const b = makeCtx();
+    await handler(
+      { type: "subscribePreviews", requestId: "r1", directory: "/proj" },
+      a.ctx,
+    );
+    await handler(
+      { type: "subscribePreviews", requestId: "r1", directory: "/other" },
+      b.ctx,
+    );
+    await previews.start(
+      "/proj",
+      { name: "web", command: "bun run dev", open: true },
+      "ses_a",
+    );
+
+    expect(a.sent[0]).toEqual({
+      type: "subscribePreviews.response",
+      requestId: "r1",
+      directory: "/proj",
+    });
+    expect(a.sent.filter((f) => f.type === "previews").at(-1)).toMatchObject({
+      directory: "/proj",
+      entries: [
+        { name: "web", status: "running", primaryPort: 5180, open: true },
+      ],
+    });
+    expect(a.sent.filter((f) => f.type === "previewOpened")).toEqual([
+      {
+        type: "previewOpened",
+        directory: "/proj",
+        name: "web",
+        sessionID: "ses_a",
+        url: "http://localhost:5180/",
+      },
+    ]);
+    expect(b.sent.map((f) => f.type)).toEqual(["subscribePreviews.response"]);
+
+    a.fireDisconnect();
+    await previews.start(
+      "/proj",
+      { name: "web", command: "bun run dev", open: true },
+      "ses_a",
+    );
+    expect(a.sent.filter((f) => f.type === "previewOpened")).toHaveLength(1);
+  });
+
+  it("getPreviews snapshots and stopPreview stops", async () => {
+    const previews = previewRegistry();
+    const handler = createCommandHandler(makeDeps({ previews }));
+    const { ctx, sent } = makeCtx();
+    await previews.start("/proj", { name: "web", command: "bun run dev" });
+    await handler(
+      { type: "getPreviews", requestId: "r1", directory: "/proj" },
+      ctx,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "getPreviews.response",
+      entries: [{ name: "web" }],
+    });
+    await handler(
+      { type: "stopPreview", requestId: "r2", directory: "/proj", name: "web" },
+      ctx,
+    );
+    expect(sent[1]).toEqual({ type: "stopPreview.response", requestId: "r2" });
+    await handler(
+      { type: "stopPreview", requestId: "r3", directory: "/proj", name: "web" },
+      ctx,
+    );
+    expect(sent[2]).toMatchObject({
+      type: "error",
+      requestId: "r3",
+      code: "not_found",
+    });
   });
 });

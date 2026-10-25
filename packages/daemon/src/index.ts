@@ -16,6 +16,8 @@ import {
   type ResolveOpencode,
 } from "./opencode/service.ts";
 import { createPairOffer } from "./pairing.ts";
+import { PreviewHost } from "./preview/host.ts";
+import type { PreviewRegistry } from "./preview/registry.ts";
 import { createCommandHandler } from "./router.ts";
 
 export interface DaemonOptions {
@@ -32,6 +34,7 @@ export { readActiveDaemonLock } from "./daemon-lock.ts";
 export { resolveThinkiteHome } from "./home.ts";
 export type { OpencodeConnection } from "./opencode/registry.ts";
 export { startsTask } from "./opencode/service.ts";
+export type { PreviewOpened, PreviewRegistry } from "./preview/registry.ts";
 
 export interface Daemon {
   stop(): Promise<void>;
@@ -78,6 +81,12 @@ export interface Daemon {
    * watcher that pushes the phone's git status. Returns the unsubscribe.
    */
   watchGit(cwd: string, onChange: () => void): () => void;
+  /**
+   * Servers the agent started with the preview tools (`thinkite_preview_*`,
+   * served to opencode over client MCP), per project directory. The phone
+   * reaches the same registry through the RPC.
+   */
+  previews: PreviewRegistry;
 }
 
 /**
@@ -158,9 +167,20 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
   // Disposed on daemon.stop() to release fs.watch handles cleanly.
   const gitWatchers = new GitWatcherRegistry();
 
+  // The agent's preview tools: one client-MCP connection per session
+  // directory on the user's opencode service, plus the registry of the
+  // servers they started (docs/preview-tool-v1.md).
+  const previewHost = new PreviewHost({
+    resolve: resolveOpencode,
+    version: PROTOCOL_VERSION,
+    log: (message) => console.log(`[thinkite] ${message}`),
+  });
+  previewHost.start();
+
   const commandHandler = createCommandHandler({
     gitWatchers,
     recentSessions: async () => listRecentSessions(await resolveOpencode()),
+    previews: previewHost.registry,
   });
 
   // The remote transport: iroh QUIC listener on the pairing identity
@@ -223,6 +243,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
     opencode: resolveOpencode,
     watchGit: (cwd, onChange) =>
       gitWatchers.getOrCreate(cwd).subscribe(() => onChange()),
+    previews: previewHost.registry,
     createPairOffer: (serviceName) => {
       const { encoded } = createPairOffer(identity, serviceName);
       return { encoded };
@@ -234,6 +255,7 @@ export async function start(options: DaemonOptions = {}): Promise<Daemon> {
       // Release fs.watch handles + cached SimpleGit instances; safe to
       // call before or after iroh.stop(), no interaction with peers.
       gitWatchers.disposeAll();
+      previewHost.stop();
       deleteDaemonLock(home);
       await iroh.stop();
       console.log("thinkite daemon stopped");
