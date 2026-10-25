@@ -260,6 +260,26 @@ describe("PreviewRegistry ports", () => {
     );
   });
 
+  it("misses to the nearest port, not the lowest", async () => {
+    const shells = fakeShells();
+    const r = registry(shells, [3306, 5174]);
+    const out = await r.start(DIR, {
+      name: "web",
+      command: "bun run dev",
+      port: 5173,
+    });
+    expect(out.text).toBe(
+      '"web" is running at http://localhost:5174 (also listening on 3306), not on the expected port 5173. Registered (not opened).',
+    );
+  });
+
+  it("takes the lower port when two are as near", async () => {
+    const shells = fakeShells();
+    const r = registry(shells, [5172, 5174]);
+    await r.start(DIR, { name: "web", command: "vite", port: 5173 });
+    expect((await r.entries(DIR))[0]?.primaryPort).toBe(5172);
+  });
+
   it("keeps the expected port across a rebuild", async () => {
     const shells = fakeShells();
     await registry(shells, [3001, 5180]).start(DIR, {

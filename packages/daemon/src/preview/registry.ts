@@ -411,15 +411,20 @@ export class PreviewRegistry {
     }
   }
 
-  /** The page's URL is the port the agent expected when it listens there,
-   *  else the lowest one (the result then says so). */
+  /** The page's URL: the listening port nearest the one the agent
+   *  expected (a busy port usually moves up by one: 5173 → 5174), the
+   *  lower on a tie; the lowest without an expectation. A miss is said in
+   *  the result. `ports` is ascending. */
   private settle(entry: Entry, ports: number[]): void {
     entry.ports = ports;
     entry.status = "running";
+    const expected = entry.expectedPort;
     entry.primaryPort =
-      entry.expectedPort !== undefined && ports.includes(entry.expectedPort)
-        ? entry.expectedPort
-        : ports[0];
+      expected === undefined
+        ? ports[0]
+        : ports.reduce((best, p) =>
+            Math.abs(p - expected) < Math.abs(best - expected) ? p : best,
+          );
   }
 
   /** Re-check one entry's shell and ports. */

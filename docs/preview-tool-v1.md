@@ -137,8 +137,9 @@ listening."
   - **Listening:** return `"<name>" is running at http://localhost:<port>`
     (other ports listed). Once some port listens, wait up to 2 s more for
     the expected one (a server can open a side port first). If it never
-    shows, the URL is the lowest port and the result says "not on the
-    expected port N", so the agent tells the user the real URL. Add "Sent to the user's preview pane" or
+    shows, the URL is the nearest listening port and the result says "not
+    on the expected port N", so the agent tells the user the real URL.
+    Add "Sent to the user's preview pane" or
     "Registered (not opened)". The words matter: in the test the model used
     this result to decide what to say to the user. They must not claim more
     than the daemon knows: it sees the request, not the user's tabs.
@@ -186,7 +187,7 @@ type PreviewEntry = {
   command: string;
   cwd: string;
   ports: number[];          // all listening ports of the process tree
-  primaryPort?: number;     // the expected port if listening, else the lowest
+  primaryPort?: number;     // nearest the expected port, else the lowest
   expectedPort?: number;    // preview_start's `port`
   opened?: { at: number; sessionID: string }; // latest request to show it
   sessions: string[];       // starter first
@@ -255,8 +256,12 @@ type PreviewEntry = {
   3. `lsof -a -p <pids> -nP -iTCP -sTCP:LISTEN -Fn`.
 - Measured 10-24: Vite, Next.js and `bun --hot` are found 0.1–1.4 s after
   the shell starts. Per-pid lsof costs about 20 ms, and so does `ps`.
-- `primaryPort`: the agent's expected port when the process tree listens
-  there, else the lowest listening port (ports are sorted). No HTTP probe:
+- `primaryPort`: with an expected port, the listening port nearest it (the
+  lower on a tie), so a busy port that moved up by one (Vite 5173 → 5174,
+  Next 3000 → 3001) still wins over a lower side port; without one, the
+  lowest listening port. A guess far off (expected 8080, app on 3000,
+  debugger on 9229) picks the debugger, and the result's "not on the
+  expected port" plus the listed ports let the agent notice. No HTTP probe:
   a debugger port answers HTTP too (Node's inspector says 400, Bun's 404),
   and `GET /` makes some dev servers compile. No page/API classification:
   whether to show a server is the agent's `open`.
