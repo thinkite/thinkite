@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { localPort, macPageNotice } from "./mac-link";
+import { localPort, macPageNotice, phonePage } from "./mac-link";
 
 describe("localPort", () => {
   it("reads the port of a page on the Mac itself", () => {
@@ -16,12 +16,27 @@ describe("localPort", () => {
   });
 });
 
+describe("phonePage", () => {
+  it("moves the page to the phone's localhost, keeping the rest", () => {
+    expect(phonePage("http://127.0.0.1:5173/a/b?x=1#top")).toBe(
+      "http://localhost:5173/a/b?x=1#top",
+    );
+    expect(phonePage("http://app.localhost:5173/")).toBe(
+      "http://localhost:5173/",
+    );
+  });
+});
+
 describe("macPageNotice", () => {
-  it("names the server on the link's port", () => {
-    const ports = [{ port: 5173, directory: "/proj", name: "web" }];
-    expect(macPageNotice(5173, ports).title).toBe(`"web" runs on your Mac`);
+  const ports = [{ port: 5173, directory: "/proj", name: "web" }];
+
+  it("says why the phone can't show it", () => {
     expect(macPageNotice(3000, ports).title).toBe(
       "Not reachable from your phone",
     );
+    expect(macPageNotice(5173, ports, "address in use").title).toBe(
+      "Port 5173 is taken on this phone",
+    );
+    expect(macPageNotice(5173, ports).title).toBe(`"web" isn't connected yet`);
   });
 });

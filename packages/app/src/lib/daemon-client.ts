@@ -175,6 +175,8 @@ export class Transport {
    * state is per-workspace on the daemon.
    */
   private readonly gitStatusCallbacks = new Map<string, GitStatusCallback>();
+  /** The forward-port subscriber, if any (one per connection). */
+  private forwardPortsCallback: ((ports: ForwardPort[]) => void) | null = null;
   /**
    * `true` once `close()` has been called by the consumer — distinguishes
    * "user / context tore down the connection" from "transport dropped on
@@ -395,6 +397,34 @@ export class Transport {
     return res.ports;
   }
 
+  /** The forward ports' change stream (no initial snapshot; that is
+   *  `getForwardPorts`), like `subscribeGitStatus`. One subscriber. */
+  async subscribeForwardPorts(
+    onUpdate: (ports: ForwardPort[]) => void,
+  ): Promise<{ unsubscribe: () => Promise<void> }> {
+    this.forwardPortsCallback = onUpdate;
+    try {
+      await this.request({
+        type: "subscribeForwardPorts",
+        requestId: Crypto.randomUUID(),
+      });
+    } catch (err) {
+      if (this.forwardPortsCallback === onUpdate)
+        this.forwardPortsCallback = null;
+      throw err;
+    }
+    return {
+      unsubscribe: async () => {
+        if (this.forwardPortsCallback !== onUpdate) return;
+        this.forwardPortsCallback = null;
+        await this.request({
+          type: "unsubscribeForwardPorts",
+          requestId: Crypto.randomUUID(),
+        });
+      },
+    };
+  }
+
   /**
    * Subscribe to live git status for a `cwd` — a PURE change stream (no
    * initial snapshot; fetch that via `getGitStatus`). Subsequent changes
@@ -525,6 +555,7 @@ export class Transport {
         message?: string;
         cwd?: string;
         status?: GitStatus;
+        ports?: ForwardPort[];
       };
       // Liveness probe answer — clears the pong deadline armed by the
       // matching ping. Any pong counts; we don't correlate echoT.
@@ -546,6 +577,10 @@ export class Transport {
         if (cb) cb(frame.status);
         return;
       }
+      if (frame.type === "forwardPorts" && frame.ports !== undefined) {
+        this.forwardPortsCallback?.(frame.ports);
+        return;
+      }
       if (!frame.requestId) return;
       const slot = this.pending.get(frame.requestId);
       if (!slot) return;
@@ -564,6 +599,7 @@ export class Transport {
     for (const [, slot] of this.pending) slot.reject(err);
     this.pending.clear();
     this.gitStatusCallbacks.clear();
+    this.forwardPortsCallback = null;
     if (!this.intentionallyClosed) {
       const cb = this.onUnexpectedClose;
       this.onUnexpectedClose = null;
@@ -701,6 +737,15 @@ export class DaemonClient {
   ): Promise<{ unsubscribe: () => Promise<void> }> {
     const t = await this.readyPromise;
     return t.subscribeGitStatus(cwd, onUpdate);
+  }
+
+  /** The forward ports' change stream on the current transport; like
+   *  `subscribeGitStatus`, callers subscribe again after a reconnect. */
+  async subscribeForwardPorts(
+    onUpdate: (ports: ForwardPort[]) => void,
+  ): Promise<{ unsubscribe: () => Promise<void> }> {
+    const t = await this.readyPromise;
+    return t.subscribeForwardPorts(onUpdate);
   }
 }
 

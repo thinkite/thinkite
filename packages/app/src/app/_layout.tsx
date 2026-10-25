@@ -26,6 +26,7 @@ import {
   useDaemonClient,
 } from "@/lib/daemon-client-context";
 import { OcRuntimeGate } from "@/lib/oc";
+import { PortForwarder } from "@/lib/port-forward";
 import { queryClient } from "@/lib/query-client";
 import { SafeAreaView } from "@/lib/styled";
 import { getThemePreference } from "@/lib/theme-preference";
@@ -74,6 +75,9 @@ export default function RootLayout() {
                   runtime (sessions collection + shared bus) off the
                   daemon connection status. */}
               <OcRuntimeGate />
+              {/* Headless: the Mac's dev servers on the phone's
+                  localhost while the app is in the foreground. */}
+              <PortForwarder />
               <SafeAreaListener
                 onChange={({ insets }) => {
                   Uniwind.updateInsets(insets);

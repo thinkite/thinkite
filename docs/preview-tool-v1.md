@@ -411,14 +411,25 @@ better writes the right link in its reply anyway.
     by all apps.
   - **Taken port:** show it; don't pick another number. The page's origin
     must stay `localhost:<same port>`.
-- **Links in messages, now** (`lib/open-link.ts`): a link to the Mac
-  itself (`localhost`, `127.x`, `[::1]`, `*.localhost`) is told apart by
-  its port against `getForwardPorts`. Until forwarding lands it opens an
-  alert: the server that serves it on the Mac, or that none does. Any
-  other http(s) link opens in the in-app browser (`expo-web-browser`).
-- **With forwarding:** a `localhost` link on a forwarded port loads as
-  `http://localhost:<port>` plus its path, through the listener. Anything
-  else (a tunnel, a public site) loads directly.
+- **Forwarding** (`lib/port-forward.ts`, `PortForwarder` in the root
+  layout): while the app is in the foreground and the daemon online, it
+  subscribes to the forward-port list (which also keeps the daemon
+  looking up ports every 5 s) and keeps one `forwardTcp` listener per
+  port, on the phone's 127.0.0.1 at the same number. Going to the
+  background unsubscribes and closes them all; coming back listens again.
+  A port that will not bind is recorded, not renumbered.
+- **Links in messages** (`lib/open-link.ts`): a link to the Mac itself
+  (`localhost`, `127.x`, `[::1]`, `*.localhost`) whose port has a
+  listener opens as `http://localhost:<port>` plus its path in the in-app
+  browser (`expo-web-browser`, SFSafariViewController). In the simulator,
+  whose localhost is the Mac's, any forward port opens directly. Otherwise
+  an alert says why: no server there, the port is taken on the phone, or
+  not connected yet. Any other http(s) link opens in the in-app browser.
+- **Open question:** does SFSafariViewController, which runs outside the
+  app's process, reach the app's loopback listener on a device? iOS
+  loopback is shared by all apps and the app stays in the foreground under
+  it, so it should; until checked on a device, the WebView in the
+  forward-tcp spike is the known-good path.
 - Preview screen: the project's servers from `getPreviews` plus
   `subscribePreviews`, and a WebView on the selected page. No JS bridge to
   the app: no `onMessage`, no injected scripts. The screen's design
@@ -434,20 +445,19 @@ the daemon, per session, rendered off screen for the agent's own checks
 It never touches the user's tabs, and the `browser_*` names are kept for
 it.
 
-## Landing the spike
+## From the spike
 
-The `forward-tcp-spike` branch is local and unpushed. Take from it:
+The daemon side of `forward-tcp-spike` landed on 10-24 (c92b7ec):
+`iroh-tcp-tunnel.ts` and its tests, the `thinkite/tcp/1` ALPN in
+`iroh-peer-server.ts`, the `iroh-duplex.ts` changes, `IROH_TCP_ALPN` and
+`IROH_TCP_HEADER_BYTES`, and `getEndpoint` exported from the app's
+`iroh-wire.ts`. The app's forwarding is `lib/port-forward.ts`;
+`dev/tunnel.tsx` stays on the branch as reference.
 
-- **daemon:** `iroh-tcp-tunnel.ts` and its tests; the `thinkite/tcp/1` ALPN
-  in `iroh-peer-server.ts`; the `iroh-duplex.ts` changes.
-- **protocol:** `IROH_TCP_ALPN`, `IROH_TCP_HEADER_BYTES`.
-- **app:** the shared-endpoint change in `iroh-wire.ts`. `dev/tunnel.tsx`
-  is reference only.
-
-Leave behind the react-native-webview 16 upgrade, its `proxy` prop patch and
-`dev/proxy.tsx`. On iOS 27 the proxy approach cannot keep the `localhost`
-origin. `main` has no react-native-webview at all, so adding it is a
-decision of its own. 14.0.1 is `latest`; 16.0.0 is on the `next` tag.
+Left behind: the react-native-webview 16 upgrade, its `proxy` prop patch
+and `dev/proxy.tsx`. On iOS 27 the proxy approach cannot keep the
+`localhost` origin. `main` has no react-native-webview at all; pages open
+in `expo-web-browser` unless that cannot reach the listener.
 
 ## Security
 
