@@ -21,10 +21,10 @@ thinkite/thinkite#31.
   `server_start`.
 - The daemon's registry is the one list of servers per project. Desktop
   and phone subscribe to it.
-- Desktop: a link in a reply to one of the project's running servers (by
-  port) opens in the session's browser panel; any other link opens in the
-  user's browser. The info panel lists the project's servers, with why
-  each one stopped and a stop button for the running ones.
+- Desktop: a web link in a reply opens in the session's browser panel
+  (⌘-click opens it in the user's browser). The info panel lists the
+  project's servers, with why each one stopped and a stop button for the
+  running ones.
 - Phone: while the app is in the foreground, every port of every running
   server is forwarded, so a page can call its API on another port (the case
   in the 10-24 test, where the page fetched `localhost:8080`) and a
@@ -433,12 +433,11 @@ without session activity, even while the page is open (#51828).
 ### Desktop
 
 - Links in messages: bare URLs are linked too (`autolink="gfm"`), since
-  agents write `http://localhost:5173/` as often as a markdown link. A link
-  to `localhost`, `127.x`, `[::1]` or `*.localhost` on a port of one of the
-  project's running servers opens in the session's browser panel
-  (`serverForLink`): a tab already on that origin is selected, otherwise a
-  new tab or the blank active one, and the panel comes up. Any other link
-  opens in the user's browser.
+  agents write `http://localhost:5173/` as often as a markdown link. Every
+  http(s) link opens in the session's browser panel: a tab already at that
+  address is selected, otherwise a new tab or the blank active one, and the
+  panel comes up. A ⌘-clicked link, or any link once all eight tabs are
+  taken, opens in the user's browser.
 - Those tabs are the user's, in the user's partition
   (`persist:thinkite-browser`). The agent's own pages, later
   (thinkite/thinkite#31), live elsewhere and never in this panel.

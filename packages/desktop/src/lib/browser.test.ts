@@ -54,6 +54,17 @@ describe("showBrowserPage", () => {
     expect(tabs("s2").open).toHaveLength(2);
   });
 
+  it("by address, opens another page of a site the user has open", () => {
+    showBrowserPage("s4", "https://github.com/a", "url");
+    showBrowserPage("s4", "https://github.com/b", "url");
+    showBrowserPage("s4", "https://github.com/a", "url");
+    expect(tabs("s4").open.map((t) => t.url)).toEqual([
+      "https://github.com/a",
+      "https://github.com/b",
+    ]);
+    expect(tabs("s4").active).toBe(2);
+  });
+
   it("never takes a page from the user, and says so when every tab is taken", () => {
     openBrowserTab("s3", "https://example.com/");
     showBrowserPage("s3", "http://localhost:5180/");

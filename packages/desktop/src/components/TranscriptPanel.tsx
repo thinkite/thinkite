@@ -651,13 +651,17 @@ function renderRow(
   onOpenLink: ((href: string) => boolean) | undefined,
 ) {
   // Bare URLs too: agents write `http://localhost:5173/` as often as a
-  // link. A link `onOpenLink` takes stays here; others open in the user's
-  // browser (the window's open handler).
+  // link. A link `onOpenLink` takes stays here; others, and any link
+  // ⌘-clicked, open in the user's browser (the window's open handler).
   const md = (text: string) => (
     <Markdown
       components={MARKDOWN_COMPONENTS}
       autolink="gfm"
-      onLinkClick={(href) => (onOpenLink?.(href) ? false : undefined)}
+      onLinkClick={(href, event) =>
+        !event.metaKey && !event.ctrlKey && onOpenLink?.(href)
+          ? false
+          : undefined
+      }
     >
       {text}
     </Markdown>

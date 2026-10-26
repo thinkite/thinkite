@@ -52,7 +52,6 @@ import {
 import { showBrowserPage } from "../../lib/browser";
 import { useGitEvents } from "../../lib/git-events";
 import { ocClient, ocReady, ocStore } from "../../lib/oc";
-import { serverForLink, usePreviews } from "../../lib/previews";
 
 // Session screen: transcript center column with a live composer (opencode
 // v2 `session.prompt` through the same-origin `/oc` proxy), and a right
@@ -408,12 +407,13 @@ function Session({ sessionId }: { sessionId: string }) {
     showBrowserPage(sessionId, url);
     pick("browser");
   };
-  // The agent shows a page by linking it in a reply: a link to one of the
-  // project's running servers opens in this session's browser.
-  const previews = usePreviews(session?.location.directory);
+  // A web link in a reply opens in this session's browser, in the tab
+  // already at it or a tab of its own. With every tab taken, the user's
+  // browser has it.
   const openLink = (href: string) => {
-    if (serverForLink(previews, href) === undefined) return false;
-    openPage(href);
+    if (!/^https?:\/\//i.test(href)) return false;
+    if (!showBrowserPage(sessionId, href, "url")) return false;
+    pick("browser");
     return true;
   };
 

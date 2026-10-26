@@ -4,8 +4,7 @@ import { useCallback, useSyncExternalStore } from "react";
 // The servers the agent started in a folder, from the daemon's preview
 // registry (/api/previews/events, docs/preview-tool-v1.md): one stream per
 // folder however many views read it. The agent shows the user a page by
-// writing its link in a reply; a link to one of these servers' ports opens
-// in the session's browser (`serverForLink`), any other in the user's.
+// writing its link in a reply, which opens in the session's browser.
 
 interface Snapshot {
   entries: PreviewEntry[];
@@ -110,8 +109,7 @@ export function serverLabel(url: string): string {
   return port === undefined ? url : `:${port}`;
 }
 
-/** The running server a link in a reply points at, by its port: the link
- *  opens in the session's browser. Any other link opens in the user's. */
+/** The running server that serves `href`, by its port. */
 export function serverForLink(
   entries: readonly PreviewEntry[],
   href: string,

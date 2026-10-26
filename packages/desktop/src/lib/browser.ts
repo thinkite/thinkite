@@ -73,12 +73,21 @@ const originOf = (url: string) => {
  * Show `url` without taking a page from the user: select the tab already
  * on its origin (no reload), else put it in place of the blank tab the user
  * is on, else in a new tab. False when every tab is taken.
+ *
+ * `reuse: "url"` selects only a tab at that very address: two links to one
+ * site are two pages, where a server's links all show its one app.
  */
-export function showBrowserPage(sessionID: string, url: string): boolean {
+export function showBrowserPage(
+  sessionID: string,
+  url: string,
+  reuse: "origin" | "url" = "origin",
+): boolean {
   const origin = originOf(url);
   let shown = true;
   update(sessionID, (t) => {
-    const same = t.open.find((x) => originOf(x.url) === origin);
+    const same = t.open.find((x) =>
+      reuse === "url" ? x.url === url : originOf(x.url) === origin,
+    );
     if (same !== undefined) return { ...t, active: same.n };
     const n = Math.max(0, ...t.open.map((x) => x.n)) + 1;
     const tab = { n, url, title: "" };
