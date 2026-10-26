@@ -1,5 +1,4 @@
 import semver from "semver";
-import { z } from "zod";
 import pkg from "../package.json" with { type: "json" };
 
 export {
@@ -26,7 +25,10 @@ export {
 // the source of truth, both at npm-install time and at runtime.
 //
 // Compatibility check (`isProtocolCompatible`) also lives in this
-// package so the rule travels with the schemas it's protecting.
+// package so the rule travels with the frame types it's protecting. The
+// frames are plain TypeScript types: nothing here validates at runtime.
+// The daemon checks what clients send (daemon/src/client-frame.ts); the
+// clients trust the daemon they handshook with.
 // Transports just call the helper; they don't reason about semver
 // themselves.
 //
@@ -34,13 +36,12 @@ export {
 //   - **patch** (0.0.1 → 0.0.2 / 1.2.3 → 1.2.4): additive only — a new
 //     optional field, or a whole new frame type that older peers
 //     harmlessly ignore (the daemon drops unknown command types, iOS
-//     drops unknown event types; no `z.strictObject`, so extra fields
-//     are stripped). NOTE: a new *enum case* on an EXISTING field is NOT
-//     automatically additive — it's breaking for a closed `z.enum` the
-//     daemon validates (old daemon rejects the whole frame) or for any
-//     consumer that switches on the value without a default. Treat an
-//     enum-case add as breaking unless that field is a loose string with
-//     a fallback path. Compatible.
+//     drops unknown event types; extra fields are ignored). NOTE: a new
+//     *enum case* on an EXISTING field is NOT automatically additive —
+//     it's breaking for a closed set the daemon validates (old daemon
+//     rejects the whole frame) or for any consumer that switches on the
+//     value without a default. Treat an enum-case add as breaking unless
+//     that field is a loose string with a fallback path. Compatible.
 //   - **minor** (0.0.x → 0.1.0 during 0.x; 1.0.0 → 1.1.0 post-1.0):
 //     0.x minor bump is breaking (npm semver convention for 0.x);
 //     ≥1.0 minor bump is additive. The compat helper handles both.
@@ -123,14 +124,13 @@ export function outdatedSide(remote: string): "local" | "remote" | null {
 
 export const PAIR_OFFER_VERSION = 2;
 
-export const pairOfferFrame = z.object({
-  type: z.literal("pair.offer"),
-  v: z.number().int(),
-  daemonIdentityPublicKey: z.string(), // base64url ed25519 raw pubkey
-  serviceName: z.string(),
-});
-
-export type PairOfferFrame = z.infer<typeof pairOfferFrame>;
+export interface PairOfferFrame {
+  type: "pair.offer";
+  v: number;
+  /** base64url ed25519 raw pubkey. */
+  daemonIdentityPublicKey: string;
+  serviceName: string;
+}
 
 /**
  * On-the-wire pair offer with one-character keys. The QR is the only
@@ -138,24 +138,35 @@ export type PairOfferFrame = z.infer<typeof pairOfferFrame>;
  * costs us ~1 module in the rendered grid. Compacting to single letters
  * keeps the QR a couple version steps smaller.
  */
-const pairOfferWire = z.object({
-  v: z.number().int(),
-  k: z.string(), // daemonIdentityPublicKey
-  s: z.string(), // serviceName
-});
-export type PairOfferWire = z.infer<typeof pairOfferWire>;
+export interface PairOfferWire {
+  v: number;
+  /** daemonIdentityPublicKey */
+  k: string;
+  /** serviceName */
+  s: string;
+}
 
 export function toPairOfferWire(offer: PairOfferFrame): PairOfferWire {
   return { v: offer.v, k: offer.daemonIdentityPublicKey, s: offer.serviceName };
 }
 
+/** A scanned QR is outside input: checked field by field, throwing on
+ *  anything that is not a pair offer. */
 export function fromPairOfferWire(wire: unknown): PairOfferFrame {
-  const parsed = pairOfferWire.parse(wire);
+  const w = wire as Partial<Record<keyof PairOfferWire, unknown>> | null;
+  if (
+    typeof w !== "object" ||
+    w === null ||
+    !Number.isInteger(w.v) ||
+    typeof w.k !== "string" ||
+    typeof w.s !== "string"
+  )
+    throw new Error("not a pair offer");
   return {
     type: "pair.offer",
-    v: parsed.v,
-    daemonIdentityPublicKey: parsed.k,
-    serviceName: parsed.s,
+    v: w.v as number,
+    daemonIdentityPublicKey: w.k,
+    serviceName: w.s,
   };
 }
 
@@ -199,72 +210,71 @@ function base64urlDecodeUtf8(b64: string): string {
 // implicitly unsubscribes; an explicit `unsubscribeGitStatus` releases the
 // watcher ref-count early so the daemon can dispose its fs.watch handles.
 
-export const gitStatus = z.object({
+export interface GitStatus {
   /** False when `cwd` isn't a git repository. Numeric fields are zero,
    *  `branch` is null, `project` is still filled with basename(cwd). */
-  isRepo: z.boolean(),
+  isRepo: boolean;
   /** `path.basename(cwd)`. Daemon's heuristic — what the user sees in
    *  Finder, no `package.json` peek, works for any language. */
-  project: z.string(),
+  project: string;
   /** Null when not a repo OR in detached-HEAD state. */
-  branch: z.string().nullable(),
-  ahead: z.number().int().nonnegative(),
-  behind: z.number().int().nonnegative(),
-  insertions: z.number().int().nonnegative(),
-  deletions: z.number().int().nonnegative(),
-  isDirty: z.boolean(),
-});
-export type GitStatus = z.infer<typeof gitStatus>;
+  branch: string | null;
+  ahead: number;
+  behind: number;
+  insertions: number;
+  deletions: number;
+  isDirty: boolean;
+}
 
 /** One-shot snapshot for `cwd`. Reuses the per-cwd watcher's cached
  *  `refresh()` (15s TTL + in-flight dedup), so firing this concurrently
  *  with `subscribeGitStatus` costs at most one git invocation. */
-export const getGitStatusCommand = z.object({
-  type: z.literal("getGitStatus"),
-  requestId: z.string(),
-  cwd: z.string(),
-});
+export interface GetGitStatusCommand {
+  type: "getGitStatus";
+  requestId: string;
+  cwd: string;
+}
 
-export const getGitStatusResponse = z.object({
-  type: z.literal("getGitStatus.response"),
-  requestId: z.string(),
-  cwd: z.string(),
-  status: gitStatus,
-});
+export interface GetGitStatusResponse {
+  type: "getGitStatus.response";
+  requestId: string;
+  cwd: string;
+  status: GitStatus;
+}
 
-export const subscribeGitStatusCommand = z.object({
-  type: z.literal("subscribeGitStatus"),
-  requestId: z.string(),
-  cwd: z.string(),
-});
+export interface SubscribeGitStatusCommand {
+  type: "subscribeGitStatus";
+  requestId: string;
+  cwd: string;
+}
 
 /** Pure change-stream ack — NO initial snapshot (use `getGitStatus`).
  *  The watcher's listener fires only on subsequent changes, delivered as
  *  `gitStatus` events. */
-export const subscribeGitStatusResponse = z.object({
-  type: z.literal("subscribeGitStatus.response"),
-  requestId: z.string(),
-  cwd: z.string(),
-});
+export interface SubscribeGitStatusResponse {
+  type: "subscribeGitStatus.response";
+  requestId: string;
+  cwd: string;
+}
 
-export const unsubscribeGitStatusCommand = z.object({
-  type: z.literal("unsubscribeGitStatus"),
-  requestId: z.string(),
-  cwd: z.string(),
-});
+export interface UnsubscribeGitStatusCommand {
+  type: "unsubscribeGitStatus";
+  requestId: string;
+  cwd: string;
+}
 
-export const unsubscribeGitStatusResponse = z.object({
-  type: z.literal("unsubscribeGitStatus.response"),
-  requestId: z.string(),
-});
+export interface UnsubscribeGitStatusResponse {
+  type: "unsubscribeGitStatus.response";
+  requestId: string;
+}
 
 /** Server-initiated push. `cwd` is the routing key — iOS may subscribe
  *  to multiple cwds (e.g. listing pages) and route by this field. */
-export const gitStatusEvent = z.object({
-  type: z.literal("gitStatus"),
-  cwd: z.string(),
-  status: gitStatus,
-});
+export interface GitStatusEvent {
+  type: "gitStatus";
+  cwd: string;
+  status: GitStatus;
+}
 
 // ─── Working-tree diff (one-shot RPC; opened from the status bar) ──────────
 //
@@ -274,29 +284,29 @@ export const gitStatusEvent = z.object({
 // patches for untracked non-binary files (`git diff` never sees untracked, but
 // the count includes them). `diff` is "" when the tree is clean.
 
-export const getWorkingTreeDiffCommand = z.object({
-  type: z.literal("getWorkingTreeDiff"),
-  requestId: z.string(),
-  cwd: z.string(),
-});
+export interface GetWorkingTreeDiffCommand {
+  type: "getWorkingTreeDiff";
+  requestId: string;
+  cwd: string;
+}
 
-export const getWorkingTreeDiffResponse = z.object({
-  type: z.literal("getWorkingTreeDiff.response"),
-  requestId: z.string(),
-  cwd: z.string(),
+export interface GetWorkingTreeDiffResponse {
+  type: "getWorkingTreeDiff.response";
+  requestId: string;
+  cwd: string;
   /** False when `cwd` isn't a git repository (`diff` is then ""). */
-  isRepo: z.boolean(),
+  isRepo: boolean;
   /** Raw multi-file unified diff (tracked vs comparison ref + untracked
    *  all-add patches). "" when there are no changes. */
-  diff: z.string(),
+  diff: string;
   /** Number of files present in `diff` (tracked changed + untracked
    *  included). Matches what renders — excludes untracked files dropped by
    *  the caps. 0 when clean / non-repo. */
-  fileCount: z.number().int().nonnegative(),
+  fileCount: number;
   /** True when untracked synthesis hit its caps (>500 files, or a file
    *  >256 KiB skipped) — the diff is "useful" not "exhaustive". */
-  truncated: z.boolean(),
-});
+  truncated: boolean;
+}
 
 // ─── Filesystem browser (cwd picker + V0.5+ file picker) ───────────────────
 //
@@ -307,86 +317,85 @@ export const getWorkingTreeDiffResponse = z.object({
 // session history (since iOS doesn't know the daemon machine's HOME).
 //
 // File-picker readiness: `includeFiles` defaults to false for V0's
-// folder-only picker; flipping it surfaces files too. `directoryEntry`
+// folder-only picker; flipping it surfaces files too. `DirectoryEntry`
 // carries optional size + modifiedAt so a future file picker can show
 // metadata without a schema bump. To skip the per-file stat cost in
 // the V0 folder-only path, the daemon's handler ONLY stats entries
 // when `includeFiles === true`.
 
-export const directoryEntry = z.object({
+export interface DirectoryEntry {
   /** Last path segment, e.g. "src" or "package.json". */
-  name: z.string(),
+  name: string;
   /** Absolute path. */
-  path: z.string(),
-  kind: z.enum(["directory", "file"]),
+  path: string;
+  kind: "directory" | "file";
   /** Size in bytes. Populated only when the response includes files
    *  AND the daemon could stat the entry. Absent otherwise. */
-  size: z.number().optional(),
+  size?: number;
   /** ISO 8601 mtime. Populated alongside `size` only. */
-  modifiedAt: z.string().optional(),
-});
-export type DirectoryEntry = z.infer<typeof directoryEntry>;
+  modifiedAt?: string;
+}
 
-export const listDirectoryCommand = z.object({
-  type: z.literal("listDirectory"),
-  requestId: z.string(),
+export interface ListDirectoryCommand {
+  type: "listDirectory";
+  requestId: string;
   /** Absolute path, or "~" / "~/..." (server expands to HOME). Anything
    *  else (relative paths, "~user") is treated as-is and likely errors. */
-  path: z.string(),
+  path: string;
   /** Include files in the response. Default false — V0 folder picker
    *  needs directories only, skipping files lets the daemon skip the
    *  per-entry stat loop entirely. */
-  includeFiles: z.boolean().optional(),
+  includeFiles?: boolean;
   /** Include dotfile / dot-directory entries (.git, .config, etc.).
    *  Default false. */
-  includeHidden: z.boolean().optional(),
-});
+  includeHidden?: boolean;
+}
 
-export const listDirectoryResponse = z.object({
-  type: z.literal("listDirectory.response"),
-  requestId: z.string(),
+export interface ListDirectoryResponse {
+  type: "listDirectory.response";
+  requestId: string;
   /** Echoed canonical absolute path of the listed dir (post-"~"-expansion). */
-  path: z.string(),
+  path: string;
   /** Parent absolute path for breadcrumb / up-nav. Null when at the
    *  filesystem root ("/"). */
-  parent: z.string().nullable(),
+  parent: string | null;
   /** Sorted by daemon: directories first, then files; alphabetical
    *  within each group (case-insensitive). iOS can render straight
    *  through without re-sorting. */
-  entries: z.array(directoryEntry),
-});
+  entries: DirectoryEntry[];
+}
 
 /** Recent cwd entry — union of Desktop session cwds and sidecode session
  *  cwds, filtered to only paths that still exist on disk (stale cwds
  *  from deleted/moved projects are dropped). */
-export const recentCwd = z.object({
-  path: z.string(),
+export interface RecentCwd {
+  path: string;
   /** ISO 8601 timestamp of the most recent session activity at this cwd. */
-  lastUsedAt: z.string(),
-});
+  lastUsedAt: string;
+}
 
-export const getFilesystemRootsCommand = z.object({
-  type: z.literal("getFilesystemRoots"),
-  requestId: z.string(),
-});
+export interface GetFilesystemRootsCommand {
+  type: "getFilesystemRoots";
+  requestId: string;
+}
 
-export const getFilesystemRootsResponse = z.object({
-  type: z.literal("getFilesystemRoots.response"),
-  requestId: z.string(),
+export interface GetFilesystemRootsResponse {
+  type: "getFilesystemRoots.response";
+  requestId: string;
   /** Daemon machine's HOME directory absolute path (e.g.
    *  "/Users/you"). Always populated — every OS has $HOME. */
-  home: z.string(),
+  home: string;
   /** `${home}/Desktop` if it exists on disk. Optional because Desktop
    *  is not universal (Linux headless servers / non-standard XDG
    *  locales lack it); macOS always has it. */
-  desktop: z.string().optional(),
+  desktop?: string;
   /** `${home}/Documents` if it exists on disk. Same optionality
    *  reasoning as `desktop`. */
-  documents: z.string().optional(),
+  documents?: string;
   /** Recent project cwds, sorted by lastUsedAt desc, deduped and
    *  filtered to existing paths. Max 10. */
-  recentCwds: z.array(recentCwd),
-});
+  recentCwds: RecentCwd[];
+}
 
 // ─── Previews: servers the agent started ──────────────────────────────────
 //
@@ -398,177 +407,174 @@ export const getFilesystemRootsResponse = z.object({
 // snapshots. Separately, `forwardPorts` lists every running server's ports
 // across projects: what the phone forwards while it is in the foreground.
 
-export const previewEntry = z.object({
+export interface PreviewEntry {
   /** The agent's label, unique per directory ("web", "api"). */
-  name: z.string(),
+  name: string;
   /** The TCP ports its processes listen on, ascending, as last seen: kept
    *  after it ends. Absent until it listens. A link in a reply to
    *  `localhost` on one of these ports is this server's page. */
-  ports: z.array(z.number().int().positive()).optional(),
+  ports?: number[];
   /** `http://localhost:<lowest port>/`, with `ports`: the page the Servers
    *  list opens. */
-  url: z.string().optional(),
-  status: z.enum(["running", "ended"]),
+  url?: string;
+  status: "running" | "ended";
   /** The shell's command. */
-  command: z.string(),
+  command: string;
   /** When its shell started, and the session whose agent started it. */
-  started: z.object({ at: z.number(), sessionID: z.string().optional() }),
+  started: { at: number; sessionID?: string };
   /** How it ended: the user's stop button, an agent's `server_stop` (and
    *  which session), the process exiting, or something outside Thinkite
    *  (opencode's kill, a service restart). */
-  ended: z
-    .object({
-      at: z.number(),
-      by: z.enum(["user", "agent", "process", "external"]),
-      sessionID: z.string().optional(),
-      exit: z.number().int().optional(),
-    })
-    .optional(),
-});
-export type PreviewEntry = z.infer<typeof previewEntry>;
+  ended?: {
+    at: number;
+    by: "user" | "agent" | "process" | "external";
+    sessionID?: string;
+    exit?: number;
+  };
+}
 
-export const getPreviewsCommand = z.object({
-  type: z.literal("getPreviews"),
-  requestId: z.string(),
-  directory: z.string(),
-});
+export interface GetPreviewsCommand {
+  type: "getPreviews";
+  requestId: string;
+  directory: string;
+}
 
-export const getPreviewsResponse = z.object({
-  type: z.literal("getPreviews.response"),
-  requestId: z.string(),
-  directory: z.string(),
-  entries: z.array(previewEntry),
-});
+export interface GetPreviewsResponse {
+  type: "getPreviews.response";
+  requestId: string;
+  directory: string;
+  entries: PreviewEntry[];
+}
 
 /** Pure change-stream ack — NO initial snapshot (use `getPreviews`). */
-export const subscribePreviewsCommand = z.object({
-  type: z.literal("subscribePreviews"),
-  requestId: z.string(),
-  directory: z.string(),
-});
+export interface SubscribePreviewsCommand {
+  type: "subscribePreviews";
+  requestId: string;
+  directory: string;
+}
 
-export const subscribePreviewsResponse = z.object({
-  type: z.literal("subscribePreviews.response"),
-  requestId: z.string(),
-  directory: z.string(),
-});
+export interface SubscribePreviewsResponse {
+  type: "subscribePreviews.response";
+  requestId: string;
+  directory: string;
+}
 
-export const unsubscribePreviewsCommand = z.object({
-  type: z.literal("unsubscribePreviews"),
-  requestId: z.string(),
-  directory: z.string(),
-});
+export interface UnsubscribePreviewsCommand {
+  type: "unsubscribePreviews";
+  requestId: string;
+  directory: string;
+}
 
-export const unsubscribePreviewsResponse = z.object({
-  type: z.literal("unsubscribePreviews.response"),
-  requestId: z.string(),
-});
+export interface UnsubscribePreviewsResponse {
+  type: "unsubscribePreviews.response";
+  requestId: string;
+}
 
 /** The user's stop button: the agent's `server_stop`, recorded as the
  *  user's. */
-export const stopPreviewCommand = z.object({
-  type: z.literal("stopPreview"),
-  requestId: z.string(),
-  directory: z.string(),
-  name: z.string(),
-});
+export interface StopPreviewCommand {
+  type: "stopPreview";
+  requestId: string;
+  directory: string;
+  name: string;
+}
 
-export const stopPreviewResponse = z.object({
-  type: z.literal("stopPreview.response"),
-  requestId: z.string(),
-});
+export interface StopPreviewResponse {
+  type: "stopPreview.response";
+  requestId: string;
+}
 
 /** Server-initiated push: the directory's full snapshot after any change. */
-export const previewsEvent = z.object({
-  type: z.literal("previews"),
-  directory: z.string(),
-  entries: z.array(previewEntry),
-});
+export interface PreviewsEvent {
+  type: "previews";
+  directory: string;
+  entries: PreviewEntry[];
+}
 
 /** A port a running server listens on, in any project. */
-export const forwardPort = z.object({
-  port: z.number().int().positive(),
-  directory: z.string(),
-  name: z.string(),
-});
-export type ForwardPort = z.infer<typeof forwardPort>;
+export interface ForwardPort {
+  port: number;
+  directory: string;
+  name: string;
+}
 
-export const getForwardPortsCommand = z.object({
-  type: z.literal("getForwardPorts"),
-  requestId: z.string(),
-});
+export interface GetForwardPortsCommand {
+  type: "getForwardPorts";
+  requestId: string;
+}
 
-export const getForwardPortsResponse = z.object({
-  type: z.literal("getForwardPorts.response"),
-  requestId: z.string(),
-  ports: z.array(forwardPort),
-});
+export interface GetForwardPortsResponse {
+  type: "getForwardPorts.response";
+  requestId: string;
+  ports: ForwardPort[];
+}
 
 /** Pure change-stream ack — NO initial snapshot (use `getForwardPorts`). */
-export const subscribeForwardPortsCommand = z.object({
-  type: z.literal("subscribeForwardPorts"),
-  requestId: z.string(),
-});
+export interface SubscribeForwardPortsCommand {
+  type: "subscribeForwardPorts";
+  requestId: string;
+}
 
-export const subscribeForwardPortsResponse = z.object({
-  type: z.literal("subscribeForwardPorts.response"),
-  requestId: z.string(),
-});
+export interface SubscribeForwardPortsResponse {
+  type: "subscribeForwardPorts.response";
+  requestId: string;
+}
 
-export const unsubscribeForwardPortsCommand = z.object({
-  type: z.literal("unsubscribeForwardPorts"),
-  requestId: z.string(),
-});
+export interface UnsubscribeForwardPortsCommand {
+  type: "unsubscribeForwardPorts";
+  requestId: string;
+}
 
-export const unsubscribeForwardPortsResponse = z.object({
-  type: z.literal("unsubscribeForwardPorts.response"),
-  requestId: z.string(),
-});
+export interface UnsubscribeForwardPortsResponse {
+  type: "unsubscribeForwardPorts.response";
+  requestId: string;
+}
 
 /** Server-initiated push: the full list whenever it changes. */
-export const forwardPortsEvent = z.object({
-  type: z.literal("forwardPorts"),
-  ports: z.array(forwardPort),
-});
+export interface ForwardPortsEvent {
+  type: "forwardPorts";
+  ports: ForwardPort[];
+}
 
 // ─── Health + error ────────────────────────────────────────────────────────
 
-export const pingFrame = z.object({
-  type: z.literal("ping"),
-  t: z.number(),
-});
+export interface PingFrame {
+  type: "ping";
+  t: number;
+}
 
-export const pongFrame = z.object({
-  type: z.literal("pong"),
-  t: z.number(),
-  echoT: z.number(),
-});
+export interface PongFrame {
+  type: "pong";
+  t: number;
+  echoT: number;
+}
 
-export const errorFrame = z.object({
-  type: z.literal("error"),
-  requestId: z.string().optional(),
-  code: z.enum([
-    "invalid_message",
-    "unauthenticated",
-    "session_not_found",
-    "internal",
-    "unsupported",
-    "rate_limited",
-    "incompatible_protocol",
-    // Filesystem browser errors (listDirectory / getFilesystemRoots).
-    "not_found",
-    "permission_denied",
-    "not_a_directory",
-  ]),
-  message: z.string(),
+export type ErrorCode =
+  | "invalid_message"
+  | "unauthenticated"
+  | "session_not_found"
+  | "internal"
+  | "unsupported"
+  | "rate_limited"
+  | "incompatible_protocol"
+  // Filesystem browser errors (listDirectory / getFilesystemRoots).
+  | "not_found"
+  | "permission_denied"
+  | "not_a_directory";
+
+export interface ErrorFrame {
+  type: "error";
+  requestId?: string;
+  code: ErrorCode;
+  message: string;
   /** Sender's PROTOCOL_VERSION. Set on `incompatible_protocol` VERSION-
    *  mismatch rejections so the receiver can run `outdatedSide()` and
    *  name the side that needs updating. Deliberately absent on the
    *  other `incompatible_protocol` use (frame-before-hello, a protocol-
    *  misuse rejection where versions may well be EQUAL and direction is
    *  meaningless) and on all other codes. */
-  protocolVersion: z.string().optional(),
-});
+  protocolVersion?: string;
+}
 
 // ─── Hello / server_info (wire-version handshake on stream open) ──────────
 //
@@ -584,84 +590,66 @@ export const errorFrame = z.object({
 // version" / "daemon release version" — the protocol package owns the
 // only version that matters for whether the two ends can talk.
 
-export const helloCommand = z.object({
-  type: z.literal("hello"),
-  protocolVersion: z.string(),
-});
+export interface HelloCommand {
+  type: "hello";
+  protocolVersion: string;
+}
 
-export const serverInfoEvent = z.object({
-  type: z.literal("server_info"),
-  protocolVersion: z.string(),
-});
+export interface ServerInfoEvent {
+  type: "server_info";
+  protocolVersion: string;
+}
 
-export type HelloCommand = z.infer<typeof helloCommand>;
-export type ServerInfoEvent = z.infer<typeof serverInfoEvent>;
-
-// ─── Top-level direction unions (parse the wire against these) ─────────────
+// ─── Top-level direction unions ────────────────────────────────────────────
 //
 // The RPC carries what opencode does not offer the phone: git status and
 // diffs, the folder picker, the agent's servers and pages, and the ports to
 // forward. Sessions, prompts and transcripts go to opencode over the HTTP
 // tunnel (IROH_HTTP_ALPN) instead.
 
-export const command = z.discriminatedUnion("type", [
-  getGitStatusCommand,
-  subscribeGitStatusCommand,
-  unsubscribeGitStatusCommand,
-  getWorkingTreeDiffCommand,
-  listDirectoryCommand,
-  getFilesystemRootsCommand,
-  getPreviewsCommand,
-  subscribePreviewsCommand,
-  unsubscribePreviewsCommand,
-  stopPreviewCommand,
-  getForwardPortsCommand,
-  subscribeForwardPortsCommand,
-  unsubscribeForwardPortsCommand,
-]);
+export type Command =
+  | GetGitStatusCommand
+  | SubscribeGitStatusCommand
+  | UnsubscribeGitStatusCommand
+  | GetWorkingTreeDiffCommand
+  | ListDirectoryCommand
+  | GetFilesystemRootsCommand
+  | GetPreviewsCommand
+  | SubscribePreviewsCommand
+  | UnsubscribePreviewsCommand
+  | StopPreviewCommand
+  | GetForwardPortsCommand
+  | SubscribeForwardPortsCommand
+  | UnsubscribeForwardPortsCommand;
 
-export type Command = z.infer<typeof command>;
-
-export const response = z.discriminatedUnion("type", [
-  getGitStatusResponse,
-  subscribeGitStatusResponse,
-  unsubscribeGitStatusResponse,
-  getWorkingTreeDiffResponse,
-  listDirectoryResponse,
-  getFilesystemRootsResponse,
-  getPreviewsResponse,
-  subscribePreviewsResponse,
-  unsubscribePreviewsResponse,
-  stopPreviewResponse,
-  getForwardPortsResponse,
-  subscribeForwardPortsResponse,
-  unsubscribeForwardPortsResponse,
-]);
-
-export type Response = z.infer<typeof response>;
+export type Response =
+  | GetGitStatusResponse
+  | SubscribeGitStatusResponse
+  | UnsubscribeGitStatusResponse
+  | GetWorkingTreeDiffResponse
+  | ListDirectoryResponse
+  | GetFilesystemRootsResponse
+  | GetPreviewsResponse
+  | SubscribePreviewsResponse
+  | UnsubscribePreviewsResponse
+  | StopPreviewResponse
+  | GetForwardPortsResponse
+  | SubscribeForwardPortsResponse
+  | UnsubscribeForwardPortsResponse;
 
 /** All frames a client may send to the daemon over the authenticated iroh
  *  stream. `hello` is the only frame the daemon accepts before the
- *  wire-version handshake completes (see helloCommand). */
-export const clientFrame = z.discriminatedUnion("type", [
-  helloCommand,
-  pingFrame,
-  ...command.options,
-]);
-
-export type ClientFrame = z.infer<typeof clientFrame>;
+ *  wire-version handshake completes (see HelloCommand). */
+export type ClientFrame = HelloCommand | PingFrame | Command;
 
 /** All frames the daemon may send to a client. `server_info` is the
  *  daemon's reply to `hello` and the signal that the client may begin
  *  sending commands. */
-export const daemonFrame = z.discriminatedUnion("type", [
-  serverInfoEvent,
-  pongFrame,
-  errorFrame,
-  gitStatusEvent,
-  previewsEvent,
-  forwardPortsEvent,
-  ...response.options,
-]);
-
-export type DaemonFrame = z.infer<typeof daemonFrame>;
+export type DaemonFrame =
+  | ServerInfoEvent
+  | PongFrame
+  | ErrorFrame
+  | GitStatusEvent
+  | PreviewsEvent
+  | ForwardPortsEvent
+  | Response;

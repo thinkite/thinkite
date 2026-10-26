@@ -2,7 +2,6 @@ import type { BiStream, Connection, Endpoint, Incoming } from "@number0/iroh";
 import {
   type ClientFrame,
   type Command,
-  clientFrame,
   type DaemonFrame,
   decodeWireFrameLength,
   decodeWireFramePayload,
@@ -14,6 +13,7 @@ import {
   PROTOCOL_VERSION,
   WIRE_FRAME_HEADER_BYTES,
 } from "@thinkite/protocol";
+import { parseClientFrame } from "./client-frame.ts";
 import type { CommandContext, CommandHandler } from "./command.ts";
 import type { Identity } from "./identity.ts";
 import { fingerprintFromPubkeyB64, seedFromPrivateKey } from "./identity.ts";
@@ -377,7 +377,7 @@ export class IrohPeerServer {
   private onFrame(slot: PeerSlot, json: string): void {
     let frame: ClientFrame;
     try {
-      frame = clientFrame.parse(JSON.parse(json));
+      frame = parseClientFrame(JSON.parse(json));
     } catch (err) {
       this.log("iroh.peer.bad_frame", {
         fingerprint: slot.fingerprint,

@@ -1,20 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  clientFrame,
-  command,
-  daemonFrame,
   decodePairOfferPayload,
   encodePairOffer,
-  errorFrame,
-  helloCommand,
+  fromPairOfferWire,
   isProtocolCompatible,
   outdatedSide,
   PAIR_OFFER_VERSION,
   PROTOCOL_VERSION,
-  pairOfferFrame,
-  pingFrame,
-  pongFrame,
-  serverInfoEvent,
 } from "./index.ts";
 
 describe("PROTOCOL_VERSION", () => {
@@ -107,21 +99,22 @@ describe("pair offer", () => {
     serviceName: "sidecode-mac",
   };
 
-  it("parses a minimal offer (pubkey + serviceName only)", () => {
-    const parsed = pairOfferFrame.parse(valid);
-    expect(parsed.daemonIdentityPublicKey).toBe("AAAA");
-    expect(parsed.serviceName).toBe("sidecode-mac");
-    expect(parsed.v).toBe(PAIR_OFFER_VERSION);
-  });
-
-  it("rejects when daemonIdentityPublicKey is missing", () => {
-    const { daemonIdentityPublicKey: _, ...rest } = valid;
-    expect(pairOfferFrame.safeParse(rest).success).toBe(false);
-  });
-
-  it("rejects when serviceName is missing", () => {
-    const { serviceName: _, ...rest } = valid;
-    expect(pairOfferFrame.safeParse(rest).success).toBe(false);
+  it("decodes a scanned offer and rejects anything else", () => {
+    expect(fromPairOfferWire({ v: 2, k: "AAAA", s: "mac" })).toEqual({
+      type: "pair.offer",
+      v: 2,
+      daemonIdentityPublicKey: "AAAA",
+      serviceName: "mac",
+    });
+    for (const bad of [
+      null,
+      "x",
+      { v: 2, s: "mac" },
+      { v: 2, k: "AAAA" },
+      { v: "2", k: "AAAA", s: "mac" },
+      { v: 2.5, k: "AAAA", s: "mac" },
+    ])
+      expect(() => fromPairOfferWire(bad)).toThrow("not a pair offer");
   });
 
   it("encodePairOffer round-trips through decodePairOfferPayload", () => {
@@ -144,156 +137,5 @@ describe("pair offer", () => {
     };
     const encoded = encodePairOffer(realistic);
     expect(encoded.length).toBeLessThan(140);
-  });
-});
-
-describe("hello / server_info wire-version handshake", () => {
-  it("helloCommand parses with protocolVersion semver string", () => {
-    const p = helloCommand.parse({
-      type: "hello",
-      protocolVersion: "0.0.1",
-    });
-    expect(p.protocolVersion).toBe("0.0.1");
-  });
-
-  it("helloCommand rejects missing protocolVersion", () => {
-    expect(helloCommand.safeParse({ type: "hello" }).success).toBe(false);
-  });
-
-  it("serverInfoEvent parses with protocolVersion semver string", () => {
-    const p = serverInfoEvent.parse({
-      type: "server_info",
-      protocolVersion: "0.0.1",
-    });
-    expect(p.protocolVersion).toBe("0.0.1");
-  });
-
-  it("helloCommand is included in clientFrame, serverInfoEvent in daemonFrame", () => {
-    expect(
-      clientFrame.parse({ type: "hello", protocolVersion: "0.0.1" }).type,
-    ).toBe("hello");
-    expect(
-      daemonFrame.parse({ type: "server_info", protocolVersion: "0.0.1" }).type,
-    ).toBe("server_info");
-  });
-});
-
-describe("health frames", () => {
-  it("ping/pong roundtrip", () => {
-    const t = Date.now();
-    expect(pingFrame.parse({ type: "ping", t }).t).toBe(t);
-    expect(pongFrame.parse({ type: "pong", t: t + 5, echoT: t }).echoT).toBe(t);
-  });
-});
-
-describe("error frame", () => {
-  it("accepts known codes", () => {
-    expect(
-      errorFrame.parse({
-        type: "error",
-        code: "session_not_found",
-        message: "no",
-      }).code,
-    ).toBe("session_not_found");
-  });
-
-  it("rejects unknown code", () => {
-    expect(
-      errorFrame.safeParse({
-        type: "error",
-        code: "made_up",
-        message: "x",
-      }).success,
-    ).toBe(false);
-  });
-
-  it("accepts incompatible_protocol (sent on hello version mismatch)", () => {
-    expect(
-      errorFrame.parse({
-        type: "error",
-        code: "incompatible_protocol",
-        message: "client v=2 outside daemon range [1, 1]",
-      }).code,
-    ).toBe("incompatible_protocol");
-  });
-
-  it("preserves the sender's protocolVersion on incompatible_protocol", () => {
-    // The field must be in the schema — z.object strips unknown keys, so
-    // a zod-parsed path would silently drop it and iOS couldn't tell
-    // which side is outdated.
-    expect(
-      errorFrame.parse({
-        type: "error",
-        code: "incompatible_protocol",
-        message: "client protocol 0.1.0 is not compatible with daemon 0.2.0",
-        protocolVersion: "0.2.0",
-      }).protocolVersion,
-    ).toBe("0.2.0");
-  });
-});
-
-describe("command union", () => {
-  it("accepts the git and folder commands", () => {
-    for (const frame of [
-      { type: "getGitStatus", requestId: "r1", cwd: "/p" },
-      { type: "subscribeGitStatus", requestId: "r2", cwd: "/p" },
-      { type: "unsubscribeGitStatus", requestId: "r3", cwd: "/p" },
-      { type: "getWorkingTreeDiff", requestId: "r4", cwd: "/p" },
-      { type: "listDirectory", requestId: "r5", path: "~" },
-      { type: "getFilesystemRoots", requestId: "r6" },
-    ]) {
-      expect(command.parse(frame).type).toBe(frame.type);
-    }
-  });
-
-  it("no longer carries session commands — sessions are opencode's", () => {
-    expect(
-      command.safeParse({
-        type: "sendPrompt",
-        requestId: "r",
-        sessionId: "s",
-        text: "x",
-      }).success,
-    ).toBe(false);
-  });
-});
-
-describe("clientFrame union", () => {
-  it("accepts hello, ping and commands", () => {
-    expect(clientFrame.parse({ type: "ping", t: 0 }).type).toBe("ping");
-    expect(
-      clientFrame.parse({ type: "getFilesystemRoots", requestId: "r" }).type,
-    ).toBe("getFilesystemRoots");
-  });
-
-  it("rejects daemon-only frames sent by a client", () => {
-    expect(
-      clientFrame.safeParse({ type: "gitStatus", cwd: "/p", status: {} })
-        .success,
-    ).toBe(false);
-  });
-});
-
-describe("daemonFrame union", () => {
-  it("accepts responses", () => {
-    expect(
-      daemonFrame.parse({
-        type: "listDirectory.response",
-        requestId: "r",
-        path: "/p",
-        parent: "/",
-        entries: [],
-      }).type,
-    ).toBe("listDirectory.response");
-  });
-
-  it("rejects client-only frames sent by daemon", () => {
-    expect(
-      daemonFrame.safeParse({
-        type: "listDirectory",
-        requestId: "r",
-        path: "~",
-      }).success,
-    ).toBe(false);
   });
 });
