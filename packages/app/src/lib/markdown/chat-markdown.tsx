@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import { useColorScheme, View } from "react-native";
 import {
   EnrichedMarkdownText,
@@ -6,7 +5,7 @@ import {
 } from "react-native-enriched-markdown";
 
 import { openLink } from "@/lib/open-link";
-import { linkBareUrls } from "./bare-urls";
+import { LINK_RECOGNITION } from "./link-recognition";
 import { useRemend } from "./remend";
 
 /**
@@ -318,9 +317,7 @@ export function ChatMarkdown({
 }: ChatMarkdownProps) {
   const colorScheme = useColorScheme() ?? "light";
   const markdownStyle = colorScheme === "dark" ? DARK_STYLE : LIGHT_STYLE;
-  const remended = useRemend(markdown, streaming);
-  // enriched leaves `http://localhost:5173/` unlinked (bare-urls.ts).
-  const content = useMemo(() => linkBareUrls(remended), [remended]);
+  const content = useRemend(markdown, streaming);
   return (
     // The plain View wrapper is LOAD-BEARING, not decoration: with enriched
     // as a direct flex child of the message column, repeated layout passes
@@ -341,6 +338,7 @@ export function ChatMarkdown({
           codeBlockMode: "progressive",
         }}
         markdownStyle={markdownStyle}
+        linkRecognition={LINK_RECOGNITION}
         onLinkPress={(e) => openLink(e.url)}
       />
     </View>

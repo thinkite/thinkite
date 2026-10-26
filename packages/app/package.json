@@ -59,7 +59,7 @@
     "react-error-boundary": "^6.1.2",
     "react-native": "0.88.0",
     "react-native-drawer-layout": "^4.2.10",
-    "react-native-enriched-markdown": "1.0.2",
+    "react-native-enriched-markdown": "1.2.0-nightly-20261024-69c3330dd",
     "react-native-gesture-handler": "~3.3.0",
     "react-native-get-random-values": "~1.11.0",
     "react-native-iroh-ffi": "0.1.0-alpha.5",
