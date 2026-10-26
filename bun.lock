@@ -204,6 +204,7 @@
   "patchedDependencies": {
     "expo-modules-jsi@58.0.17": "patches/expo-modules-jsi@58.0.17.patch",
     "uniwind@1.10.0": "patches/uniwind@1.10.0.patch",
+    "expo@58.0.17": "patches/expo@58.0.17.patch",
   },
   "overrides": {
     "react": "19.3.0",

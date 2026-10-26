@@ -1,0 +1,25 @@
+diff --git a/build/dom/webview-wrapper.js b/build/dom/webview-wrapper.js
+index 02f713b7592c68e3cb6db2013b2aee0600a602a8..4facb5318e7a12ef4e9b306e8724740f86c37d1b 100644
+--- a/build/dom/webview-wrapper.js
++++ b/build/dom/webview-wrapper.js
+@@ -27,7 +27,9 @@ const RawWebView = /*#__PURE__*/ React.forwardRef((props, ref)=>{
+                 if (domImperativeHandlePropsRef.current?.includes(propName)) {
+                     return function(...args) {
+                         const serializedArgs = args.map((arg)=>JSON.stringify(arg)).join(',');
+-                        webviewRef.current?.injectJavaScript(`window._domRefProxy.${propName}(${serializedArgs})`);
++                        // The view may be gone by now (unmounted mid-message): its promise
++                        // rejects with "Unable to find the 'DomWebView' view"; nothing to deliver to.
++                        Promise.resolve(webviewRef.current?.injectJavaScript(`window._domRefProxy.${propName}(${serializedArgs})`)).catch(() => { });
+                     };
+                 }
+                 if (typeof webviewRef.current?.[propName] === 'function') {
+@@ -49,7 +51,8 @@ const RawWebView = /*#__PURE__*/ React.forwardRef((props, ref)=>{
+     const [containerStyle, setContainerStyle] = React.useState(null);
+     const { debugZeroHeightStyle, debugOnLayout } = useDebugZeroHeight(dom);
+     const emit = React.useCallback((detail)=>{
+-        webviewRef.current?.injectJavaScript(getInjectEventScript(detail));
++        // See above: an unmounted view rejects; the message has no reader left.
++        Promise.resolve(webviewRef.current?.injectJavaScript(getInjectEventScript(detail))).catch(() => { });
+     }, [
+         webviewRef
+     ]);
