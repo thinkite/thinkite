@@ -77,6 +77,8 @@ export function serverState(e: PreviewEntry): string {
       return "Stopped by agent";
     case "process":
       return e.ended.exit === undefined ? "Exited" : `Exited (${e.ended.exit})`;
+    case "unloaded":
+      return "Closed by opencode";
     default:
       return "Killed";
   }

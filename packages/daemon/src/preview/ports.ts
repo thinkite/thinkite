@@ -4,7 +4,8 @@
 // by its shell's pid and descendants. Each command costs about 20 ms and
 // the machine-wide `lsof` about 50 ms (measured 10-25,
 // docs/preview-tool-v1.md); t3code's port scanner runs the same `lsof`
-// every 3 s.
+// every 3 s. The same `ps` gives a server's process tree (`scanTree`),
+// for ending what is left of it when opencode unloads its project.
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -105,6 +106,27 @@ export function treePorts(
     );
   }
   return result;
+}
+
+/** Each root's tree (roots first), from `ps -axo pid=,ppid=` output. */
+export function treePids(psText: string, roots: number[]): number[] {
+  const children = childrenOf(psText);
+  const seen = new Set<number>();
+  const stack = [...roots].reverse();
+  while (stack.length > 0) {
+    const pid = stack.pop() as number;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    stack.push(...(children.get(pid) ?? []));
+  }
+  return [...seen];
+}
+
+/** The pids in the roots' trees, from one `ps`; null when it failed. */
+export async function scanTree(roots: number[]): Promise<number[] | null> {
+  if (roots.length === 0) return [];
+  const ps = await output("ps", ["-axo", "pid=,ppid="]);
+  return ps === null ? null : treePids(ps, roots);
 }
 
 /** Each root's tree's listening ports, from one `ps` and one `lsof`. */

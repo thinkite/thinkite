@@ -11,6 +11,7 @@ import { InputBar } from "@/components/transcript/input-bar";
 import { useFilesystemRoots } from "@/hooks/use-filesystem-roots";
 import { useLastUsedCwd, useSetLastUsedCwd } from "@/hooks/use-last-used-cwd";
 import { clearNewSessionPick } from "@/hooks/use-model-choice";
+import { useWatchServers } from "@/hooks/use-watch-servers";
 import { useDrawerUI } from "@/lib/drawer-ui";
 import { ocStore } from "@/lib/oc";
 import { type ImageAttachment, toPromptFiles } from "@/lib/transcript-blocks";
@@ -55,6 +56,8 @@ export default function NewSessionScreen() {
   const { data: lastUsedCwd } = useLastUsedCwd();
   const { data: roots } = useFilesystemRoots();
   const cwd = lastUsedCwd ?? roots?.recentCwds[0]?.path ?? undefined;
+  // The daemon's tools for the first turn: up before the prompt lands.
+  useWatchServers(cwd);
   const setLastUsedCwd = useSetLastUsedCwd();
 
   const rawSend = useCallback(

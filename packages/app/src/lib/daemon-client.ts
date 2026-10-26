@@ -5,6 +5,7 @@ import {
   type ForwardPort,
   type GitStatus,
   PAIR_OFFER_VERSION,
+  type PreviewEntry,
 } from "@thinkite/protocol";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
@@ -177,6 +178,11 @@ export class Transport {
   private readonly gitStatusCallbacks = new Map<string, GitStatusCallback>();
   /** The forward-port subscriber, if any (one per connection). */
   private forwardPortsCallback: ((ports: ForwardPort[]) => void) | null = null;
+  /** Per-directory server-list subscribers, like `gitStatusCallbacks`. */
+  private readonly previewsCallbacks = new Map<
+    string,
+    (entries: PreviewEntry[]) => void
+  >();
   /**
    * `true` once `close()` has been called by the consumer — distinguishes
    * "user / context tore down the connection" from "transport dropped on
@@ -426,6 +432,40 @@ export class Transport {
   }
 
   /**
+   * The directory's servers' change stream (no initial snapshot). Watching
+   * a directory is also what makes the daemon serve its tools to sessions
+   * there (docs/preview-tool-v1.md). One subscriber per directory.
+   */
+  async subscribePreviews(
+    directory: string,
+    onUpdate: (entries: PreviewEntry[]) => void,
+  ): Promise<{ unsubscribe: () => Promise<void> }> {
+    this.previewsCallbacks.set(directory, onUpdate);
+    try {
+      await this.request({
+        type: "subscribePreviews",
+        requestId: Crypto.randomUUID(),
+        directory,
+      });
+    } catch (err) {
+      if (this.previewsCallbacks.get(directory) === onUpdate)
+        this.previewsCallbacks.delete(directory);
+      throw err;
+    }
+    return {
+      unsubscribe: async () => {
+        if (this.previewsCallbacks.get(directory) !== onUpdate) return;
+        this.previewsCallbacks.delete(directory);
+        await this.request({
+          type: "unsubscribePreviews",
+          requestId: Crypto.randomUUID(),
+          directory,
+        });
+      },
+    };
+  }
+
+  /**
    * Subscribe to live git status for a `cwd` — a PURE change stream (no
    * initial snapshot; fetch that via `getGitStatus`). Subsequent changes
    * arrive through `onUpdate`; returns an `unsubscribe` thunk. Mirrors the
@@ -556,6 +596,8 @@ export class Transport {
         cwd?: string;
         status?: GitStatus;
         ports?: ForwardPort[];
+        directory?: string;
+        entries?: PreviewEntry[];
       };
       // Liveness probe answer — clears the pong deadline armed by the
       // matching ping. Any pong counts; we don't correlate echoT.
@@ -581,6 +623,14 @@ export class Transport {
         this.forwardPortsCallback?.(frame.ports);
         return;
       }
+      if (
+        frame.type === "previews" &&
+        typeof frame.directory === "string" &&
+        frame.entries !== undefined
+      ) {
+        this.previewsCallbacks.get(frame.directory)?.(frame.entries);
+        return;
+      }
       if (!frame.requestId) return;
       const slot = this.pending.get(frame.requestId);
       if (!slot) return;
@@ -600,6 +650,7 @@ export class Transport {
     this.pending.clear();
     this.gitStatusCallbacks.clear();
     this.forwardPortsCallback = null;
+    this.previewsCallbacks.clear();
     if (!this.intentionallyClosed) {
       const cb = this.onUnexpectedClose;
       this.onUnexpectedClose = null;
@@ -737,6 +788,16 @@ export class DaemonClient {
   ): Promise<{ unsubscribe: () => Promise<void> }> {
     const t = await this.readyPromise;
     return t.subscribeGitStatus(cwd, onUpdate);
+  }
+
+  /** A directory's servers' change stream on the current transport; like
+   *  `subscribeGitStatus`, callers subscribe again after a reconnect. */
+  async subscribePreviews(
+    directory: string,
+    onUpdate: (entries: PreviewEntry[]) => void,
+  ): Promise<{ unsubscribe: () => Promise<void> }> {
+    const t = await this.readyPromise;
+    return t.subscribePreviews(directory, onUpdate);
   }
 
   /** The forward ports' change stream on the current transport; like

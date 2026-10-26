@@ -423,11 +423,13 @@ export interface PreviewEntry {
   /** When its shell started, and the session whose agent started it. */
   started: { at: number; sessionID?: string };
   /** How it ended: the user's stop button, an agent's `server_stop` (and
-   *  which session), the process exiting, or something outside Thinkite
-   *  (opencode's kill, a service restart). */
+   *  which session), the process exiting, opencode unloading the project
+   *  (after an hour without activity, or a reload: its shells end with it),
+   *  or something else outside Thinkite (opencode's kill, a service
+   *  restart). */
   ended?: {
     at: number;
-    by: "user" | "agent" | "process" | "external";
+    by: "user" | "agent" | "process" | "unloaded" | "external";
     sessionID?: string;
     exit?: number;
   };

@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { ChatPanel } from "@/components/transcript/chat-panel";
 import { TranscriptLoading } from "@/components/transcript/transcript-loading";
+import { useWatchServers } from "@/hooks/use-watch-servers";
 import { useDrawerUI } from "@/lib/drawer-ui";
 import { getOcClient, ocStore } from "@/lib/oc";
 import { flattenToBlocks } from "@/lib/transcript-blocks";
@@ -46,6 +47,8 @@ export default function SessionDetailScreen() {
     void ocStore.open(sessionID);
   }, [sessionID]);
   const session = useSession(ocStore, sessionID);
+  // The daemon serves its tools where a client watches: the next turn's.
+  useWatchServers(cwd ?? session?.location.directory);
   const messages = useMessages(ocStore, sessionID);
   const { hydrated } = usePaging(ocStore, sessionID);
 

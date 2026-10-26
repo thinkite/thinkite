@@ -1,18 +1,26 @@
 // PreviewHost: serves the preview tools to the user's opencode service and
 // keeps the registry in step with it.
 //
-// - One MCP connection per session directory, opened the first time the
-//   daemon sees the directory (the recent sessions at start, then
-//   `session.created` events) and kept until the daemon stops. opencode
+// - One MCP connection per directory a Thinkite client looks at: opened
+//   when a client watches the directory's servers (a session page, a
+//   folder picked for a new session) or a session is created there. opencode
 //   scopes client tools to the exact directory: a connection for
-//   `proj/web` is invisible to a session at `proj`.
+//   `proj/web` is invisible to a session at `proj`. opencode fixes a turn's
+//   tools when the turn starts, so the connection has to be up before the
+//   user sends, and it is not closed when the client looks away (a turn in
+//   progress would lose its tools).
+// - opencode unloads a directory after an hour without session activity
+//   (`location.shutdown`). The connection still holds the old instance,
+//   and with it the shells of the servers started there; new requests get a
+//   new instance without our tools. So the connection is closed (the
+//   servers end with the old instance), and opened again at once if a
+//   client still watches, else the next time one does.
 // - Each time a connection comes up, the registry re-checks that
 //   directory's entries against their shells.
 // - opencode's event bus feeds `shell.exited` into the registry, so a
 //   server that dies shows up as stopped without anyone polling.
 
 import { access } from "node:fs/promises";
-import { listRecentSessions } from "../opencode/recent.ts";
 import type { ResolveOpencode } from "../opencode/service.ts";
 import { McpConnection } from "./mcp-connection.ts";
 import { PreviewRegistry } from "./registry.ts";
@@ -40,12 +48,12 @@ export class PreviewHost {
       ...(options.stateFile === undefined
         ? {}
         : { stateFile: options.stateFile }),
+      onWatch: (directory) => void this.attach(directory),
       log: this.log,
     });
   }
 
   start(): void {
-    void this.attachRecent();
     void this.followEvents();
   }
 
@@ -84,21 +92,15 @@ export class PreviewHost {
     );
   }
 
-  private async attachRecent(): Promise<void> {
-    for (
-      let delay = 1000;
-      !this.abort.signal.aborted;
-      delay = Math.min(delay * 2, 30_000)
-    ) {
-      try {
-        const sessions = await listRecentSessions(await this.options.resolve());
-        for (const directory of new Set(sessions.map((s) => s.directory)))
-          await this.attach(directory);
-        return;
-      } catch {
-        await new Promise((r) => setTimeout(r, delay));
-      }
-    }
+  /** opencode unloaded `directory`: let go of the old instance (its
+   *  servers end with it) and serve the new one if a client watches. */
+  private async unloaded(directory: string): Promise<void> {
+    const connection = this.connections.get(directory);
+    this.connections.delete(directory);
+    await this.registry.unloaded(directory, () => {
+      connection?.close();
+      if (this.registry.watched(directory)) void this.attach(directory);
+    });
   }
 
   private async followEvents(): Promise<void> {
@@ -109,7 +111,13 @@ export class PreviewHost {
           signal: this.abort.signal,
         })) {
           delay = 1000;
-          this.onEvent(event as { type: string; data?: unknown });
+          this.onEvent(
+            event as {
+              type: string;
+              location?: { directory?: string };
+              data?: unknown;
+            },
+          );
         }
       } catch {
         // No service yet, or the stream broke (service restart): retry.
@@ -120,11 +128,20 @@ export class PreviewHost {
     }
   }
 
-  private onEvent(event: { type: string; data?: unknown }): void {
+  private onEvent(event: {
+    type: string;
+    location?: { directory?: string };
+    data?: unknown;
+  }): void {
     switch (event.type) {
       case "session.created": {
         const data = event.data as { location?: { directory?: string } };
         if (data.location?.directory) void this.attach(data.location.directory);
+        return;
+      }
+      case "location.shutdown": {
+        const directory = event.location?.directory;
+        if (directory) void this.unloaded(directory);
         return;
       }
       case "shell.exited": {

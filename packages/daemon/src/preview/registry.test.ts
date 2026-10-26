@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ForwardPort, PreviewEntry } from "@thinkite/protocol";
 import { describe, expect, it } from "vitest";
-import { PreviewRegistry } from "./registry.ts";
+import { PreviewRegistry, type Processes } from "./registry.ts";
 import type { ShellApi, ShellInfo } from "./shells.ts";
 
 const DIR = "/proj";
@@ -71,6 +71,12 @@ function fakeShells(
       s.status = "killed";
       if (s.pid) ports.delete(s.pid);
     },
+    /** Gone from opencode: its instance was unloaded. */
+    forget(id: string) {
+      const s = shells.get(id) as ShellInfo;
+      shells.delete(id);
+      if (s.pid) ports.delete(s.pid);
+    },
   };
   return fake;
 }
@@ -102,11 +108,17 @@ function registry(
     scheduled?: (() => void)[];
     repeat?: (fn: () => void, ms: number) => () => void;
     ports?: (roots: number[]) => Promise<Map<number, number[]> | null>;
+    processes?: Processes;
+    onWatch?: (directory: string) => void;
   } = {},
 ) {
   return new PreviewRegistry({
     shells: shells.api,
     ports: options.ports ?? scanOf(shells),
+    ...(options.processes === undefined
+      ? {}
+      : { processes: options.processes }),
+    ...(options.onWatch === undefined ? {} : { onWatch: options.onWatch }),
     repeat: options.repeat ?? ticker().repeat,
     sleep: () => new Promise((r) => setTimeout(r, 1)),
     schedule: (fn) => options.scheduled?.push(fn),
@@ -391,6 +403,78 @@ describe("PreviewRegistry.list / stop", () => {
       "external",
     ]);
     expect(pushed[0]?.[0]?.ended).toMatchObject({ by: "process", exit: 2 });
+  });
+});
+
+describe("PreviewRegistry unload", () => {
+  /** Processes in memory: `tree` adds `children`, `kill` ends a pid. */
+  function fakeProcesses(children: Record<number, number[]>) {
+    const alive = new Set<number>();
+    const killed: [number, string][] = [];
+    const processes: Processes = {
+      async tree(roots) {
+        return roots.flatMap((r) => [r, ...(children[r] ?? [])]);
+      },
+      alive: (pid) => alive.has(pid),
+      kill(pid, signal) {
+        killed.push([pid, signal]);
+        alive.delete(pid);
+      },
+    };
+    return { processes, alive, killed };
+  }
+
+  it("ends the servers once opencode lets go, and ends what it left behind", async () => {
+    const shells = fakeShells();
+    const procs = fakeProcesses({ 1001: [2001] });
+    const r = registry(shells, { processes: procs.processes });
+    await r.start(DIR, { name: "web", command: "bun run dev" });
+    await r.start(DIR, { name: "api", command: "bun api.ts" });
+    await r.start("/other", { name: "web", command: "vite" });
+    for (const pid of [1001, 1002, 2001]) procs.alive.add(pid);
+    const pushed: PreviewEntry[][] = [];
+    r.subscribe(DIR, (s) => pushed.push(s.entries));
+
+    await r.unloaded(DIR, () => {
+      // opencode ends the shells it ran; `bun run dev`'s child stays.
+      shells.forget("sh_1");
+      shells.forget("sh_2");
+      procs.alive.delete(1001);
+      procs.alive.delete(1002);
+      // A rebuild lands before the unload finishes.
+      void r.snapshot(DIR);
+    });
+
+    expect(procs.killed).toEqual([[2001, "SIGTERM"]]);
+    expect((await r.snapshot(DIR)).entries.map((e) => e.ended?.by)).toEqual([
+      "unloaded",
+      "unloaded",
+    ]);
+    expect(pushed.at(-1)?.every((e) => e.status === "ended")).toBe(true);
+    expect((await r.snapshot("/other")).entries[0]?.status).toBe("running");
+    expect((await r.list(DIR)).text).toContain(
+      "web: was closed when opencode unloaded the project just now",
+    );
+  });
+
+  it("lets go even when no server runs", async () => {
+    const r = registry(fakeShells());
+    let released = false;
+    await r.unloaded(DIR, () => {
+      released = true;
+    });
+    expect(released).toBe(true);
+  });
+
+  it("says when a client starts watching a directory", () => {
+    const watched: string[] = [];
+    const r = registry(fakeShells(), { onWatch: (d) => watched.push(d) });
+    expect(r.watched(DIR)).toBe(false);
+    const stop = r.subscribe(DIR, () => undefined);
+    expect(watched).toEqual([DIR]);
+    expect(r.watched(DIR)).toBe(true);
+    stop();
+    expect(r.watched(DIR)).toBe(false);
   });
 });
 

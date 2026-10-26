@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { treePorts } from "./ports.ts";
+import { treePids, treePorts } from "./ports.ts";
 
 const PS = `
     1     0
@@ -30,5 +30,13 @@ describe("treePorts", () => {
         [300, []],
       ]),
     );
+  });
+});
+
+describe("treePids", () => {
+  it("gives the roots and all their descendants, once", () => {
+    expect(treePids(PS, [100, 200, 101]).sort((a, b) => a - b)).toEqual([
+      100, 101, 102, 200,
+    ]);
   });
 });

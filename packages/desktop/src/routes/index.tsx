@@ -21,6 +21,7 @@ import {
   VariantPicker,
 } from "../components/ModelPicker";
 import { ocStore } from "../lib/oc";
+import { usePreviews } from "../lib/previews";
 
 // The new-session draft. The words are wisp's (after Waku's New task):
 // "What should we build in <folder>?", where the folder name is the picker —
@@ -90,6 +91,9 @@ function NewSession() {
     () => recentDirectories(sessions, directory),
     [sessions, directory],
   );
+  // Watching the folder's servers is what makes the daemon serve its tools
+  // there; opencode fixes the first turn's tools when the prompt lands.
+  usePreviews(directory);
   // No pick: the last used model and its reasoning variant, else the
   // folder's default — what the store will pin on create.
   const [picked, setPicked] = useState<{

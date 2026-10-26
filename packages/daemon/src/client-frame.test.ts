@@ -4,7 +4,7 @@ import { parseClientFrame } from "./client-frame.ts";
 describe("parseClientFrame", () => {
   it("accepts hello, ping and every command", () => {
     for (const frame of [
-      { type: "hello", protocolVersion: "0.2.5" },
+      { type: "hello", protocolVersion: "0.2.6" },
       { type: "ping", t: 0 },
       { type: "getGitStatus", requestId: "r", cwd: "/p" },
       { type: "subscribeGitStatus", requestId: "r", cwd: "/p" },

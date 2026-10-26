@@ -255,11 +255,14 @@ Recorded on the entry as `ended: { at, by, sessionID?, exit? }`:
 | `user` | The desktop's or phone's stop button | was stopped by the user |
 | `agent` | `server_stop`, with the caller's session | was stopped by you / by another session |
 | `process` | The process exited on its own | exited (code 1) |
+| `unloaded` | opencode unloaded the project (an hour without session activity, or a reload) and its shells ended with it | was closed when opencode unloaded the project |
 | `external` | The shell ended some other way: opencode's kill, a service restart | was killed outside Thinkite |
 
 While `server_stop` or the stop button removes a shell, the registry
 remembers who is stopping it, so the `shell.exited` event that opencode
-publishes during the removal is attributed to them, not to "external".
+publishes during the removal is attributed to them, not to "external". An
+unload is remembered the same way, so the re-check after the reconnect
+(which no longer finds the shell) records `unloaded`.
 
 Agents rarely call `server_list` before acting (once in 15 runs), so the
 reason goes where they will meet it: `server_start` on that name,
@@ -280,7 +283,7 @@ type Entry = {
   started: { at: number; sessionID?: string };
   ended?: {
     at: number;
-    by: "user" | "agent" | "process" | "external";
+    by: "user" | "agent" | "process" | "unloaded" | "external";
     sessionID?: string;
     exit?: number;
   };
@@ -311,14 +314,27 @@ better writes the right link in its reply anyway.
 
 ## Client MCP connection
 
-- One connection per distinct session directory, opened the first time the
-  daemon sees the directory:
-  - at start, from the recent-sessions list (`opencode/recent.ts`);
-  - after that, from session events on the bus.
-- The connection stays open for the daemon's lifetime. Nothing a client does
-  closes it: not the phone going to the background, not a window closing,
-  not a session ending. Every detach costs each session in that directory a
-  ~9k character catalog notice.
+The rule, as users meet it: sessions in a folder opened in Thinkite can use
+the `thinkite_server_*` tools. opencode attaches client tools to a
+directory, not to a session, so a session started elsewhere (the opencode
+TUI) in such a folder gets them too, and one in a folder Thinkite has not
+opened does not.
+
+- One connection per directory a Thinkite client looks at, opened when:
+  - a client subscribes to the directory's servers: the desktop's session
+    page and new-session folder (`usePreviews`), the phone's session screen
+    and new-session folder (`useWatchServers`);
+  - a session is created there (`session.created` on the bus).
+  opencode fixes a turn's tools when the turn starts, so the connection has
+  to be up before the user sends; a session page or a picked folder is up
+  seconds before that.
+- Nothing a client does closes it: not the phone going to the background,
+  not a window closing, not a session ending. A turn in progress would lose
+  its tools.
+- opencode tells a session about a change in its tools at its next turn
+  (a short delta, or the whole Code Mode catalog, ~9k characters,
+  anomalyco/opencode#55529). A connection that is back before then costs
+  nothing.
 - Reconnect with backoff (the `connectClientMcp` pattern: 0.5 s doubling to
   10 s) and re-check the registry after each reconnect.
 - Implement the WebSocket MCP server ourselves (about 100 lines, as in the
@@ -332,6 +348,42 @@ better writes the right link in its reply anyway.
   since anomalyco/opencode#48937, but pins attached connections to the
   legacy handshake (`packages/core/src/mcp/client.ts`: `config.type ===
   "attached" ? "legacy"`). Follow `connectClientMcp` if that changes.
+
+## When opencode unloads a project
+
+opencode 2.1 unloads a directory's services after an hour with no session
+events (`location-activity.ts`; `experimental.location_idle_timeout`
+changes it). Daemon shells and attached client MCP do not count as
+activity: only running sessions and session background jobs do
+(anomalyco/opencode#57416). What happens, measured 10-25 on an isolated
+serve with a 10 s timeout:
+
+- opencode publishes `location.shutdown` with `location.directory`.
+- New requests for the directory get a new instance. Our WebSocket still
+  holds the old one, and with it the shells started there: the servers keep
+  running, but the shell API (now the new instance) no longer finds them,
+  and the new instance has no thinkite tools. On 10-25 a session that came
+  back after the hour was told `tools.thinkite.server_*` were gone and
+  stopped its servers with `kill`.
+- Closing the WebSocket lets the old instance go: its shells' processes end
+  within 3 s, and opencode publishes no `shell.exited` for them.
+
+So on `location.shutdown` the host:
+
+1. marks the directory's running servers as being unloaded (like a stop in
+   progress), and reads their process trees with one `ps`;
+2. closes the connection, and opens a new one at once if a client still
+   watches the directory (otherwise the next watch or `session.created`
+   does);
+3. waits up to 3 s for the trees to exit, sends SIGTERM to what is left,
+   then SIGKILL 2 s later;
+4. ends the entries as `unloaded` and pushes them.
+
+A reconnect boots the directory again: 56–107 ms warm, 650–960 ms cold in
+the user's log, about a dozen file watchers and a few git commands, plus any
+local MCP servers in their config. Watching only directories on a screen
+keeps that to the projects in use. The servers still end after an hour
+without session activity, even while the page is open (#51828).
 
 ## Ports (`ports.ts`)
 
@@ -363,14 +415,15 @@ better writes the right link in its reply anyway.
 
 ## Clients
 
-### Protocol (`@thinkite/protocol` 0.2.5)
+### Protocol (`@thinkite/protocol` 0.2.6)
 
 - Per project, same shape as git status: `getPreviews { directory }` is the
   snapshot `{ entries }`, `subscribePreviews { directory }` a pure change
   stream of `previews { directory, entries }` on every change.
   `unsubscribePreviews { directory }`.
 - An entry carries `ports` and `url` once its server listens. 0.2.5 drops
-  0.2.4's `requests` and `localPort`.
+  0.2.4's `requests` and `localPort`; 0.2.6 adds `ended.by: "unloaded"`
+  (older clients show it as killed).
 - `stopPreview { directory, name }`: the user's stop button, recorded as
   `by: "user"`.
 - Global, for the phone: `getForwardPorts` is the snapshot,
@@ -488,10 +541,18 @@ in `expo-web-browser` unless that cannot reach the listener.
   tree-to-ports mapping from `ps`/`lsof` output, the project-wide list
   with "(yours)", stop reasons
   (user, agent, the exit event arriving first, process exit, an outside
-  kill), the forward-port list across projects, persistence across a
+  kill, an unload with a rebuild in the middle and a leftover child),
+  watching (`onWatch`, `watched`), the forward-port list across projects, persistence across a
   restart with an exit in between, the router frames, and the 120
   character first lines. Desktop and phone: which links count as a
   server's page (`serverForLink`, `localPort`, `macPageNotice`).
+- **Unload, 10-25:** a throwaway rig on an isolated serve with
+  `experimental.location_idle_timeout: "10 seconds"` (eviction comes on
+  the next 1 min sweep, ~70–100 s): a watched and an unwatched directory
+  each start a server through the real `PreviewHost`; after the unload both
+  end as `unloaded` with their ports free, and only the watched one
+  attaches again. In the real app, the same setting in a project's
+  `opencode.json` shortens the hour.
 - **Gated e2e** (`THINKITE_E2E_PROVIDERS=1` style, isolated `opencode
   serve` with `HOME` and the XDG dirs in a temp dir): start, logs, stop
   against real shells, and a daemon restart in the middle.

@@ -13,7 +13,7 @@
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import type { ForwardPort, PreviewEntry } from "@thinkite/protocol";
-import { type PortScan, scanPorts } from "./ports.ts";
+import { type PortScan, scanPorts, scanTree } from "./ports.ts";
 import type { ShellApi, ShellStatus } from "./shells.ts";
 
 export interface ToolOutcome {
@@ -30,6 +30,33 @@ export interface StartInput {
 /** Who stops a server: the user's stop button, or an agent's server_stop. */
 export type Stopper = { by: "user" } | { by: "agent"; sessionID?: string };
 
+/** The process side of ending a server opencode let go of; tests fake it. */
+export interface Processes {
+  /** The pids of the roots' process trees, or null when that failed. */
+  tree(roots: number[]): Promise<number[] | null>;
+  alive(pid: number): boolean;
+  kill(pid: number, signal: NodeJS.Signals): void;
+}
+
+const processes: Processes = {
+  tree: scanTree,
+  alive(pid) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  kill(pid, signal) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Already gone.
+    }
+  },
+};
+
 export interface PreviewSnapshot {
   entries: PreviewEntry[];
 }
@@ -37,6 +64,7 @@ export interface PreviewSnapshot {
 export interface RegistryOptions {
   shells: ShellApi;
   ports?: PortScan;
+  processes?: Processes;
   sleep?: (ms: number) => Promise<void>;
   /** Runs `fn` after `ms`; the port checks after a start use it. */
   schedule?: (fn: () => void, ms: number) => void;
@@ -47,6 +75,8 @@ export interface RegistryOptions {
   startWaitMs?: number;
   /** Where entries persist across daemon restarts. Absent: memory only. */
   stateFile?: string;
+  /** A client began watching the directory's servers. */
+  onWatch?: (directory: string) => void;
   log?: (message: string) => void;
 }
 
@@ -82,20 +112,27 @@ const PORT_CHECKS_MS = [1_000, 3_000, 10_000, 30_000];
  *  or the forward ports) and a server runs. t3code's scanner runs every
  *  3 s while subscribed. */
 const WATCHED_CHECK_MS = 5_000;
+/** After opencode lets go of an unloaded project's shells: how long their
+ *  processes get to exit, then how long after SIGTERM before SIGKILL. */
+const UNLOAD_EXIT_MS = 3_000;
+const UNLOAD_TERM_MS = 2_000;
 
 export class PreviewRegistry {
   private readonly shells: ShellApi;
   private readonly ports: PortScan;
+  private readonly processes: Processes;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly schedule: (fn: () => void, ms: number) => void;
   private readonly repeat: (fn: () => void, ms: number) => () => void;
   private readonly startWaitMs: number;
   private readonly stateFile?: string;
+  private readonly onWatch: (directory: string) => void;
   private readonly log: (message: string) => void;
 
   private readonly dirs = new Map<string, Map<string, Entry>>();
-  /** Shells being stopped through `stop`, so their exit event is theirs. */
-  private readonly stopping = new Map<string, Stopper>();
+  /** Shells being stopped through `stop` or an unload, so their exit
+   *  event (or their missing shell) is theirs. */
+  private readonly stopping = new Map<string, Stopper | { by: "unloaded" }>();
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly listeners = new Map<
     string,
@@ -112,6 +149,7 @@ export class PreviewRegistry {
   constructor(options: RegistryOptions) {
     this.shells = options.shells;
     this.ports = options.ports ?? scanPorts;
+    this.processes = options.processes ?? processes;
     this.sleep =
       options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.schedule =
@@ -125,6 +163,7 @@ export class PreviewRegistry {
       });
     this.startWaitMs = options.startWaitMs ?? 2_000;
     this.stateFile = options.stateFile;
+    this.onWatch = options.onWatch ?? (() => undefined);
     this.log = options.log ?? (() => undefined);
     this.load();
   }
@@ -239,10 +278,16 @@ export class PreviewRegistry {
     }
     set.add(listener);
     this.watch();
+    this.onWatch(directory);
     return () => {
       set.delete(listener);
       this.watch();
     };
+  }
+
+  /** Whether a client watches the directory's servers now. */
+  watched(directory: string): boolean {
+    return (this.listeners.get(directory)?.size ?? 0) > 0;
   }
 
   /** Every port the running servers of every project listen on: what the
@@ -280,6 +325,50 @@ export class PreviewRegistry {
         void this.checkPorts();
         return;
       }
+    }
+  }
+
+  /** opencode unloaded the directory (`location.shutdown`: after an hour
+   *  without activity, or a reload). Its servers' shells end once the daemon
+   *  lets go of the old instance, which `release` does, and opencode reports
+   *  no exit for them; whatever of their process trees is left is ended
+   *  here, and they end as unloaded. */
+  async unloaded(directory: string, release: () => void): Promise<void> {
+    const running = [...this.dir(directory).values()].filter(
+      (e) => e.status === "running",
+    );
+    for (const entry of running)
+      this.stopping.set(entry.shellID, { by: "unloaded" });
+    try {
+      const roots = running.flatMap((e) =>
+        e.pid === undefined ? [] : [e.pid],
+      );
+      // Before letting go: once a root dies its children belong to launchd.
+      const pids = (await this.processes.tree(roots)) ?? roots;
+      release();
+      const left = async (ms: number) => {
+        for (let t = 0; t < ms; t += POLL_MS) {
+          if (!pids.some((p) => this.processes.alive(p))) return [];
+          await this.sleep(POLL_MS);
+        }
+        return pids.filter((p) => this.processes.alive(p));
+      };
+      let rest = await left(UNLOAD_EXIT_MS);
+      if (rest.length > 0) {
+        this.log(`preview unload ${directory}: SIGTERM ${rest.join(" ")}`);
+        for (const pid of rest) this.processes.kill(pid, "SIGTERM");
+        rest = await left(UNLOAD_TERM_MS);
+        for (const pid of rest) this.processes.kill(pid, "SIGKILL");
+      }
+    } finally {
+      for (const entry of running) this.stopping.delete(entry.shellID);
+    }
+    for (const entry of running)
+      if (entry.status === "running")
+        this.end(entry, { at: Date.now(), by: "unloaded" });
+    if (running.length > 0) {
+      this.changed(directory);
+      void this.checkPorts();
     }
   }
 
@@ -601,6 +690,8 @@ function ended(entry: Entry, sessionID?: string): string {
         : `was stopped by another session ${when}`;
     case "process":
       return `exited${e.exit === undefined ? "" : ` (code ${e.exit})`} ${when}`;
+    case "unloaded":
+      return `was closed when opencode unloaded the project ${when} (it does after an hour without activity)`;
     default:
       return `was killed outside Thinkite ${when}`;
   }

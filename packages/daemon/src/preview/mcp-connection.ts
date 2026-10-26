@@ -9,9 +9,11 @@
 // "legacy"`), so this speaks 2025-11-25: initialize, ping, tools/list,
 // tools/call. If `connectClientMcp` ever moves to 2026-07-28, follow it.
 //
-// Keep the connection up for the daemon's lifetime: every attach or detach
-// makes opencode re-inject its whole Code Mode catalog (~9k characters)
-// into each session in the directory (anomalyco/opencode#55529).
+// opencode compares a session's tools turn to turn: a session whose turn
+// starts while the connection is down runs that turn without the tools and
+// is told so, and told again when they are back, which can cost the whole
+// Code Mode catalog (~9k characters, anomalyco/opencode#55529). A
+// connection that is back before the next turn costs nothing.
 
 import type { ResolveOpencode } from "../opencode/service.ts";
 import { authorization } from "./shells.ts";
