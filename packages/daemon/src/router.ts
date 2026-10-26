@@ -58,7 +58,7 @@ function getOrCreateGitSubs(ctx: { state: Map<string, unknown> }): GitSubsMap {
 }
 
 /**
- * The daemon's own RPC: git status and diffs for a folder, the folder
+ * The daemon's own RPC: a folder's git changes as they happen, the folder
  * picker, the servers the agent started and pages it opened (previews),
  * and the ports to forward. Sessions, prompts
  * and transcripts are opencode's, reached over the HTTP tunnel instead.
@@ -69,33 +69,10 @@ function getOrCreateGitSubs(ctx: { state: Map<string, unknown> }): GitSubsMap {
 export function createCommandHandler(deps: RouterDeps): CommandHandler {
   return async (cmd, ctx) => {
     switch (cmd.type) {
-      case "getGitStatus": {
-        // One-shot snapshot — the client's react-query queryFn. Reuses the
-        // per-cwd watcher's cached `refresh()` (15s TTL + in-flight dedup),
-        // and `getOrCreate`/`refresh` never start fs.watch, so a snapshot-
-        // only caller leaks no watcher (same contract as getWorkingTreeDiff).
-        try {
-          const status = await deps.gitWatchers.getOrCreate(cmd.cwd).refresh();
-          ctx.send({
-            type: "getGitStatus.response",
-            requestId: cmd.requestId,
-            cwd: cmd.cwd,
-            status,
-          });
-        } catch (err) {
-          ctx.send({
-            type: "error",
-            requestId: cmd.requestId,
-            code: "internal",
-            message: err instanceof Error ? err.message : String(err),
-          });
-        }
-        return;
-      }
       case "subscribeGitStatus": {
-        // Pure change-stream registration — NO initial snapshot. The client
-        // fetches the initial via `getGitStatus` (concurrently) and folds
-        // these `gitStatus` deltas into the same query-cache entry.
+        // Pure change-stream registration — NO initial snapshot. Clients
+        // read the repository from opencode's `vcs` and take each push as
+        // "changed, read again" (the desktop through `watchGit`).
         try {
           const watcher = deps.gitWatchers.getOrCreate(cmd.cwd);
           const gitSubs = getOrCreateGitSubs(ctx);
@@ -142,35 +119,6 @@ export function createCommandHandler(deps: RouterDeps): CommandHandler {
           type: "unsubscribeGitStatus.response",
           requestId: cmd.requestId,
         });
-        return;
-      }
-      case "getWorkingTreeDiff": {
-        // One-shot working-tree diff for the cwd — the status bar's tap
-        // target. Reuses the per-cwd GitWatcher (created on demand; getDiff
-        // runs git without starting the fs.watch a subscribe would, so a
-        // diff-only caller never leaks a watcher). The diff matches the
-        // bar's `+N -M`: tracked vs the same comparison ref + untracked
-        // all-add patches.
-        try {
-          const watcher = deps.gitWatchers.getOrCreate(cmd.cwd);
-          const result = await watcher.getDiff();
-          ctx.send({
-            type: "getWorkingTreeDiff.response",
-            requestId: cmd.requestId,
-            cwd: cmd.cwd,
-            isRepo: result.isRepo,
-            diff: result.diff,
-            fileCount: result.fileCount,
-            truncated: result.truncated,
-          });
-        } catch (err) {
-          ctx.send({
-            type: "error",
-            requestId: cmd.requestId,
-            code: "internal",
-            message: err instanceof Error ? err.message : String(err),
-          });
-        }
         return;
       }
       case "listDirectory": {

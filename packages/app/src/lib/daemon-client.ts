@@ -330,31 +330,6 @@ export class Transport {
   }
 
   /**
-   * Working-tree diff for `cwd` — the status bar's tap target. One-shot RPC
-   * (request/response by requestId), wrapped in react-query by
-   * `use-working-tree-diff`. Returns the raw multi-file unified diff matching
-   * the bar's `+N -M` (vs the default-branch merge-base, incl untracked).
-   */
-  async getWorkingTreeDiff(cwd: string): Promise<{
-    isRepo: boolean;
-    diff: string;
-    fileCount: number;
-    truncated: boolean;
-  }> {
-    const requestId = Crypto.randomUUID();
-    return (await this.request({
-      type: "getWorkingTreeDiff",
-      requestId,
-      cwd,
-    })) as {
-      isRepo: boolean;
-      diff: string;
-      fileCount: number;
-      truncated: boolean;
-    };
-  }
-
-  /**
    * Bootstrap RPC for the picker — one call returns daemon machine's
    * HOME + (if they exist) Desktop / Documents shortcut paths +
    * recent-cwd candidates aggregated from session history. Callers
@@ -376,22 +351,6 @@ export class Transport {
       documents?: string;
       recentCwds: { path: string; lastUsedAt: string }[];
     };
-  }
-
-  /**
-   * One-shot git status snapshot for `cwd` — the react-query queryFn
-   * counterpart to `subscribeGitStatus`'s change stream. Daemon-side it
-   * reuses the per-cwd watcher's cached `refresh()`, so firing it
-   * concurrently with subscribe costs at most one git invocation.
-   */
-  async getGitStatus(cwd: string): Promise<GitStatus> {
-    const requestId = Crypto.randomUUID();
-    const res = (await this.request({
-      type: "getGitStatus",
-      requestId,
-      cwd,
-    })) as { status: GitStatus; cwd: string };
-    return res.status;
   }
 
   /** Every port the Mac's running servers listen on, across projects. */
@@ -466,10 +425,11 @@ export class Transport {
   }
 
   /**
-   * Subscribe to live git status for a `cwd` — a PURE change stream (no
-   * initial snapshot; fetch that via `getGitStatus`). Subsequent changes
-   * arrive through `onUpdate`; returns an `unsubscribe` thunk. Mirrors the
-   * identity-checked cleanup; transport close clears the map.
+   * Subscribe to the daemon's git watcher for a `cwd`: a pure change stream
+   * (no initial snapshot). The status bar reads the repository from
+   * opencode's `vcs` and takes each push as "changed, read again".
+   * Returns an `unsubscribe` thunk. Mirrors the identity-checked cleanup;
+   * transport close clears the map.
    */
   async subscribeGitStatus(
     cwd: string,
@@ -742,16 +702,6 @@ export class DaemonClient {
     return t.listDirectory(path, opts);
   }
 
-  async getWorkingTreeDiff(cwd: string): Promise<{
-    isRepo: boolean;
-    diff: string;
-    fileCount: number;
-    truncated: boolean;
-  }> {
-    const t = await this.readyPromise;
-    return t.getWorkingTreeDiff(cwd);
-  }
-
   async getFilesystemRoots(): Promise<{
     home: string;
     desktop?: string;
@@ -762,12 +712,6 @@ export class DaemonClient {
     return t.getFilesystemRoots();
   }
 
-  /** One-shot git status snapshot for `cwd` (react-query queryFn). */
-  async getGitStatus(cwd: string): Promise<GitStatus> {
-    const t = await this.readyPromise;
-    return t.getGitStatus(cwd);
-  }
-
   /** Every port the Mac's running servers listen on (one-shot). */
   async getForwardPorts(): Promise<ForwardPort[]> {
     const t = await this.readyPromise;
@@ -775,8 +719,8 @@ export class DaemonClient {
   }
 
   /**
-   * Per-cwd git status subscribe — a pure change stream (initial snapshot
-   * comes from `getGitStatus`). Pass-through to the current transport —
+   * Per-cwd git watcher subscribe — a pure change stream (the status bar
+   * reads the repository from opencode). Pass-through to the current transport —
    * NO facade-managed registry (git status is cheap to re-fetch and per-cwd
    * subscriptions don't have the same continuity requirements as
    * transcript). Consumers re-subscribe on transport swap by including

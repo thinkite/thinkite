@@ -153,10 +153,10 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
   const awaitingOpen = useRef(false); // tool open waits on first paint
   const awaitingDiffPaint = useRef(false); // gitDiff reveal waits on paint
 
-  // Working-tree diff: one-shot RPC via react-query, fetched only while the
-  // git-diff sheet is open. structuralSharing keeps `data` referentially stable
-  // across byte-identical refetches → the effect below no-ops (no re-tokenize).
-  // GitStatusBar invalidates ["workingTreeDiff", cwd] on git changes.
+  // The folder's diff (opencode's vcs.diff) via react-query, fetched only while
+  // the git-diff sheet is open. structuralSharing keeps `data` referentially
+  // stable across byte-identical refetches → the effect below no-ops (no
+  // re-tokenize). useGitStatus invalidates it on git changes.
   const gitDiffCwd = showing?.kind === "gitDiff" ? showing.cwd : undefined;
   const diffQuery = useWorkingTreeDiff(gitDiffCwd, {
     enabled: gitDiffCwd !== undefined && index > 0,
@@ -326,7 +326,7 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
               {diffData
                 ? `${diffData.fileCount} ${
                     diffData.fileCount === 1 ? "file" : "files"
-                  } changed${diffData.truncated ? " (truncated)" : ""}`
+                  } changed`
                 : "Working tree"}
             </Text>
           ) : (

@@ -86,19 +86,6 @@ export interface GitStatus {
 
 export type GitStatusListener = (status: GitStatus) => void;
 
-/** Result of a one-shot working-tree diff (see `GitWatcher.getDiff`). */
-export interface GitDiff {
-  /** False when `cwd` isn't a git repo (then `diff` is ""). */
-  isRepo: boolean;
-  /** Raw multi-file unified diff (tracked vs comparison ref + untracked
-   *  all-add patches). "" when there are no changes. */
-  diff: string;
-  /** Number of files present in `diff` (matches what renders). */
-  fileCount: number;
-  /** True when untracked synthesis hit a cap and dropped file(s). */
-  truncated: boolean;
-}
-
 const NON_REPO_STATUS = (project: string): GitStatus => ({
   isRepo: false,
   project,
@@ -175,14 +162,6 @@ export class GitWatcher {
       });
     this.inFlight = promise;
     return promise;
-  }
-
-  /** One-shot working-tree diff matching the `+N -M` the status bar shows:
-   *  `git diff <comparisonRef>` (default-branch merge-base, else HEAD) for
-   *  tracked changes, plus synthesized all-add patches for untracked non-binary
-   *  files. Not cached — opened on demand; shares the global git limit. */
-  async getDiff(): Promise<GitDiff> {
-    return gitLimit(() => this.fetchDiff());
   }
 
   /** Free all resources. Idempotent. */
@@ -364,45 +343,10 @@ export class GitWatcher {
     return null;
   }
 
-  /** Build the working-tree diff: tracked changes vs the same comparison ref
-   *  `fetchStatus` uses (so it matches `+N -M`), plus untracked all-add
-   *  patches (`git diff` never shows untracked, but the `+N` count includes
-   *  them). */
-  private async fetchDiff(): Promise<GitDiff> {
-    let isRepo: boolean;
-    try {
-      isRepo = await this.git.checkIsRepo();
-    } catch {
-      isRepo = false;
-    }
-    if (!isRepo) {
-      return { isRepo: false, diff: "", fileCount: 0, truncated: false };
-    }
-
-    const comparisonRef = await this.resolveComparisonRef();
-    const [tracked, untracked] = await Promise.all([
-      this.git.diff([comparisonRef]).catch(() => ""),
-      this.buildUntrackedDiff(),
-    ]);
-
-    const diff = tracked + untracked.diff;
-    return {
-      isRepo: true,
-      diff,
-      // Count file headers in the final diff — exact for both the real `git
-      // diff` output and the synthesized untracked patches, and naturally
-      // excludes untracked files the caps dropped. Content lines can't match
-      // (they're prefixed with a space/+/-), only real headers sit at col 0.
-      fileCount: (diff.match(/^diff --git /gm) ?? []).length,
-      truncated: untracked.truncated,
-    };
-  }
-
   /**
    * Walk untracked, non-binary, non-huge files (the ones `git diff` never
-   * shows) and hand each one's `\n`-normalized content to `visit`. Shared by
-   * the `+N` count AND the working-tree diff so the diff renders exactly the
-   * files the count includes — no drift between the bar number and the diff.
+   * shows) and hand each one's `\n`-normalized content to `visit`, for the
+   * `+N` count.
    *
    * Caps mirror Paseo's heuristic: max 500 files, max 256 KiB per file, skip
    * files with a null byte in their first 512 bytes (rough binary detection).
@@ -458,21 +402,6 @@ export class GitWatcher {
     });
     return additions;
   }
-
-  /** All-add unified patches for untracked text files, concatenated — the
-   *  part of the working-tree diff that `git diff` can't produce. */
-  private async buildUntrackedDiff(): Promise<{
-    diff: string;
-    truncated: boolean;
-  }> {
-    let diff = "";
-    const { truncated } = await this.forEachUntrackedTextFile(
-      (rel, content) => {
-        diff += synthesizeAddPatch(rel, content);
-      },
-    );
-    return { diff, truncated };
-  }
 }
 
 /** Watch events that never move the numbers on their own. `filename` is
@@ -495,25 +424,6 @@ export function isNoise(filename: string | Buffer | null): boolean {
     rel.startsWith("node_modules/") ||
     rel.includes("/node_modules/")
   );
-}
-
-/** Build a git-style all-add unified patch for a new (untracked) file.
- *  `content` must be `\n`-normalized. The line set mirrors
- *  countUntrackedAdditions' math so the diff aligns with the `+N` count. */
-function synthesizeAddPatch(rel: string, content: string): string {
-  const hasFinalNewline = content.endsWith("\n");
-  const body = hasFinalNewline ? content.slice(0, -1) : content;
-  const lines = body.split("\n");
-  let patch =
-    `diff --git a/${rel} b/${rel}\n` +
-    "new file mode 100644\n" +
-    "--- /dev/null\n" +
-    `+++ b/${rel}\n` +
-    `@@ -0,0 +1,${lines.length} @@\n` +
-    lines.map((l) => `+${l}`).join("\n") +
-    "\n";
-  if (!hasFinalNewline) patch += "\\ No newline at end of file\n";
-  return patch;
 }
 
 /** Sniff the first 512 bytes for a null byte. Cheap heuristic that

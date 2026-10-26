@@ -199,14 +199,14 @@ function base64urlDecodeUtf8(b64: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-// ─── Git status: snapshot (get) + live subscription (workspace info bar) ──
+// ─── Git changes: live subscription (workspace info bar) ──────────────────
 //
-// Split into two RPCs so the client maps onto the canonical react-query
-// realtime shape: `getGitStatus` is the one-shot snapshot (queryFn —
-// cached + deduped daemon-side, symmetric with `getWorkingTreeDiff`), and
-// `subscribeGitStatus` is a PURE change stream (no initial in its response)
-// that pushes `gitStatus` events as the per-cwd watcher detects changes
-// (client folds each into the query cache). Closing the DataChannel
+// Clients read a folder's repository (branch, counts, diff) from opencode's
+// `vcs`, which pushes no event for file changes. `subscribeGitStatus` is
+// the change signal: a PURE change stream (no initial in its response) of
+// `gitStatus` events as the daemon's per-cwd watcher sees the numbers move;
+// clients take each as "read again" (the status is the daemon's own count,
+// against the upstream or HEAD, not opencode's). Closing the connection
 // implicitly unsubscribes; an explicit `unsubscribeGitStatus` releases the
 // watcher ref-count early so the daemon can dispose its fs.watch handles.
 
@@ -226,29 +226,13 @@ export interface GitStatus {
   isDirty: boolean;
 }
 
-/** One-shot snapshot for `cwd`. Reuses the per-cwd watcher's cached
- *  `refresh()` (15s TTL + in-flight dedup), so firing this concurrently
- *  with `subscribeGitStatus` costs at most one git invocation. */
-export interface GetGitStatusCommand {
-  type: "getGitStatus";
-  requestId: string;
-  cwd: string;
-}
-
-export interface GetGitStatusResponse {
-  type: "getGitStatus.response";
-  requestId: string;
-  cwd: string;
-  status: GitStatus;
-}
-
 export interface SubscribeGitStatusCommand {
   type: "subscribeGitStatus";
   requestId: string;
   cwd: string;
 }
 
-/** Pure change-stream ack — NO initial snapshot (use `getGitStatus`).
+/** Pure change-stream ack — NO initial snapshot.
  *  The watcher's listener fires only on subsequent changes, delivered as
  *  `gitStatus` events. */
 export interface SubscribeGitStatusResponse {
@@ -274,38 +258,6 @@ export interface GitStatusEvent {
   type: "gitStatus";
   cwd: string;
   status: GitStatus;
-}
-
-// ─── Working-tree diff (one-shot RPC; opened from the status bar) ──────────
-//
-// Returns the raw unified diff matching the `+N -M` the status bar shows:
-// `git diff <ref>` against the SAME comparison ref the watcher uses (upstream
-// tracking ref, else HEAD) for tracked changes, PLUS synthesized all-add
-// patches for untracked non-binary files (`git diff` never sees untracked, but
-// the count includes them). `diff` is "" when the tree is clean.
-
-export interface GetWorkingTreeDiffCommand {
-  type: "getWorkingTreeDiff";
-  requestId: string;
-  cwd: string;
-}
-
-export interface GetWorkingTreeDiffResponse {
-  type: "getWorkingTreeDiff.response";
-  requestId: string;
-  cwd: string;
-  /** False when `cwd` isn't a git repository (`diff` is then ""). */
-  isRepo: boolean;
-  /** Raw multi-file unified diff (tracked vs comparison ref + untracked
-   *  all-add patches). "" when there are no changes. */
-  diff: string;
-  /** Number of files present in `diff` (tracked changed + untracked
-   *  included). Matches what renders — excludes untracked files dropped by
-   *  the caps. 0 when clean / non-repo. */
-  fileCount: number;
-  /** True when untracked synthesis hit its caps (>500 files, or a file
-   *  >256 KiB skipped) — the diff is "useful" not "exhaustive". */
-  truncated: boolean;
 }
 
 // ─── Filesystem browser (cwd picker + V0.5+ file picker) ───────────────────
@@ -610,10 +562,8 @@ export interface ServerInfoEvent {
 // tunnel (IROH_HTTP_ALPN) instead.
 
 export type Command =
-  | GetGitStatusCommand
   | SubscribeGitStatusCommand
   | UnsubscribeGitStatusCommand
-  | GetWorkingTreeDiffCommand
   | ListDirectoryCommand
   | GetFilesystemRootsCommand
   | GetPreviewsCommand
@@ -625,10 +575,8 @@ export type Command =
   | UnsubscribeForwardPortsCommand;
 
 export type Response =
-  | GetGitStatusResponse
   | SubscribeGitStatusResponse
   | UnsubscribeGitStatusResponse
-  | GetWorkingTreeDiffResponse
   | ListDirectoryResponse
   | GetFilesystemRootsResponse
   | GetPreviewsResponse

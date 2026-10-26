@@ -108,12 +108,6 @@ describe("GitWatcher", () => {
     // vs-HEAD comparison would report.
     expect(status.insertions).toBe(4);
     expect(status.deletions).toBe(0);
-
-    const { diff, fileCount } = await w.getDiff();
-    expect(fileCount).toBe(3); // feat.txt + base.txt + extra.txt
-    expect(diff).toContain("b/feat.txt");
-    expect(diff).toContain("b/base.txt");
-    expect(diff).toContain("b/extra.txt");
     w.dispose();
   });
 
@@ -301,55 +295,5 @@ describe("GitWatcher", () => {
     w.dispose();
     // subscribing after dispose throws — protects against stale callers.
     expect(() => w.subscribe(() => undefined)).toThrow();
-  });
-
-  it("getDiff: isRepo false + empty diff for a non-git dir", async () => {
-    const w = new GitWatcher(dir);
-    const { isRepo, diff } = await w.getDiff();
-    expect(isRepo).toBe(false);
-    expect(diff).toBe("");
-    w.dispose();
-  });
-
-  it("getDiff: empty diff for a clean tree", async () => {
-    initRepo(dir);
-    writeFileSync(path.join(dir, "a.txt"), "hello\n");
-    execFileSync("git", ["add", "a.txt"], { cwd: dir });
-    execFileSync("git", ["commit", "-q", "-m", "first"], { cwd: dir });
-
-    const w = new GitWatcher(dir);
-    const { isRepo, diff, fileCount } = await w.getDiff();
-    expect(isRepo).toBe(true);
-    expect(diff).toBe("");
-    expect(fileCount).toBe(0);
-    w.dispose();
-  });
-
-  it("getDiff: tracked changes + synthesized untracked all-add patch", async () => {
-    initRepo(dir);
-    writeFileSync(path.join(dir, "tracked.txt"), "x\n");
-    execFileSync("git", ["add", "tracked.txt"], { cwd: dir });
-    execFileSync("git", ["commit", "-q", "-m", "first"], { cwd: dir });
-
-    writeFileSync(path.join(dir, "tracked.txt"), "x\ny\n"); // +1 tracked line
-    writeFileSync(path.join(dir, "new.txt"), "a\nb\n"); // untracked → all-add
-
-    const w = new GitWatcher(dir);
-    const { isRepo, diff, fileCount, truncated } = await w.getDiff();
-    expect(isRepo).toBe(true);
-    expect(truncated).toBe(false);
-    // Two files in the diff: the tracked modification + the untracked add.
-    expect(fileCount).toBe(2);
-    // Tracked modification appears via `git diff`.
-    expect(diff).toContain("diff --git a/tracked.txt b/tracked.txt");
-    expect(diff).toContain("+y");
-    // Untracked file appears as a synthesized new-file patch matching the count.
-    expect(diff).toContain("diff --git a/new.txt b/new.txt");
-    expect(diff).toContain("new file mode 100644");
-    expect(diff).toContain("--- /dev/null");
-    expect(diff).toContain("+++ b/new.txt");
-    expect(diff).toContain("@@ -0,0 +1,2 @@");
-    expect(diff).toContain("+a\n+b\n");
-    w.dispose();
   });
 });

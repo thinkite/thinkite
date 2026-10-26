@@ -13,10 +13,8 @@ const inDirectory = { ...request, directory: v.string() };
 const clientFrame = v.variant("type", [
   v.object({ type: v.literal("hello"), protocolVersion: v.string() }),
   v.object({ type: v.literal("ping"), t: v.number() }),
-  v.object({ type: v.literal("getGitStatus"), ...inCwd }),
   v.object({ type: v.literal("subscribeGitStatus"), ...inCwd }),
   v.object({ type: v.literal("unsubscribeGitStatus"), ...inCwd }),
-  v.object({ type: v.literal("getWorkingTreeDiff"), ...inCwd }),
   v.object({
     type: v.literal("listDirectory"),
     ...request,

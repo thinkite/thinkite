@@ -4,12 +4,10 @@ import { parseClientFrame } from "./client-frame.ts";
 describe("parseClientFrame", () => {
   it("accepts hello, ping and every command", () => {
     for (const frame of [
-      { type: "hello", protocolVersion: "0.2.6" },
+      { type: "hello", protocolVersion: "0.2.7" },
       { type: "ping", t: 0 },
-      { type: "getGitStatus", requestId: "r", cwd: "/p" },
       { type: "subscribeGitStatus", requestId: "r", cwd: "/p" },
       { type: "unsubscribeGitStatus", requestId: "r", cwd: "/p" },
-      { type: "getWorkingTreeDiff", requestId: "r", cwd: "/p" },
       { type: "listDirectory", requestId: "r", path: "~", includeFiles: true },
       { type: "getFilesystemRoots", requestId: "r" },
       { type: "getPreviews", requestId: "r", directory: "/p" },
@@ -33,8 +31,10 @@ describe("parseClientFrame", () => {
   it("rejects missing or mistyped fields, daemon-only frames and old commands", () => {
     for (const frame of [
       { type: "hello" },
-      { type: "getGitStatus", requestId: "r" },
-      { type: "getGitStatus", requestId: "r", cwd: 1 },
+      { type: "subscribeGitStatus", requestId: "r" },
+      { type: "subscribeGitStatus", requestId: "r", cwd: 1 },
+      { type: "getGitStatus", requestId: "r", cwd: "/p" },
+      { type: "getWorkingTreeDiff", requestId: "r", cwd: "/p" },
       { type: "listDirectory", requestId: "r", path: "~", includeFiles: "yes" },
       { type: "gitStatus", cwd: "/p", status: {} },
       { type: "sendPrompt", requestId: "r", sessionId: "s", text: "x" },

@@ -1,59 +1,65 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { GitStatus } from "@thinkite/protocol";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useDaemonClient } from "@/lib/daemon-client-context";
+import { getOcClient } from "@/lib/oc";
+
+/** What the status bar shows for a folder. */
+export interface RepoStatus {
+  /** False when the folder isn't in a git repository. */
+  isRepo: boolean;
+  /** The folder's name. */
+  project: string;
+  /** Null when not a repo, or in detached-HEAD state. */
+  branch: string | null;
+  insertions: number;
+  deletions: number;
+}
+
+/** Every opencode `vcs` read of a folder: one invalidation refreshes all. */
+export const vcsKey = (cwd: string) => ["vcs", cwd] as const;
+
+const basename = (cwd: string) => cwd.split("/").filter(Boolean).at(-1) ?? cwd;
 
 /**
- * Live git status for a `cwd`, as the canonical react-query realtime shape:
- * a one-shot `getGitStatus` queryFn for the initial snapshot, plus a pure
- * change-stream subscription that folds each push into the SAME cache entry
- * via `setQueryData`. Returns the latest snapshot, or `null` while loading /
- * `cwd` is undefined / offline.
+ * The folder's repository as the desktop's Changes card shows it, from
+ * opencode's `vcs` (the branch) and `vcs.diff` in branch mode (everything
+ * the branch changed since it left the default branch, uncommitted and
+ * untracked files included), counted without context lines.
  *
- * Why `connectionStatus` gates + re-subscribes: git status is a pass-through
- * to the current Transport, NOT a facade-managed auto-resume subscription.
- * On an offline→online transport swap the old subscription is dead; gating
- * `enabled` on `connectionStatus` re-fires both the query (fresh snapshot —
- * the watcher may have missed changes while we were gone) and the subscribe
- * effect (a new listener on the new transport). Default staleTime means
- * re-enabling refetches; the daemon's 15s status cache keeps that cheap.
+ * opencode pushes no event for file changes, so the daemon's git watcher
+ * is the change signal, as on the desktop (lib/git-events): each
+ * `gitStatus` push reads every `vcs` query of the folder again (the diff
+ * sheet's too, if open). The push's own numbers are not used. It is a
+ * pass-through to the current transport, so the subscription is gated on
+ * `connectionStatus` and made again after a reconnect.
  */
-export function useGitStatus(
-  cwd: string | undefined,
-  /** Fired on each live status-change push (NOT the initial snapshot — that's
-   *  the queryFn) — a generic change hook so the caller can react (e.g.
-   *  invalidate the working-tree-diff query) WITHOUT this primitive knowing
-   *  about it. Held in a ref, so a fresh inline callback each render doesn't
-   *  re-subscribe. */
-  onChange?: (status: GitStatus) => void,
-): GitStatus | null {
+export function useGitStatus(cwd: string | undefined): RepoStatus | null {
   const { client, connectionStatus } = useDaemonClient();
   const queryClient = useQueryClient();
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
+  const online = connectionStatus === "online";
+  const enabled = cwd !== undefined && online;
 
-  const enabled = cwd !== undefined && connectionStatus === "online";
-
-  const { data } = useQuery({
-    queryKey: ["gitStatus", cwd],
-    queryFn: () => {
-      if (!cwd) throw new Error("cwd required");
-      return client.getGitStatus(cwd);
-    },
+  const info = useQuery({
+    queryKey: [...vcsKey(cwd ?? ""), "info"],
+    queryFn: () => getOcClient().vcs(cwd as string),
     enabled,
   });
+  const isRepo =
+    info.data === undefined ? undefined : info.data.provider !== undefined;
+  const counts = useQuery({
+    queryKey: [...vcsKey(cwd ?? ""), "diff", 0],
+    queryFn: () => getOcClient().vcsDiff(cwd as string, "branch", 0),
+    enabled: enabled && isRepo === true,
+  });
 
-  // Live deltas — a pure change stream (no initial; that's the queryFn). Each
-  // push folds into the same cache entry and notifies onChange.
   useEffect(() => {
-    if (!enabled || !cwd) return;
+    if (!enabled || cwd === undefined) return;
     let active = true;
     let unsub: (() => Promise<void>) | null = null;
     client
-      .subscribeGitStatus(cwd, (s) => {
-        if (!active) return;
-        queryClient.setQueryData(["gitStatus", cwd], s);
-        onChangeRef.current?.(s);
+      .subscribeGitStatus(cwd, () => {
+        if (active)
+          void queryClient.invalidateQueries({ queryKey: vcsKey(cwd) });
       })
       .then(({ unsubscribe }) => {
         if (!active) return void unsubscribe().catch(() => {});
@@ -68,5 +74,14 @@ export function useGitStatus(
     };
   }, [client, cwd, enabled, queryClient]);
 
-  return data ?? null;
+  if (cwd === undefined || info.data === undefined) return null;
+  const files = counts.data ?? [];
+  return {
+    isRepo: isRepo === true,
+    project: basename(cwd),
+    // `git rev-parse --abbrev-ref` says `heads/x` when a tag is also named x.
+    branch: info.data.branch.current?.replace(/^heads\//, "") ?? null,
+    insertions: files.reduce((n, f) => n + f.additions, 0),
+    deletions: files.reduce((n, f) => n + f.deletions, 0),
+  };
 }

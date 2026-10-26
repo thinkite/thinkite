@@ -6,7 +6,6 @@ import {
   useKeyboardScrollToEnd,
 } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
-import { useQueryClient } from "@tanstack/react-query";
 import type { ModelRef } from "@thinkite/oc-client";
 import { useIsRunning } from "@thinkite/oc-client/react";
 import { useHeaderHeight } from "expo-router/react-navigation";
@@ -140,10 +139,6 @@ export function ChatPanel({ sessionID, cwd, blocks }: ChatPanelProps) {
   // Tap the workspace status bar → open the working-tree diff in the shared
   // sheet (the provider wraps this screen, see session/[sessionID].tsx).
   const { openGitDiff } = useToolCallSheet();
-  // Git changes → invalidate the diff query so an OPEN diff sheet refetches
-  // (no-op while closed → query inactive). Wired through GitStatusBar's
-  // onStatusChange (the single gitStatus subscriber) rather than re-subscribing.
-  const queryClient = useQueryClient();
   // Composer → list bottom-inset wiring (library hook). Reports the composer
   // wrapper's measured height (GitStatusBar + InputBar) as the list's bottom
   // inset, both via the `contentInsetEndAdjustment` SharedValue (drives KCSV's
@@ -517,14 +512,6 @@ export function ChatPanel({ sessionID, cwd, blocks }: ChatPanelProps) {
             <GitStatusBar
               cwd={cwd}
               onPress={cwd ? () => openGitDiff(cwd) : undefined}
-              onStatusChange={
-                cwd
-                  ? () =>
-                      queryClient.invalidateQueries({
-                        queryKey: ["workingTreeDiff", cwd],
-                      })
-                  : undefined
-              }
             />
             <InputBar sessionID={sessionID} onSend={rawSend} />
           </View>

@@ -74,11 +74,9 @@ describe("createCommandHandler — unsupported commands", () => {
   });
 });
 
-describe("createCommandHandler — getGitStatus / subscribeGitStatus / unsubscribeGitStatus", () => {
-  // Uses a real GitWatcherRegistry against a tmp non-git directory. The
-  // happy snapshot for non-repo dirs is deterministic (`isRepo:false`,
-  // all numeric fields zero) so we can assert the wire shape without
-  // invoking the `git` binary or fs.watch.
+describe("createCommandHandler — subscribeGitStatus / unsubscribeGitStatus", () => {
+  // Uses a real GitWatcherRegistry against a tmp non-git directory, so the
+  // wire shape is asserted without a repository.
   let cwd: string;
   let registry: GitWatcherRegistry;
 
@@ -92,35 +90,6 @@ describe("createCommandHandler — getGitStatus / subscribeGitStatus / unsubscri
     registry.disposeAll();
     rmSync(cwd, { recursive: true, force: true });
   }
-
-  it("getGitStatus replies with a non-repo snapshot for a plain directory", async () => {
-    const handler = createCommandHandler(makeGitDeps());
-    const { ctx, sent } = makeCtx();
-    await handler(
-      { type: "getGitStatus", requestId: "g0", cwd } satisfies Command,
-      ctx,
-    );
-    expect(sent).toEqual([
-      {
-        type: "getGitStatus.response",
-        requestId: "g0",
-        cwd,
-        status: {
-          isRepo: false,
-          project: path.basename(cwd),
-          branch: null,
-          ahead: 0,
-          behind: 0,
-          insertions: 0,
-          deletions: 0,
-          isDirty: false,
-        },
-      },
-    ]);
-    // Snapshot-only never starts a watcher (no fs.watch leak).
-    expect(registry.getOrCreate(cwd).listenerCount()).toBe(0);
-    cleanup();
-  });
 
   it("subscribeGitStatus acks WITHOUT an initial snapshot", async () => {
     const handler = createCommandHandler(makeGitDeps());

@@ -1,33 +1,46 @@
 import { useQuery } from "@tanstack/react-query";
-import { useDaemonClient } from "@/lib/daemon-client-context";
+import { getOcClient } from "@/lib/oc";
+import { vcsKey } from "./use-git-status";
 
 /**
- * Working-tree diff for `cwd` (the status bar's tap target), as a one-shot RPC
- * wrapped in react-query — same shape as `use-list-directory`. NOT a TanStack
- * DB collection: the diff is a whole-snapshot, not incrementally-synced data.
+ * The folder's diff for the status bar's tap target: opencode's `vcs.diff`
+ * in branch mode, the same changes the bar counts and the desktop's diff
+ * panel shows, one patch per file joined into one unified diff.
  *
- * `enabled` gates the fetch to when the diff sheet is open — the diff is
- * heavier than the always-on `+N -M` status subscription, so we don't pull it
- * for every session screen.
+ * `enabled` gates the fetch to when the diff sheet is open: the diff is
+ * heavier than the bar's counts, so it isn't pulled for every session
+ * screen.
  *
- * staleTime: Infinity — the diff is a pure function of the working tree, and
- * the live `gitStatus` subscription is the change signal: `GitStatusBar`
- * invalidates `["workingTreeDiff", cwd]` whenever status changes, which
- * refetches iff this query is active (sheet open). Closed → marked stale →
- * fresh on next open. structuralSharing (on by default) keeps `data`
- * referentially stable across byte-identical refetches, so an unchanged
- * refetch never re-renders / re-tokenizes the webview.
+ * staleTime: Infinity: `useGitStatus` invalidates every `vcs` query of the
+ * folder when the daemon's git watcher sees a change, which refetches this
+ * one iff it is active (sheet open). Closed → marked stale → fresh on next
+ * open. structuralSharing (on by default) keeps `data` referentially stable
+ * across byte-identical refetches, so an unchanged refetch never
+ * re-renders / re-tokenizes the webview.
  */
 export function useWorkingTreeDiff(
   cwd: string | undefined,
   opts: { enabled: boolean },
 ) {
-  const { client } = useDaemonClient();
   return useQuery({
-    queryKey: ["workingTreeDiff", cwd],
-    queryFn: () => {
+    queryKey: [...vcsKey(cwd ?? ""), "diff", "full"],
+    queryFn: async (): Promise<{
+      isRepo: boolean;
+      diff: string;
+      fileCount: number;
+    }> => {
       if (!cwd) throw new Error("cwd required");
-      return client.getWorkingTreeDiff(cwd);
+      const oc = getOcClient();
+      if ((await oc.vcs(cwd)).provider === undefined)
+        return { isRepo: false, diff: "", fileCount: 0 };
+      // Three lines of context, as `git diff` gives: opencode's default is
+      // the whole file, too much to render on a phone (a lockfile).
+      const files = await oc.vcsDiff(cwd, "branch", 3);
+      return {
+        isRepo: true,
+        diff: files.map((f) => f.patch).join("\n"),
+        fileCount: files.length,
+      };
     },
     enabled: opts.enabled && cwd !== undefined,
     staleTime: Number.POSITIVE_INFINITY,
