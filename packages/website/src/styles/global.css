@@ -388,6 +388,19 @@ html:not([data-platform]) [data-show-on~="desktop"] {
   font-weight: 600;
   color: var(--ink);
 }
+/* The one thing few remote apps do: the Mac's own localhost, on the phone. */
+.hero-pitch {
+  margin: 20px 0 0;
+  max-width: 28em;
+  font-size: 17px;
+  line-height: 1.5;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+.hero-pitch code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.92em;
+}
 .hero-actions {
   display: flex;
   justify-content: center;
@@ -593,6 +606,7 @@ html:not([data-platform]) [data-show-on~="desktop"] {
     text-align: center;
   }
   .hero-tagline,
+  .hero-pitch,
   .hero-models {
     margin-inline: auto;
   }
