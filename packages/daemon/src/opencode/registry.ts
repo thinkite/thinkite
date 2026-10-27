@@ -41,9 +41,11 @@ export interface DiscoveredOpencode extends OpencodeConnection {
 }
 
 /**
- * Version gate. Thinkite speaks the opencode 2.1 API only (the client is
- * pinned to 2.1.2; 2.0 had `/api/health` where 2.1 has `/api/info`): stable
- * releases from 2.1.0, plus the `0.0.0-beta-N` builds the
+ * Version gate. Thinkite speaks the opencode API from 2.1 on (2.0 had
+ * `/api/health` where 2.1 has `/api/info`); there is no upper bound, since
+ * the client reads responses as plain JSON and newer services only add
+ * fields and events. Accepted: stable releases from 2.1.0, plus the
+ * `0.0.0-beta-N` builds the
  * Beta desktop app ships (fast-forward snapshots of the `v2` trunk, so a
  * beta is never older than 2.0.0 in API terms) and `0.0.0-dev` source
  * builds. A 1.x service (`opencode-ai` npm, GitHub Releases, brew) never
