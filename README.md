@@ -2,7 +2,7 @@
 
 > A desktop and mobile client for opencode — drive the agents on your Mac from your phone, peer-to-peer.
 
-https://github.com/user-attachments/assets/e5cea7d4-0bc9-4265-8a14-d03146bf4194
+https://github.com/user-attachments/assets/c266942d-6346-43e7-a196-557172746b01
 
 <p align="center">
   <a href="https://thinkite.dev/mac"><img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS-000000?style=for-the-badge&logo=apple&logoColor=white" /></a>
@@ -24,6 +24,7 @@ https://github.com/user-attachments/assets/e5cea7d4-0bc9-4265-8a14-d03146bf4194
 - **One session, every client** — Thinkite talks to the same local opencode service as OpenCode Desktop and the TUI, so a turn started in any of them streams live in all the others.
 - **Start and steer from your phone** — pick any folder on your Mac, start a session, and send follow-ups while the agent is still working.
 - **Answer the agent from anywhere** — questions and permission requests appear as cards on the phone and the desktop; answer from whichever is closer.
+- **Preview your Mac's localhost on your phone** — when the agent starts a dev server, tap the `localhost` link in its reply and the page opens on your iPhone at the same address, over the same encrypted link, while the app is open.
 - **Peer-to-peer & private** — the phone dials your Mac by its public key over end-to-end encrypted QUIC, roaming between Wi-Fi and cellular. A public relay is used only when NAT blocks a direct path, and it only ever forwards encrypted bytes.
 - **Any model** — use any provider opencode supports; add one with an API key in Settings, and pick the model and reasoning effort per session on either device.
 - **A full desktop workspace** — transcript, multiple terminals per session, the branch diff, a built-in browser, session info cards (environment, context, changes, cost including subagents), subagents that open as sessions of their own, and revert / redo / fork for prompts.
