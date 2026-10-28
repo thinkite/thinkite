@@ -195,7 +195,13 @@ export function opencodeOneVersion(output: string): string | null {
   return version?.[1] === "1" ? version[0] : null;
 }
 
-async function startService(path: string): Promise<void> {
+/** The opencode 2 binary and the environment to run it in: the user's
+ *  shell's, with this process's XDG dirs. Throws when opencode is missing
+ *  or is opencode 1. */
+export async function opencodeCommand(): Promise<{
+  binary: string;
+  env: Record<string, string>;
+}> {
   const env = await shellEnvironment();
   // This process's own XDG dirs win (an isolated test run sets them); the
   // registry has to be where this daemon reads it either way. `env` is laid
@@ -228,11 +234,16 @@ async function startService(path: string): Promise<void> {
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) overlay[key] = value;
   }
+  return { binary, env: overlay };
+}
+
+async function startService(path: string): Promise<void> {
+  const { binary, env } = await opencodeCommand();
   await Service.ensure({
     file: path,
     version: () => true,
     command: [binary, "serve", "--service"],
-    env: overlay,
+    env,
   });
 }
 

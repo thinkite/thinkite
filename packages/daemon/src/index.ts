@@ -33,6 +33,7 @@ export type { DaemonLock } from "./daemon-lock.ts";
 // starting.
 export { readActiveDaemonLock } from "./daemon-lock.ts";
 export { resolveThinkiteHome } from "./home.ts";
+export { runPluginCommand } from "./opencode/plugins.ts";
 export type { OpencodeConnection } from "./opencode/registry.ts";
 export { startsTask } from "./opencode/service.ts";
 export type {

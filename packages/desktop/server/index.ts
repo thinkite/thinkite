@@ -22,6 +22,7 @@ import {
   type PreviewSnapshot,
   readActiveDaemonLock,
   resolveThinkiteHome,
+  runPluginCommand,
   start as startDaemon,
   startsTask,
 } from "@thinkite/daemon";
@@ -273,6 +274,24 @@ const server = createServer(async (req, res) => {
       }
       try {
         await openIn(url.searchParams.get("app") ?? "", directory);
+        res.writeHead(204);
+        res.end();
+      } catch (e) {
+        res.writeHead(400, { "content-type": "text/plain" });
+        res.end(e instanceof Error ? e.message : String(e));
+      }
+      return;
+    }
+    // Settings › Extensions › Plugins: install or uninstall a plugin with
+    // the opencode CLI (the server has no route for either); the service
+    // reloads its plugins when the CLI rewrites opencode.json.
+    const plugin = /^\/api\/plugins\/(add|remove)$/.exec(url.pathname);
+    if (plugin && req.method === "POST") {
+      try {
+        await runPluginCommand(
+          plugin[1] as "add" | "remove",
+          url.searchParams.get("spec") ?? "",
+        );
         res.writeHead(204);
         res.end();
       } catch (e) {

@@ -1,4 +1,3 @@
-import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -47,6 +46,7 @@ import {
   useUpdate,
 } from "../../lib/update";
 import { isVisible, newestOfFamilies, useModels } from "../ModelPicker";
+import { Extensions } from "./Extensions";
 import { Pairing } from "./Pairing";
 import { Providers } from "./Providers";
 import { Note, PageTitle, Row, Section, useLoad } from "./parts";
@@ -55,8 +55,8 @@ import { Note, PageTitle, Row, Section, useLoad } from "./parts";
 // opencode desktop's pages. Only pages that do something are here: the
 // color mode, connecting providers and managing their accounts, which
 // models the picker lists (client-side, like opencode desktop), the
-// server's terminal shell, and read-only views of the service's MCP
-// servers and skills.
+// server's terminal shell, and the service's plugins (installed and
+// removed here), MCP servers and skills.
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 
@@ -162,47 +162,6 @@ function Models() {
           </Section>
         ))
       )}
-    </>
-  );
-}
-
-function Extensions() {
-  const mcp = useLoad(["mcp"], () =>
-    ocClient.raw.mcp.list().then((r) => r.data),
-  );
-  const skills = useLoad(["skills"], () =>
-    ocClient.raw.skill.list().then((r) => r.data),
-  );
-  return (
-    <>
-      <Section title="MCP servers">
-        {mcp.error ? (
-          <Note text={mcp.error} />
-        ) : mcp.data === null ? (
-          <Note text="Loading…" />
-        ) : mcp.data.length === 0 ? (
-          <Note text="No MCP servers" />
-        ) : (
-          mcp.data.map((s) => (
-            <Row key={s.name} title={s.name}>
-              <Badge label={s.status.status} />
-            </Row>
-          ))
-        )}
-      </Section>
-      <Section title="Skills">
-        {skills.error ? (
-          <Note text={skills.error} />
-        ) : skills.data === null ? (
-          <Note text="Loading…" />
-        ) : skills.data.length === 0 ? (
-          <Note text="No skills" />
-        ) : (
-          skills.data.map((s) => (
-            <Row key={s.id} title={s.name} description={s.description} />
-          ))
-        )}
-      </Section>
     </>
   );
 }
@@ -401,7 +360,7 @@ const PAGES: {
   {
     id: "extensions",
     label: "Extensions",
-    description: "MCP servers and skills on the opencode service",
+    description: "Plugins, MCP servers and skills on the opencode service",
     icon: PuzzleIcon,
     Page: Extensions,
   },

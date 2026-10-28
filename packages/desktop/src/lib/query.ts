@@ -39,6 +39,21 @@ export const catalogKeys = {
 export const invalidateCatalog = () =>
   queryClient.invalidateQueries({ queryKey: catalogKeys.all });
 
+/** Keys of Settings › Extensions' reads, all under `["extensions"]`: read
+ *  again on the bus's plugin, config, MCP and skill events (lib/oc). */
+export const extensionKeys = {
+  all: ["extensions"] as const,
+  plugins: ["extensions", "plugins"] as const,
+  mcp: ["extensions", "mcp"] as const,
+  skills: ["extensions", "skills"] as const,
+  /** Asks the npm registry, so it stays out of `all`: read on opening the
+   *  page and after an install or update, not on every config change. */
+  pluginUpdates: ["plugin-updates"] as const,
+};
+
+export const invalidateExtensions = () =>
+  queryClient.invalidateQueries({ queryKey: extensionKeys.all });
+
 /** The attached service's identity and version: the sidebar's footer and
  *  Settings share one read. */
 export const serviceInfoKey = ["service", "info"] as const;
