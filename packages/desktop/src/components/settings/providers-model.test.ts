@@ -6,7 +6,9 @@ import {
   connectedOf,
   envDetected,
   envNames,
+  externalMethod,
   keyMethod,
+  loginProblem,
   sourceLabel,
 } from "./providers-model";
 
@@ -43,6 +45,43 @@ describe("providers model", () => {
     });
     expect(keyMethod(envOnly)).toEqual({ type: "key" });
     expect(envNames(envOnly)).toEqual(["GITHUB_TOKEN"]);
+  });
+
+  it("treats a provider with only an external login as keyless", () => {
+    const login = {
+      id: "claude-login",
+      type: "external",
+      label: "Claude Code login (claude auth login)",
+    } as const;
+    const claude = integration("claude-agent", "Claude Agent", {
+      methods: [login],
+    });
+    expect(externalMethod(claude)).toEqual(login);
+    expect(externalMethod(integration("openai", "OpenAI"))).toBeNull();
+    expect(
+      externalMethod(
+        integration("both", "Both", { methods: [{ type: "key" }, login] }),
+      ),
+    ).toBeNull();
+  });
+
+  it("reads the problem off the active login", () => {
+    const signedOut = {
+      type: "credential",
+      id: "cred_c",
+      label: "Claude",
+      method: "external",
+      status: {
+        status: "needs_auth",
+        message: "Claude Code is not logged in.",
+      },
+    } as const;
+    const claude = integration("claude-agent", "Claude Agent", {
+      connections: [signedOut],
+    });
+    expect(loginProblem(claude)).toBe("Claude Code is not logged in.");
+    expect(sourceLabel(claude)).toBe("External");
+    expect(loginProblem(integration("x", "X"))).toBeNull();
   });
 
   it("knows when the key comes from the environment", () => {

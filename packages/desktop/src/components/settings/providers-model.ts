@@ -8,6 +8,7 @@ import type { IntegrationInfo } from "@thinkite/oc-client";
 
 type Method = IntegrationInfo["methods"][number];
 export type KeyMethod = Extract<Method, { type: "key" }>;
+type ExternalMethod = Extract<Method, { type: "external" }>;
 type Connection = IntegrationInfo["connections"][number];
 export type Account = Extract<Connection, { type: "credential" }>;
 
@@ -16,6 +17,7 @@ export const POPULAR = [
   "opencode-go",
   "opencode",
   "anthropic",
+  "claude-agent",
   "github-copilot",
   "openai",
   "google",
@@ -31,6 +33,24 @@ export function keyMethod(integration: IntegrationInfo): KeyMethod {
       type: "key",
     }
   );
+}
+
+/** The login outside opencode the provider uses instead of an API key, as
+ *  Claude Agent uses Claude Code's; null for a provider that takes a key. */
+export function externalMethod(
+  integration: IntegrationInfo,
+): ExternalMethod | null {
+  if (integration.methods.some((m) => m.type === "key")) return null;
+  return (
+    integration.methods.find(
+      (m): m is ExternalMethod => m.type === "external",
+    ) ?? null
+  );
+}
+
+/** What the service's latest check of the active login found wrong. */
+export function loginProblem(integration: IntegrationInfo): string | null {
+  return integration.connections[0]?.status?.message ?? null;
 }
 
 /** Environment variables the service reads the provider's key from. */

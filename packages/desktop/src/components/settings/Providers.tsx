@@ -20,7 +20,9 @@ import {
   connectedOf,
   envDetected,
   envNames,
+  externalMethod,
   keyMethod,
+  loginProblem,
   sourceLabel,
 } from "./providers-model";
 
@@ -28,16 +30,59 @@ import {
 // providers configured now, each with Edit (a new API key, or delete it),
 // and "Add model provider" — pick a provider from the service's catalog
 // and paste its key, or leave the key empty when the opencode service
-// finds one in its environment. Browser sign-ins (OpenAI's, Copilot's)
-// are left to opencode's own clients; accounts made there still list
-// here and can be replaced with a key or deleted. Everything reads the
-// service's integration list again whenever the bus says providers,
-// accounts or models changed (the catalog queries, lib/query).
+// finds one in its environment. A provider with a login of its own outside
+// opencode (Claude Agent) connects with a button instead. Browser sign-ins
+// (OpenAI's, Copilot's) are left to opencode's own clients; accounts made
+// there still list here and can be replaced with a key or deleted.
+// Everything reads the service's integration list again whenever the bus
+// says providers, accounts or models changed (the catalog queries,
+// lib/query).
 
 const messageOf = (err: unknown) =>
   err instanceof Error ? err.message : String(err);
 
 const refresh = () => void invalidateCatalog();
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const integrationOf = async (id: string) =>
+  (await ocClient.listIntegrations()).find((i) => i.id === id);
+
+/**
+ * Connect a provider through its login outside opencode; rejects with what
+ * is wrong with that login. Connecting only records the choice and starts
+ * the service's check, which can take a minute (30 s for the program to
+ * start, 30 more to read its models). The models show up before a problem
+ * does, so a problem is looked for once more after them.
+ */
+async function connectLogin(integrationID: string, methodID: string) {
+  const before = await integrationOf(integrationID);
+  await ocClient.connectExternal(integrationID, methodID);
+  // Each connect saves a new credential; this one replaces the others.
+  await Promise.all(
+    (before ? accountsOf(before) : []).map((a) =>
+      ocClient.removeCredential(a.id),
+    ),
+  );
+  const problem = async () => {
+    const current = await integrationOf(integrationID);
+    return current ? loginProblem(current) : null;
+  };
+  const deadline = Date.now() + 65_000;
+  while (Date.now() < deadline) {
+    const found = await problem();
+    if (found !== null) throw new Error(found);
+    const models = await ocClient.listModels();
+    if (models.some((m) => m.providerID === integrationID)) {
+      await sleep(1_000);
+      const late = await problem();
+      if (late !== null) throw new Error(late);
+      return;
+    }
+    await sleep(500);
+  }
+  throw new Error("The login check timed out. Try again.");
+}
 
 /** Where the key can come from besides the field, for its placeholder and
  *  the hint under it. */
@@ -84,10 +129,11 @@ function ProviderEditor({
   onDone: () => void;
 }) {
   const showToast = useToast();
-  const [pickedID, setPickedID] = useState<string | null>(null);
-  const target =
-    integration ?? addable.find((i) => i.id === pickedID) ?? undefined;
+  // Held whole: connecting a login moves it out of `addable` mid-check.
+  const [picked, setPicked] = useState<IntegrationInfo | null>(null);
+  const target = integration ?? picked ?? undefined;
   const method = target ? keyMethod(target) : undefined;
+  const external = target ? externalMethod(target) : null;
   const fields = (method?.form ?? []) as Field[];
   const [key, setKey] = useState("");
   const [answer, setAnswer] = useState<FormAnswer>(() => initialAnswer(fields));
@@ -99,16 +145,41 @@ function ProviderEditor({
   const accounts = target ? accountsOf(target) : [];
 
   const pick = (id: string) => {
-    setPickedID(id);
     const next = addable.find((i) => i.id === id);
+    setPicked(next ?? null);
     setAnswer(
       next ? initialAnswer((keyMethod(next).form ?? []) as Field[]) : {},
     );
     setError(null);
   };
 
+  const connect = (name: string, integrationID: string, methodID: string) => {
+    setBusy(true);
+    setError(null);
+    connectLogin(integrationID, methodID)
+      .then(() => {
+        refresh();
+        showToast({ body: `Connected ${name}.`, isAutoHide: true });
+        onDone();
+      })
+      .catch((err: unknown) => {
+        refresh();
+        // A new login is in the list now, showing the problem; Edit retries.
+        if (integration === null) {
+          onDone();
+          return;
+        }
+        setError(messageOf(err));
+        setBusy(false);
+      });
+  };
+
   const save = () => {
     if (busy || target === undefined) return;
+    if (external !== null) {
+      connect(target.name, target.id, external.id);
+      return;
+    }
     const value = key.trim();
     if (value === "") {
       // Nothing new: an edit keeps what is stored.
@@ -178,12 +249,26 @@ function ProviderEditor({
             emptySearchText="No providers found"
             placeholder="Choose a provider"
             options={addable.map((i) => ({ value: i.id, label: i.name }))}
-            {...(pickedID !== null ? { value: pickedID } : {})}
+            {...(picked !== null ? { value: picked.id } : {})}
             onChange={pick}
           />
         </>
       ) : null}
-      {target !== undefined ? (
+      {target !== undefined && external !== null ? (
+        <div className="flex flex-col gap-1.5">
+          <Text size="sm" color="secondary">
+            Uses {external.label}, not an API key. Sign in on this Mac first,
+            then connect.
+          </Text>
+          {error !== null ? (
+            <span className="text-[var(--color-text-red)]">
+              <Text size="sm" color="inherit">
+                {error}
+              </Text>
+            </span>
+          ) : null}
+        </div>
+      ) : target !== undefined ? (
         <>
           <div className="flex flex-col gap-1.5">
             <TextInput
@@ -241,7 +326,13 @@ function ProviderEditor({
           onClick={onDone}
         />
         <Button
-          label="Save"
+          label={
+            external === null
+              ? "Save"
+              : accounts.length > 0
+                ? "Check again"
+                : "Connect"
+          }
           variant="primary"
           size="sm"
           isLoading={busy}
@@ -255,9 +346,11 @@ function ProviderEditor({
           onOpenChange={setConfirmDelete}
           title={`Delete ${target.name}?`}
           description={
-            detected !== null
-              ? `Its stored API key is removed. ${target.name} stays connected through ${detected}.`
-              : "Its stored API key is removed, and its models are no longer available."
+            external !== null
+              ? "Its models are no longer available. The login itself stays as it is."
+              : detected !== null
+                ? `Its stored API key is removed. ${target.name} stays connected through ${detected}.`
+                : "Its stored API key is removed, and its models are no longer available."
           }
           actionLabel={`Delete ${target.name}`}
           isActionLoading={busy}
@@ -288,32 +381,46 @@ export function Providers() {
         ) : connected.length === 0 ? (
           <Note text="No providers yet. Add one below to use its models." />
         ) : (
-          connected.map((integration) => (
-            <div key={integration.id} className="flex flex-col">
-              <div className="flex min-h-12 items-center gap-2 px-4 py-2.5">
-                <Text size="sm">{integration.name}</Text>
-                <StatusDot variant="success" label="Configured" />
-                <Badge label={sourceLabel(integration)} />
-                <span className="flex-1" />
-                {editing !== integration.id ? (
-                  <Button
-                    label="Edit"
-                    variant="secondary"
-                    size="sm"
-                    aria-label={`Edit ${integration.name}`}
-                    onClick={() => setEditing(integration.id)}
+          connected.map((integration) => {
+            const problem = loginProblem(integration);
+            return (
+              <div key={integration.id} className="flex flex-col">
+                <div className="flex min-h-12 items-center gap-2 px-4 py-2.5">
+                  <Text size="sm">{integration.name}</Text>
+                  {problem !== null ? (
+                    <StatusDot variant="error" label="Needs sign-in" />
+                  ) : (
+                    <StatusDot variant="success" label="Configured" />
+                  )}
+                  <Badge label={sourceLabel(integration)} />
+                  <span className="flex-1" />
+                  {editing !== integration.id ? (
+                    <Button
+                      label="Edit"
+                      variant="secondary"
+                      size="sm"
+                      aria-label={`Edit ${integration.name}`}
+                      onClick={() => setEditing(integration.id)}
+                    />
+                  ) : null}
+                </div>
+                {problem !== null && editing !== integration.id ? (
+                  <div className="px-4 pb-2.5">
+                    <Text size="sm" color="secondary">
+                      {problem}
+                    </Text>
+                  </div>
+                ) : null}
+                {editing === integration.id ? (
+                  <ProviderEditor
+                    integration={integration}
+                    addable={addable}
+                    onDone={() => setEditing(null)}
                   />
                 ) : null}
               </div>
-              {editing === integration.id ? (
-                <ProviderEditor
-                  integration={integration}
-                  addable={addable}
-                  onDone={() => setEditing(null)}
-                />
-              ) : null}
-            </div>
-          ))
+            );
+          })
         )}
       </Section>
       {editing === "add" ? (
