@@ -39,8 +39,8 @@ import { ToolCallSheetProvider } from "@/components/transcript/tool-call-sheet";
 export default function StackLayout() {
   return (
     // ToolCallSheetProvider lives HERE, above the Stack, rather than inside the
-    // detail screen — so the single resident Pierre webview (warm shiki + the
-    // off-thread highlight worker pool) and the shared BottomSheet PERSIST across
+    // detail screen — so the single resident Pierre webview (warm highlighter +
+    // the off-thread highlight worker pool) and the shared BottomSheet PERSIST across
     // session switches. Switching sessions is a `router.replace` within this
     // Stack: if the provider were per-screen it'd unmount + cold-reinit the
     // webview/workers on every switch. (Trade-off: it also mounts on the

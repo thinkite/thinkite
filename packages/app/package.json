@@ -10,7 +10,7 @@
     "web": "expo start --web",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",
-    "eas-build-post-install": "node scripts/sync-pierre-worker.mjs",
+    "eas-build-post-install": "bun scripts/sync-pierre-worker.mjs",
     "ota:preview": "APP_VARIANT=preview EXPO_NO_BUNDLE_SPLITTING=1 eas update --channel preview --environment preview",
     "ota:production": "APP_VARIANT=production EXPO_NO_BUNDLE_SPLITTING=1 eas update --channel production --environment production"
   },

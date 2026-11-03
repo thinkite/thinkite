@@ -1,3 +1,4 @@
+const path = require("node:path");
 const { getDefaultConfig } = require("expo/metro-config");
 const { withUniwindConfig } = require("uniwind/metro");
 
@@ -17,6 +18,30 @@ config.cacheVersion = __dirname;
 // JS module to bundle). The DOM webview fetches its URI → Blob → `new Worker`.
 // See scripts/sync-pierre-worker.mjs.
 config.resolver.assetExts.push("pwt");
+
+// Pierre diffs ships two highlighter backends and picks one at runtime with
+// dynamic imports. pierre-view.tsx runs `preferredHighlighter: "highlights"`,
+// so the shiki backend never loads — but Metro still bundled it into the DOM
+// component's www.bundle with every shiki grammar and theme (242 of 325
+// files, ~10.8 of 13.3 MB), and hoisted the grammars several languages embed
+// into the __common chunk the webview loads at startup (3.85 MB, all shiki).
+// For the web (DOM component) bundle only, the shiki backend, its TextMate
+// theme catalog and any shiki import from inside diffs resolve to a module
+// that fails on import. The worker is built the same way by
+// scripts/sync-pierre-worker.mjs.
+const PIERRE_SHIKI_STUB = path.join(__dirname, "pierre-shiki-stub.js");
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (
+    platform === "web" &&
+    context.originModulePath.includes("/@pierre/diffs/dist/") &&
+    (moduleName === "./backends/shiki.js" ||
+      moduleName === "@pierre/theming/themes" ||
+      /^(shiki|@shikijs\/)/.test(moduleName))
+  ) {
+    return { type: "sourceFile", filePath: PIERRE_SHIKI_STUB };
+  }
+  return context.resolveRequest(context, moduleName, platform);
+};
 
 module.exports = withUniwindConfig(config, {
   // relative path to your global.css file (from previous step)

@@ -14,7 +14,7 @@ import { ErrorBoundary } from "react-error-boundary";
 import { JETBRAINS_MONO_CSS } from "./jetbrains-mono-font";
 
 /**
- * Tool-detail renderer: `@pierre/diffs` (shiki) inside an `@expo/dom-webview`
+ * Tool-detail renderer: `@pierre/diffs` (highlights) inside an `@expo/dom-webview`
  * WebView. Replaces the react-native-diffs (`DiffsView` / `MarkdownView`) path
  * for `bash` / `read` / `edit` / `write` / `grep` / `glob` detail bodies.
  *
@@ -24,10 +24,10 @@ import { JETBRAINS_MONO_CSS } from "./jetbrains-mono-font";
  *
  * Hosted as a SINGLE resident, pre-warmed instance in `tool-call-sheet.tsx`:
  * the sheet keeps it mounted across opens (SWM bottom-sheet keeps collapsed
- * children mounted), so shiki stays warm and opens are fast. `onReady` gates
- * the sheet open until the new payload has painted (no flash of the previous
- * one); `collapsed` scrolls back to top when the sheet closes (the resident
- * webview otherwise keeps the prior payload's scroll position).
+ * children mounted), so the highlighter stays warm and opens are fast.
+ * `onReady` gates the sheet open until the new payload has painted (no flash
+ * of the previous one); `collapsed` scrolls back to top when the sheet closes
+ * (the resident webview otherwise keeps the prior payload's scroll position).
  *
  * IMPORTANT — `content` MUST arrive `encodeURIComponent`-encoded. `@expo/dom-
  * webview@56.0.4` injects the initialProps JSON inside a JS *template literal*
@@ -55,7 +55,7 @@ ${JETBRAINS_MONO_CSS}
 #root { flex-direction: column; align-items: stretch; height: 100%; }
 `;
 
-// Open anyway if the highlighter never loads, so a wedged shiki can't hang the
+// Open anyway if the highlighter never loads, so a wedged highlighter can't hang the
 // sheet open. onPostRender (below) is the fast path; this is only a backstop.
 const FALLBACK_MS = 4000;
 
@@ -66,7 +66,7 @@ export interface PierreViewProps {
   kind: "diff" | "code" | "multifile";
   /** encodeURIComponent-encoded (see @expo/dom-webview bug note above). */
   content: string;
-  /** filename — drives shiki language inference for kind="code". Still used
+  /** filename — drives language inference for kind="code". Still used
    *  for language even when the header is hidden. */
   name?: string;
   scheme: "light" | "dark";
@@ -94,8 +94,9 @@ export interface PierreViewProps {
    *  internal CSS scroll container doesn't, so we add it explicitly. */
   bottomInset?: number;
   /** Fetchable URL of Pierre's `worker-portable.js` (a Metro asset, passed from
-   *  RN). PierreView fetches it → Blob → `new Worker` to run shiki highlighting
-   *  off the main thread (Pierre's VS Code-webview worker-pool pattern) so
+   *  RN, built by scripts/sync-pierre-worker.mjs). PierreView fetches it →
+   *  Blob → `new Worker` to run highlighting off the main thread (Pierre's
+   *  VS Code-webview worker-pool pattern) so
    *  tokenization doesn't block scroll. Until it loads, highlighting runs on the
    *  main thread (disableWorkerPool). */
   workerUri?: string;
@@ -199,7 +200,7 @@ export default function PierreView({
   }, [decoded, fireReady]);
 
   // ── Off-thread highlight pool ─────────────────────────────────────────────
-  // Pierre tokenizes (shiki) on a Web Worker so it doesn't block scroll. Following
+  // Pierre tokenizes on a Web Worker so it doesn't block scroll. Following
   // Pierre's VS Code-webview pattern: the host passes a fetchable `workerUri`
   // (worker-portable.js as a Metro asset); we fetch it → Blob → blob URL →
   // `new Worker`. Until the blob URL is ready the components run main-thread

@@ -110,7 +110,7 @@ interface WebviewPayload {
   noLineNumbers?: boolean;
 }
 
-// Pre-warm payload: a tiny file so shiki loads before the first real open.
+// Pre-warm payload: a tiny file so the highlighter loads before the first real open.
 const WARMUP: WebviewPayload = {
   kind: "code",
   content: "// warm\n",
@@ -221,7 +221,7 @@ export function ToolCallSheetProvider({ children }: { children: ReactNode }) {
     setIndex(0); // keep `showing` + `webview` so re-opening is warm
   }, []);
 
-  // Fired by the webview once shiki has loaded and the payload has painted.
+  // Fired by the webview once the highlighter has loaded and the payload has painted.
   const onReady = useCallback(() => {
     renderedContent.current = pendingContent.current;
     if (awaitingDiffPaint.current) {
