@@ -6,7 +6,7 @@ import {
   ChatMessageMetadata,
   ChatSystemMessage,
 } from "@astryxdesign/core/Chat";
-import { CodeBlock } from "@astryxdesign/core/CodeBlock";
+import { CodeBlock, type CodeLanguage } from "@astryxdesign/core/CodeBlock";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Lightbox } from "@astryxdesign/core/Lightbox";
 import { Markdown } from "@astryxdesign/core/Markdown";
@@ -42,7 +42,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { highlightTokens } from "../lib/highlight";
+import { codeLanguage, MARKDOWN_CODE_LANGUAGES } from "../lib/highlight";
 import { ocStore } from "../lib/oc";
 import { modelName, useModels } from "./ModelPicker";
 import {
@@ -84,38 +84,16 @@ import {
 // OFF so row-internal state never leaks between rows.
 
 /**
- * File extension → highlighter language for a diff. Highlights takes most
- * extensions as language aliases (ts, py, rs, kt, yml…); the rest render
- * plain.
+ * File extension → CodeBlock language for a diff. Highlights takes most
+ * extensions as language aliases (ts, py, rs, kt, yml…); the rest go to
+ * Astryx's own grammars or render plain.
  */
-function languageOf(file: string): string | undefined {
+function languageOf(file: string): string | CodeLanguage | undefined {
   const dot = file.lastIndexOf(".");
-  return dot === -1 ? undefined : file.slice(dot + 1).toLowerCase();
+  return dot === -1
+    ? undefined
+    : codeLanguage(file.slice(dot + 1).toLowerCase());
 }
-
-/**
- * A fenced code block in the agent's markdown, as Markdown draws it by
- * default (wrapped, collapsible, `diff` fences as diffs) but tokenized by
- * highlights. Markdown hands a custom renderer only the fence's first word,
- * so `diff-tsx` arrives as `diff` and renders as a plain diff.
- */
-function CodeFence({ code, language }: { code: string; language?: string }) {
-  const isDiff = language === "diff";
-  return (
-    <div className="my-3 first:mt-0 last:mb-0">
-      <CodeBlock
-        code={code}
-        isDiff={isDiff}
-        isCollapsible
-        isWrapped
-        tokenizer={highlightTokens}
-        {...(!isDiff && language !== undefined ? { language } : {})}
-      />
-    </div>
-  );
-}
-
-const MARKDOWN_COMPONENTS = { code: CodeFence };
 
 /**
  * opencode's disclosure: the label with a small ▾ right after it (not at
@@ -222,8 +200,7 @@ function executeDetail(tool: ToolPart): ReactNode {
       {code !== "" && (
         <CodeBlock
           code={code}
-          language="javascript"
-          tokenizer={highlightTokens}
+          language={codeLanguage("javascript")}
           width="100%"
           size="sm"
           maxHeight={480}
@@ -236,9 +213,7 @@ function executeDetail(tool: ToolPart): ReactNode {
           width="100%"
           size="sm"
           maxHeight={480}
-          {...(isJson(result)
-            ? { language: "json", tokenizer: highlightTokens }
-            : {})}
+          {...(isJson(result) ? { language: codeLanguage("json") } : {})}
         />
       )}
       {error !== undefined && (
@@ -268,7 +243,6 @@ function toolDetail(tool: ToolPart): ReactNode {
         width="100%"
         size="sm"
         maxHeight={480}
-        tokenizer={highlightTokens}
         {...(languageOf(d.file) ? { language: languageOf(d.file) } : {})}
       />
     ));
@@ -655,7 +629,7 @@ function renderRow(
   // ⌘-clicked, open in the user's browser (the window's open handler).
   const md = (text: string) => (
     <Markdown
-      components={MARKDOWN_COMPONENTS}
+      codeLanguages={MARKDOWN_CODE_LANGUAGES}
       autolink="gfm"
       onLinkClick={(href, event) =>
         !event.metaKey && !event.ctrlKey && onOpenLink?.(href)

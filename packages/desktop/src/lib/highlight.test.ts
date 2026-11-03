@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { highlightTokens } from "./highlight";
+import {
+  codeLanguage,
+  highlightTokens,
+  MARKDOWN_CODE_LANGUAGES,
+} from "./highlight";
 
 const typed = (code: string, language: string) =>
   highlightTokens(code, language).map((t) => [
@@ -31,5 +35,25 @@ describe("highlightTokens", () => {
   it("takes extensions as languages and leaves unknown ones plain", () => {
     expect(highlightTokens("fn main() {}", "rs").length).toBeGreaterThan(0);
     expect(highlightTokens("whatever", "no-such-language")).toEqual([]);
+  });
+});
+
+describe("codeLanguage", () => {
+  it("gives a word highlights knows one language value, named as written", () => {
+    const ts = codeLanguage("ts");
+    expect(typeof ts).not.toBe("string");
+    expect(codeLanguage("ts")).toBe(ts);
+    expect(ts).toMatchObject({ name: "ts", identifiers: ["ts"] });
+  });
+
+  it("leaves other words, and plain text, to Astryx", () => {
+    expect(codeLanguage("no-such-language")).toBe("no-such-language");
+    expect(codeLanguage("text")).toBe("text");
+  });
+
+  it("lists every fence word for Markdown", () => {
+    const words = MARKDOWN_CODE_LANGUAGES.flatMap((l) => l.identifiers);
+    expect(words).toEqual(expect.arrayContaining(["tsx", "py", "bash"]));
+    expect(new Set(words).size).toBe(words.length);
   });
 });
